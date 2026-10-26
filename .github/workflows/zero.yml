@@ -31,8 +31,13 @@ jobs:
     env:
       # A PAT (or GitHub App token) lets the PRs zero opens trigger CI; GITHUB_TOKEN does not.
       GH_TOKEN: ${{ secrets.ZERO_GH_TOKEN || github.token }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GITHUB_REPOSITORY: ${{ github.repository }}
+      # Only the keys of the engines you use are needed.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTIGRAVITY_API_KEY: ${{ secrets.ANTIGRAVITY_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +49,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Install engine CLIs used by zero.config.json
+        # claude runs through the bundled Agent SDK and needs no install.
+        # Add a case here for any other CLI you configure (antigravity, gemini, opencode...).
+        run: |
+          ENGINES=$(node -e 'const c=JSON.parse(require("fs").readFileSync("zero.config.json","utf8"));console.log([c.engine??"claude",...Object.values(c.roles??{}).map(r=>r.engine)].join(" "))')
+          echo "engines: $ENGINES"
+          case " $ENGINES " in *" codex "*) npm i -g @openai/codex ;; esac
       - name: Configure git identity
         run: |
           git config user.name "kaelen-zero[bot]"

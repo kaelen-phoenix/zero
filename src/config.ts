@@ -4,13 +4,29 @@ import { resolve } from "node:path";
 import { z } from "zod";
 
 const RoleSchema = z.object({
+  /** Engine for this role; defaults to the top-level `engine`. */
+  engine: z.string().optional(),
+  /** Model passed to the engine; omitted = the engine's own default. */
   model: z.string().optional(),
-  maxTurns: z.number().int().positive(),
-  maxBudgetUsd: z.number().positive(),
+  /** Honoured by engines that support it (claude). */
+  maxTurns: z.number().int().positive().optional(),
+  /** Honoured by engines that support it (claude). */
+  maxBudgetUsd: z.number().positive().optional(),
+  /** Hard wall-clock limit, enforced by zero for every engine. */
+  timeoutMinutes: z.number().positive(),
+});
+
+/** Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin. */
+export const CustomEngineSchema = z.object({
+  command: z.array(z.string()).min(1),
+  readArgs: z.array(z.string()).default([]),
+  writeArgs: z.array(z.string()).default([]),
+  modelArgs: z.array(z.string()).default([]),
 });
 
 export const ConfigSchema = z.object({
-  model: z.string().default("claude-opus-5-5"),
+  engine: z.string().default("claude"),
+  engines: z.record(z.string(), CustomEngineSchema).default({}),
   baseBranch: z.string().default("main"),
   branchPrefix: z.string().default("zero/"),
   /** How many coder→verify→review rounds before a task is marked failed. */
@@ -27,15 +43,16 @@ export const ConfigSchema = z.object({
     .prefault({}),
   roles: z
     .object({
-      planner: RoleSchema.prefault({ maxTurns: 40, maxBudgetUsd: 2 }),
-      coder: RoleSchema.prefault({ maxTurns: 120, maxBudgetUsd: 10 }),
-      reviewer: RoleSchema.prefault({ maxTurns: 40, maxBudgetUsd: 2 }),
+      planner: RoleSchema.prefault({ maxTurns: 40, maxBudgetUsd: 2, timeoutMinutes: 15 }),
+      coder: RoleSchema.prefault({ maxTurns: 120, maxBudgetUsd: 10, timeoutMinutes: 45 }),
+      reviewer: RoleSchema.prefault({ maxTurns: 40, maxBudgetUsd: 2, timeoutMinutes: 15 }),
     })
     .prefault({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type RoleName = keyof Config["roles"];
+export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 
 export const CONFIG_FILE = "zero.config.json";
 

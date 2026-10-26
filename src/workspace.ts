@@ -6,6 +6,8 @@ export interface Workspace {
   checkoutBranch(name: string, base: string): void;
   hasChanges(): boolean;
   commitAll(message: string): void;
+  /** Drop uncommitted changes, including new files (ignored files such as node_modules are kept). */
+  discardChanges(): void;
   push(branch: string): void;
   /** Run the verify commands; returns null when all pass, else a failure report. */
   verify(commands: string[]): string | null;
@@ -26,6 +28,10 @@ export function createWorkspace(cwd: string): Workspace {
     commitAll(message) {
       git(["add", "-A"], cwd);
       git(["commit", "-m", message], cwd);
+    },
+    discardChanges() {
+      git(["reset", "--hard", "HEAD"], cwd);
+      git(["clean", "-fd"], cwd);
     },
     push(branch) {
       git(["push", "--force-with-lease", "origin", branch], cwd);

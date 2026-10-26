@@ -1,46 +1,26 @@
-import type { AgentRunner } from "./agent.js";
+import { z } from "zod";
+import type { AgentRequest, AgentRunner } from "./agent.js";
 import type { Config } from "./config.js";
 import { log } from "./log.js";
 import type { Task, Tracker } from "./tracker.js";
 import type { Workspace } from "./workspace.js";
 
-export interface Plan {
-  feasible: boolean;
-  reason: string;
-  summary: string;
-  steps: string[];
-  risks: string[];
-}
+export const PlanSchema = z.object({
+  feasible: z.boolean().describe("False when the task is ambiguous, unsafe or impossible without a human."),
+  reason: z.string(),
+  summary: z.string(),
+  steps: z.array(z.string()),
+  risks: z.array(z.string()),
+});
 
-export interface Review {
-  approved: boolean;
-  summary: string;
-  issues: string[];
-}
+export const ReviewSchema = z.object({
+  approved: z.boolean(),
+  summary: z.string(),
+  issues: z.array(z.string()).describe("Blocking problems the coder must fix."),
+});
 
-export const PLAN_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["feasible", "reason", "summary", "steps", "risks"],
-  properties: {
-    feasible: { type: "boolean", description: "False when the task is ambiguous, unsafe or impossible without a human." },
-    reason: { type: "string" },
-    summary: { type: "string" },
-    steps: { type: "array", items: { type: "string" } },
-    risks: { type: "array", items: { type: "string" } },
-  },
-} as const;
-
-export const REVIEW_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["approved", "summary", "issues"],
-  properties: {
-    approved: { type: "boolean" },
-    summary: { type: "string" },
-    issues: { type: "array", items: { type: "string" }, description: "Blocking problems the coder must fix." },
-  },
-} as const;
+export type Plan = z.infer<typeof PlanSchema>;
+export type Review = z.infer<typeof ReviewSchema>;
 
 export type Outcome =
   | { status: "review"; pullRequest: string; attempts: number; costUsd: number }
@@ -60,6 +40,8 @@ export function branchName(prefix: string, task: Task): string {
 
 const taskBlock = (task: Task) => `# Task #${task.number}: ${task.title}\n\n${task.body}`;
 const list = (items: string[]) => items.map((s) => `- ${s}`).join("\n");
+const engineSummary = (config: Config) =>
+  (["planner", "coder", "reviewer"] as const).map((r) => `${r}=${config.roles[r].engine ?? config.engine}`).join(", ");
 
 /**
  * One task, end to end: plan → (code → verify → review) × maxAttempts → pull request.
@@ -78,6 +60,16 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
     return { status: "failed", reason, attempts, costUsd };
   };
 
+  /** Not every engine can sandbox a read-only role, so zero enforces it: anything it wrote is discarded. */
+  const runReadOnly = async <T>(req: AgentRequest<T>) => {
+    const run = await runAgent(req);
+    if (workspace.hasChanges()) {
+      log.warn("read-only agent modified the workspace; discarding", { role: req.role });
+      workspace.discardChanges();
+    }
+    return run;
+  };
+
   await tracker.setState(task.number, labels.working, [labels.ready, labels.failed]);
   try {
     return await execute();
@@ -88,10 +80,10 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
   async function execute(): Promise<Outcome> {
     workspace.checkoutBranch(branch, config.baseBranch);
 
-    const planRun = await runAgent<Plan>({
+    const planRun = await runReadOnly({
       role: "planner",
       cwd: workspace.cwd,
-      schema: PLAN_SCHEMA,
+      schema: PlanSchema,
       prompt: `${taskBlock(task)}\n\nStudy the repository and produce an implementation plan for this task.`,
     });
     costUsd += planRun.costUsd;
@@ -130,10 +122,10 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
         continue;
       }
 
-      const reviewRun = await runAgent<Review>({
+      const reviewRun = await runReadOnly({
         role: "reviewer",
         cwd: workspace.cwd,
-        schema: REVIEW_SCHEMA,
+        schema: ReviewSchema,
         prompt: `${taskBlock(task)}\n\nReview the change with \`git diff origin/${config.baseBranch}...HEAD\`. Approve only if it fully and correctly solves the task.`,
       });
       costUsd += reviewRun.costUsd;
@@ -152,7 +144,7 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
         head: branch,
         base: config.baseBranch,
         title: task.title,
-        body: `Closes #${task.number}\n\n## Plan\n${plan.summary}\n\n## Review\n${review.summary}\n\n---\nattempts: ${attempts} · est. cost: $${costUsd.toFixed(2)}`,
+        body: `Closes #${task.number}\n\n## Plan\n${plan.summary}\n\n## Review\n${review.summary}\n\n---\nengines: ${engineSummary(config)} · attempts: ${attempts} · est. cost: $${costUsd.toFixed(2)}`,
       });
       await tracker.setState(task.number, labels.review, [labels.working]);
       await tracker.comment(task.number, `Pull request ready: ${pullRequest}`);

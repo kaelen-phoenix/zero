@@ -4,14 +4,23 @@ import { ConfigSchema } from "../src/config.js";
 describe("ConfigSchema", () => {
   it("fills defaults from an empty file", () => {
     const config = ConfigSchema.parse({});
-    expect(config.model).toBe("claude-opus-5-5");
+    expect(config.engine).toBe("claude");
     expect(config.labels.ready).toBe("zero:ready");
-    expect(config.roles.coder.maxTurns).toBe(120);
+    expect(config.roles.coder).toMatchObject({ maxTurns: 120, timeoutMinutes: 45 });
   });
 
-  it("keeps partial overrides", () => {
-    const config = ConfigSchema.parse({ roles: { reviewer: { model: "claude-sonnet-5-5", maxTurns: 10, maxBudgetUsd: 1 } } });
-    expect(config.roles.reviewer.model).toBe("claude-sonnet-5-5");
-    expect(config.roles.planner.maxTurns).toBe(40);
+  it("allows a different engine per role", () => {
+    const config = ConfigSchema.parse({
+      engine: "claude",
+      roles: { coder: { engine: "codex", model: "gpt-5-codex", timeoutMinutes: 60 } },
+    });
+    expect(config.roles.coder.engine).toBe("codex");
+    expect(config.roles.planner.engine).toBeUndefined();
+  });
+
+  it("validates custom engines", () => {
+    const config = ConfigSchema.parse({ engines: { opencode: { command: ["opencode", "run", "{prompt}"] } } });
+    expect(config.engines.opencode).toEqual({ command: ["opencode", "run", "{prompt}"], readArgs: [], writeArgs: [], modelArgs: [] });
+    expect(() => ConfigSchema.parse({ engines: { bad: { command: [] } } })).toThrow();
   });
 });

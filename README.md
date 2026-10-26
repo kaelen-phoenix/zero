@@ -2,7 +2,9 @@
 
 **Kaelen Global Defence** — *Autonomous agent network. Continuous execution. Zero human intervention required.*
 
-`zero` es el orquestador base de Kaelen: convierte issues de GitHub en pull requests revisados, sin intervención humana, usando una red de agentes Claude (Claude Agent SDK) que se ejecuta de forma continua en GitHub Actions.
+`zero` es el orquestador base de Kaelen: convierte issues de GitHub en pull requests revisados, sin intervención humana, usando una red de agentes que se ejecuta de forma continua en GitHub Actions.
+
+**Agnóstico al motor:** zero define el proceso; los agentes son intercambiables. Claude Code, OpenAI Codex, Google Antigravity o cualquier CLI de agente headless, y cada rol puede usar uno distinto (p. ej. Codex implementa y Claude revisa).
 
 ## Cómo funciona
 
@@ -20,13 +22,18 @@
                                                              PR abierto [zero:review]
 ```
 
-| Agente | Herramientas | Responsabilidad |
+| Rol | Acceso | Responsabilidad |
 |---|---|---|
 | **planner** | solo lectura | Explora el repo, produce un plan estructurado o rechaza la tarea si es ambigua/insegura |
 | **coder** | lectura, edición, bash | Implementa el plan, añade tests, aplica el feedback del intento anterior |
-| **reviewer** | solo lectura + `git diff` | Última puerta: aprueba o devuelve problemas concretos |
+| **reviewer** | solo lectura | Última puerta: aprueba o devuelve problemas concretos |
 
-Entre coder y reviewer, el orquestador ejecuta los comandos `verify` de `zero.config.json`; un cambio que no pasa tests nunca llega a revisión. Todos los agentes corren con `permissionMode: "dontAsk"`: lo que no está en su allowlist se deniega, así que ninguna ejecución se queda esperando a un humano.
+Las garantías importantes las aplica zero, no el motor, así que valen igual para cualquier proveedor:
+
+- **Puerta de verify:** entre coder y reviewer, zero ejecuta los comandos `verify` de `zero.config.json`; un cambio que no pasa tests nunca llega a revisión.
+- **Solo lectura real:** si un planner/reviewer modifica el workspace (porque su motor no sabe sandboxearlo), zero descarta los cambios.
+- **Salida estructurada validada:** plan y review se definen con zod; se pasa JSON Schema a los motores que lo soportan y, al resto, se les pide JSON y se valida igual.
+- **Timeout duro** por rol; ninguna ejecución queda colgada esperando a un humano.
 
 ### Estados (labels)
 
@@ -35,7 +42,7 @@ Entre coder y reviewer, el orquestador ejecuta los comandos `verify` de `zero.co
 ## Puesta en marcha
 
 1. **Secrets** del repo (Settings → Secrets → Actions):
-   - `ANTHROPIC_API_KEY` — obligatorio.
+   - La clave del motor que uses: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTIGRAVITY_API_KEY`, `GEMINI_API_KEY`…
    - `ZERO_GH_TOKEN` — recomendado: PAT o token de GitHub App con `contents`, `issues`, `pull-requests`. Sin él se usa `GITHUB_TOKEN`, y los PRs que abra zero no dispararán CI.
 2. **Labels**:
    ```sh
@@ -55,18 +62,51 @@ npm run dev -- run 12     # un issue concreto
 npm run dev -- tick       # el siguiente zero:ready
 ```
 
+## Motores
+
+| Motor | Cómo se invoca | Clave | Solo lectura | Esquema nativo |
+|---|---|---|---|---|
+| `claude` (defecto) | Claude Agent SDK (incluido) | `ANTHROPIC_API_KEY` | allowlist de herramientas | sí |
+| `codex` | `codex exec` | `OPENAI_API_KEY` | `--sandbox read-only` | sí (`--output-schema`) |
+| `antigravity` | `agy -p` (experimental) | `ANTIGRAVITY_API_KEY` | guardia de zero | no (JSON del texto) |
+| *personalizado* | cualquier CLI declarado en config | la suya | guardia de zero | no |
+
+Cualquier otro agente (Gemini CLI, opencode, aider, Cursor CLI…) se añade sin código, en `zero.config.json`:
+
+```json
+{
+  "engine": "claude",
+  "engines": {
+    "gemini": {
+      "command": ["gemini", "-p", "{prompt}", "--output-format", "json"],
+      "writeArgs": ["--yolo"],
+      "modelArgs": ["-m", "{model}"]
+    }
+  },
+  "roles": {
+    "coder":    { "engine": "codex", "timeoutMinutes": 60 },
+    "reviewer": { "engine": "gemini", "model": "gemini-3-pro", "timeoutMinutes": 15 }
+  }
+}
+```
+
+`{prompt}` y `{model}` se sustituyen; si el comando no contiene `{prompt}`, el prompt se envía por stdin. `readArgs`/`writeArgs` se añaden según el rol. Las instrucciones de cada rol (`agents/*.md`) son las mismas para todos los motores, y los agentes leen las convenciones del repo de `AGENTS.md`.
+
+Para instalar el CLI de un motor en Actions, añádelo al paso *Install engine CLIs* de `.github/workflows/zero.yml` (`codex` ya está).
+
 ## Configuración (`zero.config.json`)
 
 | Campo | Defecto | |
 |---|---|---|
-| `model` | `claude-opus-5-5` | Modelo por defecto de todos los roles |
+| `engine` | `claude` | Motor por defecto de todos los roles |
+| `engines` | `{}` | Motores CLI personalizados (ver arriba) |
 | `baseBranch` | `main` | Rama base de los PRs |
 | `branchPrefix` | `zero/` | Prefijo de ramas de trabajo |
 | `maxAttempts` | `3` | Rondas coder→verify→review antes de fallar |
 | `verify` | `["npm run typecheck", "npm test"]` | Comandos que deben pasar |
-| `roles.<rol>` | ver `src/config.ts` | `model`, `maxTurns`, `maxBudgetUsd` por rol |
+| `roles.<rol>` | ver `src/config.ts` | `engine`, `model`, `timeoutMinutes`; `maxTurns` y `maxBudgetUsd` donde el motor lo soporte |
 
-`maxBudgetUsd` limita el gasto de cada ejecución de agente; el coste estimado total de cada tarea aparece en el PR.
+zero ejecuta `git checkout -B` y descarta cambios no confirmados en el directorio de trabajo: úsalo siempre en un clon dedicado (en Actions ya lo es).
 
 ## Desarrollo
 
@@ -74,11 +114,11 @@ npm run dev -- tick       # el siguiente zero:ready
 npm run typecheck && npm test && npm run build
 ```
 
-zero trabaja también sobre sí mismo: los issues de este repo con `zero:ready` mejoran el propio orquestador. Ver `CLAUDE.md` para las convenciones que siguen los agentes.
+zero trabaja también sobre sí mismo: los issues de este repo con `zero:ready` mejoran el propio orquestador. Ver `AGENTS.md` para las convenciones que siguen los agentes.
 
 ## Próximos pasos
 
 - Auto-merge de PRs aprobados cuando CI pasa (cierre del bucle sin humanos).
 - Decomposición: planner que divide issues grandes en sub-issues `zero:ready`.
 - Varios repos objetivo desde un único despliegue de zero.
-- Telemetría de coste/éxito por tarea.
+- Telemetría de coste/éxito por tarea y por motor, para elegir el mejor motor por rol con datos.

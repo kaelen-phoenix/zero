@@ -8,7 +8,7 @@ import type { Workspace } from "../src/workspace.js";
 const task: Task = { number: 7, title: "Add health check endpoint!", body: "GET /health returns 200" };
 const plan: Plan = { feasible: true, reason: "", summary: "Add route", steps: ["edit server.ts"], risks: [] };
 
-function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Plan } = {}) {
+function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Plan; dirtyAfterReadOnly?: boolean } = {}) {
   const reviews = [...(opts.reviews ?? [{ approved: true, summary: "LGTM", issues: [] }])];
   const verify = [...(opts.verify ?? [null])];
   const labels: string[] = [];
@@ -24,15 +24,16 @@ function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Pl
   const workspace: Workspace = {
     cwd: "/repo",
     checkoutBranch: vi.fn(),
-    hasChanges: vi.fn(() => true),
+    hasChanges: vi.fn(() => opts.dirtyAfterReadOnly ?? false),
     commitAll: vi.fn(),
+    discardChanges: vi.fn(),
     push: vi.fn(),
     verify: vi.fn(() => verify.shift() ?? null),
   };
   const runAgent = vi.fn(async (req: AgentRequest): Promise<AgentRun<any>> => {
     prompts.push(req);
     const output = req.role === "planner" ? (opts.plan ?? plan) : req.role === "reviewer" ? reviews.shift() : undefined;
-    return { ok: true, text: "done", output, costUsd: 0.5, turns: 3 };
+    return { ok: true, text: "done", output, costUsd: 0.5 };
   });
 
   const config = ConfigSchema.parse({ maxAttempts: 2 });
@@ -84,6 +85,15 @@ describe("runTask", () => {
     const outcome = await runTask(task, f.deps);
     expect(outcome).toMatchObject({ status: "failed" });
     expect(f.labels.at(-1)).toBe("zero:failed");
+  });
+});
+
+describe("read-only guard", () => {
+  it("discards anything a read-only role wrote", async () => {
+    const f = fakes({ dirtyAfterReadOnly: true });
+    await runTask(task, f.deps);
+    // after planner and after reviewer
+    expect(f.workspace.discardChanges).toHaveBeenCalledTimes(2);
   });
 });
 
