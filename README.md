@@ -42,7 +42,7 @@ Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie
 | L2 vigilada | Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto |
 | L3 a oscuras | Nada; las políticas son límites duros, y está el botón de parada |
 
-Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamiento**, que todavía no está disponible: mientras tanto **trabaja en L2 y lo informa** en su estado. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.
+Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamiento** lista (ver abajo); mientras falte algo, **trabaja en L2 y dice exactamente qué falta**. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.
 
 ## Empezar
 
@@ -50,6 +50,7 @@ Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamient
 npm install && npm run build
 node dist/cli.js init       # crea ~/.zero/zero.factory.yaml y agrega el repo actual como línea
 node dist/cli.js install    # registra zero en Claude Code (y te muestra cómo hacerlo en Codex / OpenCode)
+node dist/cli.js box setup  # prepara la caja de aislamiento (pide permiso antes de instalar nada)
 ```
 
 Después, en tu chat: *"zero, quiero que mi tienda calcule descuentos"*. O desde la terminal:
@@ -72,7 +73,8 @@ Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_a
 
 ```yaml
 level: L3                 # L0 · L1 · L2 · L3
-isolation: worktree       # container (caja) llegará en una próxima versión
+isolation: container      # caja de aislamiento (worktree = copias locales, sin caja)
+box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, luego Docker
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
 limits:
@@ -102,6 +104,26 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `worktrees/` y `jobs/`, con las especificaciones renderizadas;
 - `daemon.log`.
 
+## Caja de aislamiento
+
+En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
+
+- **Copia propia.** La caja recibe un clon independiente del repositorio, sin enlaces al tuyo. No ve tu carpeta personal, tus otros proyectos ni tus claves.
+- **Solo lectura de verdad.** `spec` y `review` reciben la copia montada en modo solo lectura.
+- **Sin privilegios.** Corre como usuario sin privilegios, sin capacidades extra, con el sistema de archivos en solo lectura y con límites de CPU, memoria y procesos.
+- **Credenciales mínimas.** Cada estación recibe solo la credencial de su motor, por nombre, nunca en la línea de comandos. Nunca recibe tokens de GitHub ni claves SSH.
+- **Parada inmediata.** El andon y los tiempos límite detienen el contenedor.
+
+```sh
+zero box status                # qué falta
+zero box setup                 # Windows: WSL2 + Podman · macOS: Podman · Linux: instrucciones; y la imagen
+claude setup-token             # token de tu suscripción para trabajar en la caja
+zero secret set CLAUDE_CODE_OAUTH_TOKEN    # lo guarda en el llavero del sistema (no se muestra)
+zero secret list
+```
+
+Con la caja lista y las credenciales de los motores guardadas, la fábrica pasa a **L3 real**. La caja todavía tiene salida a internet, porque la necesita para hablar con el modelo; restringirla a los dominios necesarios es el próximo paso de seguridad.
+
 ## Observabilidad
 
 Cada trabajo deja una traza: trabajo → estación → intento → agente o comando. Cada elemento registra duración, estado, motor, modelo y costo, y el costo indica su origen (`reported` o `unknown`).
@@ -128,4 +150,4 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 
 ## Próximas etapas
 
-Caja de aislamiento (L3 real) · panel en el navegador e instalador · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.
+Restringir la salida a internet de la caja · panel en el navegador e instalador · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.

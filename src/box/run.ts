@@ -30,12 +30,10 @@ export const containerName = (jobId: string) => `zero-${jobId}-${randomBytes(3).
  */
 export function boxRunArgs(spec: BoxRunSpec): string[] {
   const platform = spec.platform ?? process.platform;
-  const user =
-    platform === "linux"
-      ? spec.runtime === "podman"
-        ? ["--userns=keep-id"]
-        : ["--user", `${spec.uid ?? process.getuid?.() ?? 1000}:${spec.gid ?? process.getgid?.() ?? 1000}`]
-      : [];
+  // On Linux the copy belongs to the owner's uid: run as that uid (the image's own user would not own it).
+  // Rootless Podman also needs keep-id so that uid maps to the same uid on the host.
+  const owner = ["--user", `${spec.uid ?? process.getuid?.() ?? 1000}:${spec.gid ?? process.getgid?.() ?? 1000}`];
+  const user = platform === "linux" ? (spec.runtime === "podman" ? ["--userns=keep-id", ...owner] : owner) : [];
   return [
     "run", "--rm", "-i", "--init",
     "--name", spec.name,

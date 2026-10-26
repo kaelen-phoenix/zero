@@ -146,7 +146,7 @@ describe("running in the box", () => {
 
   it("runs as the owner on Linux", () => {
     expect(boxRunArgs(spec({ platform: "linux", runtime: "docker", uid: 1001, gid: 1002 })).join(" ")).toContain("--user 1001:1002");
-    expect(boxRunArgs(spec({ platform: "linux", runtime: "podman" }))).toContain("--userns=keep-id");
+    expect(boxRunArgs(spec({ platform: "linux", runtime: "podman", uid: 1001, gid: 1002 })).join(" ")).toContain("--userns=keep-id --user 1001:1002");
     expect(boxRunArgs(spec({ platform: "win32" })).some((a) => a.startsWith("--user"))).toBe(false);
   });
 });

@@ -164,3 +164,12 @@ La change OpenSpec `add-local-factory` implementa la fábrica local:
 - townhall local por línea.
 
 Se verificó de punta a punta con Claude real: un pedido en lenguaje natural se entregó integrado en `main` en 60 s, por $0.65.
+
+### Segunda etapa: caja de aislamiento (2026-10-26)
+
+La change OpenSpec `add-isolation-box` implementa la caja:
+- un contenedor (Podman, si no Docker) con un clon independiente del proyecto, de solo lectura para `spec` y `review`, sin privilegios, con límites y con la sola credencial del motor de cada estación;
+- `zero box status|setup` con consentimiento por paso;
+- credenciales en el llavero del sistema.
+
+L3 es real cuando la caja y las credenciales están listas. Queda pendiente restringir la salida a internet de la caja.

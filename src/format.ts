@@ -46,7 +46,7 @@ export function formatStatus(s: FactoryStatus): string {
     out.push(
       s.box.availability.ready && st
         ? `Caja de aislamiento: lista (${st.runtime} · ${st.image})`
-        : `Caja de aislamiento: no lista; los trabajos corren en copias locales. ${s.box.availability.problems.join("; ")}`,
+        : `Caja de aislamiento: no lista; los trabajos corren en copias locales.${s.level.reason ? "" : ` ${s.box.availability.problems.join("; ")}`}`,
     );
   } else {
     out.push("Caja de aislamiento: desactivada (isolation: worktree)");

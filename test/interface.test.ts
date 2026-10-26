@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -5,7 +8,7 @@ import { factoryStatus, requestWork, stop } from "../src/app.js";
 import { formatStatus } from "../src/format.js";
 import { installClaude, manualInstructions, serverCommand } from "../src/install.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
-import { cleanup, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, gitRepo, tempDir, testFactory } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -102,5 +105,23 @@ describe("zero install", () => {
   it("pins ZERO_HOME only when it is not the default", () => {
     const ctx = testFactory({});
     expect(serverCommand(ctx.home, "/cli.js").env).toEqual({ ZERO_HOME: ctx.home.root });
+  });
+});
+
+describe("zero secret (CLI)", () => {
+  const cli = (args: string[], home: string) =>
+    spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, ZERO_HOME: home }, input: "" });
+
+  it("refuses a value passed as an argument", () => {
+    const r = cli(["secret", "set", "OPENAI_API_KEY", "sk-should-not-be-here"], tempDir());
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/No pases el valor como argumento/);
+  });
+
+  it("lists names only", () => {
+    const home = tempDir();
+    writeFileSync(join(home, "secrets.json"), JSON.stringify(["CLAUDE_CODE_OAUTH_TOKEN"]));
+    const r = cli(["secret", "list"], home);
+    expect(r.stdout.trim()).toBe("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });
