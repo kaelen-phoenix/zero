@@ -23,7 +23,7 @@
 
 ## 5. Prueba real y documentación
 
-- [ ] 5.1 Ampliar el e2e de la caja: sin salida directa ni DNS, sitio normal por la puerta, sitio sospechoso bloqueado y registrado; correrlo en CI con Podman y con Docker
+- [x] 5.1 Ampliar el e2e de la caja: sin salida directa ni DNS, sitio normal por la puerta, sitio sospechoso bloqueado y registrado; correrlo en CI con Podman y con Docker
 - [x] 5.2 Actualizar README, AGENTS.md y el ADR
 
 ## Workflow follow-up

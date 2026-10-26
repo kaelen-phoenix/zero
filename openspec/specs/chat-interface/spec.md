@@ -6,7 +6,15 @@ Permite usar la fábrica desde el chat del cliente de agentes del dueño (Claude
 ## Requirements
 
 ### Requirement: Servidor MCP de zero
-zero SHALL ofrecer un servidor MCP por stdio con herramientas para: pedir un trabajo, consultar el estado de la fábrica o de un trabajo, responder una consulta, detener o reanudar (fábrica o trabajo), leer el informe y listar las líneas.
+zero SHALL ofrecer un servidor MCP por stdio con herramientas para:
+- pedir un trabajo;
+- consultar el estado de la fábrica o de un trabajo;
+- responder una consulta;
+- detener o reanudar (fábrica o trabajo);
+- leer el informe;
+- listar las líneas;
+- ver las salidas a internet de la caja;
+- bloquear un sitio.
 
 #### Scenario: Pedido desde el chat
 - **WHEN** el cliente llama a la herramienta de pedido con un texto
@@ -15,6 +23,10 @@ zero SHALL ofrecer un servidor MCP por stdio con herramientas para: pedir un tra
 #### Scenario: Consulta de estado
 - **WHEN** el cliente pide el estado de un trabajo en `waiting`
 - **THEN** recibe la pregunta pendiente en lenguaje simple y cómo responderla
+
+#### Scenario: Salidas desde el chat
+- **WHEN** el cliente pide las salidas de un trabajo
+- **THEN** recibe el mismo informe que `zero egress <trabajo>`
 
 ### Requirement: El chat no ejecuta el trabajo
 Las herramientas MCP MUST responder sin esperar a que el trabajo termine; la ejecución SHALL ocurrir en el daemon.
