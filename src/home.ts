@@ -12,6 +12,8 @@ export interface FactoryHome {
   daemonLog: string;
   /** Shared with the egress gate's container: its policy, the passes of running boxes and its connection records. */
   gate: string;
+  /** Optional helper binaries zero downloads with the owner's consent (cloudflared). */
+  bin: string;
 }
 
 export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".zero")): FactoryHome {
@@ -25,5 +27,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     jobs: join(abs, "jobs"),
     daemonLog: join(abs, "daemon.log"),
     gate: join(abs, "gate"),
+    bin: join(abs, "bin"),
   };
 }

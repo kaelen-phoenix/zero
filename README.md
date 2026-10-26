@@ -69,12 +69,37 @@ zero start [--detach] · zero shutdown
 
 Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace`, `zero_lines`, `zero_egress` y `zero_egress_block`.
 
+## Panel en el navegador
+
+Con la fábrica en marcha, el panel muestra:
+- el estado de la fábrica;
+- los trabajos;
+- las preguntas, con botones para aprobar o rechazar;
+- la traza de cada trabajo;
+- las salidas a internet y el informe.
+
+Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
+
+```sh
+zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
+zero panel remote on           # acceso desde afuera (celular) con un túnel temporal de Cloudflare
+zero panel remote off          # lo cierra
+zero panel rotate              # clave nueva: los links anteriores dejan de servir
+```
+
+- El panel escucha solo en tu PC (`127.0.0.1:4848`).
+- La clave viaja en el link después de `#`, así que el navegador no la envía en la dirección. Se canjea por una cookie de sesión.
+- La clave vive en el llavero del sistema.
+- El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
+- Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
+
 ## La fábrica (`~/.zero/zero.factory.yaml`)
 
 ```yaml
 level: L3                 # L0 · L1 · L2 · L3
 isolation: container      # caja de aislamiento (worktree = copias locales, sin caja)
 box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, luego Docker
+panel: { port: 4848 }     # 0 = sin panel
 egress:                   # salidas a internet de la caja (todas pasan por la puerta de zero)
   mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
   allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
@@ -106,6 +131,7 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `state.db`, con los trabajos y las trazas;
 - `townhall/`, la memoria colectiva;
 - `worktrees/` y `jobs/`, con las especificaciones renderizadas;
+- `bin/`, con las herramientas que zero descarga con tu permiso (cloudflared);
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
 
@@ -180,4 +206,4 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 
 ## Próximas etapas
 
-Panel en el navegador (con las salidas y botones para permitir y bloquear) e instalador · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.
+Instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.

@@ -18,6 +18,7 @@ A software factory that runs on its owner's machine. Agents of any vendor work o
 - `src/townhall/`: collective memory and the owner briefing.
 - `src/box/`: the isolation box. `runtime.ts` detects Podman/Docker, `status.ts` inspects and caches readiness, `image.ts` and `box/Dockerfile` build the image, `run.ts` holds every hardening flag, `executor.ts` routes shell commands and agents into the box, `agent.ts` is the entry point inside it, and `setup.ts` walks the per-platform plan with consent. `src/keychain.ts` stores credentials in the OS keychain.
 - The egress gate: boxes run on an internal network with no DNS and leave only through zero's proxy. `src/box/egress.ts` holds the rules (pure), `gate.ts` is the proxy (runs in its own container via `gate-main.ts`), and `network.ts` starts it, issues one pass per box run and moves its records into `state.db`. Only `suspicious` refusals affect a job.
+- `src/panel/`: the control panel the daemon serves on 127.0.0.1. `server.ts` (session from the key in the link's fragment, Origin checks, actions through `app.ts`), `html.ts` (server-rendered pages), `key.ts` (key in the keychain), `tunnel.ts` (optional cloudflared quick tunnel, downloaded with consent and kept by the daemon).
 - `openspec/`: specs (`specs/`) and changes (`changes/`). `docs/adr/`: decisions.
 
 ## Conventions

@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, requestWork, resume, setEgressMode, setEgressRule, SHUTDOWN_KEY, stop, trace } from "./app.js";
+import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { runDaemon } from "./daemon.js";
 import { formatEgress, formatJob, formatRequest, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
@@ -11,6 +11,7 @@ import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
 import { log } from "./log.js";
 import { serveStdio } from "./mcp/server.js";
+import { downloadCloudflared, downloadPlan, findCloudflared } from "./panel/tunnel.js";
 
 const USAGE = `zero: tu fábrica de software, en tu máquina
 
@@ -39,6 +40,11 @@ Salidas a internet de la caja (todas pasan por la puerta de zero):
   zero egress remove <sitio>         Saca un sitio de tus listas
   zero egress mode blocklist|allowlist
                                  blocklist: sale todo salvo lo sospechoso y lo bloqueado; allowlist: solo lo permitido
+
+Panel en el navegador:
+  zero panel                     Muestra el link del panel (con tu clave) y enciende la fábrica si hace falta
+  zero panel remote on|off       Abre o cierra el acceso desde afuera (celular) con un túnel temporal   [--yes]
+  zero panel rotate              Cambia la clave: los links anteriores dejan de funcionar
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
@@ -176,6 +182,29 @@ async function main(argv: string[]): Promise<number> {
         console.log(`# ${b.title}\n\n${b.body}`);
         return 0;
       }
+      case "panel": {
+        const [action, arg] = rest;
+        if (action === "remote" && arg === "off") {
+          setRemotePanel(ctx, false);
+          console.log("Acceso remoto cerrado: el link de afuera deja de funcionar en unos segundos.");
+          return 0;
+        }
+        if (action === "remote" && arg === "on") {
+          if (!(await ensureCloudflared(ctx, Boolean(values.yes)))) return 1;
+          setRemotePanel(ctx, true);
+          await ensureDaemon(ctx);
+          console.log("Abriendo el túnel…");
+          const links = await waitFor(() => panelLinks(ctx).remote, 90_000);
+          if (!links) console.log("El túnel todavía no respondió; probá `zero panel` en un minuto (mirá daemon.log si no aparece).");
+          printPanel(panelLinks(ctx));
+          return 0;
+        }
+        if (action && action !== "rotate") break;
+        const started = await ensureDaemon(ctx);
+        printPanel(panelLinks(ctx, { rotate: action === "rotate" }), action === "rotate");
+        if (started) console.log("\nLa fábrica estaba apagada: la encendí (el panel tarda unos segundos en responder).");
+        return 0;
+      }
       case "egress": {
         const [action, arg] = rest;
         if (action === "allow" || action === "block" || action === "remove") {
@@ -251,4 +280,42 @@ function interactiveConfirm() {
     confirm: async (q: string) => /^(s|si|sí|y|yes)$/i.test((await rl.question(`${q} [s/N] `)).trim()),
     close: () => rl.close(),
   };
+}
+
+function printPanel(links: PanelLinks, rotated = false) {
+  if (rotated) console.log("Clave nueva: los links y sesiones anteriores ya no sirven.\n");
+  console.log(links.local ? `En esta PC:   ${links.local}` : "El panel está desactivado (panel.port: 0).");
+  if (links.remote) console.log(`Desde afuera: ${links.remote}`);
+  else if (links.remoteOn) console.log("Desde afuera: el túnel se está abriendo; volvé a correr `zero panel` en unos segundos.");
+  if (links.local || links.remote) console.log("\nCada link lleva tu clave: no lo compartas. Si se filtró: `zero panel rotate`.");
+  if (links.remote) console.log("Para cerrar el acceso desde afuera: `zero panel remote off`.");
+}
+
+/** cloudflared is downloaded only with the owner's consent (or `--yes`). */
+async function ensureCloudflared(ctx: FactoryContext, yes: boolean): Promise<boolean> {
+  if (findCloudflared(ctx.home)) return true;
+  const plan = downloadPlan();
+  if ("manual" in plan) {
+    console.log(plan.manual);
+    return false;
+  }
+  console.log(`Para abrir el panel desde afuera hace falta cloudflared (de Cloudflare, open source, Apache-2.0).\nLo descargo de sus releases oficiales en GitHub a ${ctx.home.bin}. No necesita administrador ni instala nada en el sistema.`);
+  const ask = interactiveConfirm();
+  const ok = yes || (await ask.confirm("¿Lo descargo?"));
+  ask.close();
+  if (!ok) {
+    console.log("No descargué nada.");
+    return false;
+  }
+  const d = await downloadCloudflared(ctx.home);
+  console.log(`cloudflared descargado${process.platform === "win32" ? " y con la firma de Cloudflare verificada" : ""} (sha256 ${d.sha256.slice(0, 16)}…).`);
+  return true;
+}
+
+async function waitFor<T>(fn: () => T | undefined, ms: number): Promise<T | undefined> {
+  for (const start = Date.now(); Date.now() - start < ms; await new Promise((r) => setTimeout(r, 1000))) {
+    const v = fn();
+    if (v !== undefined) return v;
+  }
+  return undefined;
 }

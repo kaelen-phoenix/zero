@@ -11,6 +11,8 @@ import { finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { FINAL_STATUSES, Store, type Job } from "./state/store.js";
 import { formatEgressSites } from "./format.js";
 import { log } from "./log.js";
+import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
+import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
 import { computeMetrics, dailyBudgetReached, spentToday, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, Tracer } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
@@ -264,4 +266,29 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
 
 export function lines(config: FactoryConfig) {
   return config.lines.map((l) => ({ name: l.name, repo: l.repo, baseBranch: l.baseBranch, integrate: l.integrate, verify: l.verify }));
+}
+
+export interface PanelLinks {
+  /** Opens on this machine only. */
+  local?: string;
+  /** Through the tunnel, when it is open. */
+  remote?: string;
+  remoteOn: boolean;
+}
+
+/** The panel's links, each carrying the key. Whoever has one gets into the factory. */
+export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {}): PanelLinks {
+  const key = opts.rotate ? rotatePanelKey(ctx.secrets) : panelKey(ctx.secrets);
+  const remoteUrl = ctx.store.getKv(REMOTE_URL_KEY);
+  return {
+    local: ctx.config.panel.port ? panelLink(`http://127.0.0.1:${ctx.config.panel.port}`, key) : undefined,
+    remote: remoteUrl ? panelLink(remoteUrl, key) : undefined,
+    remoteOn: ctx.store.getKv(REMOTE_KEY) === "on",
+  };
+}
+
+/** Asks the daemon to open or close the tunnel to the panel. */
+export function setRemotePanel(ctx: FactoryContext, on: boolean) {
+  if (on) ctx.store.setKv(REMOTE_KEY, "on");
+  else ctx.store.deleteKv(REMOTE_KEY);
 }

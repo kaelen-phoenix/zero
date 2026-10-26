@@ -101,6 +101,8 @@ export const FactorySchema = z
       })
       .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
+    /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
+    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
     lines: z.array(LineSchema).default([]),
   })
   .superRefine((cfg, ctx) => {

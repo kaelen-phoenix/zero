@@ -9,6 +9,9 @@ import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { log } from "./log.js";
+import { panelKey } from "./panel/key.js";
+import { createPanelServer } from "./panel/server.js";
+import { tunnelKeeper } from "./panel/tunnel.js";
 import { dailyBudgetReached, spentToday } from "./telemetry/metrics.js";
 
 export interface DaemonOptions {
@@ -22,6 +25,8 @@ export interface DaemonOptions {
   inspectBox?: (config: FactoryConfig) => BoxStatus;
   /** Builds the executor for a ready box; tests inject a simulated one. */
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
+  /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
+  panel?: boolean;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -86,6 +91,13 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   process.once("SIGTERM", shutdown);
   log.info("factory started", { pid: process.pid, home: ctx.home.root });
 
+  // The panel is fixed to the port the factory started with; changing it needs a restart.
+  const port = (opts.panel ?? !opts.once) ? ctx.config.panel.port : 0;
+  const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets) }) : undefined;
+  panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
+  panel?.listen(port, "127.0.0.1", () => log.info("control panel listening", { url: `http://127.0.0.1:${port}` }));
+  const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+
   try {
     while (!stopping) {
       beat();
@@ -103,6 +115,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
 
       if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
       readGate(ctx);
+      tunnel.tick();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -145,6 +158,9 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     }
   } finally {
     await Promise.allSettled([...running.values()].map((r) => r.done));
+    tunnel.stop();
+    panel?.close();
+    panel?.closeAllConnections();
     process.removeListener("SIGINT", shutdown);
     process.removeListener("SIGTERM", shutdown);
     const mine = daemonInfo(store, now());

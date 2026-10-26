@@ -180,6 +180,8 @@ L3 es real cuando la caja y las credenciales están listas.
 |---|---|---|
 | 10 | Salida a internet de la caja | **No limitarla por defecto: verla toda y bloquear lo sospechoso.** El dueño puede armar su lista de bloqueados o pasar a una lista de permitidos (`egress.mode`). Para que verla sirva, la caja no tiene salida propia ni DNS: sale solo por una puerta de zero (proxy propio en su contenedor, red interna del runtime). Un trabajo con salidas sospechosas no se integra solo (L3 falla, L0–L2 pregunta). Desde el chat solo se puede bloquear |
 
+| 11 | Panel y acceso remoto | **Panel servido por el daemon solo en `127.0.0.1`**, HTML del servidor, sin framework. Clave en el llavero, que viaja en el fragmento del link y se canjea por una cookie. Acceso desde el celular con un **túnel rápido de Cloudflare, temporal y a pedido** (`zero panel remote on|off`). Elegido porque funciona sin estar frente a la PC: no requiere administrador ni cuenta. La red privada (Tailscale/Headscale) queda como alternativa más privada |
+
 La change OpenSpec `add-egress-gate` implementa:
 - la puerta;
 - los pases por ejecución;
