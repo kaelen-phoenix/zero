@@ -70,6 +70,8 @@ export interface Job {
   spec?: unknown;
   branch?: string;
   worktree?: string;
+  /** Where the job runs, fixed when it starts: a job started in the box finishes in the box. */
+  isolation?: "worktree" | "container";
   feedback?: string;
   costUsd: number;
   budgetUsd: number;
@@ -157,6 +159,7 @@ function toJob(r: Row): Job {
     spec: json(r.spec),
     branch: str(r.branch),
     worktree: str(r.worktree),
+    isolation: str(r.isolation) as Job["isolation"],
     feedback: str(r.feedback),
     costUsd: Number(r.cost_usd),
     budgetUsd: Number(r.budget_usd),
@@ -186,7 +189,7 @@ function toSpan(r: Row): SpanRow {
 
 const COLUMNS: Record<string, string> = {
   status: "status", station: "station", checkpoint: "checkpoint", attempt: "attempt", title: "title",
-  spec: "spec", branch: "branch", worktree: "worktree", feedback: "feedback", costUsd: "cost_usd",
+  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", feedback: "feedback", costUsd: "cost_usd",
   budgetUsd: "budget_usd", question: "question", approvals: "approvals", delivery: "delivery",
   reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at",
 };
@@ -208,6 +211,13 @@ export class Store {
     this.db = new Database(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Columns added after the first release, for factories created before them. */
+  private migrate() {
+    const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
+    if (!columns.has("isolation")) this.db.exec("ALTER TABLE jobs ADD COLUMN isolation TEXT");
   }
 
   close() {

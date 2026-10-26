@@ -1,5 +1,7 @@
 import { createAgentRunner, type AgentRunner } from "./agent.js";
-import { ANDON_KEY, daemonInfo, DAEMON_KEY, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { loadFactory, type FactoryConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
@@ -14,7 +16,13 @@ export interface DaemonOptions {
   once?: boolean;
   /** Agent runner per config; tests inject fakes. */
   agentRunner?: (config: FactoryConfig) => AgentRunner;
+  /** Probes the isolation box; tests inject a result instead of running container commands. */
+  inspectBox?: (config: FactoryConfig) => BoxStatus;
+  /** Builds the executor for a ready box; tests inject a simulated one. */
+  boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
 }
+
+const BOX_RECHECK_MS = 10 * 60_000;
 
 interface Running {
   line: string;
@@ -47,6 +55,16 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
 
   const running = new Map<string, Running>();
   let stopping = false;
+  let boxCheckedAt = 0;
+  const refreshBox = () => {
+    if (ctx.config.isolation !== "container") return;
+    try {
+      saveBoxStatus(store, (opts.inspectBox ?? inspectBox)(ctx.config));
+    } catch (err) {
+      log.warn("box inspection failed", { error: String(err) });
+    }
+    boxCheckedAt = Date.now();
+  };
   const shutdown = () => {
     stopping = true;
     for (const r of running.values()) r.controller.abort("shutdown" satisfies StopReason);
@@ -70,6 +88,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
         continue;
       }
 
+      if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -97,7 +116,9 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
           }
           startable = true;
           const controller = new AbortController();
-          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config) };
+          const { status, availability } = currentBox(ctx);
+          const box = ctx.config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets)))(ctx.config, status) : undefined;
+          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
           const done = runJob(job.id, deps, controller.signal)
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))
             .finally(() => running.delete(job.id));

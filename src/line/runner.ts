@@ -2,14 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentRunner } from "../agent.js";
-import { effectiveLevel, findLine, type Level, type LineConfig } from "../config.js";
+import type { BoxExecutor } from "../box/executor.js";
+import { effectiveLevel, findLine, type BoxAvailability, type Level, type LineConfig } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
-import { git, sh } from "../shell.js";
+import { git, sh, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
-import { openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
+import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { decide } from "./policy.js";
@@ -29,10 +30,16 @@ import { verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
   home: FactoryHome;
+  /** Agents on this machine, for jobs that do not run in the box. */
   runAgent: AgentRunner;
-  /** Whether the isolation box is available; defaults to detecting it. */
-  isolationBox?: boolean;
+  /** The isolation box, when it is ready. */
+  box?: BoxExecutor;
+  /** What the effective level sees; defaults to "ready" exactly when a box is given. */
+  boxAvailability?: BoxAvailability;
 }
+
+/** Runs a shell command in the job's work copy, wherever the job runs. */
+type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: AbortSignal; parentId: string }) => Promise<ShellResult>;
 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
@@ -60,8 +67,20 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   let job = store.getJob(jobId);
   if (!job) throw new Error(`job ${jobId} not found`);
   const line = findLine(config, job.line);
-  const level = effectiveLevel(config, deps.isolationBox).level;
+  const level = effectiveLevel(config, deps.boxAvailability ?? { ready: Boolean(deps.box), problems: deps.box ? [] : ["la caja no está lista"] }).level;
   const jobSpan = tracer.jobSpanId(job.id);
+
+  // Fixed on the first run: a job that started in the box finishes in the box.
+  const isolation = job.isolation ?? (config.isolation === "container" && deps.box ? "container" : "worktree");
+  if (!job.isolation) job = store.updateJob(jobId, { isolation });
+  if (isolation === "container" && !deps.box) {
+    return finalizeJob(deps, job, "failed", { reason: "Este trabajo empezó en la caja de aislamiento, que ahora no está lista. Revisala con `zero box status` y volvé a pedir el trabajo." });
+  }
+  const box = isolation === "container" ? deps.box : undefined;
+  const lineDeps: RunnerDeps = { ...deps, runAgent: box ? box.agentRunner(config) : deps.runAgent };
+  const shell: Shell = box
+    ? (command, cwd, o) => box.shell(command, { cwd, mount: "rw", jobId, timeoutMs: o.timeoutMs, signal: o.signal, trace: { tracer, jobId, parentId: o.parentId } })
+    : (command, cwd, o) => sh(command, cwd, o);
 
   const reload = () => (job = store.getJob(jobId)!);
   const check = () => {
@@ -74,11 +93,11 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 
   job = store.updateJob(jobId, { status: "running" });
   try {
-    const copy = await prepareWorkCopy(deps, job, line);
+    const copy = await prepareWorkCopy(deps, job, line, isolation, shell);
     job = reload();
 
     if (job.checkpoint === "none") {
-      const outcome = await specStation(deps, job, line, copy, signal, addCost, learn);
+      const outcome = await specStation(lineDeps, job, line, copy, signal, addCost, learn);
       check();
       if (typeof outcome === "string") return await fail(outcome);
       job = reload();
@@ -89,7 +108,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     }
 
     if (job.checkpoint === "spec") {
-      const outcome = await buildLoop(deps, jobId, line, level, copy, spec, signal, addCost, learn);
+      const outcome = await buildLoop(lineDeps, jobId, line, level, copy, spec, signal, addCost, learn, shell);
       if (outcome) return outcome;
       job = reload();
     }
@@ -99,14 +118,15 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     }
     check();
     job = store.updateJob(jobId, { station: "integrate" });
-    const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate } }, async () =>
-      integrate(line, copy, {
+    const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation } }, async () => {
+      copy.publish();
+      return integrate(line, copy, {
         jobId,
         title: spec.title,
         body: `${plainSpec(spec)}\n\n---\nGenerado por zero · trabajo ${jobId} · costo estimado $${job!.costUsd.toFixed(2)}`,
         scratchDir: join(deps.home.worktrees, line.name),
-      }),
-    );
+      });
+    });
     if (!result.ok) {
       return askOwner(deps, reload(), { kind: "integration-blocked", text: `${result.reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
     }
@@ -128,20 +148,22 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
  * setup produces is not part of the change: edits to tracked files (lockfile
  * rewrites) are reverted and new paths (node_modules) are excluded from commits.
  */
-async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig): Promise<WorkCopy> {
+async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, isolation: "worktree" | "container", shell: Shell): Promise<WorkCopy> {
   const path = job.worktree ?? join(deps.home.worktrees, line.name, job.id);
   const branch = job.branch ?? `zero/${job.id}`;
   const excludeFile = join(deps.home.jobs, job.id, "setup-untracked.json");
+  // The box gets an independent clone; a worktree would expose the owner's repository.
+  const open = (exclude: string[]) => (isolation === "container" ? openCloneCopy : openWorkCopy)(line.repo, line.baseBranch, branch, path, exclude);
   if (existsSync(path)) {
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
-    return openWorkCopy(line.repo, line.baseBranch, branch, path, exclude);
+    return open(exclude);
   }
-  const bare = await openWorkCopy(line.repo, line.baseBranch, branch, path);
+  const bare = await open([]);
   deps.store.updateJob(job.id, { worktree: path, branch });
   if (line.setup.length) {
-    await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id) }, async (span) => {
+    await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
       for (const command of line.setup) {
-        const r = await sh(command, bare.cwd, { timeoutMs: 20 * 60_000 });
+        const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id });
         span.set({ "process.command_line": command, "process.exit.code": r.code });
         if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
       }
@@ -151,7 +173,7 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig): Pr
   const exclude = untrackedPaths(bare.cwd);
   await mkdir(join(deps.home.jobs, job.id), { recursive: true });
   await writeFile(excludeFile, JSON.stringify(exclude));
-  return openWorkCopy(line.repo, line.baseBranch, branch, path, exclude);
+  return open(exclude);
 }
 
 const remaining = (job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - job.costUsd, 0.01);
@@ -232,6 +254,7 @@ async function buildLoop(
   signal: AbortSignal,
   addCost: (usd: number) => Job,
   learn: (l: Learning[], extra?: NewPost[]) => Promise<void>,
+  shell: Shell,
 ): Promise<Job | undefined> {
   const { store, tracer, config } = deps;
   const contract = renderSpecDelta(spec, false);
@@ -311,8 +334,11 @@ async function buildLoop(
         jobId,
         parentId: span.id,
         signal,
+        run: (command, o) => shell(command, copy.cwd, o),
       }),
     );
+    // Whatever verification left behind (coverage, build output) must never end up in a later commit.
+    copy.discardChanges();
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
     if (!verified.ok && verified.kind === "protected") {
       if (decide(level, "protected-path") === "fail") {

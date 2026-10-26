@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { effectiveLevel, findLine, loadFactory, type EffectiveLevel, type FactoryConfig } from "./config.js";
+import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
+import { effectiveLevel, findLine, loadFactory, type BoxAvailability, type EffectiveLevel, type FactoryConfig } from "./config.js";
+import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
 import { finalizeJob, type LedgerDeps } from "./line/finish.js";
@@ -20,13 +22,24 @@ const BEAT_FRESH_MS = 15_000;
 /** Everything the CLI, the MCP server and the daemon share about one factory. */
 export interface FactoryContext extends LedgerDeps {
   home: FactoryHome;
+  secrets: SecretStore;
 }
 
 export async function openFactory(home: FactoryHome = factoryHome(), now?: () => Date): Promise<FactoryContext> {
   const config = await loadFactory(home.config);
   await mkdir(home.root, { recursive: true });
   const store = new Store(home.db, now);
-  return { home, config, store, tracer: new Tracer(store, now), townhall: openTownhall(home, now), now };
+  return { home, config, store, tracer: new Tracer(store, now), townhall: openTownhall(home, now), secrets: new SecretStore(home), now };
+}
+
+/** The box as the factory last saw it, plus the credentials available now. */
+export function currentBox(ctx: FactoryContext): { status?: BoxStatus; availability: BoxAvailability } {
+  const status = readBoxStatus(ctx.store);
+  return { status, availability: boxAvailability(ctx.config, status, ctx.secrets) };
+}
+
+export function currentLevel(ctx: FactoryContext): EffectiveLevel {
+  return effectiveLevel(ctx.config, currentBox(ctx).availability);
 }
 
 export function openTownhall(home: FactoryHome, now?: () => Date): Townhall {
@@ -81,7 +94,7 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
   const text = input.text.trim();
   if (!text) throw new Error("El pedido está vacío.");
   const line = findLine(ctx.config, input.line);
-  const level = effectiveLevel(ctx.config);
+  const level = currentLevel(ctx);
   const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob });
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
@@ -124,6 +137,8 @@ export function resume(ctx: FactoryContext) {
 
 export interface FactoryStatus {
   level: EffectiveLevel;
+  isolation: FactoryConfig["isolation"];
+  box: { status?: BoxStatus; availability: BoxAvailability };
   daemon: DaemonInfo;
   andon: boolean;
   budget: { spentUsd: number; limitUsd: number; reached: boolean };
@@ -137,8 +152,11 @@ export interface FactoryStatus {
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   const now = (ctx.now ?? (() => new Date()))();
   const spentUsd = spentToday(ctx.store, now);
+  const box = currentBox(ctx);
   return {
-    level: effectiveLevel(ctx.config),
+    level: effectiveLevel(ctx.config, box.availability),
+    isolation: ctx.config.isolation,
+    box,
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: { spentUsd, limitUsd: ctx.config.limits.usdPerDay, reached: dailyBudgetReached(spentUsd, ctx.config.limits.usdPerDay) },

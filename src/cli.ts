@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
+import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
+import { SecretStore } from "./keychain.js";
 import { answer, briefing, ensureDaemon, factoryStatus, getJob, openFactory, requestWork, resume, SHUTDOWN_KEY, stop, trace } from "./app.js";
 import { runDaemon } from "./daemon.js";
 import { formatJob, formatRequest, formatStatus } from "./format.js";
@@ -24,6 +27,12 @@ Uso diario (también desde el chat):
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero trace <trabajo>           Traza paso a paso de un trabajo
 
+Caja de aislamiento y credenciales:
+  zero box status                Revisa la caja (contenedores) donde trabajan los agentes
+  zero box setup [--yes]         Prepara la caja: pide permiso antes de instalar nada
+  zero secret set <NOMBRE>       Guarda una credencial en el llavero del sistema (se escribe sin mostrarse)
+  zero secret list | remove <NOMBRE>
+
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
@@ -44,6 +53,7 @@ async function main(argv: string[]): Promise<number> {
       note: { type: "string" },
       days: { type: "string" },
       detach: { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -72,6 +82,26 @@ async function main(argv: string[]): Promise<number> {
       for (const r of install(home)) console.log(`\n[${r.client}] ${r.status}\n${r.detail}`);
       return 0;
     }
+    case "secret": {
+      const secrets = new SecretStore(home);
+      const [action, name, extra] = rest;
+      if (action === "list") {
+        const names = secrets.list();
+        console.log(names.length ? names.join("\n") : "No hay credenciales guardadas.");
+        return 0;
+      }
+      if (action === "remove" && name) {
+        console.log(secrets.remove(name) ? `Credencial ${name} borrada.` : `No había una credencial ${name}.`);
+        return 0;
+      }
+      if (action === "set" && name) {
+        if (extra !== undefined) throw new Error("No pases el valor como argumento (quedaría en el historial). Corré `zero secret set NOMBRE` y escribilo cuando lo pida, o pasalo por la entrada estándar.");
+        secrets.set(name, await readSecretValue(name));
+        console.log(`Credencial ${name} guardada en el llavero del sistema.`);
+        return 0;
+      }
+      break;
+    }
     case "mcp":
       await serveStdio(home);
       return -1; // keep running until the client closes stdin
@@ -92,6 +122,18 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         }
         await runDaemon(ctx);
+        return 0;
+      }
+      case "box": {
+        if (rest[0] === "setup") {
+          const ask = interactiveConfirm();
+          const outcome = await setupBox(ctx.config, { confirm: ask.confirm, say: (t) => console.log(t) }, Boolean(values.yes));
+          ask.close();
+          console.log(outcome === "ready" ? "Caja lista." : outcome === "reboot" ? "" : "La caja todavía no está lista.");
+        } else if (rest[0] !== "status") break;
+        const status = inspectBox(ctx.config);
+        saveBoxStatus(ctx.store, status);
+        console.log(formatStatus(factoryStatus(ctx)).split("\n").filter((l) => l.startsWith("Caja") || l.startsWith("Fábrica") || l.startsWith("  ")).join("\n"));
         return 0;
       }
       case "shutdown":
@@ -144,8 +186,47 @@ main(process.argv.slice(2)).then(
     if (code >= 0) process.exit(code);
   },
   (err) => {
-    log.error("fatal", { error: err instanceof Error ? err.message : String(err) });
+    if (process.env.ZERO_DEBUG) log.error("fatal", { error: err instanceof Error ? err.stack : String(err) });
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   },
 );
+
+/** Reads a secret without echoing it on a terminal, or from stdin when piped. */
+async function readSecretValue(name: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    let input = "";
+    for await (const chunk of process.stdin) input += chunk;
+    return input.trim();
+  }
+  process.stdout.write(`Valor de ${name} (no se muestra): `);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  return new Promise((resolve) => {
+    let value = "";
+    const onData = (buf: Buffer) => {
+      for (const ch of buf.toString("utf8")) {
+        if (ch === "\r" || ch === "\n") {
+          process.stdin.setRawMode(false);
+          process.stdin.pause();
+          process.stdin.off("data", onData);
+          process.stdout.write("\n");
+          return resolve(value);
+        }
+        if (ch === "\u0003") process.exit(130);
+        value = ch === "\u007f" || ch === "\b" ? value.slice(0, -1) : value + ch;
+      }
+    };
+    process.stdin.on("data", onData);
+  });
+}
+
+/** Yes/no questions on a terminal; without one, nobody can consent, so the answer is no. */
+function interactiveConfirm() {
+  if (!process.stdin.isTTY) return { confirm: async () => false, close: () => {} };
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return {
+    confirm: async (q: string) => /^(s|si|sí|y|yes)$/i.test((await rl.question(`${q} [s/N] `)).trim()),
+    close: () => rl.close(),
+  };
+}

@@ -11,7 +11,7 @@ afterEach(cleanup);
 describe("factory definition", () => {
   it("fills safe defaults around a single line", () => {
     const cfg = parseFactory("lines:\n  - name: api\n    repo: /work/api\n");
-    expect(cfg).toMatchObject({ level: "L3", engine: "claude", isolation: "worktree", limits: { usdPerDay: 10, usdPerJob: 3 } });
+    expect(cfg).toMatchObject({ level: "L3", engine: "claude", isolation: "container", limits: { usdPerDay: 10, usdPerJob: 3 }, box: { runtime: "auto", cpus: 2 } });
     expect(cfg.lines[0]).toMatchObject({ integrate: "merge", baseBranch: "main", maxAttempts: 3 });
     expect(cfg.limits.protectedPaths).toContain(".github/**");
   });
@@ -45,7 +45,7 @@ describe("effective level", () => {
   });
 
   it("keeps L3 when the box is configured and available", () => {
-    expect(effectiveLevel({ level: "L3", isolation: "container" }, true)).toEqual({ level: "L3", configured: "L3" });
+    expect(effectiveLevel({ level: "L3", isolation: "container" }, { ready: true, problems: [] })).toEqual({ level: "L3", configured: "L3" });
   });
 
   it("leaves lower levels alone", () => {
@@ -62,6 +62,7 @@ describe("zero init", () => {
     const cfg = parseFactory(readFileSync(home.config, "utf8"));
     expect(cfg.lines).toHaveLength(1);
     expect(cfg.lines[0]).toMatchObject({ baseBranch: "main", setup: ["npm ci"], verify: ["npm run typecheck", "npm test"] });
+    expect(cfg.isolation).toBe("container");
   });
 
   it("never overwrites an existing definition", async () => {

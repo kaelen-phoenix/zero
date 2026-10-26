@@ -21,3 +21,28 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npx openspec validate --all
+
+  # The isolation box for real: builds the image with Docker and delivers a job inside it.
+  box:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Prepare the box (zero box setup)
+        env:
+          ZERO_HOME: ${{ runner.temp }}/zero-home
+        run: |
+          mkdir -p "$ZERO_HOME"
+          printf 'isolation: container\nlines: []\n' > "$ZERO_HOME/zero.factory.yaml"
+          node dist/cli.js box setup --yes
+          node dist/cli.js box status
+      - name: Deliver a job inside the box
+        env:
+          ZERO_BOX_E2E: "1"
+        run: npx vitest run test/box.e2e.test.ts

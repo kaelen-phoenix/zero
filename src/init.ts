@@ -79,7 +79,7 @@ export async function initFactory(home: FactoryHome, cwd: string, isAvailable?: 
   const doc = {
     version: 1,
     level: "L3",
-    isolation: "worktree",
+    isolation: "container",
     engine,
     limits: { usdPerDay: 10, usdPerJob: 3 },
     lines: line ? [line] : [],

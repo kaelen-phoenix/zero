@@ -41,6 +41,16 @@ export function formatStatus(s: FactoryStatus): string {
     `Fábrica: ${s.andon ? "DETENIDA (andon)" : s.daemon.alive ? "en marcha" : "apagada (arranca sola con el próximo pedido)"} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
   ];
   if (s.level.reason) out.push(`  ${s.level.reason}`);
+  if (s.isolation === "container") {
+    const st = s.box.status;
+    out.push(
+      s.box.availability.ready && st
+        ? `Caja de aislamiento: lista (${st.runtime} · ${st.image})`
+        : `Caja de aislamiento: no lista; los trabajos corren en copias locales. ${s.box.availability.problems.join("; ")}`,
+    );
+  } else {
+    out.push("Caja de aislamiento: desactivada (isolation: worktree)");
+  }
   out.push(`Presupuesto de hoy: ${usd(s.budget.spentUsd)} de ${usd(s.budget.limitUsd)}${s.budget.reached ? " · ALCANZADO: los trabajos nuevos esperan a mañana" : ""}`);
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo ${usd(t.costUsd)}`);
   const list = (title: string, jobs: Job[]) => {

@@ -1,0 +1,78 @@
+import { createAgentRunner, type AgentRunner } from "../agent.js";
+import type { FactoryConfig } from "../config.js";
+import type { SecretStore } from "../keychain.js";
+import type { ShellResult } from "../shell.js";
+import type { Tracer } from "../telemetry/tracer.js";
+import { engineCredentials } from "./credentials.js";
+import { decodeResult, type BoxAgentRequest } from "./protocol.js";
+import { containerName, runInBox, type Mount } from "./run.js";
+import type { BoxStatus } from "./status.js";
+
+export interface BoxTrace {
+  tracer: Tracer;
+  jobId: string;
+  parentId: string;
+}
+
+/** Runs a job's commands and agents inside the isolation box. */
+export interface BoxExecutor {
+  runtime: string;
+  image: string;
+  /** A shell command (setup, verify) in the box, with the job's copy at /work and no credentials. */
+  shell(command: string, opts: { cwd: string; mount: Mount; jobId: string; timeoutMs?: number; signal?: AbortSignal; trace?: BoxTrace }): Promise<ShellResult>;
+  /** An agent runner whose engines run in the box, read-only for read-only stations. */
+  agentRunner(config: FactoryConfig): AgentRunner;
+}
+
+const AGENT_ENTRY = ["node", "/opt/zero/dist/box/agent.js"];
+const tail = (s: string) => s.trim().slice(-1500);
+
+export function createBoxExecutor(config: FactoryConfig, status: BoxStatus, secrets: SecretStore): BoxExecutor {
+  if (!status.ready || !status.runtime) throw new Error("la caja no está lista");
+  const runtime = status.runtime;
+  const base = { runtime, image: status.image, limits: config.box };
+
+  return {
+    runtime,
+    image: status.image,
+    async shell(command, opts) {
+      const span = opts.trace?.tracer.start("zero.box.run", {
+        jobId: opts.trace.jobId,
+        parentId: opts.trace.parentId,
+        attrs: { "zero.box.runtime": runtime, "zero.box.image": status.image, "zero.box.mount": opts.mount, "process.command_line": command },
+      });
+      const r = await runInBox(
+        { ...base, copy: opts.cwd, mount: opts.mount, secretNames: [], command: ["sh", "-c", command], name: containerName(opts.jobId) },
+        { timeoutMs: opts.timeoutMs ?? 20 * 60_000, signal: opts.signal },
+      );
+      span?.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code });
+      return { code: r.code, output: `${r.stdout}${r.stderr}`, timedOut: r.timedOut };
+    },
+    agentRunner(cfg) {
+      return createAgentRunner(cfg, {
+        async execute(engine, req, trace) {
+          const creds = engineCredentials(engine.name, cfg, secrets);
+          if (creds.problem) return { ok: false, text: `No se puede usar ${engine.name} en la caja: ${creds.problem}` };
+          const mount: Mount = req.access === "read" ? "ro" : "rw";
+          const span = trace?.tracer.start("zero.box.run", {
+            jobId: trace.jobId,
+            parentId: trace.parentId,
+            attrs: { "zero.box.runtime": runtime, "zero.box.image": status.image, "zero.box.mount": mount },
+          });
+          const { signal, cwd, ...request } = req;
+          const payload: BoxAgentRequest = { engine: engine.name, engines: cfg.engines, request };
+          const env = Object.fromEntries(creds.names.map((n) => [n, secrets.get(n)!]));
+          const r = await runInBox(
+            { ...base, copy: cwd, mount, secretNames: creds.names, command: AGENT_ENTRY, name: containerName(trace?.jobId ?? "agent") },
+            // The engine enforces its own timeout inside; the extra minute covers container start-up.
+            { input: JSON.stringify(payload), env, timeoutMs: req.timeoutMs + 60_000, signal },
+          );
+          span?.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut });
+          if (r.cancelled) return { ok: false, text: "cancelled" };
+          if (r.timedOut) return { ok: false, text: `la caja superó el tiempo límite (${Math.round(req.timeoutMs / 60_000)} min)` };
+          return decodeResult(r.stdout) ?? { ok: false, text: `la caja terminó con código ${r.code} sin resultado: ${tail(r.stderr || r.stdout)}` };
+        },
+      });
+    },
+  };
+}

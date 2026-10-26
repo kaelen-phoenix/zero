@@ -24,6 +24,8 @@ export const CustomEngineSchema = z.object({
   readArgs: z.array(z.string()).default([]),
   writeArgs: z.array(z.string()).default([]),
   modelArgs: z.array(z.string()).default([]),
+  /** Environment variables (credentials) this engine needs inside the isolation box. */
+  secrets: z.array(z.string()).default([]),
 });
 
 export const LineSchema = z.object({
@@ -44,8 +46,17 @@ export const FactorySchema = z
   .object({
     version: z.literal(1).default(1),
     level: z.enum(LEVELS).default("L3"),
-    /** `container` is reserved for the isolation box; until it ships, work copies are git worktrees. */
-    isolation: z.enum(["worktree", "container"]).default("worktree"),
+    /** `container` runs setup, agents and verification inside the isolation box; `worktree` runs them on this machine. */
+    isolation: z.enum(["worktree", "container"]).default("container"),
+    box: z
+      .object({
+        /** Container runtime; `auto` prefers Podman, then Docker. */
+        runtime: z.enum(["auto", "podman", "docker"]).default("auto"),
+        cpus: z.number().positive().default(2),
+        memoryGb: z.number().positive().default(4),
+        pids: z.number().int().positive().default(512),
+      })
+      .prefault({}),
     engine: z.string().default("claude"),
     engines: z.record(z.string(), CustomEngineSchema).default({}),
     /** Jobs running at once across all lines; each line runs one job at a time. */
@@ -116,20 +127,22 @@ export interface EffectiveLevel {
   reason?: string;
 }
 
-/** Whether the isolation box is available on this machine. It does not exist yet in this version. */
-export function isolationBoxAvailable(): boolean {
-  return false;
+/** Whether the isolation box can take work right now, and if not, what is missing in the owner's words. */
+export interface BoxAvailability {
+  ready: boolean;
+  problems: string[];
 }
 
-/** L3 means nobody is watching, so it requires the isolation box; without it the factory runs at L2 and says why. */
-export function effectiveLevel(cfg: Pick<FactoryConfig, "level" | "isolation">, boxAvailable = isolationBoxAvailable()): EffectiveLevel {
+export const BOX_NOT_CHECKED: BoxAvailability = { ready: false, problems: ["la caja todavía no se revisó: corré `zero box status`"] };
+
+const AT_L2 = "la fábrica trabaja en L2 (solo consulta si se toca algo protegido o se agota el presupuesto)";
+
+/** L3 means nobody is watching, so it requires a ready isolation box; without it the factory runs at L2 and says exactly why. */
+export function effectiveLevel(cfg: Pick<FactoryConfig, "level" | "isolation">, box: BoxAvailability = BOX_NOT_CHECKED): EffectiveLevel {
   if (cfg.level !== "L3") return { level: cfg.level, configured: cfg.level };
-  if (cfg.isolation === "container" && boxAvailable) return { level: "L3", configured: "L3" };
-  const reason =
-    cfg.isolation === "container"
-      ? "L3 requiere la caja de aislamiento, que todavía no está disponible en esta versión: la fábrica trabaja en L2 (solo consulta si se toca algo protegido o se agota el presupuesto)."
-      : "L3 requiere la caja de aislamiento (isolation: container): la fábrica trabaja en L2 (solo consulta si se toca algo protegido o se agota el presupuesto).";
-  return { level: "L2", configured: "L3", reason };
+  if (cfg.isolation !== "container") return { level: "L2", configured: "L3", reason: `L3 requiere la caja de aislamiento (isolation: container): ${AT_L2}.` };
+  if (box.ready && !box.problems.length) return { level: "L3", configured: "L3" };
+  return { level: "L2", configured: "L3", reason: `L3 necesita la caja lista: ${box.problems.join("; ")}. Mientras tanto ${AT_L2}.` };
 }
 
 export function findLine(cfg: FactoryConfig, name?: string): LineConfig {

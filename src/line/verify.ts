@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { sh } from "../shell.js";
+import { sh, type ShellResult } from "../shell.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import type { ChangedFile, WorkCopy } from "../workspace.js";
 
@@ -51,6 +51,8 @@ export interface VerifyOptions {
   parentId: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Where commands run: on this machine by default, or in the isolation box. */
+  run?: (command: string, opts: { timeoutMs: number; signal?: AbortSignal; parentId: string }) => Promise<ShellResult>;
 }
 
 /**
@@ -67,7 +69,8 @@ export async function verifyChange(copy: WorkCopy, opts: VerifyOptions): Promise
 
   for (const command of opts.commands) {
     const span = opts.tracer.start("zero.verify.command", { jobId: opts.jobId, parentId: opts.parentId, attrs: { "process.command_line": command } });
-    const r = await sh(command, copy.cwd, { timeoutMs: opts.timeoutMs ?? 20 * 60_000, signal: opts.signal });
+    const timeoutMs = opts.timeoutMs ?? 20 * 60_000;
+    const r = opts.run ? await opts.run(command, { timeoutMs, signal: opts.signal, parentId: span.id }) : await sh(command, copy.cwd, { timeoutMs, signal: opts.signal });
     span.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut });
     if (r.code !== 0) {
       const why = r.timedOut ? "superó el tiempo límite" : `terminó con código ${r.code}`;

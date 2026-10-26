@@ -12,6 +12,9 @@ import type { Review } from "../src/line/review.js";
 import { Store } from "../src/state/store.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { Tracer } from "../src/telemetry/tracer.js";
+import type { BoxExecutor } from "../src/box/executor.js";
+import { sh } from "../src/shell.js";
+import { memoryKeyring, SecretStore } from "../src/keychain.js";
 
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -67,7 +70,7 @@ export function testFactory(definition: Record<string, unknown>, now?: () => Dat
   writeFileSync(home.config, yaml);
   const store = new Store(home.db, now);
   stores.push(store);
-  return { home, config: parseFactory(yaml), store, tracer: new Tracer(store, now), townhall: openTownhall(home, now), now };
+  return { home, config: parseFactory(yaml), store, tracer: new Tracer(store, now), townhall: openTownhall(home, now), secrets: new SecretStore(home, memoryKeyring(), {}), now };
 }
 
 export const validSpec = (over: Partial<Spec> = {}): Spec => ({
@@ -113,4 +116,23 @@ export function fakeAgents(handlers: Partial<Record<AgentStation, Handler>>, cos
     return result as AgentRun<T>;
   };
   return { runner, calls, count };
+}
+
+/**
+ * A box that runs everything on this machine, recording what would have run
+ * inside the container. Exercises the box code path (clone copy, shell routed
+ * through the box, publish before integrating) without a container runtime.
+ */
+export function simulatedBox(agentRunner: AgentRunner) {
+  const calls: { command: string; mount: string; cwd: string }[] = [];
+  const box: BoxExecutor = {
+    runtime: "simulated",
+    image: "zero-box:test",
+    async shell(command, o) {
+      calls.push({ command, mount: o.mount, cwd: o.cwd });
+      return sh(command, o.cwd, { timeoutMs: o.timeoutMs ?? 60_000, signal: o.signal });
+    },
+    agentRunner: () => agentRunner,
+  };
+  return { box, calls };
 }

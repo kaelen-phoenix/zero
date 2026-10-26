@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { answer, requestWork, trace, type FactoryContext } from "../src/app.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
-import { cleanReview, cleanup, fakeAgents, gitIn, gitRepo, testFactory, validSpec, writeTree } from "./helpers.js";
+import { statSync } from "node:fs";
+import { cleanReview, cleanup, fakeAgents, gitIn, gitRepo, simulatedBox, testFactory, validSpec, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -156,7 +157,7 @@ describe("production line", () => {
       build: (req, n) => void writeTree(req.cwd, n === 1 ? { ".env": "SECRET=1" } : { "src/health.ts": "ok" }),
     });
     const { job } = requestWork(ctx, { text: "health" });
-    const done = await runJob(job.id, deps(ctx, agents.runner, { isolationBox: true }));
+    const done = await runJob(job.id, deps(ctx, agents.runner, { box: simulatedBox(agents.runner).box }));
     // The first attempt touched .env and was rejected; the second never reverted it, so it is still protected.
     expect(done.status).toBe("failed");
     expect(agents.calls.filter((c) => c.station === "build")[1]!.prompt).toContain("rutas protegidas (.env)");
@@ -165,7 +166,8 @@ describe("production line", () => {
   it("stops at the job budget at L3 and asks for more at L2", async () => {
     const strict = factory({ level: "L3", isolation: "container", usdPerJob: 0.15, verify: [`node -e "process.exit(1)"`] });
     const j1 = requestWork(strict.ctx, { text: "x" }).job;
-    const failed = await runJob(j1.id, deps(strict.ctx, fakeAgents({ build: writeHealth() }).runner, { isolationBox: true }));
+    const strictAgents = fakeAgents({ build: writeHealth() });
+    const failed = await runJob(j1.id, deps(strict.ctx, strictAgents.runner, { box: simulatedBox(strictAgents.runner).box }));
     expect(failed).toMatchObject({ status: "failed", reason: expect.stringMatching(/presupuesto/) });
 
     const lenient = factory({ level: "L2", usdPerJob: 0.15, verify: [`node -e "process.exit(1)"`] });
@@ -236,6 +238,39 @@ describe("production line", () => {
     expect(done).toMatchObject({ status: "delivered", attempt: 2 });
     expect(gitIn(repo, "ls-tree", "-r", "--name-only", "main")).not.toContain("node_modules");
     expect(existsSync(join(repo, "junk.txt"))).toBe(false);
+  });
+
+  it("runs setup, agents and verification through the box, on an independent clone", async () => {
+    const repo = gitRepo();
+    const ctx = testFactory({ level: "L3", isolation: "container", lines: [{ name: "demo", repo, setup: [passes], verify: [passes] }] });
+    const agents = fakeAgents({ build: writeHealth() });
+    const sim = simulatedBox(agents.runner);
+    const { job } = requestWork(ctx, { text: "health" });
+    let copyIsClone = false;
+    const done = await runJob(job.id, deps(ctx, fakeAgents({}).runner, {
+      box: { ...sim.box, shell: async (c, o) => ((copyIsClone ||= statSync(join(o.cwd, ".git")).isDirectory()), sim.box.shell(c, o)) },
+    }));
+    expect(done).toMatchObject({ status: "delivered", isolation: "container" });
+    expect(sim.calls.map((c) => [c.command, c.mount])).toEqual([[passes, "rw"], [passes, "rw"]]);
+    expect(copyIsClone).toBe(true);
+    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1 });
+    expect(readFileSync(join(repo, "src/health.ts"), "utf8")).toContain("ok");
+    expect(trace(ctx, job.id)).toContain("zero.station.integrate");
+  });
+
+  it("works on this machine when the box is configured but not ready", async () => {
+    const ctx = testFactory({ level: "L3", isolation: "container", lines: [{ name: "demo", repo: gitRepo(), verify: [passes] }] });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner));
+    expect(done).toMatchObject({ status: "delivered", isolation: "worktree" });
+  });
+
+  it("does not move a job out of the box when the box disappears", async () => {
+    const ctx = testFactory({ isolation: "container", lines: [{ name: "demo", repo: gitRepo() }] });
+    const { job } = requestWork(ctx, { text: "health" });
+    ctx.store.updateJob(job.id, { isolation: "container" });
+    const done = await runJob(job.id, deps(ctx, fakeAgents({}).runner));
+    expect(done).toMatchObject({ status: "failed", reason: expect.stringMatching(/caja de aislamiento/) });
   });
 
   it("shares what one job learned with the next job of the same line only", async () => {

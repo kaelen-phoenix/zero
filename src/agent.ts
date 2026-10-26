@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { FactoryConfig } from "./config.js";
-import { resolveEngine, type Access } from "./engines/index.js";
+import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult } from "./engines/index.js";
 import { log } from "./log.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
@@ -35,6 +35,11 @@ export interface AgentRequest<T = unknown> {
 }
 
 export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
+
+/** Where an engine actually runs: on this machine by default, or inside the isolation box. */
+export type EngineExecute = (engine: Engine, req: EngineRequest, trace?: { tracer: Tracer; jobId: string; parentId: string }) => Promise<EngineResult>;
+
+const runHere: EngineExecute = (engine, req) => engine.run(req);
 
 /** Only the build station may change the work copy. */
 const ACCESS: Record<AgentStation, Access> = { spec: "read", build: "write", review: "read" };
@@ -79,7 +84,8 @@ export function toEngineSchema(schema: z.ZodType): Record<string, unknown> {
   return rest;
 }
 
-export function createAgentRunner(config: FactoryConfig): AgentRunner {
+export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute } = {}): AgentRunner {
+  const execute = opts.execute ?? runHere;
   return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace }: AgentRequest<T>): Promise<AgentRun<T>> {
     const stationCfg = config.stations[station];
     const engine = resolveEngine(stationCfg.engine ?? config.engine, config);
@@ -95,7 +101,7 @@ export function createAgentRunner(config: FactoryConfig): AgentRunner {
       attrs: { "gen_ai.agent.name": station, "gen_ai.request.model": stationCfg.model, "zero.engine": engine.name },
     });
     log.info(`agent:${station} start`, { engine: engine.name, model: stationCfg.model });
-    const result = await engine.run({
+    const result = await execute(engine, {
       instructions: await stationInstructions(station),
       prompt: fullPrompt,
       cwd,
@@ -106,7 +112,7 @@ export function createAgentRunner(config: FactoryConfig): AgentRunner {
       maxBudgetUsd,
       timeoutMs: stationCfg.timeoutMinutes * 60_000,
       signal,
-    });
+    }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id });
 
     const run: AgentRun<T> = {
       ok: result.ok,

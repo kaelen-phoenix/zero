@@ -32,7 +32,7 @@ describe("antigravity", () => {
 });
 
 describe("custom engine", () => {
-  const def = { command: ["gemini", "-p", "{prompt}"], readArgs: [], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] };
+  const def = { command: ["gemini", "-p", "{prompt}"], readArgs: [], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"], secrets: [] };
 
   it("substitutes placeholders and appends access/model args", () => {
     const inv = customInvocation(def, req({ model: "gemini-3-pro" }));
@@ -69,7 +69,7 @@ describe("output parsing", () => {
 
 describe("cancellation", () => {
   it("kills a CLI engine when the andon cord is pulled", async () => {
-    const engine = customEngine("sleeper", { command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"], readArgs: [], writeArgs: [], modelArgs: [] });
+    const engine = customEngine("sleeper", { command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"], readArgs: [], writeArgs: [], modelArgs: [], secrets: [] });
     const controller = new AbortController();
     const started = Date.now();
     setTimeout(() => controller.abort("andon"), 200);

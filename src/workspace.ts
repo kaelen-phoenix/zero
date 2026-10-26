@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { git, tryGit } from "./shell.js";
@@ -27,6 +27,8 @@ export interface WorkCopy {
   /** Lines added on the branch relative to the base, per file. */
   addedLines(): { path: string; text: string }[];
   commitsAhead(): number;
+  /** Makes the job's branch available in the line's repository, ready to integrate. */
+  publish(): void;
 }
 
 /** Untracked files present in a work copy, e.g. what a setup command such as `npm install` created. */
@@ -45,6 +47,27 @@ export async function openWorkCopy(repo: string, base: string, branch: string, p
     git(branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, base], repo);
   }
   return workCopyAt(path, base, branch, exclude);
+}
+
+/**
+ * The work copy for the isolation box: an independent clone that shares no
+ * files with the owner's repository (`--no-hardlinks`), so nothing done in the
+ * box can reach it. The branch is fetched back when the job is ready.
+ */
+export async function openCloneCopy(repo: string, base: string, branch: string, path: string, exclude: string[] = []): Promise<WorkCopy> {
+  if (!existsSync(path)) {
+    await mkdir(dirname(path), { recursive: true });
+    const branchExists = tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo) !== undefined;
+    git(["clone", "-q", "--no-hardlinks", "--branch", branchExists ? branch : base, repo, path], repo);
+    if (!branchExists) git(["checkout", "-q", "-b", branch], path);
+    // The base must exist locally for diffs against it.
+    if (branchExists) git(["branch", "-q", "--force", base, `origin/${base}`], path);
+  }
+  const copy = workCopyAt(path, base, branch, exclude);
+  return {
+    ...copy,
+    publish: () => void git(["fetch", "-q", path, `+refs/heads/${branch}:refs/heads/${branch}`], repo),
+  };
 }
 
 /**
@@ -89,12 +112,16 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
       return added;
     },
     commitsAhead: () => Number(git(["rev-list", "--count", `${base}..HEAD`], cwd)),
+    // A worktree shares the repository: its branch is already there.
+    publish: () => {},
   };
 }
 
 export function removeWorkCopy(repo: string, path: string) {
   if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
   tryGit(["worktree", "prune"], repo);
+  // Clones (box copies) are not worktrees: remove them directly.
+  if (existsSync(path)) rmSync(path, { recursive: true, force: true, maxRetries: 3 });
 }
 
 /** Where a branch is checked out, if anywhere (the owner's copy or another worktree). */
