@@ -41,7 +41,7 @@
 ## 7. Chat
 
 - [x] 7.1 Implementar `zero mcp` con las herramientas de pedido, estado, respuesta, andon, informe y líneas, y verificarlo con tests que llaman a las herramientas por un cliente MCP en memoria
-- [ ] 7.2 Implementar `zero install` (Claude Code automático e idempotente; instrucciones para Codex y OpenCode) y verificarlo registrando zero en Claude Code en esta máquina
+- [x] 7.2 Implementar `zero install` (Claude Code automático e idempotente; instrucciones para Codex y OpenCode) y verificarlo registrando zero en Claude Code en esta máquina
 
 ## 8. Integración y documentación
 
