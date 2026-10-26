@@ -1,6 +1,6 @@
 # ADR 0001 — Construir zero propio vs adoptar un framework existente
 
-- **Estado:** propuesto (pendiente de aprobación)
+- **Estado:** aceptado (2026-10-26). Ver "Decisiones tomadas" al final.
 - **Fecha:** 2026-10-26
 
 ## Contexto
@@ -118,8 +118,22 @@ intención → spec + criterios ejecutables → N candidatos en paralelo (varios
 - Los PRs quedan como registro de auditoría, no como paso obligatorio.
 - Los humanos están en la sala de control: definen la intención, los presupuestos y los límites, y leen el townhall y las trazas.
 
-## Pendiente de decisión humana
+## Decisiones tomadas (2026-10-26)
 
-1. Aprobar este ADR (construir zero propio con los componentes indicados).
-2. Licencia de zero: **Apache-2.0** (recomendada por su concesión de patentes; es la misma que usa la mayor parte del ecosistema evaluado) o MIT.
-3. Orden de trabajo: primero la capa de motores (ACP + OpenCode) y la observabilidad (OTel), o primero el rediseño como línea de producción.
+Contexto añadido tras este ADR:
+- **Cada dueño tiene su propia fábrica en su máquina.** Funciona como un daemon local, sin servicio central y con un solo dueño.
+- **La fábrica debe poder usarla alguien que no programa.** Habrá un modo simple por defecto y un modo avanzado.
+- **Se configura desde un panel en el navegador**, que se abre al instalar.
+
+| # | Decisión | Elección |
+|---|---|---|
+| 1 | Construir o adoptar | **Construir zero propio**, reutilizando piezas libres donde sirvan (OpenSpec, ccusage…) |
+| 2 | Licencia | **Apache-2.0** |
+| 3 | Entrada de trabajo | **Las dos**: lenguaje natural por defecto (una estación lo convierte en un change de OpenSpec) o especificación directa para quien sepa. Las fuentes (panel, GitHub, Linear, Jira…) son plugins |
+| 4 | Autonomía | **Niveles L0–L3**, elegidos por cada dueño. **Por defecto se arranca en L3 (a oscuras)**, con límites duros y botón de parada |
+| 5 | Protección del equipo | **En L3 los agentes trabajan siempre dentro de una caja aislada que prepara el instalador de zero.** Si en una máquina no es posible, la fábrica baja de nivel y explica por qué |
+| 6 | Configuración | **Un archivo legible (`zero.factory.yaml`) que escribe el panel.** Los secretos van al llavero del sistema operativo |
+
+Consecuencias inmediatas:
+- **El runtime principal pasa a ser el daemon local.** GitHub Actions queda como opción.
+- **Con L3 por defecto y usuarios no técnicos**, los límites duros (presupuesto, rutas prohibidas, nada publicado sin permiso) y el aislamiento automático pasan a ser requisitos del instalador, no opciones.

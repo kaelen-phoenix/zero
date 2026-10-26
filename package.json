@@ -2,7 +2,7 @@
   "name": "@kaelen/zero",
   "version": "0.1.0",
   "description": "Kaelen Global Defence: autonomous agent network. Continuous execution. Zero human intervention required.",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "bin": {
