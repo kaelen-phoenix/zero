@@ -36,7 +36,8 @@ export interface IssueApi {
 
 export function githubIssues(token: string, repository: string): IssueApi {
   const [owner, repo] = repository.split("/") as [string, string];
-  const gh = new Octokit({ auth: token });
+  // Missing labels and permissions are expected answers, not errors to print.
+  const gh = new Octokit({ auth: token, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } });
   return {
     async labeled(label) {
       const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
