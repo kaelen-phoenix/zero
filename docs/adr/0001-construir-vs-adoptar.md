@@ -146,3 +146,9 @@ Consecuencias inmediatas:
 | 8 | Dónde se hace el trabajo | **En segundo plano.** El daemon de zero ejecuta la línea con los mismos clientes en modo headless, con la cuenta del dueño, y sigue aunque se cierre el chat. Los avisos fuera del chat van por panel, email o Telegram |
 
 Pendiente de verificar: los términos de uso de cada proveedor para ejecuciones headless con una suscripción personal.
+
+### Especialistas (2026-10-26)
+
+| # | Decisión | Elección |
+|---|---|---|
+| 9 | Creación de agentes | **Especialistas definidos por contrato**, no por personaje. Cada uno declara su estación, sus permisos (impuestos por zero), una entrega comprobable y sus skills (Agent Skills). Se obtienen de **tres formas**: incluidos de fábrica (tester, seguridad, backend…), creados desde el chat (zero los arma y **los prueba con trabajos pasados antes de activarlos**), o escritos a mano o instalados como plugin compartido. El townhall mide a cada uno: aciertos, falsos positivos y costo |
