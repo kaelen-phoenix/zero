@@ -27,7 +27,7 @@ function realBox(ctx: FactoryContext) {
 // Engines with no model: plain scripts that run inside the box and report what they could do there.
 const tryWrite = "let writable = true; try { require('fs').writeFileSync('/work/should-not-exist', 'x') } catch { writable = false }";
 const specScript = `${tryWrite}; console.log(JSON.stringify({ feasible: !writable, reason: writable ? 'spec could write to /work' : '', title: 'Health', summary: 'Un endpoint de salud para el servicio de prueba.', capability: 'health', requirements: [{ name: 'Health', text: 'The service SHALL report ok.', scenarios: [{ name: 'ok', when: 'asked', then: 'reports ok' }] }], tasks: ['write it'], risks: [], learnings: [], followUps: [] }))`;
-const buildScript = "require('fs').mkdirSync('src', { recursive: true }); require('fs').writeFileSync('src/health.ts', \"export const status = 'ok';\n\"); console.log('built in ' + process.cwd() + ' as ' + process.env.HOME)";
+const buildScript = "require('fs').mkdirSync('src', { recursive: true }); require('fs').writeFileSync('src/health.ts', \"export const status = 'ok';\\n\"); console.log('built in ' + process.cwd() + ' as ' + process.env.HOME)";
 const reviewScript = `${tryWrite}; console.log(JSON.stringify({ summary: 'writable=' + writable, findings: writable ? [{ severity: 'critical', file: 'src/health.ts', line: 1, problem: 'review could write to /work', fix: 'mount read-only' }] : [], learnings: [] }))`;
 
 describe.skipIf(!enabled)("isolation box (real container)", () => {
