@@ -1,7 +1,7 @@
 # egress-gate Specification
 
 ## Purpose
-TBD - created by archiving change add-egress-gate. Update Purpose after archive.
+Hace visible y controla todo lo que la caja envía a internet: la caja sale solo por la puerta de zero, que registra cada conexión, bloquea lo sospechoso y aplica las reglas del dueño, sin limitar lo demás salvo que el dueño lo elija.
 
 ## Requirements
 
