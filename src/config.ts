@@ -49,6 +49,8 @@ export const LineSchema = z.object({
   integrate: z.enum(["merge", "branch", "pull-request"]).default("merge"),
   remote: z.string().default("origin"),
   maxAttempts: z.number().int().min(1).default(3),
+  /** Take GitHub issues carrying this label as requests (polled from the line's remote). Off when absent. */
+  issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
 });
 
 export const FactorySchema = z

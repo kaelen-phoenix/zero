@@ -53,6 +53,15 @@ export interface Approvals {
   egressSeq?: number;
 }
 
+/** Where a request came from, when it was not the owner typing it. */
+export interface JobSource {
+  kind: "github-issue";
+  /** owner/repo */
+  repository: string;
+  number: number;
+  url: string;
+}
+
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";
   branch: string;
@@ -75,6 +84,9 @@ export interface Job {
   worktree?: string;
   /** Where the job runs, fixed when it starts: a job started in the box finishes in the box. */
   isolation?: "worktree" | "container";
+  /** The ref the job's branch started from and is measured against (`main`, or `origin/main` for pull requests). */
+  base?: string;
+  source?: JobSource;
   feedback?: string;
   costUsd: number;
   budgetUsd: number;
@@ -187,6 +199,8 @@ function toJob(r: Row): Job {
     branch: str(r.branch),
     worktree: str(r.worktree),
     isolation: str(r.isolation) as Job["isolation"],
+    base: str(r.base),
+    source: json<JobSource>(r.source),
     feedback: str(r.feedback),
     costUsd: Number(r.cost_usd),
     budgetUsd: Number(r.budget_usd),
@@ -235,11 +249,11 @@ function toEgress(r: Row): EgressRow {
 
 const COLUMNS: Record<string, string> = {
   status: "status", station: "station", checkpoint: "checkpoint", attempt: "attempt", title: "title",
-  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", feedback: "feedback", costUsd: "cost_usd",
+  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", feedback: "feedback", costUsd: "cost_usd",
   budgetUsd: "budget_usd", question: "question", approvals: "approvals", delivery: "delivery",
   reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at",
 };
-const JSON_FIELDS = new Set(["spec", "question", "approvals", "delivery"]);
+const JSON_FIELDS = new Set(["spec", "question", "approvals", "delivery", "source"]);
 
 export type JobPatch = Partial<Omit<Job, "id" | "line" | "kind" | "request" | "createdAt" | "updatedAt">>;
 
@@ -263,7 +277,7 @@ export class Store {
   /** Columns added after the first release, for factories created before them. */
   private migrate() {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
-    if (!columns.has("isolation")) this.db.exec("ALTER TABLE jobs ADD COLUMN isolation TEXT");
+    for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
   }
 
   close() {
@@ -274,12 +288,12 @@ export class Store {
     return this.now().toISOString();
   }
 
-  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number }): Job {
+  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource }): Job {
     const at = this.stamp();
     const id = newId();
     this.db
-      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)")
-      .run(id, input.line, input.kind, input.request, input.budgetUsd, at, at);
+      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)")
+      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, at, at);
     return this.getJob(id)!;
   }
 
@@ -416,6 +430,11 @@ export class Store {
     this.db
       .prepare("INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(key, value, this.stamp());
+  }
+
+  kvWithPrefix(prefix: string): [string, string][] {
+    const rows = this.db.prepare("SELECT key, value FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key").all(prefix.length, prefix) as Row[];
+    return rows.map((r) => [String(r.key), String(r.value)]);
   }
 
   deleteKv(key: string) {

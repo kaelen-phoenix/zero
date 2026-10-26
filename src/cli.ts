@@ -3,7 +3,10 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { findLine } from "./config.js";
+import { githubIssues, lineRepository } from "./intake/github.js";
+import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
 import { formatEgress, formatJob, formatRequest, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
@@ -48,6 +51,7 @@ Panel en el navegador:
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
+  zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
@@ -65,6 +69,7 @@ async function main(argv: string[]): Promise<number> {
       reject: { type: "boolean" },
       note: { type: "string" },
       days: { type: "string" },
+      label: { type: "string" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -180,6 +185,23 @@ async function main(argv: string[]): Promise<number> {
       case "briefing": {
         const b = await briefing(ctx, values.days ? Number(values.days) : 1);
         console.log(`# ${b.title}\n\n${b.body}`);
+        return 0;
+      }
+      case "issues": {
+        if (rest[0] !== "on" && rest[0] !== "off") break;
+        const r = await setIssueIntake(ctx, { line: values.line, on: rest[0] === "on", label: values.label });
+        if (!r.label) {
+          console.log(`La línea ${r.line} ya no toma issues de GitHub.`);
+          return 0;
+        }
+        const repository = lineRepository(findLine(ctx.config, r.line));
+        const token = githubToken();
+        if (!repository) console.log(`Ojo: el remoto de la línea ${r.line} no es un repositorio de GitHub, así que no va a encontrar issues.`);
+        else if (!token) console.log("Ojo: no hay acceso a GitHub. Iniciá sesión con `gh auth login` (o definí GH_TOKEN).");
+        else if (await githubIssues(token, repository).ensureLabel(r.label)) console.log(`Creé la etiqueta "${r.label}" en ${repository}.`);
+        console.log(
+          `La línea ${r.line} toma los issues${repository ? ` de ${repository}` : ""} con la etiqueta "${r.label}". La fábrica los revisa cada minuto mientras está en marcha.\nSolo toma issues escritos y etiquetados por personas con permiso de escritura, comenta en cada uno cómo va su trabajo, y el pull request lo cierra al aceptarlo.`,
+        );
         return 0;
       }
       case "panel": {

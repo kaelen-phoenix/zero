@@ -1,0 +1,176 @@
+import { Octokit } from "@octokit/rest";
+import { requestWork, type FactoryContext } from "../app.js";
+import type { LineConfig } from "../config.js";
+import { describeDelivery } from "../line/finish.js";
+import { githubRepository } from "../line/integrate.js";
+import { tryGit } from "../shell.js";
+import { FINAL_STATUSES, type Job } from "../state/store.js";
+import { intakeProblemKey, issueKey } from "./keys.js";
+
+/**
+ * GitHub issues as requests: for lines with `issues`, open issues carrying the
+ * label become jobs, and the issue hears back how its job is going. Polled, so
+ * the owner's machine needs no public address.
+ */
+
+export interface Issue {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  url: string;
+  isPullRequest: boolean;
+}
+
+/** The slice of GitHub the intake needs; tests use a fake. */
+export interface IssueApi {
+  labeled(label: string): Promise<Issue[]>;
+  /** Who applied the label last, and when. */
+  lastLabeled(number: number, label: string): Promise<{ actor: string; at: string } | undefined>;
+  /** `admin`, `write`, `read` or `none`. */
+  permission(login: string): Promise<string>;
+  comment(number: number, body: string): Promise<void>;
+  /** Creates the label if the repository does not have it; true when it had to. */
+  ensureLabel(label: string): Promise<boolean>;
+}
+
+export function githubIssues(token: string, repository: string): IssueApi {
+  const [owner, repo] = repository.split("/") as [string, string];
+  const gh = new Octokit({ auth: token });
+  return {
+    async labeled(label) {
+      const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
+      return issues.map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request) }));
+    },
+    async lastLabeled(number, label) {
+      const events = await gh.paginate(gh.issues.listEvents, { owner, repo, issue_number: number, per_page: 100 });
+      const last = events.filter((e) => e.event === "labeled" && (e as { label?: { name?: string } }).label?.name === label).at(-1);
+      return last?.actor ? { actor: last.actor.login, at: last.created_at } : undefined;
+    },
+    async permission(login) {
+      try {
+        return (await gh.repos.getCollaboratorPermissionLevel({ owner, repo, username: login })).data.permission;
+      } catch {
+        return "none";
+      }
+    },
+    async comment(number, body) {
+      await gh.issues.createComment({ owner, repo, issue_number: number, body });
+    },
+    async ensureLabel(label) {
+      try {
+        await gh.issues.getLabel({ owner, repo, name: label });
+        return false;
+      } catch {
+        await gh.issues.createLabel({ owner, repo, name: label, color: "5319e7", description: "Trabajo para la fábrica zero" });
+        return true;
+      }
+    },
+  };
+}
+
+/** Write access (admin covers maintain; write covers it too in GitHub's legacy permission field). */
+const TRUSTED = new Set(["admin", "write"]);
+const MAX_REQUEST = 20_000;
+
+interface IssueState {
+  job?: string;
+  /** Last job status the issue was told about (`waiting:<askedAt>` for each question). */
+  reported?: string;
+  /** When the label the factory acted on was applied, by GitHub's clock: only a later label asks again. */
+  labeledAt: string;
+}
+
+/** owner/repo of the line's remote, when it is GitHub. */
+export function lineRepository(line: LineConfig): string | undefined {
+  const url = tryGit(["remote", "get-url", line.remote], line.repo);
+  return url ? githubRepository(url) : undefined;
+}
+
+const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
+
+/** What the issue is told when its job reaches a status worth telling, once per status (and per question). */
+function report(job: Job): { key: string; body: string } | undefined {
+  const id = `\`${job.id}\``;
+  if (job.status === "waiting" && job.question) {
+    const timeout = job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza";
+    return {
+      key: `waiting:${job.question.askedAt}`,
+      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\nRespondé desde el panel o el chat (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
+    };
+  }
+  if (job.status === "delivered" && job.delivery) return { key: "delivered", body: `Listo: ${describeDelivery(job.delivery)}.` };
+  if (job.status === "failed") return { key: "failed", body: `El trabajo ${id} no se pudo completar:\n\n${quote(job.reason ?? "(sin detalle)")}\n\nPara volver a pedirlo, sacale y volvele a poner la etiqueta.` };
+  if (job.status === "stopped") return { key: "stopped", body: `El trabajo ${id} se detuvo: ${job.reason ?? "por el dueño"}.` };
+  return undefined;
+}
+
+async function takeIssues(ctx: FactoryContext, line: LineConfig & { issues: { label: string } }, repository: string, gh: IssueApi) {
+  const trust = new Map<string, Promise<boolean>>();
+  const trusted = (login: string) => {
+    if (!trust.has(login)) trust.set(login, gh.permission(login).then((p) => TRUSTED.has(p)));
+    return trust.get(login)!;
+  };
+  for (const issue of await gh.labeled(line.issues.label)) {
+    if (issue.isPullRequest) continue;
+    const key = issueKey(repository, issue.number);
+    const raw = ctx.store.getKv(key);
+    const state: IssueState | undefined = raw ? JSON.parse(raw) : undefined;
+    const job = state?.job ? ctx.store.getJob(state.job) : undefined;
+    // One job per issue at a time; after it ends (or the issue was turned down), only a new label asks again.
+    if (job && !FINAL_STATUSES.includes(job.status)) continue;
+    const labeled = await gh.lastLabeled(issue.number, line.issues.label);
+    if (!labeled || (state && labeled.at <= state.labeledAt)) continue;
+
+    const [authorOk, labelerOk] = await Promise.all([trusted(issue.author), trusted(labeled.actor)]);
+    if (!authorOk || !labelerOk) {
+      ctx.store.setKv(key, JSON.stringify({ labeledAt: labeled.at } satisfies IssueState));
+      const who = !authorOk ? `lo escribió @${issue.author}, que no tiene permiso de escritura en el repositorio` : `la etiqueta la puso @${labeled.actor}, que no tiene permiso de escritura`;
+      await gh.comment(
+        issue.number,
+        `La fábrica zero no toma este issue: ${who}. Solo toma issues escritos y etiquetados por personas con permiso de escritura, porque su texto se convierte en instrucciones para los agentes. Si querés que lo haga, copialo en un issue tuyo.`,
+      );
+      continue;
+    }
+
+    const text = `Issue #${issue.number} de GitHub: ${issue.title}\n\n${issue.body}`.slice(0, MAX_REQUEST);
+    const r = requestWork(ctx, { text, line: line.name, source: { kind: "github-issue", repository, number: issue.number, url: issue.url } });
+    ctx.store.setKv(key, JSON.stringify({ job: r.job.id, reported: "queued", labeledAt: labeled.at } satisfies IssueState));
+    await gh.comment(issue.number, `La fábrica tomó este issue como trabajo \`${r.job.id}\` (nivel ${r.level.level}). ${r.next} Te aviso acá cómo va.`);
+  }
+}
+
+async function reportIssues(ctx: FactoryContext, repository: string, gh: IssueApi) {
+  for (const [key, raw] of ctx.store.kvWithPrefix(`issue:${repository}#`)) {
+    const state = JSON.parse(raw) as IssueState;
+    const job = state.job ? ctx.store.getJob(state.job) : undefined;
+    const update = job && report(job);
+    if (!update || update.key === state.reported) continue;
+    await gh.comment(Number(key.slice(key.lastIndexOf("#") + 1)), update.body);
+    ctx.store.setKv(key, JSON.stringify({ ...state, reported: update.key } satisfies IssueState));
+  }
+}
+
+/**
+ * One pass over every line that takes issues. A line's problem (no GitHub
+ * remote, no access) is kept for `zero status` and never stops the others.
+ */
+export async function pollIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined): Promise<void> {
+  for (const line of ctx.config.lines) {
+    if (!line.issues) continue;
+    const problem = intakeProblemKey(line.name);
+    const repository = lineRepository(line);
+    const gh = repository && api(repository);
+    if (!repository || !gh) {
+      ctx.store.setKv(problem, repository ? "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" : `el remoto "${line.remote}" no es un repositorio de GitHub`);
+      continue;
+    }
+    try {
+      await takeIssues(ctx, { ...line, issues: line.issues }, repository, gh);
+      await reportIssues(ctx, repository, gh);
+      ctx.store.deleteKv(problem);
+    } catch (err) {
+      ctx.store.setKv(problem, `no se pudo leer GitHub: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300));
+    }
+  }
+}

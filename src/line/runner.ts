@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -127,7 +128,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       return integrate(line, copy, {
         jobId,
         title: spec.title,
-        body: `${plainSpec(spec)}\n\n---\nGenerado por zero · trabajo ${jobId} · costo estimado $${job!.costUsd.toFixed(2)}`,
+        body: deliveryBody(spec, job!),
         scratchDir: join(deps.home.worktrees, line.name),
       });
     });
@@ -155,15 +156,17 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, isolation: "worktree" | "container", shell: Shell): Promise<WorkCopy> {
   const path = job.worktree ?? join(deps.home.worktrees, line.name, job.id);
   const branch = job.branch ?? `zero/${job.id}`;
+  // Fixed when the copy is made, so a resumed job measures its changes from the same point.
+  const base = job.base ?? (existsSync(path) ? line.baseBranch : startingBase(line, job.id));
   const excludeFile = join(deps.home.jobs, job.id, "setup-untracked.json");
   // The box gets an independent clone; a worktree would expose the owner's repository.
-  const open = (exclude: string[]) => (isolation === "container" ? openCloneCopy : openWorkCopy)(line.repo, line.baseBranch, branch, path, exclude);
+  const open = (exclude: string[]) => (isolation === "container" ? openCloneCopy : openWorkCopy)(line.repo, base, branch, path, exclude);
   if (existsSync(path)) {
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
     return open(exclude);
   }
   const bare = await open([]);
-  deps.store.updateJob(job.id, { worktree: path, branch });
+  deps.store.updateJob(job.id, { worktree: path, branch, base });
   if (line.setup.length) {
     await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
       for (const command of line.setup) {
@@ -205,6 +208,25 @@ async function egressStop(deps: RunnerDeps, jobId: string, level: Level): Promis
 }
 
 const remaining = (job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - job.costUsd, 0.01);
+
+/** What the pull request says: the plain spec, the issue it closes, and what the job cost. */
+export function deliveryBody(spec: Spec, job: Job): string {
+  const closes = job.source?.kind === "github-issue" ? `\n\nCloses #${job.source.number}` : "";
+  return `${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`;
+}
+
+/**
+ * Where a new job's branch starts. A pull request is judged against the
+ * remote's base, which may be ahead of the owner's local branch (pull requests
+ * accepted on GitHub), so it is fetched first; the local branch is never moved.
+ */
+function startingBase(line: LineConfig, jobId: string): string {
+  if (line.integrate !== "pull-request") return line.baseBranch;
+  const fetched = spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+  if (fetched.status === 0) return `${line.remote}/${line.baseBranch}`;
+  log.warn("cannot fetch the base branch; starting from the local one", { job: jobId, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
+  return line.baseBranch;
+}
 
 /** Returns a failure reason, or undefined once the spec is stored at checkpoint `spec`. */
 async function specStation(
@@ -397,7 +419,7 @@ async function buildLoop(
           signal,
           maxBudgetUsd: remaining(store.getJob(jobId)!),
           trace: { tracer, jobId, parentId: span.id },
-          prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\nReview the change with \`git diff ${line.baseBranch}...HEAD\`.`,
+          prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\nReview the change with \`git diff ${copy.base}...HEAD\`.`,
         });
         addCost(run.costUsd);
         // Review is read-only: whatever the engine wrote is discarded.

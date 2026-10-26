@@ -53,7 +53,7 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
   return { ok: true, delivery: { mode: "merge", branch: copy.branch, commit: git(["rev-parse", line.baseBranch], line.repo) } };
 }
 
-function githubToken(): string | undefined {
+export function githubToken(): string | undefined {
   const fromEnv = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   if (fromEnv) return fromEnv;
   const r = spawnSync("gh", ["auth", "token"], { encoding: "utf8", windowsHide: true });
@@ -65,13 +65,14 @@ export function githubRepository(url: string): string | undefined {
   return url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/)?.[1];
 }
 
+/** Published from the line's repository: its remote is GitHub, and the branch is already there (a box copy is fetched back first). */
 async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {
-  const url = tryGit(["remote", "get-url", line.remote], copy.cwd);
+  const url = tryGit(["remote", "get-url", line.remote], line.repo);
   const repository = url && githubRepository(url);
   if (!repository) return { ok: false, reason: `El remoto "${line.remote}" no es un repositorio de GitHub.` };
   const token = githubToken();
   if (!token) return { ok: false, reason: "Para abrir la solicitud de cambio hace falta GH_TOKEN o haber iniciado sesión con `gh auth login`." };
-  const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: copy.cwd, encoding: "utf8", windowsHide: true });
+  const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
   const pr = await createGitHubTracker(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: opts.title, body: opts.body });
   return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr } };

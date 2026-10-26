@@ -39,6 +39,11 @@ export function untrackedPaths(cwd: string): string[] {
     .map((l) => l.slice(3).replace(/^"|"$/g, ""));
 }
 
+/**
+ * A worktree of the line's repository on the job's branch. `base` is where a
+ * new branch starts and what its changes are measured against: a local branch
+ * (`main`) or a remote-tracking one (`origin/main`).
+ */
 export async function openWorkCopy(repo: string, base: string, branch: string, path: string, exclude: string[] = []): Promise<WorkCopy> {
   if (!existsSync(path)) {
     await mkdir(dirname(path), { recursive: true });
@@ -58,10 +63,14 @@ export async function openCloneCopy(repo: string, base: string, branch: string, 
   if (!existsSync(path)) {
     await mkdir(dirname(path), { recursive: true });
     const branchExists = tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo) !== undefined;
-    git(["clone", "-q", "--no-hardlinks", "--branch", branchExists ? branch : base, repo, path], repo);
-    if (!branchExists) git(["checkout", "-q", "-b", branch], path);
-    // The base must exist locally for diffs against it.
-    if (branchExists) git(["branch", "-q", "--force", base, `origin/${base}`], path);
+    git(["clone", "-q", "--no-hardlinks", "--no-checkout", repo, path], repo);
+    // The base under the same name it has in the line's repository (`main` or `origin/main`), for diffs against it.
+    const baseRef = git(["rev-parse", "--symbolic-full-name", base], repo);
+    git(["fetch", "-q", "--update-head-ok", repo, `+${baseRef}:${baseRef}`], path);
+    if (branchExists) {
+      git(["fetch", "-q", "--update-head-ok", repo, `+refs/heads/${branch}:refs/heads/${branch}`], path);
+      git(["checkout", "-q", branch], path);
+    } else git(["checkout", "-q", "-b", branch, base], path);
   }
   const copy = workCopyAt(path, base, branch, exclude);
   return {

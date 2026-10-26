@@ -69,6 +69,22 @@ zero start [--detach] · zero shutdown
 
 Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace`, `zero_lines`, `zero_egress` y `zero_egress_block`.
 
+## Issues de GitHub
+
+Una línea puede tomar como pedidos los issues de su repositorio de GitHub que tengan una etiqueta:
+
+```sh
+zero issues on                 # en la línea (o --line <nombre>); crea la etiqueta "zero" si no existe   [--label otra]
+zero issues off
+```
+
+Cargás un issue, le ponés la etiqueta `zero`, y la fábrica lo revisa cada minuto y lo convierte en un trabajo.
+- **Comenta en el issue** cuando lo toma, cuando te necesita y cuando termina. El pull request incluye `Closes #N`, así que al aceptarlo se cierra el issue.
+- **Solo toma issues escritos y etiquetados por personas con permiso de escritura.** En un repositorio público cualquiera puede abrir un issue, y su texto se convierte en instrucciones para los agentes.
+- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
+
+En las líneas que entregan por `pull-request`, cada trabajo arranca desde la rama base de GitHub. Así incluye lo que aceptaste allá, sin mover tu rama local.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -121,7 +137,8 @@ lines:
     baseBranch: main
     setup: ["npm ci"]     # se ejecuta en cada copia nueva
     verify: ["npm test"]  # todo debe pasar antes de la revisión
-    integrate: merge      # merge · branch · pull-request
+    integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
+    issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
 ```
 
 Los secretos **no** van en este archivo: si zero detecta algo con forma de credencial, se niega a cargarlo. Cada motor usa tu propia sesión o las variables de entorno.
@@ -206,4 +223,4 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 
 ## Próximas etapas
 
-Instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.
+Responder consultas desde el issue · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.

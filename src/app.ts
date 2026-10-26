@@ -8,7 +8,8 @@ import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
 import { finalizeJob, type LedgerDeps } from "./line/finish.js";
-import { FINAL_STATUSES, Store, type Job } from "./state/store.js";
+import { intakeProblemKey } from "./intake/keys.js";
+import { FINAL_STATUSES, Store, type Job, type JobSource } from "./state/store.js";
 import { formatEgressSites } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
@@ -95,16 +96,16 @@ export interface RequestResult {
   next: string;
 }
 
-export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"] }): RequestResult {
+export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"]; source?: JobSource }): RequestResult {
   const text = input.text.trim();
   if (!text) throw new Error("El pedido está vacío.");
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
-  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob });
+  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob, source: input.source });
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
     jobId: job.id,
-    attrs: { "zero.line": line.name, "zero.kind": job.kind, "zero.level": level.level },
+    attrs: { "zero.line": line.name, "zero.kind": job.kind, "zero.level": level.level, ...(input.source && { "zero.source": input.source.url }) },
   });
   const integration = { merge: "lo integra en la rama base", branch: "deja una rama lista", "pull-request": "abre una solicitud de cambio" }[line.integrate];
   const next =
@@ -144,6 +145,8 @@ export interface FactoryStatus {
   level: EffectiveLevel;
   isolation: FactoryConfig["isolation"];
   egressMode: FactoryConfig["egress"]["mode"];
+  /** Lines taking GitHub issues, and the last problem reaching GitHub. */
+  intake: { line: string; label: string; problem?: string }[];
   box: { status?: BoxStatus; availability: BoxAvailability };
   daemon: DaemonInfo;
   andon: boolean;
@@ -164,6 +167,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
     egressMode: ctx.config.egress.mode,
+    intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
     box,
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -291,4 +295,16 @@ export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {})
 export function setRemotePanel(ctx: FactoryContext, on: boolean) {
   if (on) ctx.store.setKv(REMOTE_KEY, "on");
   else ctx.store.deleteKv(REMOTE_KEY);
+}
+
+/** Turns a line's GitHub issue intake on (with its label) or off, keeping the file's comments. */
+export async function setIssueIntake(ctx: FactoryContext, input: { line?: string; on: boolean; label?: string }): Promise<{ line: string; label?: string }> {
+  const line = findLine(ctx.config, input.line);
+  const index = ctx.config.lines.findIndex((l) => l.name === line.name);
+  const label = input.on ? (input.label ?? line.issues?.label ?? "zero") : undefined;
+  ctx.config = await editFactory(ctx.home.config, (doc) => {
+    if (label) doc.setIn(["lines", index, "issues"], doc.createNode({ label }));
+    else doc.deleteIn(["lines", index, "issues"]);
+  });
+  return { line: line.name, label };
 }

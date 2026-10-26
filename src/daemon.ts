@@ -2,6 +2,8 @@ import { createAgentRunner, type AgentRunner } from "./agent.js";
 import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
+import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { loadFactory, type FactoryConfig } from "./config.js";
@@ -25,11 +27,19 @@ export interface DaemonOptions {
   inspectBox?: (config: FactoryConfig) => BoxStatus;
   /** Builds the executor for a ready box; tests inject a simulated one. */
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
+  /** GitHub for the issue intake; tests inject a fake. */
+  issues?: (repository: string) => IssueApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
   panel?: boolean;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
+const INTAKE_MS = 60_000;
+
+const realIssues = (repository: string) => {
+  const token = githubToken();
+  return token ? githubIssues(token, repository) : undefined;
+};
 
 interface Running {
   line: string;
@@ -97,6 +107,16 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
   panel?.listen(port, "127.0.0.1", () => log.info("control panel listening", { url: `http://127.0.0.1:${port}` }));
   const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+  // GitHub issues are read in the background: a slow GitHub never holds up the loop, and passes never overlap.
+  let intakeAt = 0;
+  let intake: Promise<void> | undefined;
+  const takeIssues = () => {
+    if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
+    intakeAt = Date.now();
+    intake = pollIssues(ctx, opts.issues ?? realIssues)
+      .catch((err) => log.warn("issue intake failed", { error: String(err) }))
+      .finally(() => (intake = undefined));
+  };
 
   try {
     while (!stopping) {
@@ -116,6 +136,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
       readGate(ctx);
       tunnel.tick();
+      takeIssues();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -158,6 +179,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     }
   } finally {
     await Promise.allSettled([...running.values()].map((r) => r.done));
+    await intake;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();
