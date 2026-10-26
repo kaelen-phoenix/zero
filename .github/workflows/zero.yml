@@ -1,0 +1,59 @@
+name: zero
+
+# The agent network's heartbeat: every tick picks the oldest `zero:ready` issue
+# and drives it through plan → code → verify → review → pull request.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number to run (empty = next ready issue)"
+        required: false
+
+# One task at a time per repository; queued ticks wait instead of racing.
+concurrency:
+  group: zero
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  tick:
+    if: github.event_name != 'issues' || github.event.label.name == 'zero:ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # A PAT (or GitHub App token) lets the PRs zero opens trigger CI; GITHUB_TOKEN does not.
+      GH_TOKEN: ${{ secrets.ZERO_GH_TOKEN || github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ZERO_GH_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Configure git identity
+        run: |
+          git config user.name "kaelen-zero[bot]"
+          git config user.email "zero@kaelen.invalid"
+      - name: Run
+        env:
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          if [ -n "$ISSUE" ]; then
+            node dist/cli.js run "$ISSUE"
+          else
+            node dist/cli.js tick
+          fi

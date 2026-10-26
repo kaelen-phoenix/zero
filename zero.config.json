@@ -1,0 +1,6 @@
+{
+  "model": "claude-opus-5-5",
+  "baseBranch": "main",
+  "maxAttempts": 3,
+  "verify": ["npm run typecheck", "npm test"]
+}
