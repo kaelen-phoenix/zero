@@ -1,4 +1,5 @@
-import type { Metrics } from "../telemetry/metrics.js";
+import { bytes } from "../format.js";
+import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
 
 export interface Briefing {
@@ -15,7 +16,7 @@ const ref = (p: Post) => ` (${p.line}${p.job ? ` · ${p.job}` : ""})`;
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[]): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [
@@ -39,8 +40,23 @@ export function renderBriefing(metrics: Metrics, posts: Post[]): Briefing {
     ...(metrics.pendingQuestions ? [`- **${metrics.pendingQuestions} consulta(s) esperando tu respuesta.**`] : []),
     ...ofKind("blocker").map((p) => `- **Bloqueado**${ref(p)}: ${p.topic}. ${p.body}`),
     ...ofKind("proposal").map((p) => `- **Propuesta**${ref(p)}: ${p.body}`),
+    ...(egress?.sites ?? [])
+      .filter((s) => s.suspicious)
+      .map((s) => `- **Salida sospechosa bloqueada**: ${s.host}:${s.port}${s.jobs.length ? ` (${s.jobs.join(", ")})` : ""}: ${s.reason}. Si es legítima: \`zero egress allow ${s.host}\`.`),
   ];
   sections.push(`## Necesita al dueño\n${decisions.length ? decisions.join("\n") : "Nada. La fábrica funcionó sola."}`);
+
+  if (egress?.connections) {
+    const fresh = egress.sites.filter((s) => s.isNew && !s.blocked).map((s) => s.host);
+    const sent = egress.sites.reduce((n, s) => n + s.bytesUp, 0);
+    sections.push(
+      [
+        "## Salidas a internet",
+        `${egress.connections} conexiones a ${egress.sites.length} sitios · ${egress.blocked} bloqueadas${egress.suspicious ? ` (${egress.suspicious} sospechosas)` : ""} · enviado ${bytes(sent)}.`,
+        ...(fresh.length ? [`Sitios nuevos: ${fresh.join(", ")}.`] : []),
+      ].join("\n"),
+    );
+  }
 
   const knowledge = [...ofKind("lesson"), ...ofKind("finding")].map((p) => `- [${p.kind}] **${p.topic}**: ${p.body}${ref(p)}`);
   if (knowledge.length) sections.push(`## Lo que aprendió la red\n${knowledge.join("\n")}`);

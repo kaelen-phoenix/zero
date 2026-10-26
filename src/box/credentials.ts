@@ -22,7 +22,7 @@ const BUILT_IN: Record<string, Requirement | null> = {
 };
 
 /** The engines the factory's stations use. */
-export function stationEngines(config: FactoryConfig): string[] {
+export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine">): string[] {
   return [...new Set((["spec", "build", "review"] as const).map((s) => config.stations[s].engine ?? config.engine))];
 }
 

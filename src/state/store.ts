@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { EgressEvent, EgressRule } from "../box/egress.js";
 
 /** node:sqlite is still flagged experimental; load it without printing that warning on every command. */
 function loadSqlite(): typeof import("node:sqlite") {
@@ -28,7 +29,7 @@ export const FINAL_STATUSES: readonly JobStatus[] = ["delivered", "failed", "sto
 export type Checkpoint = "none" | "spec" | "review" | "delivered";
 export type Station = "spec" | "build" | "verify" | "review" | "integrate";
 
-export type QuestionKind = "spec-ready" | "before-integrate" | "protected-path" | "budget-exceeded" | "integration-blocked";
+export type QuestionKind = "spec-ready" | "before-integrate" | "protected-path" | "budget-exceeded" | "integration-blocked" | "egress-suspicious";
 
 export interface Question {
   kind: QuestionKind;
@@ -48,6 +49,8 @@ export interface Approvals {
   protectedPaths?: string[];
   extraBudgetUsd?: number;
   retryIntegration?: boolean;
+  /** Suspicious connections up to this record (`EgressRow.seq`) were accepted by the owner. */
+  egressSeq?: number;
 }
 
 export interface Delivery {
@@ -96,6 +99,11 @@ export interface SpanRow {
   attrs: Record<string, unknown>;
 }
 
+/** A connection recorded by the egress gate, numbered in the order the host read it. */
+export interface EgressRow extends EgressEvent {
+  seq: number;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -135,6 +143,25 @@ CREATE TABLE IF NOT EXISTS spans (
 );
 CREATE INDEX IF NOT EXISTS spans_job ON spans(job_id, start);
 CREATE INDEX IF NOT EXISTS spans_name ON spans(name, start);
+CREATE TABLE IF NOT EXISTS egress (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  at TEXT NOT NULL,
+  job_id TEXT,
+  station TEXT,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  allowed INTEGER NOT NULL,
+  rule TEXT,
+  reason TEXT,
+  bytes_up INTEGER NOT NULL DEFAULT 0,
+  bytes_down INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS egress_at ON egress(at);
+CREATE INDEX IF NOT EXISTS egress_job ON egress(job_id, seq);
+CREATE INDEX IF NOT EXISTS egress_host ON egress(host, at);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -184,6 +211,25 @@ function toSpan(r: Row): SpanRow {
     end: str(r.end),
     status: str(r.status) as SpanRow["status"],
     attrs: json<Record<string, unknown>>(r.attrs) ?? {},
+  };
+}
+
+function toEgress(r: Row): EgressRow {
+  return {
+    seq: Number(r.seq),
+    id: String(r.id),
+    at: String(r.at),
+    ...(r.job_id != null && { job: String(r.job_id) }),
+    ...(r.station != null && { station: String(r.station) }),
+    host: String(r.host),
+    port: Number(r.port),
+    allowed: Number(r.allowed) === 1,
+    ...(r.rule != null && { rule: r.rule as EgressRule }),
+    ...(r.reason != null && { reason: String(r.reason) }),
+    bytesUp: Number(r.bytes_up),
+    bytesDown: Number(r.bytes_down),
+    durationMs: Number(r.duration_ms),
+    ...(r.error != null && { error: String(r.error) }),
   };
 }
 
@@ -306,6 +352,59 @@ export class Store {
 
   spansSince(name: string, since: Date): SpanRow[] {
     return (this.db.prepare("SELECT * FROM spans WHERE name = ? AND start >= ? ORDER BY start").all(name, since.toISOString()) as Row[]).map(toSpan);
+  }
+
+  /** Runs `fn` in one write transaction: other processes wait, so a read-then-write cannot interleave. */
+  transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  /** Adds connections recorded by the gate; ones already stored (same id) are skipped. Returns how many were new. */
+  insertEgress(events: EgressEvent[]): number {
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO egress (id, at, job_id, station, host, port, allowed, rule, reason, bytes_up, bytes_down, duration_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    let added = 0;
+    for (const e of events) {
+      const r = insert.run(e.id, e.at, e.job ?? null, e.station ?? null, e.host, e.port, e.allowed ? 1 : 0, e.rule ?? null, e.reason ?? null, e.bytesUp, e.bytesDown, e.durationMs, e.error ?? null);
+      added += Number(r.changes);
+    }
+    return added;
+  }
+
+  /** Connections that started in [from, to], or all of a job's, oldest first. */
+  listEgress(filter: { from?: Date; to?: Date; job?: string; afterSeq?: number } = {}): EgressRow[] {
+    const where: string[] = [];
+    const values: (string | number)[] = [];
+    const add = (clause: string, value: string | number) => {
+      where.push(clause);
+      values.push(value);
+    };
+    if (filter.from) add("at >= ?", filter.from.toISOString());
+    if (filter.to) add("at <= ?", filter.to.toISOString());
+    if (filter.job) add("job_id = ?", filter.job);
+    if (filter.afterSeq !== undefined) add("seq > ?", filter.afterSeq);
+    const sql = `SELECT * FROM egress ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq`;
+    return (this.db.prepare(sql).all(...values) as Row[]).map(toEgress);
+  }
+
+  /** When each site was first seen by this factory. */
+  egressFirstSeen(hosts: string[]): Map<string, string> {
+    if (!hosts.length) return new Map();
+    const rows = this.db.prepare(`SELECT host, MIN(at) AS first FROM egress WHERE host IN (${hosts.map(() => "?").join(", ")}) GROUP BY host`).all(...hosts) as Row[];
+    return new Map(rows.map((r) => [String(r.host), String(r.first)]));
+  }
+
+  pruneEgress(before: Date) {
+    this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
   getKv(key: string): string | undefined {

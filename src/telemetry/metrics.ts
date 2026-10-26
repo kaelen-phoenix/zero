@@ -1,4 +1,5 @@
-import type { Store } from "../state/store.js";
+import type { EgressRule } from "../box/egress.js";
+import type { EgressRow, Store } from "../state/store.js";
 
 /** Span names the metrics are derived from. */
 export const AGENT_SPAN = "gen_ai.invoke_agent";
@@ -27,6 +28,74 @@ export interface Metrics {
   /** Time jobs spent waiting for the owner, for questions answered in the window. */
   humanWaitMin: number;
   byEngine: Record<string, EngineMetrics>;
+  /** Connections of the box through the egress gate. */
+  egress: { connections: number; blocked: number; suspicious: number };
+}
+
+/** One site as the egress gate saw it in a period. */
+export interface EgressSite {
+  host: string;
+  port: number;
+  connections: number;
+  blocked: number;
+  /** Refusals with the `suspicious` rule: the ones that hint at a manipulated agent or dependency. */
+  suspicious: number;
+  bytesUp: number;
+  bytesDown: number;
+  jobs: string[];
+  stations: string[];
+  lastAt: string;
+  /** Why the last refusal happened. */
+  rule?: EgressRule;
+  reason?: string;
+  /** First seen by this factory inside the period. */
+  isNew: boolean;
+}
+
+export interface EgressSummary {
+  connections: number;
+  blocked: number;
+  suspicious: number;
+  sites: EgressSite[];
+}
+
+/**
+ * The one definition of what the box reached: per site, with refusals first
+ * (suspicious ones on top), then the busiest allowed sites.
+ */
+export function summarizeEgress(store: Store, filter: { from?: Date; to?: Date; job?: string }): EgressSummary {
+  const rows = store.listEgress(filter);
+  const sites = new Map<string, EgressSite>();
+  const seen = (list: string[], value?: string) => value && !list.includes(value) && list.push(value);
+  for (const r of rows) {
+    const key = `${r.host}:${r.port}`;
+    const s = sites.get(key) ?? { host: r.host, port: r.port, connections: 0, blocked: 0, suspicious: 0, bytesUp: 0, bytesDown: 0, jobs: [], stations: [], lastAt: r.at, isNew: false };
+    s.connections++;
+    s.bytesUp += r.bytesUp;
+    s.bytesDown += r.bytesDown;
+    if (r.at > s.lastAt) s.lastAt = r.at;
+    seen(s.jobs, r.job);
+    seen(s.stations, r.station);
+    if (!r.allowed) refused(s, r);
+    sites.set(key, s);
+  }
+  const firstSeen = store.egressFirstSeen([...new Set(rows.map((r) => r.host))]);
+  const from = filter.from?.toISOString();
+  for (const s of sites.values()) s.isNew = from !== undefined && (firstSeen.get(s.host) ?? "") >= from;
+  const list = [...sites.values()].sort((a, b) => b.suspicious - a.suspicious || b.blocked - a.blocked || b.connections - a.connections || a.host.localeCompare(b.host));
+  return {
+    connections: rows.length,
+    blocked: rows.filter((r) => !r.allowed).length,
+    suspicious: rows.filter((r) => !r.allowed && r.rule === "suspicious").length,
+    sites: list,
+  };
+}
+
+function refused(s: EgressSite, r: EgressRow) {
+  s.blocked++;
+  if (r.rule === "suspicious") s.suspicious++;
+  s.rule = r.rule;
+  s.reason = r.reason;
 }
 
 /**
@@ -61,6 +130,7 @@ export function computeMetrics(store: Store, from: Date, to: Date = new Date()):
     .filter((s) => s.end && Date.parse(s.end) >= from.getTime() && Date.parse(s.end) <= to.getTime())
     .map((s) => (Date.parse(s.end!) - Date.parse(s.start)) / 60_000);
 
+  const egress = summarizeEgress(store, { from, to });
   return {
     from: from.toISOString(),
     to: to.toISOString(),
@@ -75,6 +145,7 @@ export function computeMetrics(store: Store, from: Date, to: Date = new Date()):
     pendingQuestions: store.listJobs({ status: ["waiting"] }).length,
     humanWaitMin: waits.reduce((a, b) => a + b, 0),
     byEngine,
+    egress: { connections: egress.connections, blocked: egress.blocked, suspicious: egress.suspicious },
   };
 }
 

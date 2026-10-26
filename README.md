@@ -67,7 +67,7 @@ zero line add <ruta>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace` y `zero_lines`.
+Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace`, `zero_lines`, `zero_egress` y `zero_egress_block`.
 
 ## La fábrica (`~/.zero/zero.factory.yaml`)
 
@@ -75,6 +75,10 @@ Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_a
 level: L3                 # L0 · L1 · L2 · L3
 isolation: container      # caja de aislamiento (worktree = copias locales, sin caja)
 box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, luego Docker
+egress:                   # salidas a internet de la caja (todas pasan por la puerta de zero)
+  mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
+  allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
+  block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
 limits:
@@ -102,6 +106,7 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `state.db`, con los trabajos y las trazas;
 - `townhall/`, la memoria colectiva;
 - `worktrees/` y `jobs/`, con las especificaciones renderizadas;
+- `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
 
 ## Caja de aislamiento
@@ -122,13 +127,38 @@ zero secret set CLAUDE_CODE_OAUTH_TOKEN    # lo guarda en el llavero del sistema
 zero secret list
 ```
 
-Con la caja lista y las credenciales de los motores guardadas, la fábrica pasa a **L3 real**. La caja todavía tiene salida a internet, porque la necesita para hablar con el modelo; restringirla a los dominios necesarios es el próximo paso de seguridad.
+Con la caja lista y las credenciales de los motores guardadas, la fábrica pasa a **L3 real**.
+
+### Salidas a internet
+
+La caja no tiene salida propia a internet ni DNS: sale solo por la **puerta** de zero, un proxy que corre en su propio contenedor. Así se ve **todo** lo que sale, también lo de un agente que intente ignorar al vigilante.
+
+- **Por defecto no se limita nada salvo lo sospechoso** (`mode: blocklist`). La puerta bloquea sola, y explica por qué:
+  - direcciones IP sin nombre;
+  - tu red local y las direcciones internas, también cuando un nombre apunta a ellas;
+  - puertos que no son 80 ni 443;
+  - nombres tan largos que parecen llevar datos;
+  - servicios típicos para sacar datos: pegar textos, compartir archivos, capturar peticiones, túneles, mensajería y DNS dinámico.
+- **Cada conexión queda registrada**: sitio, trabajo, estación, bytes enviados y recibidos, y la decisión.
+- **Un trabajo con salidas sospechosas no se integra solo.** En L3 falla y explica cómo permitir el sitio; en L0–L2 te pregunta.
+- **Tus reglas**: bloquear o permitir sitios, o pasar a `allowlist` para que salga solo lo permitido. Los sitios de tus motores se permiten solos, así la fábrica no se queda sin modelo.
+
+```sh
+zero egress                    # qué salió hoy, cuánto y qué se bloqueó   [--days N]
+zero egress <trabajo>          # las salidas de un trabajo (también en `zero trace`)
+zero egress block <sitio>      # también desde el chat
+zero egress allow <sitio>      # solo desde la terminal: un chat manipulado no puede abrir la puerta
+zero egress remove <sitio>
+zero egress mode allowlist     # o blocklist
+```
+
+Lo que la puerta no puede ver: el contenido cifrado, y los datos que se envíen a un sitio permitido (por ejemplo, la API del modelo). Los bytes enviados quedan registrados para detectarlo después.
 
 ## Observabilidad
 
 Cada trabajo deja una traza: trabajo → estación → intento → agente o comando. Cada elemento registra duración, estado, motor, modelo y costo, y el costo indica su origen (`reported` o `unknown`).
 
-Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry, para poder exportarlos por OTLP más adelante.
+Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor, conexiones y bloqueos de la caja) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry, para poder exportarlos por OTLP más adelante.
 
 ## Townhall
 
@@ -150,4 +180,4 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 
 ## Próximas etapas
 
-Restringir la salida a internet de la caja · panel en el navegador e instalador · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.
+Panel en el navegador (con las salidas y botones para permitir y bloquear) e instalador · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.

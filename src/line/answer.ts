@@ -23,6 +23,9 @@ function granted(job: Job): Approvals {
     case "integration-blocked":
       a.retryIntegration = true;
       break;
+    case "egress-suspicious":
+      a.egressSeq = Math.max(a.egressSeq ?? 0, Number(q.data?.seq ?? 0));
+      break;
   }
   return a;
 }

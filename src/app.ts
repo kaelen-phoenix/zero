@@ -1,14 +1,17 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
-import { effectiveLevel, findLine, loadFactory, type BoxAvailability, type EffectiveLevel, type FactoryConfig } from "./config.js";
+import { editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
 import { finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { FINAL_STATUSES, Store, type Job } from "./state/store.js";
-import { computeMetrics, dailyBudgetReached, spentToday, startOfDay, type Metrics } from "./telemetry/metrics.js";
+import { formatEgressSites } from "./format.js";
+import { log } from "./log.js";
+import { computeMetrics, dailyBudgetReached, spentToday, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, Tracer } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
@@ -138,6 +141,7 @@ export function resume(ctx: FactoryContext) {
 export interface FactoryStatus {
   level: EffectiveLevel;
   isolation: FactoryConfig["isolation"];
+  egressMode: FactoryConfig["egress"]["mode"];
   box: { status?: BoxStatus; availability: BoxAvailability };
   daemon: DaemonInfo;
   andon: boolean;
@@ -150,12 +154,14 @@ export interface FactoryStatus {
 }
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
+  readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
   const spentUsd = spentToday(ctx.store, now);
   const box = currentBox(ctx);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
+    egressMode: ctx.config.egress.mode,
     box,
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -169,15 +175,91 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
 }
 
 export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing> {
+  readGate(ctx);
   const to = (ctx.now ?? (() => new Date()))();
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }));
 }
 
 export function trace(ctx: FactoryContext, id: string): string {
-  getJob(ctx, id);
-  return renderTrace(ctx.store.spansForJob(id)) || "(sin trazas todavía)";
+  const job = getJob(ctx, id);
+  readGate(ctx);
+  const steps = renderTrace(ctx.store.spansForJob(id)) || "(sin trazas todavía)";
+  const egress = summarizeEgress(ctx.store, { job: id, from: new Date(job.createdAt) });
+  return egress.connections ? `${steps}
+
+${formatEgressSites(egress)}` : steps;
+}
+
+/** The gate's latest records, so every view is current even when the daemon is off. Never throws. */
+export function readGate(ctx: FactoryContext) {
+  if (ctx.config.isolation !== "container") return;
+  try {
+    ingestEgress(ctx.store, ctx.home.gate);
+  } catch (err) {
+    log.warn("cannot read the egress gate's records", { error: String(err) });
+  }
+}
+
+export interface EgressReport {
+  mode: FactoryConfig["egress"]["mode"];
+  from: string;
+  to: string;
+  job?: string;
+  summary: EgressSummary;
+  /** Why the gate is not seeing the factory's work right now, if it is not. */
+  note?: string;
+}
+
+/** What the box reached in the last `days`, or during one job. */
+export function egressReport(ctx: FactoryContext, opts: { job?: string; days?: number } = {}): EgressReport {
+  const to = (ctx.now ?? (() => new Date()))();
+  const job = opts.job ? getJob(ctx, opts.job) : undefined;
+  const from = job ? new Date(job.createdAt) : new Date(to.getTime() - (opts.days ?? 1) * 86_400_000);
+  readGate(ctx);
+  const box = currentBox(ctx);
+  const note =
+    ctx.config.isolation !== "container"
+      ? "Los trabajos corren fuera de la caja (isolation: worktree): sus salidas no pasan por la puerta y no se ven."
+      : job && job.isolation === "worktree"
+        ? "Este trabajo corrió fuera de la caja: sus salidas no pasaron por la puerta."
+        : !box.availability.ready
+          ? `La caja no está lista, así que los trabajos corren en copias locales y sus salidas no se ven: ${box.availability.problems.join("; ")}`
+          : undefined;
+  const summary = summarizeEgress(ctx.store, job ? { job: job.id, from } : { from, to });
+  return { mode: ctx.config.egress.mode, from: from.toISOString(), to: to.toISOString(), job: job?.id, summary, note };
+}
+
+export type EgressAction = "allow" | "block" | "remove";
+
+/** Puts a site in the allow or block list (taking it out of the other), or out of both. */
+export async function setEgressRule(ctx: FactoryContext, input: string, action: EgressAction): Promise<string> {
+  const parsed = SiteSchema.safeParse(input);
+  if (!parsed.success) throw new Error(`"${input}" no es un sitio válido. Usá un nombre como ejemplo.com o ejemplo.com:8443.`);
+  const site = parsed.data;
+  const { egress } = ctx.config;
+  const listed = egress.allow.includes(site) || egress.block.includes(site);
+  ctx.config = await editFactory(ctx.home.config, (doc) => {
+    const allow = egress.allow.filter((s) => s !== site);
+    const block = egress.block.filter((s) => s !== site);
+    if (action === "allow") allow.push(site);
+    if (action === "block") block.push(site);
+    doc.setIn(["egress", "allow"], doc.createNode(allow));
+    doc.setIn(["egress", "block"], doc.createNode(block));
+  });
+  const next = "Rige desde la próxima ejecución en la caja.";
+  if (action === "allow") return `Permitido: la caja puede conectarse a ${site}${ctx.config.egress.mode === "blocklist" ? " aunque parezca sospechoso" : ""}. ${next}`;
+  if (action === "block") return `Bloqueado: la caja ya no puede conectarse a ${site}. ${next}`;
+  return listed ? `${site} ya no está en tus listas: vale la regla general (modo ${ctx.config.egress.mode}).` : `${site} no estaba en tus listas.`;
+}
+
+export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<string> {
+  if (mode !== "blocklist" && mode !== "allowlist") throw new Error('El modo es "blocklist" (sale todo salvo lo sospechoso y lo bloqueado) o "allowlist" (solo lo permitido).');
+  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(["egress", "mode"], mode));
+  return mode === "allowlist"
+    ? `Modo allowlist: la caja solo sale a tus sitios permitidos (${ctx.config.egress.allow.join(", ") || "ninguno todavía"}) y a los de tus motores.`
+    : "Modo blocklist: la caja sale a todo salvo lo sospechoso y lo que bloquees.";
 }
 
 export function lines(config: FactoryConfig) {

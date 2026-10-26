@@ -1,6 +1,8 @@
 import { createAgentRunner, type AgentRunner } from "./agent.js";
-import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { egressPolicy } from "./box/egress.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { loadFactory, type FactoryConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
@@ -54,6 +56,17 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   }
 
   const running = new Map<string, Running>();
+  // One gate host per runtime and image, shared by every job so only one of them starts the gate.
+  const gates = new Map<string, GateHost>();
+  const gateFor = (st: BoxStatus) => {
+    const key = `${st.runtime}:${st.image}`;
+    let gate = gates.get(key);
+    if (!gate) {
+      gate = createGateHost({ runtime: st.runtime!, image: st.image, dir: ctx.home.gate, store, policy: () => egressPolicy(ctx.config) });
+      gates.set(key, gate);
+    }
+    return gate;
+  };
   let stopping = false;
   let boxCheckedAt = 0;
   const refreshBox = () => {
@@ -89,6 +102,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       }
 
       if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
+      readGate(ctx);
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -117,7 +131,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
           startable = true;
           const controller = new AbortController();
           const { status, availability } = currentBox(ctx);
-          const box = ctx.config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets)))(ctx.config, status) : undefined;
+          const box = ctx.config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(ctx.config, status) : undefined;
           const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
           const done = runJob(job.id, deps, controller.signal)
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))

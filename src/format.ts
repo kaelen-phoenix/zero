@@ -1,6 +1,7 @@
-import type { FactoryStatus, RequestResult } from "./app.js";
+import type { EgressReport, FactoryStatus, RequestResult } from "./app.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Job } from "./state/store.js";
+import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
 
@@ -51,6 +52,10 @@ export function formatStatus(s: FactoryStatus): string {
   } else {
     out.push("Caja de aislamiento: desactivada (isolation: worktree)");
   }
+  if (s.isolation === "container" && s.box.availability.ready) {
+    const e = s.today.egress;
+    out.push(`Salidas a internet hoy: ${e.connections} conexiones · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas: \`zero egress\`)` : ""} · modo ${s.egressMode}`);
+  }
   out.push(`Presupuesto de hoy: ${usd(s.budget.spentUsd)} de ${usd(s.budget.limitUsd)}${s.budget.reached ? " · ALCANZADO: los trabajos nuevos esperan a mañana" : ""}`);
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo ${usd(t.costUsd)}`);
   const list = (title: string, jobs: Job[]) => {
@@ -65,5 +70,49 @@ export function formatStatus(s: FactoryStatus): string {
     out.push("", "Últimos terminados:");
     for (const j of s.recent) out.push(`- ${j.id} · ${STATUS_TEXT[j.status]} · ${name(j)}${j.delivery ? ` · ${describeDelivery(j.delivery)}` : ""}`);
   }
+  return out.join("\n");
+}
+
+const MODE_TEXT: Record<EgressReport["mode"], string> = {
+  blocklist: "sale todo salvo lo sospechoso y lo que bloquees",
+  allowlist: "solo salen tus sitios permitidos y los de tus motores",
+};
+
+export function bytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function siteLine(s: EgressSite): string {
+  const where = [s.stations.join(", "), s.jobs.length ? `trabajo${s.jobs.length > 1 ? "s" : ""} ${s.jobs.join(", ")}` : ""].filter(Boolean).join(" · ");
+  if (s.blocked) {
+    const tries = s.blocked === s.connections ? `${s.blocked} ${s.blocked === 1 ? "intento" : "intentos"}` : `${s.blocked} de ${s.connections} bloqueadas`;
+    return `- ${s.host}:${s.port} · ${tries}${where ? ` · ${where}` : ""}${s.isNew ? " · nuevo" : ""}\n  ${s.rule === "suspicious" ? "SOSPECHOSO: " : ""}${s.reason ?? "bloqueado"}`;
+  }
+  const n = `${s.connections} ${s.connections === 1 ? "conexión" : "conexiones"}`;
+  return `- ${s.host}:${s.port} · ${n} · envió ${bytes(s.bytesUp)}, recibió ${bytes(s.bytesDown)}${where ? ` · ${where}` : ""}${s.isNew ? " · nuevo" : ""}`;
+}
+
+/** The sites the box reached, refusals first. Shared by `zero egress`, the trace and the chat. */
+export function formatEgressSites(e: EgressSummary): string {
+  const blocked = e.sites.filter((s) => s.blocked);
+  const allowed = e.sites.filter((s) => !s.blocked);
+  const out = [`Salidas a internet: ${e.connections} conexiones a ${e.sites.length} sitios · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas)` : ""}`];
+  if (blocked.length) out.push("", "Bloqueadas:", ...blocked.map(siteLine));
+  if (allowed.length) out.push("", "Permitidas:", ...allowed.map(siteLine));
+  return out.join("\n");
+}
+
+export function formatEgress(r: EgressReport): string {
+  const since = r.from.slice(0, 16).replace("T", " ");
+  const out = [
+    r.job ? `Salidas a internet del trabajo ${r.job}` : `Salidas a internet de la caja desde ${since} UTC`,
+    `Modo ${r.mode}: ${MODE_TEXT[r.mode]}.`,
+  ];
+  if (r.note) out.push(`Nota: ${r.note}`);
+  out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
+  out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
 }

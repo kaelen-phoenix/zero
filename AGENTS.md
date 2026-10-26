@@ -17,12 +17,14 @@ A software factory that runs on its owner's machine. Agents of any vendor work o
 - `src/agent.ts` + `src/engines/`: engine-agnostic agent runner and one adapter per engine. `agents/*.md` holds the per-station instructions, shared by every engine.
 - `src/townhall/`: collective memory and the owner briefing.
 - `src/box/`: the isolation box. `runtime.ts` detects Podman/Docker, `status.ts` inspects and caches readiness, `image.ts` and `box/Dockerfile` build the image, `run.ts` holds every hardening flag, `executor.ts` routes shell commands and agents into the box, `agent.ts` is the entry point inside it, and `setup.ts` walks the per-platform plan with consent. `src/keychain.ts` stores credentials in the OS keychain.
+- The egress gate: boxes run on an internal network with no DNS and leave only through zero's proxy. `src/box/egress.ts` holds the rules (pure), `gate.ts` is the proxy (runs in its own container via `gate-main.ts`), and `network.ts` starts it, issues one pass per box run and moves its records into `state.db`. Only `suspicious` refusals affect a job.
 - `openspec/`: specs (`specs/`) and changes (`changes/`). `docs/adr/`: decisions.
 
 ## Conventions
 - ESM, Node 22, imports with the `.js` suffix. User-facing text is in Spanish; code, comments and agent instructions are in English.
 - Engine-specific behaviour stays in `src/engines/`; nothing else may assume a vendor.
-- Guarantees are enforced by zero, never trusted to an engine: read-only stations, timeouts, schema validation, verify gate, protected paths, citation checks, isolation box.
+- Guarantees are enforced by zero, never trusted to an engine: read-only stations, timeouts, schema validation, verify gate, protected paths, citation checks, isolation box, egress gate.
+- The chat may only tighten egress rules (block); allowing a site or changing the mode is for the owner on the terminal or in the file.
 - Nothing installs software or needs admin without the owner's explicit consent. Secrets never go in argv, files or logs.
 - The line never blocks on the owner: questions park a job, carry a timeout and a default answer, and approvals resume from a checkpoint.
 - Every job end goes through `finalizeJob`, so it gets a final status, a closed job span and a townhall report.

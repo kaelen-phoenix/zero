@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, briefing, ensureDaemon, factoryStatus, getJob, lines, openFactory, requestWork, resume, stop, trace, type FactoryContext } from "../app.js";
-import { formatJob, formatRequest, formatStatus } from "../format.js";
+import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, lines, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { formatEgress, formatJob, formatRequest, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
@@ -129,6 +129,32 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       annotations: { readOnlyHint: true },
     },
     ({ job }) => withFactory(home, (ctx) => trace(ctx, job)),
+  );
+
+  server.registerTool(
+    "zero_egress",
+    {
+      title: "Salidas a internet de la caja",
+      description: "Every site the isolation box connected to through zero's egress gate: connections, bytes, and what was blocked and why. For the last days or for one job.",
+      inputSchema: {
+        job: z.string().optional().describe("Job id; omit for the whole factory."),
+        days: z.number().positive().optional().describe("Period in days when no job is given (default 1)."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ job, days }) => withFactory(home, (ctx) => formatEgress(egressReport(ctx, { job, days }))),
+  );
+
+  // Only blocking is offered here: a chat can be manipulated by what it reads, and blocking too much is safe.
+  // Allowing a site or changing the mode is for the owner, on the terminal or in zero.factory.yaml.
+  server.registerTool(
+    "zero_egress_block",
+    {
+      title: "Bloquear un sitio para la caja",
+      description: "Block a site (and its subdomains) for the isolation box, when the owner asks for it. Takes effect on the next run in the box. To allow a site the owner runs `zero egress allow <site>` themselves.",
+      inputSchema: { site: z.string().describe("Site name, e.g. example.com or example.com:8443.") },
+    },
+    ({ site }) => withFactory(home, (ctx) => setEgressRule(ctx, site, "block")),
   );
 
   server.registerTool(

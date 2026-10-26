@@ -14,6 +14,7 @@ const TOOLS: Record<Access, string[]> = {
 export const claudeEngine: Engine = {
   name: "claude",
   nativeSchema: true,
+  hosts: ["api.anthropic.com"],
   async run(req) {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), req.timeoutMs);

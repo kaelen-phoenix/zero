@@ -37,7 +37,7 @@ export interface AgentRequest<T = unknown> {
 export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
 
 /** Where an engine actually runs: on this machine by default, or inside the isolation box. */
-export type EngineExecute = (engine: Engine, req: EngineRequest, trace?: { tracer: Tracer; jobId: string; parentId: string }) => Promise<EngineResult>;
+export type EngineExecute = (engine: Engine, req: EngineRequest, trace: { tracer: Tracer; jobId: string; parentId: string } | undefined, station: AgentStation) => Promise<EngineResult>;
 
 const runHere: EngineExecute = (engine, req) => engine.run(req);
 
@@ -112,7 +112,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       maxBudgetUsd,
       timeoutMs: stationCfg.timeoutMinutes * 60_000,
       signal,
-    }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id });
+    }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id }, station);
 
     const run: AgentRun<T> = {
       ok: result.ok,

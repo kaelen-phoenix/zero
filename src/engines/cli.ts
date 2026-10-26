@@ -103,6 +103,8 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
 export const codexEngine: Engine = {
   name: "codex",
   nativeSchema: true,
+  // API keys use api.openai.com; a ChatGPT sign-in uses chatgpt.com.
+  hosts: ["api.openai.com", "chatgpt.com"],
   async run(req) {
     const dir = await mkdtemp(join(tmpdir(), "zero-codex-"));
     try {
@@ -162,6 +164,7 @@ export function customEngine(name: string, def: CustomEngine): Engine {
   return {
     name,
     nativeSchema: false,
+    hosts: def.hosts,
     run: (req) => execute(name, customInvocation(def, req), req),
   };
 }

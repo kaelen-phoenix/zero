@@ -34,5 +34,7 @@ export interface Engine {
   name: string;
   /** True when the engine enforces `schema` itself; otherwise zero asks for JSON in the prompt and parses it. */
   nativeSchema: boolean;
+  /** Sites the engine must reach to talk to its model; allowed by the egress gate in every mode. */
+  hosts?: string[];
   run(req: EngineRequest): Promise<EngineResult>;
 }

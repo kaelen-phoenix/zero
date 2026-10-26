@@ -39,7 +39,7 @@ export interface RunnerDeps extends LedgerDeps {
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
-type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: AbortSignal; parentId: string }) => Promise<ShellResult>;
+type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: AbortSignal; parentId: string; station: "setup" | "verify" }) => Promise<ShellResult>;
 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
@@ -79,7 +79,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   const box = isolation === "container" ? deps.box : undefined;
   const lineDeps: RunnerDeps = { ...deps, runAgent: box ? box.agentRunner(config) : deps.runAgent };
   const shell: Shell = box
-    ? (command, cwd, o) => box.shell(command, { cwd, mount: "rw", jobId, timeoutMs: o.timeoutMs, signal: o.signal, trace: { tracer, jobId, parentId: o.parentId } })
+    ? (command, cwd, o) => box.shell(command, { cwd, mount: "rw", jobId, station: o.station, timeoutMs: o.timeoutMs, signal: o.signal, trace: { tracer, jobId, parentId: o.parentId } })
     : (command, cwd, o) => sh(command, cwd, o);
 
   const reload = () => (job = store.getJob(jobId)!);
@@ -102,6 +102,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       if (typeof outcome === "string") return await fail(outcome);
       job = reload();
     }
+    const flaggedAfterSpec = await egressStop(deps, jobId, level);
+    if (flaggedAfterSpec) return flaggedAfterSpec;
     const spec = job.spec as Spec;
     if (job.checkpoint === "spec" && !job.approvals.spec && decide(level, "spec-ready") === "ask") {
       return askOwner(deps, job, { kind: "spec-ready", text: `Antes de empezar, ¿te parece bien?\n\n${plainSpec(spec)}` });
@@ -113,6 +115,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       job = reload();
     }
 
+    const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
+    if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
     if (!job.approvals.integrate && decide(level, "before-integrate") === "ask") {
       return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
     }
@@ -163,7 +167,7 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
   if (line.setup.length) {
     await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
       for (const command of line.setup) {
-        const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id });
+        const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
         span.set({ "process.command_line": command, "process.exit.code": r.code });
         if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
       }
@@ -174,6 +178,30 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
   await mkdir(join(deps.home.jobs, job.id), { recursive: true });
   await writeFile(excludeFile, JSON.stringify(exclude));
   return open(exclude);
+}
+
+/**
+ * A job whose box runs tried something suspicious is not delivered without the
+ * owner: L3 fails it, lower levels ask. Only the gate's `suspicious` refusals
+ * count (the owner's own lists are policy, not a warning sign), and only those
+ * after what the owner already accepted.
+ */
+async function egressStop(deps: RunnerDeps, jobId: string, level: Level): Promise<Job | undefined> {
+  const job = deps.store.getJob(jobId)!;
+  const flagged = deps.store.listEgress({ job: jobId, afterSeq: job.approvals.egressSeq ?? 0 }).filter((e) => !e.allowed && e.rule === "suspicious");
+  if (!flagged.length) return undefined;
+  const sites = new Map(flagged.map((e) => [`${e.host}:${e.port}`, e]));
+  const list = [...sites].map(([site, e]) => `- ${site}${e.station ? ` (${e.station})` : ""}: ${e.reason}`).join("\n");
+  if (decide(level, "egress-suspicious") === "fail") {
+    return finalizeJob(deps, job, "failed", {
+      reason: `La puerta de salida bloqueó conexiones sospechosas de este trabajo:\n${list}\nPor seguridad no se integró. Si un sitio es legítimo, permitilo con \`zero egress allow <sitio>\` y volvé a pedir el trabajo.`,
+    });
+  }
+  return askOwner(deps, job, {
+    kind: "egress-suspicious",
+    text: `La puerta de salida bloqueó conexiones sospechosas del trabajo "${job.title ?? job.request.slice(0, 80)}":\n${list}\nPuede ser una dependencia rara o un agente manipulado. ¿Sigo igual?`,
+    data: { seq: Math.max(...flagged.map((e) => e.seq)) },
+  });
 }
 
 const remaining = (job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - job.costUsd, 0.01);
@@ -267,6 +295,8 @@ async function buildLoop(
     // A job interrupted after building resumes at the station it was in, without rebuilding.
     const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review");
     const attempt = resuming ? job.attempt : job.attempt + 1;
+    const flagged = await egressStop(deps, jobId, level);
+    if (flagged) return flagged;
     if (attempt > line.maxAttempts) {
       return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
     }
@@ -334,7 +364,7 @@ async function buildLoop(
         jobId,
         parentId: span.id,
         signal,
-        run: (command, o) => shell(command, copy.cwd, o),
+        run: (command, o) => shell(command, copy.cwd, { ...o, station: "verify" }),
       }),
     );
     // Whatever verification left behind (coverage, build output) must never end up in a later commit.

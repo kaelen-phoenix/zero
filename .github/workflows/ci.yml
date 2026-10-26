@@ -23,9 +23,16 @@ jobs:
       - run: npm run build
       - run: npx openspec validate --all
 
-  # The isolation box for real: builds the image with Docker and delivers a job inside it.
+  # The isolation box for real, with each runtime: builds the image, delivers a job inside it,
+  # and checks that the box reaches the internet only through the egress gate.
   box:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [podman, docker]
+    env:
+      ZERO_BOX_RUNTIME: ${{ matrix.runtime }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,7 +49,7 @@ jobs:
           printf 'isolation: container\nlines: []\n' > "$ZERO_HOME/zero.factory.yaml"
           node dist/cli.js box setup --yes
           node dist/cli.js box status
-      - name: Deliver a job inside the box
+      - name: Deliver a job inside the box and check its egress
         env:
           ZERO_BOX_E2E: "1"
         run: npx vitest run test/box.e2e.test.ts

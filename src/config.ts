@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { parse } from "yaml";
+import { readFile, writeFile } from "node:fs/promises";
+import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { findSecret } from "./secrets.js";
 
@@ -18,6 +18,13 @@ const StationSchema = z.object({
   timeoutMinutes: z.number().positive(),
 });
 
+/** A site for the egress rules: a host name (it covers its subdomains) or an IPv4 address, optionally with `:port`. */
+export const SiteSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?::\d{1,5})?$/, "use a site name like example.com or example.com:8443");
+
 /** Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin. */
 export const CustomEngineSchema = z.object({
   command: z.array(z.string()).min(1),
@@ -26,6 +33,8 @@ export const CustomEngineSchema = z.object({
   modelArgs: z.array(z.string()).default([]),
   /** Environment variables (credentials) this engine needs inside the isolation box. */
   secrets: z.array(z.string()).default([]),
+  /** Sites this engine must reach (its model's API); allowed by the egress gate in every mode. */
+  hosts: z.array(SiteSchema).default([]),
 });
 
 export const LineSchema = z.object({
@@ -55,6 +64,15 @@ export const FactorySchema = z
         cpus: z.number().positive().default(2),
         memoryGb: z.number().positive().default(4),
         pids: z.number().int().positive().default(512),
+      })
+      .prefault({}),
+    /** What the isolation box may reach on the internet. Every connection goes through zero's gate and is recorded. */
+    egress: z
+      .object({
+        /** `blocklist`: everything leaves except suspicious and blocked sites. `allowlist`: only allowed sites and the engines' own. */
+        mode: z.enum(["blocklist", "allowlist"]).default("blocklist"),
+        allow: z.array(SiteSchema).default([]),
+        block: z.array(SiteSchema).default([]),
       })
       .prefault({}),
     engine: z.string().default("claude"),
@@ -118,6 +136,16 @@ export function parseFactory(text: string): FactoryConfig {
 export async function loadFactory(path: string): Promise<FactoryConfig> {
   if (!existsSync(path)) throw new ConfigError(`No hay fábrica en ${path}. Creala con \`zero init\`.`);
   return parseFactory(await readFile(path, "utf8"));
+}
+
+/** Edits `zero.factory.yaml` keeping its comments; never writes a definition the factory would refuse to load. */
+export async function editFactory(path: string, edit: (doc: Document) => void): Promise<FactoryConfig> {
+  const doc = parseDocument(await readFile(path, "utf8"));
+  edit(doc);
+  const text = doc.toString();
+  const config = parseFactory(text);
+  await writeFile(path, text);
+  return config;
 }
 
 export interface EffectiveLevel {

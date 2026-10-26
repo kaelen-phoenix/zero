@@ -16,11 +16,46 @@ export interface BoxRunSpec {
   secretNames: string[];
   command: string[];
   name: string;
+  /** The egress gate's internal network and the proxy URL with this run's pass. */
+  egress?: { network: string; proxy: string };
   /** Host platform and ids, to run as the owner on Linux so files in the copy stay theirs. */
   platform?: NodeJS.Platform;
   uid?: number;
   gid?: number;
 }
+
+export interface OwnerIds {
+  runtime: Runtime;
+  platform?: NodeJS.Platform;
+  uid?: number;
+  gid?: number;
+}
+
+/**
+ * On Linux mounted directories belong to the owner's uid: run as that uid (the
+ * image's own user would not own them). Rootless Podman also needs keep-id so
+ * that uid maps to the same uid on the host.
+ */
+export function ownerUser(o: OwnerIds): string[] {
+  if ((o.platform ?? process.platform) !== "linux") return [];
+  const owner = ["--user", `${o.uid ?? process.getuid?.() ?? 1000}:${o.gid ?? process.getgid?.() ?? 1000}`];
+  return o.runtime === "podman" ? ["--userns=keep-id", ...owner] : owner;
+}
+
+/** Inside the box only `localhost` is reached directly; everything else goes through the gate. */
+export function proxyEnv(proxy: string): string[] {
+  const direct = "localhost,127.0.0.1,::1";
+  const vars: [string, string][] = [
+    ["HTTP_PROXY", proxy], ["HTTPS_PROXY", proxy], ["http_proxy", proxy], ["https_proxy", proxy],
+    ["NO_PROXY", direct], ["no_proxy", direct],
+    // Node's own fetch honours the variables only with this flag.
+    ["NODE_USE_ENV_PROXY", "1"],
+  ];
+  return vars.flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+}
+
+/** TEST-NET-1 (RFC 5737): never routed, so every lookup inside the box fails at once. */
+export const NO_DNS = "192.0.2.1";
 
 export const containerName = (jobId: string) => `zero-${jobId}-${randomBytes(3).toString("hex")}`;
 
@@ -29,11 +64,6 @@ export const containerName = (jobId: string) => `zero-${jobId}-${randomBytes(3).
  * unit-tested rather than trusted.
  */
 export function boxRunArgs(spec: BoxRunSpec): string[] {
-  const platform = spec.platform ?? process.platform;
-  // On Linux the copy belongs to the owner's uid: run as that uid (the image's own user would not own it).
-  // Rootless Podman also needs keep-id so that uid maps to the same uid on the host.
-  const owner = ["--user", `${spec.uid ?? process.getuid?.() ?? 1000}:${spec.gid ?? process.getgid?.() ?? 1000}`];
-  const user = platform === "linux" ? (spec.runtime === "podman" ? ["--userns=keep-id", ...owner] : owner) : [];
   return [
     "run", "--rm", "-i", "--init",
     "--name", spec.name,
@@ -46,7 +76,10 @@ export function boxRunArgs(spec: BoxRunSpec): string[] {
     "--cpus", String(spec.limits.cpus),
     "--memory", `${spec.limits.memoryGb}g`,
     "--pids-limit", String(spec.limits.pids),
-    ...user,
+    ...ownerUser(spec),
+    // No route out and no DNS, so the gate is the only way out and names cannot smuggle data. The DNS server is a
+    // documentation address that is never routed (a loopback one would make Docker forward from the host).
+    ...(spec.egress ? ["--network", spec.egress.network, "--dns", NO_DNS, ...proxyEnv(spec.egress.proxy)] : []),
     "-v", `${spec.copy}:/work${spec.mount === "ro" ? ":ro" : ""}`,
     "-w", "/work",
     ...spec.secretNames.flatMap((n) => ["-e", n]),

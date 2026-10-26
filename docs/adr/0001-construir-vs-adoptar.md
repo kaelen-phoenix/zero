@@ -172,4 +172,16 @@ La change OpenSpec `add-isolation-box` implementa la caja:
 - `zero box status|setup` con consentimiento por paso;
 - credenciales en el llavero del sistema.
 
-L3 es real cuando la caja y las credenciales están listas. Queda pendiente restringir la salida a internet de la caja.
+L3 es real cuando la caja y las credenciales están listas.
+
+### Tercera etapa: puerta de salida (2026-10-26)
+
+| # | Decisión | Elección |
+|---|---|---|
+| 10 | Salida a internet de la caja | **No limitarla por defecto: verla toda y bloquear lo sospechoso.** El dueño puede armar su lista de bloqueados o pasar a una lista de permitidos (`egress.mode`). Para que verla sirva, la caja no tiene salida propia ni DNS: sale solo por una puerta de zero (proxy propio en su contenedor, red interna del runtime). Un trabajo con salidas sospechosas no se integra solo (L3 falla, L0–L2 pregunta). Desde el chat solo se puede bloquear |
+
+La change OpenSpec `add-egress-gate` implementa:
+- la puerta;
+- los pases por ejecución;
+- el registro de cada conexión en `state.db`;
+- las reglas y el informe `zero egress`.

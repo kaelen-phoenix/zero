@@ -62,6 +62,13 @@ export function gitRepo(files: Record<string, string> = { "README.md": "# demo\n
   return repo;
 }
 
+/** A state store in a temporary directory, closed after the test. */
+export function testStore(name = "state.db"): Store {
+  const store = new Store(join(tempDir(), name));
+  stores.push(store);
+  return store;
+}
+
 /** A factory in a temporary ZERO_HOME, with the given definition. */
 export function testFactory(definition: Record<string, unknown>, now?: () => Date): FactoryContext {
   const home = factoryHome(tempDir("zero-home-"));

@@ -10,6 +10,8 @@ export interface FactoryHome {
   worktrees: string;
   jobs: string;
   daemonLog: string;
+  /** Shared with the egress gate's container: its policy, the passes of running boxes and its connection records. */
+  gate: string;
 }
 
 export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".zero")): FactoryHome {
@@ -22,5 +24,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     worktrees: join(abs, "worktrees"),
     jobs: join(abs, "jobs"),
     daemonLog: join(abs, "daemon.log"),
+    gate: join(abs, "gate"),
   };
 }

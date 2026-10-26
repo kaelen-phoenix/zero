@@ -3,9 +3,9 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { answer, briefing, ensureDaemon, factoryStatus, getJob, openFactory, requestWork, resume, SHUTDOWN_KEY, stop, trace } from "./app.js";
+import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, requestWork, resume, setEgressMode, setEgressRule, SHUTDOWN_KEY, stop, trace } from "./app.js";
 import { runDaemon } from "./daemon.js";
-import { formatJob, formatRequest, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatRequest, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -32,6 +32,13 @@ Caja de aislamiento y credenciales:
   zero box setup [--yes]         Prepara la caja: pide permiso antes de instalar nada
   zero secret set <NOMBRE>       Guarda una credencial en el llavero del sistema (se escribe sin mostrarse)
   zero secret list | remove <NOMBRE>
+
+Salidas a internet de la caja (todas pasan por la puerta de zero):
+  zero egress [trabajo] [--days N]   Qué sitios, cuánto se envió y qué se bloqueó
+  zero egress allow|block <sitio>    Permite o bloquea un sitio (incluye sus subdominios)
+  zero egress remove <sitio>         Saca un sitio de tus listas
+  zero egress mode blocklist|allowlist
+                                 blocklist: sale todo salvo lo sospechoso y lo bloqueado; allowlist: solo lo permitido
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
@@ -167,6 +174,21 @@ async function main(argv: string[]): Promise<number> {
       case "briefing": {
         const b = await briefing(ctx, values.days ? Number(values.days) : 1);
         console.log(`# ${b.title}\n\n${b.body}`);
+        return 0;
+      }
+      case "egress": {
+        const [action, arg] = rest;
+        if (action === "allow" || action === "block" || action === "remove") {
+          if (!arg) throw new Error(`Indicá el sitio: zero egress ${action} <sitio>`);
+          console.log(await setEgressRule(ctx, arg, action));
+          return 0;
+        }
+        if (action === "mode") {
+          if (!arg) throw new Error("Indicá el modo: zero egress mode blocklist|allowlist");
+          console.log(await setEgressMode(ctx, arg));
+          return 0;
+        }
+        console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
         return 0;
       }
       case "trace":

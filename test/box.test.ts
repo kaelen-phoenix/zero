@@ -162,7 +162,7 @@ describe("box agent protocol", () => {
     const work = tempDir();
     const request: BoxAgentRequest = {
       engine: "echo",
-      engines: { echo: { command: [process.execPath, "-e", "console.log(JSON.stringify({response: process.cwd()}))"], readArgs: [], writeArgs: [], modelArgs: [], secrets: [] } },
+      engines: { echo: { command: [process.execPath, "-e", "console.log(JSON.stringify({response: process.cwd()}))"], readArgs: [], writeArgs: [], modelArgs: [], secrets: [], hosts: [] } },
       request: { instructions: "i", prompt: "p", access: "read", timeoutMs: 30_000 },
     };
     const r = spawnSync(process.execPath, ["--import", "tsx", join("src", "box", "agent.ts")], {
