@@ -1,0 +1,125 @@
+# ADR 0001 — Construir zero propio vs adoptar un framework existente
+
+- **Estado:** propuesto (pendiente de aprobación)
+- **Fecha:** 2026-10-26
+
+## Contexto
+
+zero es la base de la red de agentes de Kaelen Global Defence: *"Autonomous agent network. Continuous execution. Zero human intervention required."* Requisitos:
+
+| # | Requisito |
+|---|---|
+| R1 | Open source (OSI) y gratuito, igual que zero |
+| R2 | Desatendido: corre en CI o como daemon, sin UI ni aprobaciones |
+| R3 | Agnóstico al motor (Claude, Codex, Antigravity, agentes open source) |
+| R4 | Línea completa: issue → plan → implementación → verificación → revisión independiente → reintentos → integración |
+| R5 | Continuo: fuente de tareas, programación, control de concurrencia |
+| R6 | Extensible o usable como librería |
+| R7 | Proyecto sano y mantenido |
+| R8 | **Observabilidad de primer nivel** |
+| R9 | **Diseño de fábrica a oscuras:** no imitar el ciclo de vida de un equipo humano |
+
+Se evaluaron 4 frentes en paralelo: 13 orquestadores, 12 motores de agente, ACP, 12 frameworks y motores de workflows, y 7 backends de observabilidad. Los repos se clonaron sin ejecutar nada; los datos de salud proceden de `gh api` del 2026-10-26.
+
+## Hallazgos
+
+### Orquestadores
+
+| Proyecto | Licencia | Veredicto | Motivo principal |
+|---|---|---|---|
+| Agent Orchestrator | Apache-2.0 | Tomar ideas | El más completo (~45 adaptadores), pero centrado en la supervisión humana (kanban, app móvil), sin modo CI, sin OTel y con telemetría a PostHog activada por defecto |
+| **Sortie** | Apache-2.0 | Construir encima / tomar ideas | El que más cubre: tracker → agente → PR, reacciones a fallos de CI y revisión, coste y Prometheus. Le faltan OTel, revisión independiente, auto-merge y modo Actions, y no se puede importar como librería (Go `internal/`) |
+| **gh-aw** (GitHub) | MIT | Construir encima (más adelante) | Nativo de Actions, exporta OTLP, motores claude, codex, gemini y agy. Es un framework, no una línea, y está en versión pre-1.0 |
+| OpenHands software-agent-sdk | MIT | Construir encima (opcional) | Runtime con ACP, OTel y coste. Dependencia pesada en Python |
+| Scion (Google) | Apache-2.0 | Tomar ideas | La mejor observabilidad (reenvío OTLP por contenedor). No tiene línea de entrega, es pre-1.0 y necesita un Hub |
+| no_human | MIT | Tomar ideas | Las mejores puertas: *repro gate* (el test falla antes y pasa después), guardia contra tests borrados o debilitados y revisión adversarial con otro modelo. Solo soporta 2 motores |
+| CLITrigger | MIT | Tomar ideas | Límites de rondas, coste y "sin progreso", y cambio de herramienta al agotar cuota. Herramienta personal con un solo mantenedor |
+| Aixgo Code | Apache-2.0 | Tomar ideas | Registro en una rama huérfana (valida el diseño del townhall). Beta, 0 estrellas, merge humano obligatorio |
+| vibe-kanban | Apache-2.0 | Descartar | En proceso de cierre (sunset) y centrado en un tablero humano |
+| Claude Squad | AGPL-3.0 | Descartar | Multiplexor tmux para humanos y licencia AGPL |
+| AI-Agents-Orchestrator, taskpods, Orbi y otros | varias | Descartar | Sin línea de entrega, sin modo headless, AGPL o cubren un solo proveedor |
+
+**Ninguno sustituye a zero** en una línea desatendida en CI. Todos fallan en al menos dos de R2, R8 y R9. Los más maduros están diseñados para que una persona supervise.
+
+### Motores de agente
+
+| Motor | Licencia | Solo lectura | Esquema JSON | Modelos libres o locales | ACP | Observabilidad | Encaje |
+|---|---|---|---|---|---|---|---|
+| **OpenCode** | MIT | agente `plan` + permisos | vía SDK/servidor | Sí (Ollama, OpenRouter) | nativo | JSONL + coste + OTel | **Principal y vía gratuita** |
+| **Codex CLI** | Apache-2.0 | sandbox del SO (el más fuerte) | `--output-schema` | `--oss` con Ollama | adaptador | JSONL + tokens + OTel (sin $) | Principal |
+| **Goose** | Apache-2.0 | allowlist en recipe | recipe validado | Sí | nativo | OTel completo + coste | Principal |
+| Claude Code / Agent SDK | **Propietario** | `plan` | `--json-schema` | Solo Claude | adaptador | El más maduro | **Opcional**: credenciales propias |
+| Qwen Code, Kilo CLI | Apache-2.0 / MIT | sí | sí / SDK | Sí | nativo | OTel | Segunda fila |
+| Gemini CLI | Apache-2.0 | en headless pasa a YOLO | no | Solo Gemini; sin capa gratuita | nativo | OTel | Mal encaje |
+| Antigravity `agy` | **Propietario** | no se puede imponer | `--json-schema` | No | binario aparte | sin OTel | Mal encaje |
+| Crush | FSL (no OSI) | lo aprueba todo | no | Sí | no | no | Descartar |
+| Aider | Apache-2.0 | `ask` | no | Sí | no | no | Proyecto estancado |
+
+Claude Agent SDK: *"© Anthropic PBC. All rights reserved"*. zero puede invocarlo y seguir siendo open source si no lo redistribuye. Cada usuario debe usar sus propias credenciales; zero nunca las agrupa ni hace de proxy. Además añade unos 284 MB de binario nativo, así que no puede ser una dependencia obligatoria.
+
+### Protocolo ACP
+
+La v1 es estable (1.12.0) y el SDK de TypeScript `@agentclientprotocol/sdk` (Apache-2.0) es joven, así que conviene fijar su versión. Lo hablan de forma nativa OpenCode, Goose, Qwen, Kilo, Gemini, Cline, OpenHands y Copilot; Claude y Codex lo hacen mediante adaptadores Apache-2.0.
+
+Limitaciones: no tiene salida estructurada, el informe de coste es opcional y los modos de solo lectura tienen IDs distintos en cada agente. La v2 sigue en alfa.
+
+### Frameworks y motores de workflows
+
+- **Frameworks de agentes** (LangGraph, Mastra, CrewAI, OpenAI Agents SDK, Google ADK): todos controlan el bucle del LLM, pero en zero ese bucle lo traen los CLIs. **No aportan nada.**
+- **Motores de workflows:** ahora no hacen falta, porque GitHub ya actúa como estado durable. Cuando se necesite una flota multi-repo, colas o ejecuciones de más de 6 h: **DBOS** (MIT, solo Postgres) o **Hatchet** (MIT). Inngest (SSPL) y Restate (BSL) quedan descartados porque su licencia no es OSI.
+
+### Observabilidad
+
+- Las convenciones GenAI de OpenTelemetry definen spans para agentes (`invoke_workflow`, `invoke_agent`, `execute_tool`) y tokens. Su estado sigue siendo *Development* y **no incluyen coste**.
+- Backends libres:
+  - Langfuse: núcleo MIT, con sesiones y coste.
+  - Jaeger: Apache-2.0, solo trazas.
+  - SigNoz: núcleo MIT.
+  - Grafana LGTM: AGPL, que no afecta a zero porque solo le enviamos datos.
+  - Phoenix: ELv2, no es OSI.
+- Los motores principales (OpenCode, Goose, Codex, Claude) exportan OTel de forma nativa.
+
+## Decisión propuesta
+
+**Construir zero propio, open source y gratuito.** Ningún orquestador cumple R2, R8 y R9 a la vez, y los frameworks genéricos no aportan valor para orquestar CLIs que traen su propio bucle. Construir el núcleo no significa reinventarlo todo:
+
+1. **Núcleo propio:** la línea de producción, las puertas de calidad, el townhall y la observabilidad son lo diferencial de Kaelen.
+2. **Capa de motores sobre estándares:**
+   - Añadir un motor `acp` genérico con `@agentclientprotocol/sdk` (versión fijada, protocolo v1). Pasa a ser la vía agnóstica por defecto.
+   - Mantener los adaptadores nativos donde aportan garantías que ACP no da: `codex` (sandbox del SO y `--output-schema`) y `opencode`, que entra como motor por defecto y vía gratuita.
+   - `claude` pasa a ser **dependencia opcional** (peer/optional) y se usa con las credenciales propias de cada usuario.
+   - `antigravity` queda como experimental vía ACP; se retira el adaptador por CLI.
+3. **Observabilidad sobre OpenTelemetry:**
+   - Solo `@opentelemetry/api` + SDK, con las variables estándar `OTEL_*`.
+   - La exportación está apagada si no se configura un destino.
+   - Siempre se genera un registro JSONL de cada ejecución como artefacto de Actions.
+   - Modelo de spans: tarea → estación → intento → herramienta, más `zero.cost.usd` con el origen del dato (reportado, estimado o desconocido).
+   - Se documenta Langfuse como backend recomendado y Jaeger como opción mínima.
+4. **Ideas adoptadas** (sin depender de esos proyectos):
+   - De no_human: *repro gate* y guardia contra tests borrados o debilitados.
+   - De CLITrigger: límites de coste, de rondas y de "sin progreso", y cambio de motor al agotar cuota.
+   - De Agent Orchestrator y Sortie: los fallos de CI y los conflictos de merge vuelven al agente responsable.
+   - De Scion: reenvío de la telemetría nativa de cada CLI.
+5. **Revisar más adelante:**
+   - gh-aw como sustrato de ejecución alternativo cuando llegue a la 1.0.
+   - Sortie como modo daemon.
+   - DBOS o Hatchet cuando haya una flota multi-repo.
+
+## Consecuencias: rediseño como línea de producción (R9)
+
+La implementación actual (planner, coder, reviewer y PR) todavía imita a un equipo humano. La línea objetivo:
+
+```
+intención → spec + criterios ejecutables → N candidatos en paralelo (varios motores)
+   → estaciones de verificación (tests, repro gate, tamper guard, tipos, seguridad, juez LLM como un sensor más)
+   → selección del mejor → integración automática → vigilancia → rollback automático
+```
+
+- Los PRs quedan como registro de auditoría, no como paso obligatorio.
+- Los humanos están en la sala de control: definen la intención, los presupuestos y los límites, y leen el townhall y las trazas.
+
+## Pendiente de decisión humana
+
+1. Aprobar este ADR (construir zero propio con los componentes indicados).
+2. Licencia de zero: **Apache-2.0** (recomendada por su concesión de patentes; es la misma que usa la mayor parte del ecosistema evaluado) o MIT.
+3. Orden de trabajo: primero la capa de motores (ACP + OpenCode) y la observabilidad (OTel), o primero el rediseño como línea de producción.
