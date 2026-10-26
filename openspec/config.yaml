@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  Language: es
+  All artifacts must be written in es.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Project: zero, the base of Kaelen Global Defence's autonomous agent network.
+  Motto: "Autonomous agent network. Continuous execution. Zero human intervention required."
+
+  Non-negotiable principles:
+  - Open source and free. Every dependency must be OSI-licensed and free. Proprietary agents
+    (Claude Code, Antigravity) are optional adapters only, used with each user's own credentials.
+  - Engine-agnostic. No component outside src/engines/ may assume a vendor. Prefer open
+    standards (Agent Client Protocol, OpenTelemetry).
+  - Lights-out factory. Do not imitate a human team's lifecycle (roles, PR review rituals,
+    kanban, approvals). Design production-line stations with machine-checkable inputs and
+    outputs. Humans stay in the control room: they set intent, budgets and limits, and read
+    the instruments.
+  - Observability is first-class. Every station emits telemetry (OpenTelemetry traces,
+    metrics, cost) and reports to the townhall.
+  - zero enforces its own guarantees (read-only stations, timeouts, schema validation,
+    verification gates). It never trusts an engine to do so.
+
+  Decisions so far: docs/adr/0001-construir-vs-adoptar.md.
+  Stack: TypeScript, Node 22, ESM, zod, vitest. Runs in GitHub Actions.
+
+rules:
+  proposal:
+    - State which principle(s) the change serves and how it affects observability.
+    - Always state what is out of scope.
+  specs:
+    - Every requirement needs at least one scenario that can be turned into an automated test.
+  design:
+    - Say how each new station is observed (spans, metrics, townhall posts).
