@@ -17,6 +17,8 @@ export const claudeEngine: Engine = {
   async run(req) {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), req.timeoutMs);
+    const cancel = () => abort.abort();
+    req.signal?.addEventListener("abort", cancel, { once: true });
     const options: Options = {
       cwd: req.cwd,
       model: req.model,
@@ -37,14 +39,17 @@ export const claudeEngine: Engine = {
         if (message.type === "result") result = message;
       }
     } catch (err) {
+      if (req.signal?.aborted) return { ok: false, text: "cancelled" };
       if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min` };
       return { ok: false, text: err instanceof Error ? err.message : String(err) };
     } finally {
       clearTimeout(timer);
+      req.signal?.removeEventListener("abort", cancel);
     }
 
     if (!result) return { ok: false, text: "ended without a result message" };
-    if (result.subtype !== "success") return { ok: false, text: result.subtype, costUsd: result.total_cost_usd };
-    return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd };
+    const sessionId = result.session_id;
+    if (result.subtype !== "success") return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId };
+    return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId };
   },
 };

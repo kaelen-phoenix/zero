@@ -1,31 +1,33 @@
 import { z } from "zod";
 
 /**
- * What agents may contribute to the townhall from a run. Planner and reviewer
- * return these as part of their structured output.
+ * What agents may contribute to the townhall from a run. The spec and review
+ * stations return these as part of their structured output.
  */
 export const LearningSchema = z.object({
   kind: z.enum(["finding", "lesson"]).describe("finding = a fact about this codebase; lesson = what worked or failed and should change future runs."),
   topic: z.string().describe("Short key, e.g. 'tests', 'build', 'src/tracker.ts'."),
   body: z.string(),
+  source: z.string().describe("Where this comes from, as 'path' or 'path:line'. Empty if it is not about a file."),
 });
 
 export type Learning = z.infer<typeof LearningSchema>;
 
 export interface RunData {
-  status: "review" | "failed";
+  status: "delivered" | "failed" | "stopped";
   attempts: number;
   costUsd: number;
   durationMs: number;
   engines: string;
-  pullRequest?: string;
+  delivery?: string;
 }
 
 interface PostBase {
   id: string;
   /** ISO timestamp. */
   at: string;
-  task?: number;
+  line: string;
+  job?: string;
   source: string;
   topic: string;
   body: string;
@@ -33,9 +35,9 @@ interface PostBase {
 
 /**
  * One entry in the network's collective memory.
- * - run: the outcome of a task (feeds the briefing's production numbers)
+ * - run: the outcome of a job
  * - finding / lesson: knowledge agents want future runs to have
- * - blocker: something the network could not resolve, which needs a human decision
+ * - blocker: something the network could not resolve, which needs the owner
  * - proposal: work an agent discovered that nobody asked for yet
  */
 export type Post =
@@ -48,6 +50,7 @@ export type PostKind = Post["kind"];
 export type NewPost = Post extends infer P ? (P extends Post ? Omit<P, "id" | "at"> : never) : never;
 
 export interface RecallFilter {
+  line?: string;
   kinds?: PostKind[];
   since?: Date;
   limit?: number;

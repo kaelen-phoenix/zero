@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { Config, RoleName } from "./config.js";
+import type { FactoryConfig } from "./config.js";
 import { resolveEngine, type Access } from "./engines/index.js";
 import { log } from "./log.js";
+import { AGENT_SPAN } from "./telemetry/metrics.js";
+import type { Tracer } from "./telemetry/tracer.js";
+
+/** Stations staffed by an agent. `verify` and `integrate` are run by zero itself. */
+export type AgentStation = "spec" | "build" | "review";
 
 export interface AgentRun<T = unknown> {
   ok: boolean;
@@ -11,27 +16,36 @@ export interface AgentRun<T = unknown> {
   /** Validated structured output when the request has a schema. */
   output?: T;
   costUsd: number;
+  /** `reported` when the engine said what the call cost; `unknown` otherwise. */
+  costSource: "reported" | "unknown";
+  engine: string;
+  model?: string;
 }
 
 export interface AgentRequest<T = unknown> {
-  role: RoleName;
+  station: AgentStation;
   prompt: string;
   cwd: string;
   schema?: z.ZodType<T>;
+  /** Spend cap for this call, honoured by engines that support it. */
+  maxBudgetUsd?: number;
+  signal?: AbortSignal;
+  /** Where to record the `gen_ai.invoke_agent` span. */
+  trace?: { tracer: Tracer; jobId: string; parentId: string };
 }
 
 export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
 
-/** Only the coder may change the workspace. */
-const ACCESS: Record<RoleName, Access> = { planner: "read", coder: "write", reviewer: "read" };
+/** Only the build station may change the work copy. */
+const ACCESS: Record<AgentStation, Access> = { spec: "read", build: "write", review: "read" };
 
-const promptCache = new Map<RoleName, string>();
+const promptCache = new Map<AgentStation, string>();
 
-async function roleInstructions(role: RoleName): Promise<string> {
-  let text = promptCache.get(role);
+async function stationInstructions(station: AgentStation): Promise<string> {
+  let text = promptCache.get(station);
   if (!text) {
-    text = await readFile(new URL(`../agents/${role}.md`, import.meta.url), "utf8");
-    promptCache.set(role, text);
+    text = await readFile(new URL(`../agents/${station}.md`, import.meta.url), "utf8");
+    promptCache.set(station, text);
   }
   return text;
 }
@@ -65,30 +79,43 @@ export function toEngineSchema(schema: z.ZodType): Record<string, unknown> {
   return rest;
 }
 
-export function createAgentRunner(config: Config): AgentRunner {
-  return async function runAgent<T>({ role, prompt, cwd, schema }: AgentRequest<T>): Promise<AgentRun<T>> {
-    const roleCfg = config.roles[role];
-    const engine = resolveEngine(roleCfg.engine ?? config.engine, config);
+export function createAgentRunner(config: FactoryConfig): AgentRunner {
+  return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace }: AgentRequest<T>): Promise<AgentRun<T>> {
+    const stationCfg = config.stations[station];
+    const engine = resolveEngine(stationCfg.engine ?? config.engine, config);
     const jsonSchema = schema && toEngineSchema(schema);
     const fullPrompt =
       jsonSchema && !engine.nativeSchema
         ? `${prompt}\n\nEnd your answer with a single \`\`\`json fenced block containing an object that matches this JSON Schema:\n${JSON.stringify(jsonSchema)}`
         : prompt;
 
-    log.info(`agent:${role} start`, { engine: engine.name, model: roleCfg.model });
+    const span = trace?.tracer.start(AGENT_SPAN, {
+      jobId: trace.jobId,
+      parentId: trace.parentId,
+      attrs: { "gen_ai.agent.name": station, "gen_ai.request.model": stationCfg.model, "zero.engine": engine.name },
+    });
+    log.info(`agent:${station} start`, { engine: engine.name, model: stationCfg.model });
     const result = await engine.run({
-      instructions: await roleInstructions(role),
+      instructions: await stationInstructions(station),
       prompt: fullPrompt,
       cwd,
-      access: ACCESS[role],
+      access: ACCESS[station],
       schema: jsonSchema,
-      model: roleCfg.model,
-      maxTurns: roleCfg.maxTurns,
-      maxBudgetUsd: roleCfg.maxBudgetUsd,
-      timeoutMs: roleCfg.timeoutMinutes * 60_000,
+      model: stationCfg.model,
+      maxTurns: stationCfg.maxTurns,
+      maxBudgetUsd,
+      timeoutMs: stationCfg.timeoutMinutes * 60_000,
+      signal,
     });
 
-    const run: AgentRun<T> = { ok: result.ok, text: result.text, costUsd: result.costUsd ?? 0 };
+    const run: AgentRun<T> = {
+      ok: result.ok,
+      text: result.text,
+      costUsd: result.costUsd ?? 0,
+      costSource: result.costUsd === undefined ? "unknown" : "reported",
+      engine: engine.name,
+      model: stationCfg.model,
+    };
     if (run.ok && schema) {
       const parsed = schema.safeParse(result.output ?? extractJson(result.text));
       if (parsed.success) run.output = parsed.data;
@@ -98,7 +125,13 @@ export function createAgentRunner(config: Config): AgentRunner {
       }
     }
 
-    log.info(`agent:${role} done`, { engine: engine.name, ok: run.ok, costUsd: run.costUsd.toFixed(3) });
+    span?.end(run.ok ? "ok" : "error", {
+      "zero.cost.usd": run.costUsd,
+      "zero.cost.source": run.costSource,
+      "gen_ai.conversation.id": result.sessionId,
+      ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
+    });
+    log.info(`agent:${station} done`, { engine: engine.name, ok: run.ok, costUsd: run.costUsd.toFixed(3) });
     return run;
   };
 }

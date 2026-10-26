@@ -17,27 +17,37 @@ interface ProcessResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled: boolean;
 }
 
-function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number): Promise<ProcessResult> {
+export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let cancelled = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
+    const cancel = () => {
+      cancelled = true;
+      child.kill("SIGKILL");
+    };
+    if (signal?.aborted) cancel();
+    signal?.addEventListener("abort", cancel, { once: true });
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       reject(new Error(`cannot start "${bin}": ${err.message}. Is it installed and on PATH?`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      signal?.removeEventListener("abort", cancel);
+      resolve({ code, stdout, stderr, timedOut, cancelled });
     });
     child.stdin.end(stdin ?? "");
   });
@@ -63,7 +73,8 @@ export function finalText(stdout: string): string {
 }
 
 async function execute(name: string, inv: Invocation, req: EngineRequest): Promise<EngineResult> {
-  const r = await runProcess(inv, req.cwd, req.timeoutMs);
+  const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal);
+  if (r.cancelled) return { ok: false, text: `${name} cancelled` };
   if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min` };
   if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${(r.stderr || r.stdout).slice(-2000)}` };
   return { ok: true, text: finalText(r.stdout) };

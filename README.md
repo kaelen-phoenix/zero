@@ -1,133 +1,122 @@
 # zero
 
-**Kaelen Global Defence** — *Autonomous agent network. Continuous execution. Zero human intervention required.*
+**Kaelen Global Defence**: *Autonomous agent network. Continuous execution. Zero human intervention required.*
 
-`zero` es el orquestador base de Kaelen: convierte issues de GitHub en pull requests revisados, sin intervención humana, usando una red de agentes que se ejecuta de forma continua en GitHub Actions.
+zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo desde el chat de tu cliente de IA (Claude Code, Codex, agy…) o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.
 
-**Agnóstico al motor:** zero define el proceso; los agentes son intercambiables. Claude Code, OpenAI Codex, Google Antigravity o cualquier CLI de agente headless, y cada rol puede usar uno distinto (p. ej. Codex implementa y Claude revisa).
+Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
 ## Cómo funciona
 
 ```
- issue [zero:ready]
-        │
-        ▼
-   ┌─────────┐   plan (JSON)    ┌────────┐   commit   ┌─────────┐   diff   ┌──────────┐
-   │ planner │ ───────────────▶ │ coder  │ ─────────▶ │ verify  │ ───────▶ │ reviewer │
-   └─────────┘   read-only      └────────┘            └─────────┘          └──────────┘
-        │ inviable                   ▲    fallo de tests  │       cambios pedidos │
-        ▼                            └────────────────────┴───────────────────────┘
-  [zero:failed]                         hasta maxAttempts intentos       │ aprobado
-                                                                         ▼
-                                                             PR abierto [zero:review]
+ vos, en el chat o la terminal: "quiero aplicar descuentos a los precios"
+                    │
+                    ▼  (zero_request / zero request)
+ ┌──────────────── zero daemon (tu máquina) ───────────────────────────────────┐
+ │  spec ──▶ build ──▶ verify ──▶ review ──▶ integrate                          │
+ │  requisitos   código +   tests, tests     hallazgos con   merge / rama / PR  │
+ │  WHEN/THEN    tests      borrados,        citas verificadas                  │
+ │  (OpenSpec)              rutas protegidas                                    │
+ │        ▲───────── reintentos con la retroalimentación concreta ─────────┘    │
+ │  estado en SQLite · trazas y costos · townhall (memoria de la red)           │
+ └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-| Rol | Acceso | Responsabilidad |
-|---|---|---|
-| **planner** | solo lectura | Explora el repo, produce un plan estructurado o rechaza la tarea si es ambigua/insegura |
-| **coder** | lectura, edición, bash | Implementa el plan, añade tests, aplica el feedback del intento anterior |
-| **reviewer** | solo lectura | Última puerta: aprueba o devuelve problemas concretos |
+- **Estaciones con contrato.** Cada estación recibe y entrega algo verificable. La especificación es un change de OpenSpec con requisitos y escenarios.
+- **zero aplica las garantías, no el motor:**
+  - las estaciones `spec` y `review` son de solo lectura (si un motor escribe, se descarta);
+  - hay un tiempo límite por estación;
+  - las salidas estructuradas se validan;
+  - se detectan tests borrados o desactivados;
+  - las rutas protegidas no se tocan;
+  - los hallazgos de la revisión que citan archivos o líneas inexistentes se descartan.
+- **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
+- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
-Las garantías importantes las aplica zero, no el motor, así que valen igual para cualquier proveedor:
+## Niveles de autonomía
 
-- **Puerta de verify:** entre coder y reviewer, zero ejecuta los comandos `verify` de `zero.config.json`; un cambio que no pasa tests nunca llega a revisión.
-- **Solo lectura real:** si un planner/reviewer modifica el workspace (porque su motor no sabe sandboxearlo), zero descarta los cambios.
-- **Salida estructurada validada:** plan y review se definen con zod; se pasa JSON Schema a los motores que lo soportan y, al resto, se les pide JSON y se valida igual.
-- **Timeout duro** por rol; ninguna ejecución queda colgada esperando a un humano.
+| Nivel | Qué aprobás |
+|---|---|
+| L0 asistida | La especificación y la integración |
+| L1 supervisada | Solo la especificación ("vas a obtener esto") |
+| L2 vigilada | Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto |
+| L3 a oscuras | Nada; las políticas son límites duros, y está el botón de parada |
 
-### Estados (labels)
+Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamiento**, que todavía no está disponible: mientras tanto **trabaja en L2 y lo informa** en su estado. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.
 
-`zero:ready` → `zero:working` → `zero:review` (PR abierto) o `zero:failed` (con comentario explicando por qué).
+## Empezar
+
+```sh
+npm install && npm run build
+node dist/cli.js init       # crea ~/.zero/zero.factory.yaml y agrega el repo actual como línea
+node dist/cli.js install    # registra zero en Claude Code (y te muestra cómo hacerlo en Codex / OpenCode)
+```
+
+Después, en tu chat: *"zero, quiero que mi tienda calcule descuentos"*. O desde la terminal:
+
+```sh
+zero request "quiero que mi tienda calcule descuentos"   # la fábrica se enciende sola si estaba apagada
+zero status                    # cómo va todo
+zero status <trabajo>          # detalle, y la pregunta si te está esperando
+zero approve <trabajo>         # aprobar (o --reject --note "por qué")
+zero trace <trabajo>           # paso a paso: estaciones, intentos, agentes, comandos, costo
+zero briefing                  # informe: producción, costo, aprendizajes, lo que te necesita
+zero stop [trabajo]            # andon: para un trabajo o toda la fábrica · zero resume
+zero line add <ruta>           # agregar otro proyecto
+zero start [--detach] · zero shutdown
+```
+
+Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace` y `zero_lines`.
+
+## La fábrica (`~/.zero/zero.factory.yaml`)
+
+```yaml
+level: L3                 # L0 · L1 · L2 · L3
+isolation: worktree       # container (caja) llegará en una próxima versión
+engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
+concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+limits:
+  usdPerDay: 10           # 0 = solo motores gratuitos
+  usdPerJob: 3
+  protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
+approvals: { timeoutHours: 24, onTimeout: reject }
+stations:                 # motor, modelo y tiempo límite por estación (opcional)
+  review: { engine: codex, timeoutMinutes: 15 }
+engines:                  # cualquier otro CLI de agentes, sin código
+  gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+lines:
+  - name: tienda
+    repo: /ruta/a/tienda
+    baseBranch: main
+    setup: ["npm ci"]     # se ejecuta en cada copia nueva
+    verify: ["npm test"]  # todo debe pasar antes de la revisión
+    integrate: merge      # merge · branch · pull-request
+```
+
+Los secretos **no** van en este archivo: si zero detecta algo con forma de credencial, se niega a cargarlo. Cada motor usa tu propia sesión o las variables de entorno.
+
+El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
+- la definición de la fábrica;
+- `state.db`, con los trabajos y las trazas;
+- `townhall/`, la memoria colectiva;
+- `worktrees/` y `jobs/`, con las especificaciones renderizadas;
+- `daemon.log`.
+
+## Observabilidad
+
+Cada trabajo deja una traza: trabajo → estación → intento → agente o comando. Cada elemento registra duración, estado, motor, modelo y costo, y el costo indica su origen (`reported` o `unknown`).
+
+Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry, para poder exportarlos por OTLP más adelante.
 
 ## Townhall
 
-El espacio común de la red, con dos capas:
+Es la memoria colectiva de la fábrica. Cada trabajo publica:
+- su resultado;
+- los hallazgos (`spec`) y las lecciones (`review`), siempre con su fuente;
+- las propuestas de trabajo nuevo;
+- los bloqueos.
 
-**Foro de agentes (memoria colectiva).** Cada ejecución publica *posts* estructurados en una rama huérfana del repo, `zero-townhall` (JSONL por mes: gratis, versionado y auditable, sin servidores):
-
-| Tipo | Quién lo publica | Para qué |
-|---|---|---|
-| `run` | zero | Resultado, intentos, duración, coste y motores de cada tarea |
-| `finding` | planner | Hechos del codebase que las siguientes ejecuciones deben saber |
-| `lesson` | reviewer | Errores recurrentes y convenciones a aplicar |
-| `proposal` | planner | Trabajo descubierto fuera de alcance |
-| `blocker` | zero | Lo que la red no pudo resolver y requiere a un humano |
-
-Antes de trabajar, planner y coder reciben los últimos `finding`, `lesson` y `blocker`: la red no repite errores ni redescubre lo que ya sabe.
-
-**Informe a la sala de control.** El workflow `townhall` (diario, 07:00 UTC) sintetiza el foro en un issue con label `zero:townhall`: producción, tasa de éxito, coste por entrega, comparativa por motor, **lo que necesita a un humano** (blockers y propuestas) y lo que la red aprendió. Es determinista: no gasta tokens. También se puede lanzar a mano con `zero briefing`.
-
-Configuración en `zero.config.json` → `townhall`: `store` (`github` | `local` | `off`), `branch`, `recallLimit`, `briefing.sink` (`issue` | `stdout`), `briefing.days`.
-
-## Puesta en marcha
-
-1. **Secrets** del repo (Settings → Secrets → Actions):
-   - La clave del motor que uses: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTIGRAVITY_API_KEY`, `GEMINI_API_KEY`…
-   - `ZERO_GH_TOKEN` — recomendado: PAT o token de GitHub App con `contents`, `issues`, `pull-requests`. Sin él se usa `GITHUB_TOKEN`, y los PRs que abra zero no dispararán CI.
-2. **Labels**:
-   ```sh
-   gh label create zero:ready   --color 1f883d --description "Lista para la red de agentes"
-   gh label create zero:working --color bf8700 --description "Un agente está trabajando"
-   gh label create zero:review  --color 0969da --description "PR abierto, pendiente de merge"
-   gh label create zero:failed  --color cf222e --description "zero no pudo completarla"
-   ```
-3. Crea un issue con una tarea concreta y ponle `zero:ready`. El workflow `zero` arranca al instante (y además cada 30 min como latido).
-
-Ejecución local:
-
-```sh
-npm install
-export ANTHROPIC_API_KEY=... GH_TOKEN=$(gh auth token) GITHUB_REPOSITORY=kaelen-phoenix/zero
-npm run dev -- run 12     # un issue concreto
-npm run dev -- tick       # el siguiente zero:ready
-npm run dev -- briefing   # informe del townhall
-```
-
-## Motores
-
-| Motor | Cómo se invoca | Clave | Solo lectura | Esquema nativo |
-|---|---|---|---|---|
-| `claude` (defecto) | Claude Agent SDK (incluido) | `ANTHROPIC_API_KEY` | allowlist de herramientas | sí |
-| `codex` | `codex exec` | `OPENAI_API_KEY` | `--sandbox read-only` | sí (`--output-schema`) |
-| `antigravity` | `agy -p` (experimental) | `ANTIGRAVITY_API_KEY` | guardia de zero | no (JSON del texto) |
-| *personalizado* | cualquier CLI declarado en config | la suya | guardia de zero | no |
-
-Cualquier otro agente (Gemini CLI, opencode, aider, Cursor CLI…) se añade sin código, en `zero.config.json`:
-
-```json
-{
-  "engine": "claude",
-  "engines": {
-    "gemini": {
-      "command": ["gemini", "-p", "{prompt}", "--output-format", "json"],
-      "writeArgs": ["--yolo"],
-      "modelArgs": ["-m", "{model}"]
-    }
-  },
-  "roles": {
-    "coder":    { "engine": "codex", "timeoutMinutes": 60 },
-    "reviewer": { "engine": "gemini", "model": "gemini-3-pro", "timeoutMinutes": 15 }
-  }
-}
-```
-
-`{prompt}` y `{model}` se sustituyen; si el comando no contiene `{prompt}`, el prompt se envía por stdin. `readArgs`/`writeArgs` se añaden según el rol. Las instrucciones de cada rol (`agents/*.md`) son las mismas para todos los motores, y los agentes leen las convenciones del repo de `AGENTS.md`.
-
-Para instalar el CLI de un motor en Actions, añádelo al paso *Install engine CLIs* de `.github/workflows/zero.yml` (`codex` ya está).
-
-## Configuración (`zero.config.json`)
-
-| Campo | Defecto | |
-|---|---|---|
-| `engine` | `claude` | Motor por defecto de todos los roles |
-| `engines` | `{}` | Motores CLI personalizados (ver arriba) |
-| `baseBranch` | `main` | Rama base de los PRs |
-| `branchPrefix` | `zero/` | Prefijo de ramas de trabajo |
-| `maxAttempts` | `3` | Rondas coder→verify→review antes de fallar |
-| `verify` | `["npm run typecheck", "npm test"]` | Comandos que deben pasar |
-| `roles.<rol>` | ver `src/config.ts` | `engine`, `model`, `timeoutMinutes`; `maxTurns` y `maxBudgetUsd` donde el motor lo soporte |
-
-zero ejecuta `git checkout -B` y descarta cambios no confirmados en el directorio de trabajo: úsalo siempre en un clon dedicado (en Actions ya lo es).
+Las estaciones `spec` y `build` reciben las notas recientes de **su misma línea**. Las notas se guardan con los secretos borrados y sin duplicados. Si el townhall falla, la producción sigue igual.
 
 ## Desarrollo
 
@@ -135,11 +124,8 @@ zero ejecuta `git checkout -B` y descarta cambios no confirmados en el directori
 npm run typecheck && npm test && npm run build
 ```
 
-zero trabaja también sobre sí mismo: los issues de este repo con `zero:ready` mejoran el propio orquestador. Ver `AGENTS.md` para las convenciones que siguen los agentes.
+zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y las convenciones para agentes en `AGENTS.md`.
 
-## Próximos pasos
+## Próximas etapas
 
-- Auto-merge de PRs aprobados cuando CI pasa (cierre del bucle sin humanos).
-- Decomposición: planner que divide issues grandes en sub-issues `zero:ready`.
-- Varios repos objetivo desde un único despliegue de zero.
-- Telemetría de coste/éxito por tarea y por motor, para elegir el mejor motor por rol con datos.
+Caja de aislamiento (L3 real) · panel en el navegador e instalador · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.

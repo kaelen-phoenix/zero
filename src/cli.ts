@@ -1,93 +1,151 @@
 #!/usr/bin/env node
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { createAgentRunner } from "./agent.js";
-import { loadConfig, type Config } from "./config.js";
+import { parseArgs } from "node:util";
+import { answer, briefing, ensureDaemon, factoryStatus, getJob, openFactory, requestWork, resume, SHUTDOWN_KEY, stop, trace } from "./app.js";
+import { runDaemon } from "./daemon.js";
+import { formatJob, formatRequest, formatStatus } from "./format.js";
+import { factoryHome } from "./home.js";
+import { addLine, initFactory } from "./init.js";
+import { install } from "./install.js";
 import { log } from "./log.js";
-import { runTask } from "./pipeline.js";
-import { createTownhall, resilient, silentTownhall, type Townhall } from "./townhall/index.js";
-import { renderBriefing } from "./townhall/briefing.js";
-import { createGitHubStore, createLocalStore } from "./townhall/store.js";
-import { createGitHubTracker } from "./tracker.js";
-import { createWorkspace } from "./workspace.js";
+import { serveStdio } from "./mcp/server.js";
 
-const USAGE = `zero — Kaelen autonomous agent network
+const USAGE = `zero: tu fábrica de software, en tu máquina
 
-Usage:
-  zero tick            Pick the oldest issue labelled ready and run it
-  zero run <issue>     Run a specific issue
-  zero briefing        Publish the townhall briefing for the control room
+Primeros pasos:
+  zero init                      Crea la fábrica (y agrega el repo actual como línea)
+  zero install                   Registra zero en tus clientes de chat (Claude Code, …)
 
-Environment:
-  GH_TOKEN             GitHub token (issues, PRs, push, townhall)
-  GITHUB_REPOSITORY    owner/repo
-  ZERO_WORKDIR         Working copy (default: cwd)
-  + the API key of each engine in use (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...)`;
+Uso diario (también desde el chat):
+  zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec]
+  zero status [trabajo]          Estado de la fábrica o de un trabajo
+  zero approve <trabajo>         Aprueba una consulta   [--reject] [--note "<motivo>"]
+  zero stop [trabajo]            Andon: detiene un trabajo, o toda la fábrica
+  zero resume                    Reanuda la fábrica
+  zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
+  zero trace <trabajo>           Traza paso a paso de un trabajo
 
-function env(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing environment variable ${name}`);
-  return value;
-}
+Fábrica:
+  zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
+  zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
+  zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
+  zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
 
-function openTownhall(config: Config): Townhall {
-  const { store, branch, localDir } = config.townhall;
-  if (store === "off") return silentTownhall;
-  const backend =
-    store === "github"
-      ? createGitHubStore(env("GH_TOKEN"), env("GITHUB_REPOSITORY"), branch)
-      : createLocalStore(localDir ?? join(homedir(), ".zero", "townhall", env("GITHUB_REPOSITORY").replace("/", "_")));
-  return resilient(createTownhall(backend));
-}
-
-async function briefing(config: Config): Promise<number> {
-  const to = new Date();
-  const from = new Date(to.getTime() - config.townhall.briefing.days * 86_400_000);
-  const posts = await openTownhall(config).recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
-  const report = renderBriefing(posts, from, to);
-  console.log(`# ${report.title}\n\n${report.body}`);
-  if (config.townhall.briefing.sink === "issue") {
-    const tracker = createGitHubTracker(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-    const url = await tracker.createIssue({ title: report.title, body: report.body, labels: [config.townhall.briefing.label] });
-    log.info("briefing published", { url, ...report.stats });
-  }
-  return 0;
-}
+Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
 async function main(argv: string[]): Promise<number> {
-  const [command, arg] = argv;
-  if (command !== "tick" && command !== "run" && command !== "briefing") {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      line: { type: "string" },
+      name: { type: "string" },
+      spec: { type: "boolean" },
+      reject: { type: "boolean" },
+      note: { type: "string" },
+      days: { type: "string" },
+      detach: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  const [command, ...rest] = positionals;
+  const home = factoryHome();
+
+  if (!command || values.help || command === "help") {
     console.log(USAGE);
-    return command ? 2 : 0;
-  }
-
-  const cwd = process.env.ZERO_WORKDIR ?? process.cwd();
-  const config = await loadConfig(cwd);
-  if (command === "briefing") return briefing(config);
-
-  const tracker = createGitHubTracker(env("GH_TOKEN"), env("GITHUB_REPOSITORY"));
-  const deps = {
-    config,
-    tracker,
-    workspace: createWorkspace(cwd),
-    runAgent: createAgentRunner(config),
-    townhall: openTownhall(config),
-  };
-
-  const task = command === "run" ? await tracker.get(Number(arg)) : await tracker.nextReady(config.labels.ready);
-  if (!task) {
-    log.info("no ready tasks");
     return 0;
   }
-  const outcome = await runTask(task, deps);
-  log.info("outcome", { task: task.number, ...outcome });
-  return outcome.status === "review" ? 0 : 1;
+
+  switch (command) {
+    case "init": {
+      const r = await initFactory(home, process.cwd());
+      if (!r.created) {
+        console.log(`La fábrica ya existe en ${r.path}; no la modifiqué.`);
+        return 0;
+      }
+      console.log(`Fábrica creada en ${r.path}`);
+      console.log(`Motor: ${r.engine}${r.clients.length ? ` (detectados: ${r.clients.join(", ")})` : " (no detecté clientes de agentes; instalá Claude Code, Codex o agy)"}`);
+      console.log(r.line ? `Línea: ${r.line} (este repositorio)` : "Sin líneas todavía: agregá un repo con `zero line add <ruta>`.");
+      console.log("Siguiente paso: `zero install` para usar zero desde tu chat.");
+      return 0;
+    }
+    case "install": {
+      for (const r of install(home)) console.log(`\n[${r.client}] ${r.status}\n${r.detail}`);
+      return 0;
+    }
+    case "mcp":
+      await serveStdio(home);
+      return -1; // keep running until the client closes stdin
+    case "line": {
+      if (rest[0] !== "add") break;
+      const line = await addLine(home, rest[1] ?? process.cwd(), values.name);
+      console.log(`Línea "${line.name}" agregada: ${line.repo} (rama ${line.baseBranch}, verificación: ${line.verify.join(", ") || "ninguna"})`);
+      return 0;
+    }
+  }
+
+  const ctx = await openFactory(home);
+  try {
+    switch (command) {
+      case "start": {
+        if (values.detach) {
+          console.log((await ensureDaemon(ctx)) ? "Fábrica encendida en segundo plano." : "La fábrica ya estaba en marcha.");
+          return 0;
+        }
+        await runDaemon(ctx);
+        return 0;
+      }
+      case "shutdown":
+        ctx.store.setKv(SHUTDOWN_KEY, new Date().toISOString());
+        console.log("La fábrica se apagará en unos segundos; los trabajos en curso vuelven a la cola.");
+        return 0;
+      case "request": {
+        const text = rest.join(" ");
+        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request" });
+        const started = await ensureDaemon(ctx);
+        console.log(formatRequest(r) + (started ? "\nLa fábrica estaba apagada: la encendí." : ""));
+        return 0;
+      }
+      case "status":
+        console.log(rest[0] ? formatJob(getJob(ctx, rest[0])) : formatStatus(factoryStatus(ctx)));
+        return 0;
+      case "approve": {
+        if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");
+        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note)));
+        return 0;
+      }
+      case "stop": {
+        const r = await stop(ctx, rest[0]);
+        console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!));
+        return 0;
+      }
+      case "resume":
+        resume(ctx);
+        console.log("Fábrica reanudada.");
+        return 0;
+      case "briefing": {
+        const b = await briefing(ctx, values.days ? Number(values.days) : 1);
+        console.log(`# ${b.title}\n\n${b.body}`);
+        return 0;
+      }
+      case "trace":
+        if (!rest[0]) throw new Error("Indicá el trabajo: zero trace <trabajo>");
+        console.log(trace(ctx, rest[0]));
+        return 0;
+    }
+  } finally {
+    ctx.store.close();
+  }
+  console.log(USAGE);
+  return 2;
 }
 
 main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
+  (code) => {
+    if (code >= 0) process.exit(code);
+  },
   (err) => {
-    log.error("fatal", { error: err instanceof Error ? err.stack : String(err) });
+    log.error("fatal", { error: err instanceof Error ? err.message : String(err) });
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   },
 );

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractJson } from "../src/agent.js";
-import { ConfigSchema } from "../src/config.js";
-import { antigravityInvocation, codexInvocation, customInvocation, finalText } from "../src/engines/cli.js";
+import { FactorySchema } from "../src/config.js";
+import { antigravityInvocation, codexInvocation, customEngine, customInvocation, finalText } from "../src/engines/cli.js";
 import { resolveEngine, type EngineRequest } from "../src/engines/index.js";
 
 const req = (over: Partial<EngineRequest> = {}): EngineRequest => ({
@@ -48,7 +48,7 @@ describe("custom engine", () => {
   });
 
   it("overrides built-ins when declared in config", () => {
-    const config = ConfigSchema.parse({ engines: { codex: { command: ["my-codex"] } } });
+    const config = FactorySchema.parse({ engines: { codex: { command: ["my-codex"] } } });
     expect(resolveEngine("codex", config).nativeSchema).toBe(false);
     expect(() => resolveEngine("nope", config)).toThrow(/Known engines: claude, codex, antigravity/);
   });
@@ -64,5 +64,17 @@ describe("output parsing", () => {
     expect(extractJson('Plan:\n```json\n{"approved": true}\n```')).toEqual({ approved: true });
     expect(extractJson('I think {not json}. Final: {"a": {"b": 1}}')).toEqual({ a: { b: 1 } });
     expect(extractJson("no json here")).toBeUndefined();
+  });
+});
+
+describe("cancellation", () => {
+  it("kills a CLI engine when the andon cord is pulled", async () => {
+    const engine = customEngine("sleeper", { command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"], readArgs: [], writeArgs: [], modelArgs: [] });
+    const controller = new AbortController();
+    const started = Date.now();
+    setTimeout(() => controller.abort("andon"), 200);
+    const result = await engine.run({ ...req({ cwd: process.cwd() }), timeoutMs: 60_000, signal: controller.signal });
+    expect(result).toEqual({ ok: false, text: "sleeper cancelled" });
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 });

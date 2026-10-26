@@ -152,3 +152,15 @@ Pendiente de verificar: los términos de uso de cada proveedor para ejecuciones 
 | # | Decisión | Elección |
 |---|---|---|
 | 9 | Creación de agentes | **Especialistas definidos por contrato**, no por personaje. Cada uno declara su estación, sus permisos (impuestos por zero), una entrega comprobable y sus skills (Agent Skills). Se obtienen de **tres formas**: incluidos de fábrica (tester, seguridad, backend…), creados desde el chat (zero los arma y **los prueba con trabajos pasados antes de activarlos**), o escritos a mano o instalados como plugin compartido. El townhall mide a cada uno: aciertos, falsos positivos y costo |
+
+### Primera etapa construida (2026-10-26)
+
+La change OpenSpec `add-local-factory` implementa la fábrica local:
+- definición en `zero.factory.yaml`, con el nivel efectivo (L3 → L2 hasta que exista la caja);
+- línea `spec → build → verify → review → integrate` con checkpoints, reintentos, políticas, rutas protegidas, guardia de tests y citas verificadas;
+- daemon con reanudación, andon y arranque automático;
+- servidor MCP para el chat y `zero install`;
+- trazas y métricas con una sola definición;
+- townhall local por línea.
+
+Se verificó de punta a punta con Claude real: un pedido en lenguaje natural se entregó integrado en `main` en 60 s, por $0.65.

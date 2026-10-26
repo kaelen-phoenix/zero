@@ -13,6 +13,8 @@ export interface EngineRequest {
   maxTurns?: number;
   maxBudgetUsd?: number;
   timeoutMs: number;
+  /** Aborted when the owner pulls the andon cord or the daemon shuts down. */
+  signal?: AbortSignal;
 }
 
 export interface EngineResult {
@@ -23,6 +25,8 @@ export interface EngineResult {
   output?: unknown;
   /** Estimated cost, when the engine reports it. */
   costUsd?: number;
+  /** The engine's own session id, when it reports one (for transcript and cost lookups). */
+  sessionId?: string;
 }
 
 /** A coding agent zero can drive headlessly: Claude Code, Codex, Antigravity, or any CLI. */
