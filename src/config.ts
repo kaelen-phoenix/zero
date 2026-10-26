@@ -41,6 +41,25 @@ export const ConfigSchema = z.object({
       failed: z.string().default("zero:failed"),
     })
     .prefault({}),
+  /** The agent network's shared space: collective memory plus the periodic briefing for humans. */
+  townhall: z
+    .object({
+      /** github = JSONL on an orphan branch of the repo; local = JSONL under `localDir`; off = no memory. */
+      store: z.enum(["github", "local", "off"]).default("github"),
+      branch: z.string().default("zero-townhall"),
+      localDir: z.string().optional(),
+      /** How many notes from previous runs are given to planner and coder. */
+      recallLimit: z.number().int().min(0).default(30),
+      briefing: z
+        .object({
+          /** issue = open a GitHub issue per briefing; stdout = only print it. */
+          sink: z.enum(["issue", "stdout"]).default("issue"),
+          label: z.string().default("zero:townhall"),
+          days: z.number().positive().default(1),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
   roles: z
     .object({
       planner: RoleSchema.prefault({ maxTurns: 40, maxBudgetUsd: 2, timeoutMinutes: 15 }),

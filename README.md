@@ -39,6 +39,26 @@ Las garantías importantes las aplica zero, no el motor, así que valen igual pa
 
 `zero:ready` → `zero:working` → `zero:review` (PR abierto) o `zero:failed` (con comentario explicando por qué).
 
+## Townhall
+
+El espacio común de la red, con dos capas:
+
+**Foro de agentes (memoria colectiva).** Cada ejecución publica *posts* estructurados en una rama huérfana del repo, `zero-townhall` (JSONL por mes: gratis, versionado y auditable, sin servidores):
+
+| Tipo | Quién lo publica | Para qué |
+|---|---|---|
+| `run` | zero | Resultado, intentos, duración, coste y motores de cada tarea |
+| `finding` | planner | Hechos del codebase que las siguientes ejecuciones deben saber |
+| `lesson` | reviewer | Errores recurrentes y convenciones a aplicar |
+| `proposal` | planner | Trabajo descubierto fuera de alcance |
+| `blocker` | zero | Lo que la red no pudo resolver y requiere a un humano |
+
+Antes de trabajar, planner y coder reciben los últimos `finding`, `lesson` y `blocker`: la red no repite errores ni redescubre lo que ya sabe.
+
+**Informe a la sala de control.** El workflow `townhall` (diario, 07:00 UTC) sintetiza el foro en un issue con label `zero:townhall`: producción, tasa de éxito, coste por entrega, comparativa por motor, **lo que necesita a un humano** (blockers y propuestas) y lo que la red aprendió. Es determinista: no gasta tokens. También se puede lanzar a mano con `zero briefing`.
+
+Configuración en `zero.config.json` → `townhall`: `store` (`github` | `local` | `off`), `branch`, `recallLimit`, `briefing.sink` (`issue` | `stdout`), `briefing.days`.
+
 ## Puesta en marcha
 
 1. **Secrets** del repo (Settings → Secrets → Actions):
@@ -60,6 +80,7 @@ npm install
 export ANTHROPIC_API_KEY=... GH_TOKEN=$(gh auth token) GITHUB_REPOSITORY=kaelen-phoenix/zero
 npm run dev -- run 12     # un issue concreto
 npm run dev -- tick       # el siguiente zero:ready
+npm run dev -- briefing   # informe del townhall
 ```
 
 ## Motores

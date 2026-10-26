@@ -13,6 +13,7 @@ export interface Tracker {
   setState(number: number, add: string, remove: string[]): Promise<void>;
   comment(number: number, body: string): Promise<void>;
   openPullRequest(pr: { head: string; base: string; title: string; body: string }): Promise<string>;
+  createIssue(issue: { title: string; body: string; labels: string[] }): Promise<string>;
 }
 
 export function createGitHubTracker(token: string, repository: string): Tracker {
@@ -55,6 +56,10 @@ export function createGitHubTracker(token: string, repository: string): Tracker 
         return existing.data[0].html_url;
       }
       const { data } = await gh.pulls.create({ owner, repo, head, base, title, body });
+      return data.html_url;
+    },
+    async createIssue({ title, body, labels }) {
+      const { data } = await gh.issues.create({ owner, repo, title, body, labels });
       return data.html_url;
     },
   };

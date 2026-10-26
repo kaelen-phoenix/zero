@@ -4,12 +4,17 @@ import { ConfigSchema } from "../src/config.js";
 import { branchName, runTask, type Plan, type Review } from "../src/pipeline.js";
 import type { Task, Tracker } from "../src/tracker.js";
 import type { Workspace } from "../src/workspace.js";
+import type { NewPost, Townhall } from "../src/townhall/index.js";
 
 const task: Task = { number: 7, title: "Add health check endpoint!", body: "GET /health returns 200" };
-const plan: Plan = { feasible: true, reason: "", summary: "Add route", steps: ["edit server.ts"], risks: [] };
+const plan: Plan = {
+  feasible: true, reason: "", summary: "Add route", steps: ["edit server.ts"], risks: [],
+  learnings: [{ kind: "finding", topic: "server", body: "routes live in server.ts" }],
+  followUps: ["Add rate limiting"],
+};
 
 function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Plan; dirtyAfterReadOnly?: boolean } = {}) {
-  const reviews = [...(opts.reviews ?? [{ approved: true, summary: "LGTM", issues: [] }])];
+  const reviews = [...(opts.reviews ?? [{ approved: true, summary: "LGTM", issues: [], learnings: [] }])];
   const verify = [...(opts.verify ?? [null])];
   const labels: string[] = [];
   const prompts: AgentRequest[] = [];
@@ -20,6 +25,12 @@ function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Pl
     setState: vi.fn(async (_n, add) => void labels.push(add)),
     comment: vi.fn(async () => {}),
     openPullRequest: vi.fn(async () => "https://github.com/k/zero/pull/1"),
+    createIssue: vi.fn(async () => ""),
+  };
+  const published: NewPost[] = [];
+  const townhall: Townhall = {
+    publish: vi.fn(async (posts) => void published.push(...posts)),
+    recall: vi.fn(async () => [{ id: "m", at: "", kind: "lesson" as const, source: "zero", topic: "style", body: "use .js imports" }]),
   };
   const workspace: Workspace = {
     cwd: "/repo",
@@ -37,7 +48,7 @@ function fakes(opts: { reviews?: Review[]; verify?: (string | null)[]; plan?: Pl
   });
 
   const config = ConfigSchema.parse({ maxAttempts: 2 });
-  return { deps: { config, tracker, workspace, runAgent: runAgent as any }, labels, prompts, tracker, workspace };
+  return { deps: { config, tracker, workspace, runAgent: runAgent as any, townhall }, labels, prompts, tracker, workspace, published };
 }
 
 describe("runTask", () => {
@@ -52,8 +63,8 @@ describe("runTask", () => {
   it("feeds reviewer issues back to the coder and retries", async () => {
     const f = fakes({
       reviews: [
-        { approved: false, summary: "Missing test", issues: ["add test for /health"] },
-        { approved: true, summary: "LGTM", issues: [] },
+        { approved: false, summary: "Missing test", issues: ["add test for /health"], learnings: [{ kind: "lesson", topic: "tests", body: "every route needs a test" }] },
+        { approved: true, summary: "LGTM", issues: [], learnings: [] },
       ],
     });
     const outcome = await runTask(task, f.deps);
@@ -94,6 +105,23 @@ describe("read-only guard", () => {
     await runTask(task, f.deps);
     // after planner and after reviewer
     expect(f.workspace.discardChanges).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("townhall integration", () => {
+  it("gives agents the network memory and reports the run", async () => {
+    const f = fakes();
+    await runTask(task, f.deps);
+    expect(f.prompts.find((p) => p.role === "planner")?.prompt).toContain("use .js imports");
+    expect(f.prompts.find((p) => p.role === "coder")?.prompt).toContain("use .js imports");
+    expect(f.published.map((p) => p.kind)).toEqual(["run", "finding", "proposal"]);
+    expect(f.published[0]).toMatchObject({ kind: "run", data: { status: "review", attempts: 1 } });
+  });
+
+  it("raises a blocker for humans when the line fails", async () => {
+    const f = fakes({ plan: { ...plan, feasible: false, reason: "needs prod credentials" } });
+    await runTask(task, f.deps);
+    expect(f.published.find((p) => p.kind === "blocker")?.body).toContain("needs prod credentials");
   });
 });
 

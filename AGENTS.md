@@ -13,6 +13,7 @@ Orchestrator of Kaelen's autonomous agent network. Agents of any vendor (Claude 
 - `src/agent.ts` — engine-independent agent runner: role instructions, structured output (zod → JSON Schema, validated), JSON extraction for engines without native schemas.
 - `src/engines/` — one adapter per agent: `claude.ts` (Agent SDK), `cli.ts` (codex, antigravity, custom CLIs from config). `types.ts` is the contract.
 - `src/tracker.ts` — GitHub Issues/PRs. `src/workspace.ts` — git + verify commands.
+- `src/townhall/` — the network's shared space: collective memory (posts on the `zero-townhall` orphan branch) and the daily briefing for humans.
 - `agents/*.md` — role instructions, shared by every engine.
 - `zero.config.json` — per-repo config, validated by `src/config.ts`.
 
@@ -21,4 +22,5 @@ Orchestrator of Kaelen's autonomous agent network. Agents of any vendor (Claude 
 - New I/O goes behind an interface so `pipeline.ts` stays testable with fakes.
 - Engine-specific behaviour stays in `src/engines/`; nothing else may assume a vendor.
 - Guarantees that matter (read-only roles, timeouts, schema validation, verify gate) are enforced by zero itself, not trusted to the engine.
+- The townhall must never break production: store failures are logged, not thrown.
 - Every pipeline exit must leave the issue in a terminal label state with a comment.

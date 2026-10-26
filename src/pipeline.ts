@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AgentRequest, AgentRunner } from "./agent.js";
 import type { Config } from "./config.js";
 import { log } from "./log.js";
+import { LearningSchema, memoryBlock, type Learning, type NewPost, type Townhall } from "./townhall/index.js";
 import type { Task, Tracker } from "./tracker.js";
 import type { Workspace } from "./workspace.js";
 
@@ -11,12 +12,15 @@ export const PlanSchema = z.object({
   summary: z.string(),
   steps: z.array(z.string()),
   risks: z.array(z.string()),
+  learnings: z.array(LearningSchema).describe("What you learned about this codebase that future runs should know. Empty if nothing new."),
+  followUps: z.array(z.string()).describe("Work you noticed that is out of scope for this task but worth doing. Empty if none."),
 });
 
 export const ReviewSchema = z.object({
   approved: z.boolean(),
   summary: z.string(),
   issues: z.array(z.string()).describe("Blocking problems the coder must fix."),
+  learnings: z.array(LearningSchema).describe("Lessons future coders should apply (recurring mistakes, conventions). Empty if nothing new."),
 });
 
 export type Plan = z.infer<typeof PlanSchema>;
@@ -31,6 +35,8 @@ export interface PipelineDeps {
   tracker: Tracker;
   workspace: Workspace;
   runAgent: AgentRunner;
+  townhall: Townhall;
+  now?: () => number;
 }
 
 export function branchName(prefix: string, task: Task): string {
@@ -47,7 +53,41 @@ const engineSummary = (config: Config) =>
  * One task, end to end: plan → (code → verify → review) × maxAttempts → pull request.
  * Every exit path leaves the issue labelled with a terminal state and a comment explaining it.
  */
-export async function runTask(task: Task, { config, tracker, workspace, runAgent }: PipelineDeps): Promise<Outcome> {
+export async function runTask(task: Task, deps: PipelineDeps): Promise<Outcome> {
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const learnings: Learning[] = [];
+  const followUps: string[] = [];
+  const outcome = await runLine(task, deps, learnings, followUps);
+
+  // Every run reports to the townhall: its outcome, what agents learned, and what needs a human.
+  const source = "zero";
+  const posts: NewPost[] = [
+    {
+      kind: "run", task: task.number, source, topic: task.title,
+      body: outcome.status === "review" ? `Delivered ${outcome.pullRequest}` : outcome.reason.slice(0, 500),
+      data: {
+        status: outcome.status, attempts: outcome.attempts, costUsd: outcome.costUsd,
+        durationMs: now() - started, engines: engineSummary(deps.config),
+        ...(outcome.status === "review" && { pullRequest: outcome.pullRequest }),
+      },
+    },
+    ...learnings.map((l) => ({ ...l, task: task.number, source })),
+    ...followUps.map((f) => ({ kind: "proposal" as const, task: task.number, source, topic: f.slice(0, 80), body: f })),
+    ...(outcome.status === "failed"
+      ? [{ kind: "blocker" as const, task: task.number, source, topic: task.title, body: outcome.reason.slice(0, 1000) }]
+      : []),
+  ];
+  await deps.townhall.publish(posts);
+  return outcome;
+}
+
+async function runLine(
+  task: Task,
+  { config, tracker, workspace, runAgent, townhall }: PipelineDeps,
+  learnings: Learning[],
+  followUps: string[],
+): Promise<Outcome> {
   const { labels } = config;
   const branch = branchName(config.branchPrefix, task);
   let costUsd = 0;
@@ -79,16 +119,21 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
 
   async function execute(): Promise<Outcome> {
     workspace.checkoutBranch(branch, config.baseBranch);
+    const memory = memoryBlock(await townhall.recall({ kinds: ["lesson", "finding", "blocker"], limit: config.townhall.recallLimit }));
 
     const planRun = await runReadOnly({
       role: "planner",
       cwd: workspace.cwd,
       schema: PlanSchema,
-      prompt: `${taskBlock(task)}\n\nStudy the repository and produce an implementation plan for this task.`,
+      prompt: [taskBlock(task), memory, "Study the repository and produce an implementation plan for this task."]
+        .filter(Boolean)
+        .join("\n\n"),
     });
     costUsd += planRun.costUsd;
     const plan = planRun.output;
     if (!planRun.ok || !plan) return fail(`Planner did not produce a plan (${planRun.text}).`);
+    learnings.push(...plan.learnings);
+    followUps.push(...plan.followUps);
     if (!plan.feasible) return fail(`Planner rejected the task: ${plan.reason}`);
     await tracker.comment(task.number, `**Plan**\n\n${plan.summary}\n\n${list(plan.steps)}`);
 
@@ -103,6 +148,7 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
         prompt: [
           taskBlock(task),
           `## Plan\n${plan.summary}\n\n${list(plan.steps)}`,
+          memory,
           feedback && `## Feedback from the previous attempt (fix all of it)\n${feedback}`,
           `Implement the task. Verification commands that must pass: ${config.verify.join(", ") || "none"}.`,
         ]
@@ -134,6 +180,7 @@ export async function runTask(task: Task, { config, tracker, workspace, runAgent
         feedback = `Review could not be completed (${reviewRun.text}).`;
         continue;
       }
+      learnings.push(...review.learnings);
       if (!review.approved) {
         feedback = `Reviewer requested changes:\n${review.summary}\n\n${list(review.issues)}`;
         continue;
