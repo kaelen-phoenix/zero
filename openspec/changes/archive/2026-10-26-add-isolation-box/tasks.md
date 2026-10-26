@@ -26,7 +26,7 @@
 
 ## 5. Prueba real y documentación
 
-- [ ] 5.1 Agregar el job de CI con Docker que construye la imagen y entrega un trabajo dentro de la caja (montaje de solo lectura y aislamiento del directorio del usuario comprobados), y verificar que pasa en GitHub Actions
+- [x] 5.1 Agregar el job de CI con Docker que construye la imagen y entrega un trabajo dentro de la caja (montaje de solo lectura y aislamiento del directorio del usuario comprobados), y verificar que pasa en GitHub Actions
 - [x] 5.2 Actualizar README, AGENTS.md y el ADR, y verificar que los comandos documentados existen
 
 ## Workflow follow-up
