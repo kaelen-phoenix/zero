@@ -137,3 +137,12 @@ Contexto añadido tras este ADR:
 Consecuencias inmediatas:
 - **El runtime principal pasa a ser el daemon local.** GitHub Actions queda como opción.
 - **Con L3 por defecto y usuarios no técnicos**, los límites duros (presupuesto, rutas prohibidas, nada publicado sin permiso) y el aislamiento automático pasan a ser requisitos del instalador, no opciones.
+
+### Interfaz principal (2026-10-26)
+
+| # | Decisión | Elección |
+|---|---|---|
+| 7 | Cómo se usa zero | **Desde el chat del cliente de agentes del dueño** (Claude Code, Codex, agy, OpenCode). zero se instala como plugin (skills + servidor MCP stateless). El panel en el navegador queda para la configuración inicial y lo visual |
+| 8 | Dónde se hace el trabajo | **En segundo plano.** El daemon de zero ejecuta la línea con los mismos clientes en modo headless, con la cuenta del dueño, y sigue aunque se cierre el chat. Los avisos fuera del chat van por panel, email o Telegram |
+
+Pendiente de verificar: los términos de uso de cada proveedor para ejecuciones headless con una suscripción personal.
