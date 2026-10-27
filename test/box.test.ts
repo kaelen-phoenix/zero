@@ -6,7 +6,7 @@ import { credentialProblems, engineCredentials, stationEngines } from "../src/bo
 import { imageTag } from "../src/box/image.js";
 import { decodeResult, encodeResult, type BoxAgentRequest } from "../src/box/protocol.js";
 import { boxRunArgs, type BoxRunSpec } from "../src/box/run.js";
-import { planBoxSetup, runBoxSetup, type Probes, type SetupIO } from "../src/box/setup.js";
+import { planBoxSetup, probe, runBoxSetup, type Probes, type SetupIO } from "../src/box/setup.js";
 import { boxAvailability, inspectBox } from "../src/box/status.js";
 import type { Exec } from "../src/box/runtime.js";
 import { effectiveLevel, parseFactory } from "../src/config.js";
@@ -233,6 +233,24 @@ describe("box setup", () => {
     const t = io(states, true);
     expect(await runBoxSetup(t.value, { yes: false })).toBe("ready");
     expect(t.ran.map((r) => r.split(" ").slice(0, 3).join(" "))).toEqual(["winget install -e", "podman machine init", "podman machine start", "build"]);
+  });
+
+  it("sees WSL once installed, even before it has a distribution", () => {
+    const exec = (answers: Record<string, number>) => (bin: string, args: string[]) => ({ status: answers[`${bin} ${args.join(" ")}`] ?? 1, stdout: "", stderr: "" });
+    expect(probe("win32", exec({ "wsl --status": 50, "wsl --version": 1 }), [], undefined, false).wsl).toBe(false);
+    expect(probe("win32", exec({ "wsl --status": 1, "wsl --version": 0 }), [], undefined, false).wsl).toBe(true);
+  });
+
+  it("asks for administrator permission to install Podman on Windows", () => {
+    expect(planBoxSetup(probes({ wsl: true }))[0]).toMatchObject({ id: "install-podman", installs: true, admin: true });
+  });
+
+  it("stops instead of repeating a step that succeeded without effect", async () => {
+    // Podman installed, but this terminal still cannot find it.
+    const t = io([probes({ wsl: true })], true);
+    expect(await runBoxSetup(t.value, { yes: true })).toBe("manual");
+    expect(t.ran).toHaveLength(1);
+    expect(t.said.at(-1)).toMatch(/Abrí una terminal nueva/);
   });
 
   it("stops after enabling WSL until the owner reboots", async () => {

@@ -37,7 +37,8 @@ export function probe(platform: NodeJS.Platform, run: Exec, runtimes: Runtime[],
     platform,
     runtimes,
     responding,
-    wsl: platform === "win32" ? ok("wsl", ["--status"]) : undefined,
+    // Without a distribution `--status` may fail even when WSL is installed; `--version` only exists once it is.
+    wsl: platform === "win32" ? ok("wsl", ["--status"]) || ok("wsl", ["--version"]) : undefined,
     brew: platform === "darwin" ? ok("brew", ["--version"]) : undefined,
     podmanMachines,
     imageBuilt,
@@ -62,7 +63,8 @@ export function planBoxSetup(p: Probes): SetupStep[] {
         }));
         return steps;
       }
-      steps.push(step({ id: "install-podman", title: "Instalar Podman (contenedores, libre y gratuito) con winget.", command: { bin: "winget", args: ["install", "-e", "--id", "RedHat.Podman", "--accept-source-agreements", "--accept-package-agreements"] }, installs: true }));
+      // The Windows installer is machine-wide, so Windows asks for administrator permission.
+      steps.push(step({ id: "install-podman", title: "Instalar Podman (contenedores, libre y gratuito) con winget.", command: { bin: "winget", args: ["install", "-e", "--id", "RedHat.Podman", "--accept-source-agreements", "--accept-package-agreements"] }, installs: true, admin: true }));
     } else if (p.platform === "darwin") {
       if (!p.brew) {
         steps.push(step({ id: "manual", title: "Instalá Podman desde https://podman.io (o Homebrew desde https://brew.sh) y volvé a correr `zero box setup`.", installs: true }));
@@ -105,12 +107,18 @@ export type SetupOutcome = "ready" | "needs-consent" | "reboot" | "manual" | "fa
  * anything that needs the owner: consent, a reboot or a manual action.
  */
 export async function runBoxSetup(io: SetupIO, opts: { yes: boolean }): Promise<SetupOutcome> {
+  let done: SetupStep["id"] | undefined;
   for (let round = 0; round < 8; round++) {
     const probes = io.probe();
     const [next, ...rest] = planBoxSetup(probes);
     if (!next) return "ready";
     if (next.id === "manual") {
       io.say(next.title);
+      return "manual";
+    }
+    // A step that just succeeded but is still pending: running it again would not help.
+    if (next.id === done) {
+      io.say(`El paso "${next.title}" terminó bien, pero todavía no se ve su efecto. Abrí una terminal nueva y volvé a correr \`zero box setup\`.`);
       return "manual";
     }
     const sensitive = next.installs || next.admin || next.reboot;
@@ -131,6 +139,7 @@ export async function runBoxSetup(io: SetupIO, opts: { yes: boolean }): Promise<
         io.say(`No se pudo construir la imagen: ${err instanceof Error ? err.message : String(err)}`);
         return "failed";
       }
+      done = next.id;
       continue;
     }
     const code = io.run(next.command!.bin, next.command!.args);
@@ -138,6 +147,7 @@ export async function runBoxSetup(io: SetupIO, opts: { yes: boolean }): Promise<
       io.say(`El paso terminó con código ${code}.`);
       return "failed";
     }
+    done = next.id;
     if (next.reboot) {
       io.say("Reiniciá el equipo y volvé a correr `zero box setup` para continuar.");
       return "reboot";
