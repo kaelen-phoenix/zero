@@ -7,16 +7,16 @@ import { editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type Bo
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
-import { finalizeJob, type LedgerDeps } from "./line/finish.js";
+import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource } from "./state/store.js";
-import { formatEgressSites } from "./format.js";
+import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type QuestionKind, type SpanRow } from "./state/store.js";
+import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
 import { computeMetrics, dailyBudgetReached, spentToday, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
-import { renderTrace, Tracer } from "./telemetry/tracer.js";
+import { renderTrace, spanEngine, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
@@ -205,6 +205,125 @@ export function trace(ctx: FactoryContext, id: string): string {
   return egress.connections ? `${steps}
 
 ${formatEgressSites(egress)}` : steps;
+}
+
+/** The stations of the production line, in the order a job goes through them. */
+export const LINE_STATIONS = ["setup", "spec", "build", "verify", "review", "security", "integrate"] as const;
+export type LineStation = (typeof LINE_STATIONS)[number];
+export type StationState = "pending" | "active" | "done" | "error" | "waiting";
+
+export interface StationView {
+  name: LineStation;
+  state: StationState;
+  /** Why it failed, in one short line. */
+  reason?: string;
+  /** What `zero trace` says about its last run; absent when it never ran. */
+  detail?: { time: string; cost?: string; engines: string[]; error?: string };
+}
+
+export interface LineRow {
+  id: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  /** Where the piece is: the station working or waiting, or the one that failed. */
+  at?: LineStation;
+  attempt: number;
+  maxAttempts: number;
+  /** What made the factory build again, when this is not the first attempt. */
+  retryError?: string;
+  delivery?: { text: string; url?: string; merge?: string };
+  reason?: string;
+  stations: StationView[];
+}
+
+export interface ProductionLine {
+  counts: { active: number; waiting: number; failed: number; delivered: number };
+  rows: LineRow[];
+}
+
+/** Where a parked job waits, by the question it asked. */
+const WAITING_AT: Partial<Record<QuestionKind, LineStation>> = { "spec-ready": "spec", "before-integrate": "integrate", "integration-blocked": "integrate", "protected-path": "verify" };
+const ATTEMPT_STATIONS: readonly LineStation[] = ["build", "verify", "review", "security"];
+
+/** One line, at most `max` characters, for a reason shown inside a station. */
+const brief = (text: unknown, max = 140) => {
+  const first = String(text ?? "").trim().split("\n")[0]!.trim();
+  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+};
+
+/** Each job of `factoryStatus` as a piece on the production line, derived only from its record and its spans. */
+export function productionLine(ctx: FactoryContext): ProductionLine {
+  const s = factoryStatus(ctx);
+  const jobs = [...s.running, ...s.waiting, ...s.queued, ...s.recent];
+  return {
+    counts: { active: s.running.length + s.queued.length, waiting: s.waiting.length, failed: s.today.failed, delivered: s.today.delivered },
+    rows: jobs.map((job) => lineRow(ctx, job)),
+  };
+}
+
+function lineRow(ctx: FactoryContext, job: Job): LineRow {
+  const spans = ctx.store.spansForJob(job.id);
+  const maxAttempts = ctx.config.lines.find((l) => l.name === job.line)?.maxAttempts ?? 3;
+  const children = new Map<string, SpanRow[]>();
+  for (const sp of spans) if (sp.parentId) children.set(sp.parentId, [...(children.get(sp.parentId) ?? []), sp]);
+  const descendants = (sp: SpanRow): SpanRow[] => (children.get(sp.id) ?? []).flatMap((c) => [c, ...descendants(c)]);
+  const attempts = spans.filter((sp) => sp.name === "zero.attempt");
+  const current = attempts.at(-1);
+  const last = (station: LineStation) =>
+    spans.filter((sp) => sp.name === (station === "setup" ? "zero.setup" : `zero.station.${station}`) && (!ATTEMPT_STATIONS.includes(station) || sp.parentId === current?.id)).at(-1);
+
+  const final = FINAL_STATUSES.includes(job.status);
+  const setupOpen = spans.some((sp) => sp.name === "zero.setup" && !sp.end);
+  const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? job.station : (job.station ?? (setupOpen ? "setup" : undefined));
+  // The last station an attempt reached carries the attempt's failure, since verify and the reviews end well and report.
+  const failedIn = current?.status === "error" ? ATTEMPT_STATIONS.filter((st) => last(st)).at(-1) : undefined;
+
+  const stations = LINE_STATIONS.map((name): StationView => {
+    const sp = last(name);
+    const below = sp ? descendants(sp) : [];
+    const costs = [sp!, ...below].filter((x) => x && typeof x.attrs["zero.cost.usd"] === "number");
+    const engines = [...new Set(below.filter((x) => x.attrs["zero.engine"]).map((x) => spanEngine(x.attrs)))];
+    const spanError = sp?.status === "error" ? brief(sp.attrs["error.message"] || job.reason) : name === failedIn && final ? brief(current!.attrs["error.message"] || job.reason) : undefined;
+    const detail = sp && {
+      time: spanTime(sp),
+      cost: costs.length ? traceUsd(costs.reduce((sum, x) => sum + (x.attrs["zero.cost.usd"] as number), 0)) : undefined,
+      engines,
+      error: spanError,
+    };
+    let state: StationState = "pending";
+    if (name === here && job.status === "running") state = "active";
+    else if (name === here && job.status === "waiting") state = "waiting";
+    else if (spanError) state = "error";
+    else if (sp?.status === "ok") state = "done";
+    return { name, state, reason: state === "error" ? spanError : undefined, detail };
+  });
+  // A job that failed without any station span saying so fails where it stood.
+  if (job.status === "failed" && !stations.some((st) => st.state === "error") && here) {
+    const st = stations.find((x) => x.name === here)!;
+    st.state = "error";
+    st.reason = brief(job.reason);
+  }
+
+  const previous = attempts.filter((a) => a.status === "error" && Number(a.attrs["zero.attempt"]) < job.attempt).at(-1);
+  const merge = job.delivery?.mode === "pull-request" ? (JSON.parse(ctx.store.getKv(mergeKey(job.id)) ?? "null") as MergeState | null) : undefined;
+  return {
+    id: job.id,
+    line: job.line,
+    title: jobName(job),
+    status: job.status,
+    at: stations.find((st) => st.state === "active" || st.state === "waiting" || st.state === "error")?.name ?? here,
+    attempt: job.attempt,
+    maxAttempts,
+    retryError: job.attempt > 1 ? brief(previous?.attrs["error.message"] || job.feedback) || undefined : undefined,
+    delivery: job.delivery && {
+      text: describeDelivery(job.delivery),
+      url: job.delivery.url,
+      merge: job.delivery.mode === "merge" ? "ya integrado" : merge?.status === "merged" ? "ya fundido" : job.delivery.mode === "pull-request" ? "sin fundir todavía" : undefined,
+    },
+    reason: job.reason ? brief(job.reason) : undefined,
+    stations,
+  };
 }
 
 /** The gate's latest records, so every view is current even when the daemon is off. Never throws. */

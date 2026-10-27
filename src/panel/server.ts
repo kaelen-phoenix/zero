@@ -1,8 +1,8 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, briefing, egressReport, factoryStatus, getJob, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, briefing, egressReport, factoryStatus, getJob, productionLine, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { log } from "../log.js";
-import { briefingPage, egressPage, esc, jobPage, loginPage, overviewPage, page } from "./html.js";
+import { briefingPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -115,6 +115,11 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
 
     if (req.method === "GET") {
       if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), ctx.config.lines.map((l) => l.name), nonce, flash), nonce);
+      if (path === "/line") {
+        // The fragment is what the page's script fetches to update its rows in place.
+        if (url.searchParams.get("fragment") === "1") return send(res, 200, lineView(productionLine(ctx)), nonce);
+        return send(res, 200, linePage(productionLine(ctx), nonce), nonce);
+      }
       const job = /^\/job\/([0-9a-f]{8})$/.exec(path)?.[1];
       if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash), nonce);
       if (path === "/egress") {
