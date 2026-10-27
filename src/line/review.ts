@@ -45,6 +45,6 @@ export function blockingFindings(valid: Finding[]): Finding[] {
   return valid.filter((f) => BLOCKING.has(f.severity));
 }
 
-export function findingsFeedback(findings: Finding[]): string {
-  return `La revisión encontró defectos que hay que corregir:\n${findings.map((f) => `- [${f.severity}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
+export function findingsFeedback(findings: Finding[], station: "review" | "security" = "review"): string {
+  return `${station === "security" ? "La revisión de seguridad encontró problemas" : "La revisión encontró defectos"} que hay que corregir:\n${findings.map((f) => `- [${f.severity}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
 }

@@ -12,7 +12,7 @@ A software factory that runs on its owner's machine. Agents of any vendor work o
 - `src/cli.ts`: commands. `src/app.ts`: operations shared by the CLI, the MCP server and the daemon (request, status, answer, stop, briefing, trace). Never duplicate logic between interfaces; add it here.
 - `src/config.ts`: `zero.factory.yaml` schema, effective level. `src/init.ts`: `zero init`, `zero line add`. `src/home.ts`: `ZERO_HOME` layout.
 - `src/state/store.ts`: SQLite state (jobs, spans, kv). `src/telemetry/`: tracer and the single definition of every metric.
-- `src/line/`: the production line. `runner.ts` is the state machine (checkpoints, attempts, policy). Each station has a module (`spec`, `verify`, `review`, `integrate`). `policy.ts` is the only place that decides when the owner is asked. `finish.ts` is the only way a job ends.
+- `src/line/`: the production line. `runner.ts` is the state machine (checkpoints, attempts, policy). Each station has a module (`spec`, `verify`, `review`, `integrate`); `security` reuses `review.ts` with its own instructions. `automerge.ts` merges pull requests of `autoMerge` lines once GitHub reports them ready (polled by the daemon). `policy.ts` is the only place that decides when the owner is asked. `finish.ts` is the only way a job ends.
 - `src/daemon.ts`: background loop. `src/mcp/server.ts`: chat tools. `src/install.ts`: client registration.
 - `src/agent.ts` + `src/engines/`: engine-agnostic agent runner and one adapter per engine. `agents/*.md` holds the per-station instructions, shared by every engine.
 - `src/townhall/`: collective memory and the owner briefing.

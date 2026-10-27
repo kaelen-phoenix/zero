@@ -38,8 +38,8 @@ describe("production line", () => {
     expect(readFileSync(join(repo, "src/health.ts"), "utf8")).toContain("ok");
     expect(existsSync(done.worktree!)).toBe(false);
     expect(gitIn(repo, "branch", "--list", `zero/${job.id}`)).toContain(job.id);
-    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1 });
-    expect(done.costUsd).toBeCloseTo(0.3);
+    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1, security: 1 });
+    expect(done.costUsd).toBeCloseTo(0.4);
 
     const t = trace(ctx, job.id);
     for (const span of ["zero.job", "zero.station.spec", "zero.attempt", "zero.station.build", "zero.station.verify", "zero.verify.command", "zero.station.review", "zero.station.integrate"]) {
@@ -109,6 +109,26 @@ describe("production line", () => {
     const done = await runJob(job.id, deps(ctx, agents.runner));
     expect(done).toMatchObject({ status: "delivered", attempt: 2 });
     expect(agents.calls.filter((c) => c.station === "build")[1]!.prompt).toContain("src/health.ts:1: no test");
+  });
+
+  it("runs a separate security check after the review, and sends its verified findings back to the build", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: writeHealth(),
+      security: (req, n) =>
+        n === 1
+          ? (writeTree(req.cwd, { "sneaky.txt": "x" }), { output: cleanReview({ findings: [{ severity: "critical", file: "src/health.ts", line: 1, problem: "token in code", fix: "read it from the keychain" }] }) })
+          : undefined,
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done).toMatchObject({ status: "delivered", attempt: 2 });
+    expect(agents.calls.map((c) => c.station)).toEqual(["spec", "build", "review", "security", "build", "review", "security"]);
+    expect(agents.calls.find((c) => c.station === "security")!.prompt).toContain("security problems");
+    const retry = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
+    expect(retry).toContain("La revisión de seguridad encontró problemas");
+    expect(retry).toContain("src/health.ts:1: token in code");
+    expect(gitIn(ctx.config.lines[0]!.repo, "ls-tree", "-r", "--name-only", "main")).not.toContain("sneaky.txt");
   });
 
   it("discards anything the read-only spec station writes", async () => {
@@ -220,7 +240,7 @@ describe("production line", () => {
     await answer(ctx, job.id, "approve");
     const done = await runJob(job.id, deps(ctx, agents.runner));
     expect(done.status).toBe("delivered");
-    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1 });
+    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1, security: 1 });
   });
 
   it("keeps what setup creates out of the change, and never discards it", async () => {
@@ -253,7 +273,7 @@ describe("production line", () => {
     expect(done).toMatchObject({ status: "delivered", isolation: "container" });
     expect(sim.calls.map((c) => [c.command, c.mount])).toEqual([[passes, "rw"], [passes, "rw"]]);
     expect(copyIsClone).toBe(true);
-    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1 });
+    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1, security: 1 });
     expect(readFileSync(join(repo, "src/health.ts"), "utf8")).toContain("ok");
     expect(trace(ctx, job.id)).toContain("zero.station.integrate");
   });

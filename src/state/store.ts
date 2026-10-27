@@ -27,7 +27,7 @@ export const FINAL_STATUSES: readonly JobStatus[] = ["delivered", "failed", "sto
 
 /** Last station completed; the runner resumes after it. */
 export type Checkpoint = "none" | "spec" | "review" | "delivered";
-export type Station = "spec" | "build" | "verify" | "review" | "integrate";
+export type Station = "spec" | "build" | "verify" | "review" | "security" | "integrate";
 
 export type QuestionKind = "spec-ready" | "before-integrate" | "protected-path" | "budget-exceeded" | "integration-blocked" | "egress-suspicious";
 
@@ -67,6 +67,8 @@ export interface Delivery {
   branch: string;
   url?: string;
   commit?: string;
+  /** The factory merges this pull request itself once GitHub says it is ready. */
+  autoMerge?: boolean;
 }
 
 export interface Job {

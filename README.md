@@ -13,10 +13,10 @@ Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie
                     │
                     ▼  (zero_request / zero request)
  ┌──────────────── zero daemon (tu máquina) ───────────────────────────────────┐
- │  spec ──▶ build ──▶ verify ──▶ review ──▶ integrate                          │
- │  requisitos   código +   tests, tests     hallazgos con   merge / rama / PR  │
- │  WHEN/THEN    tests      borrados,        citas verificadas                  │
- │  (OpenSpec)              rutas protegidas                                    │
+ │  spec ──▶ build ──▶ verify ──▶ review ──▶ security ──▶ integrate             │
+ │  requisitos   código +   tests, tests     hallazgos con citas  merge / rama  │
+ │  WHEN/THEN    tests      borrados,        verificadas          / PR (y       │
+ │  (OpenSpec)              rutas protegidas                      fusión sola)  │
  │        ▲───────── reintentos con la retroalimentación concreta ─────────┘    │
  │  estado en SQLite · trazas y costos · townhall (memoria de la red)           │
  └──────────────────────────────────────────────────────────────────────────────┘
@@ -24,12 +24,13 @@ Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie
 
 - **Estaciones con contrato.** Cada estación recibe y entrega algo verificable. La especificación es un change de OpenSpec con requisitos y escenarios.
 - **zero aplica las garantías, no el motor:**
-  - las estaciones `spec` y `review` son de solo lectura (si un motor escribe, se descarta);
+  - las estaciones `spec`, `review` y `security` son de solo lectura (si un motor escribe, se descarta);
+  - `security` es una segunda revisión, solo de seguridad, que puede usar otro motor;
   - hay un tiempo límite por estación;
   - las salidas estructuradas se validan;
   - se detectan tests borrados o desactivados;
   - las rutas protegidas no se tocan;
-  - los hallazgos de la revisión que citan archivos o líneas inexistentes se descartan.
+  - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan.
 - **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
 - **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
@@ -85,6 +86,10 @@ Cargás un issue, le ponés la etiqueta `zero`, y la fábrica lo revisa cada min
 
 En las líneas que entregan por `pull-request`, cada trabajo arranca desde la rama base de GitHub. Así incluye lo que aceptaste allá, sin mover tu rama local.
 
+### Fusión automática
+
+Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -129,6 +134,7 @@ limits:
 approvals: { timeoutHours: 24, onTimeout: reject }
 stations:                 # motor, modelo y tiempo límite por estación (opcional)
   review: { engine: codex, timeoutMinutes: 15 }
+  security: { engine: claude }   # la revisión de seguridad; con otro motor, la mirada es más independiente
 engines:                  # cualquier otro CLI de agentes, sin código
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
 lines:
@@ -139,6 +145,7 @@ lines:
     verify: ["npm test"]  # todo debe pasar antes de la revisión
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
+    autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
 ```
 
 Los secretos **no** van en este archivo: si zero detecta algo con forma de credencial, se niega a cargarlo. Cada motor usa tu propia sesión o las variables de entorno.
@@ -157,7 +164,7 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
 
 - **Copia propia.** La caja recibe un clon independiente del repositorio, sin enlaces al tuyo. No ve tu carpeta personal, tus otros proyectos ni tus claves.
-- **Solo lectura de verdad.** `spec` y `review` reciben la copia montada en modo solo lectura.
+- **Solo lectura de verdad.** `spec`, `review` y `security` reciben la copia montada en modo solo lectura.
 - **Sin privilegios.** Corre como usuario sin privilegios, sin capacidades extra, con el sistema de archivos en solo lectura y con límites de CPU, memoria y procesos.
 - **Credenciales mínimas.** Cada estación recibe solo la credencial de su motor, por nombre, nunca en la línea de comandos. Nunca recibe tokens de GitHub ni claves SSH.
 - **Parada inmediata.** El andon y los tiempos límite detienen el contenedor.

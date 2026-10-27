@@ -3,6 +3,7 @@ import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, 
 import { egressPolicy } from "./box/egress.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
+import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
@@ -29,6 +30,8 @@ export interface DaemonOptions {
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
   /** GitHub for the issue intake; tests inject a fake. */
   issues?: (repository: string) => IssueApi | undefined;
+  /** GitHub for automatic merging; tests inject a fake. */
+  merges?: (repository: string) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
   panel?: boolean;
 }
@@ -39,6 +42,11 @@ const INTAKE_MS = 60_000;
 const realIssues = (repository: string) => {
   const token = githubToken();
   return token ? githubIssues(token, repository) : undefined;
+};
+
+const realMerges = (repository: string) => {
+  const token = githubToken();
+  return token ? githubMerges(token, repository) : undefined;
 };
 
 interface Running {
@@ -117,6 +125,16 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
       .finally(() => (intake = undefined));
   };
+  // Pull requests to merge, polled the same way.
+  let mergesAt = 0;
+  let merging: Promise<void> | undefined;
+  const mergeReady = () => {
+    if (merging || !ctx.config.lines.some((l) => l.autoMerge) || Date.now() - mergesAt < (opts.once ? 0 : INTAKE_MS)) return;
+    mergesAt = Date.now();
+    merging = pollMerges(ctx, opts.merges ?? realMerges)
+      .catch((err) => log.warn("automatic merge failed", { error: String(err) }))
+      .finally(() => (merging = undefined));
+  };
 
   try {
     while (!stopping) {
@@ -137,6 +155,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       readGate(ctx);
       tunnel.tick();
       takeIssues();
+      mergeReady();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -180,6 +199,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   } finally {
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
+    await merging;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();

@@ -7,7 +7,7 @@ import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
 
 /** Stations staffed by an agent. `verify` and `integrate` are run by zero itself. */
-export type AgentStation = "spec" | "build" | "review";
+export type AgentStation = "spec" | "build" | "review" | "security";
 
 export interface AgentRun<T = unknown> {
   ok: boolean;
@@ -42,7 +42,7 @@ export type EngineExecute = (engine: Engine, req: EngineRequest, trace: { tracer
 const runHere: EngineExecute = (engine, req) => engine.run(req);
 
 /** Only the build station may change the work copy. */
-const ACCESS: Record<AgentStation, Access> = { spec: "read", build: "write", review: "read" };
+const ACCESS: Record<AgentStation, Access> = { spec: "read", build: "write", review: "read", security: "read" };
 
 const promptCache = new Map<AgentStation, string>();
 

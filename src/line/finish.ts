@@ -1,4 +1,4 @@
-import type { FactoryConfig } from "../config.js";
+import { AGENT_STATIONS, type FactoryConfig } from "../config.js";
 import type { Delivery, Job, Question, Store } from "../state/store.js";
 import { APPROVAL_SPAN } from "../telemetry/metrics.js";
 import type { Tracer } from "../telemetry/tracer.js";
@@ -14,7 +14,7 @@ export interface LedgerDeps {
 }
 
 export function engineSummary(config: FactoryConfig): string {
-  return (["spec", "build", "review"] as const).map((s) => `${s}=${config.stations[s].engine ?? config.engine}`).join(", ");
+  return AGENT_STATIONS.map((s) => `${s}=${config.stations[s].engine ?? config.engine}`).join(", ");
 }
 
 export function describeDelivery(d: Delivery): string {

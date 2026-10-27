@@ -51,6 +51,8 @@ export const LineSchema = z.object({
   maxAttempts: z.number().int().min(1).default(3),
   /** Take GitHub issues carrying this label as requests (polled from the line's remote). Off when absent. */
   issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
+  /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
+  autoMerge: z.boolean().default(false),
 });
 
 export const FactorySchema = z
@@ -100,6 +102,8 @@ export const FactorySchema = z
         spec: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
         build: StationSchema.prefault({ maxTurns: 150, timeoutMinutes: 45 }),
         review: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
+        /** A second, security-only read; give it another engine for an independent look. */
+        security: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
       })
       .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
@@ -112,6 +116,9 @@ export const FactorySchema = z
     for (const [i, line] of cfg.lines.entries()) {
       if (seen.has(line.name)) ctx.addIssue({ code: "custom", path: ["lines", i, "name"], message: `duplicate line "${line.name}"` });
       seen.add(line.name);
+      if (line.autoMerge && line.integrate !== "pull-request") {
+        ctx.addIssue({ code: "custom", path: ["lines", i, "autoMerge"], message: `autoMerge needs integrate: pull-request (line "${line.name}")` });
+      }
     }
   });
 
@@ -119,6 +126,9 @@ export type FactoryConfig = z.infer<typeof FactorySchema>;
 export type LineConfig = z.infer<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
+
+/** Every station that runs an agent, in line order. */
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security"];
 
 export class ConfigError extends Error {}
 

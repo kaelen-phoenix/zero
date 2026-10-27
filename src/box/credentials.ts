@@ -1,4 +1,4 @@
-import type { FactoryConfig } from "../config.js";
+import { AGENT_STATIONS, type FactoryConfig } from "../config.js";
 import type { SecretStore } from "../keychain.js";
 
 interface Requirement {
@@ -23,7 +23,7 @@ const BUILT_IN: Record<string, Requirement | null> = {
 
 /** The engines the factory's stations use. */
 export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine">): string[] {
-  return [...new Set((["spec", "build", "review"] as const).map((s) => config.stations[s].engine ?? config.engine))];
+  return [...new Set(AGENT_STATIONS.map((s) => config.stations[s].engine ?? config.engine))];
 }
 
 export interface EngineCredentials {

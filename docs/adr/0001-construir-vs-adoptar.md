@@ -183,6 +183,7 @@ L3 es real cuando la caja y las credenciales están listas.
 | 11 | Panel y acceso remoto | **Panel servido por el daemon solo en `127.0.0.1`**, HTML del servidor, sin framework. Clave en el llavero, que viaja en el fragmento del link y se canjea por una cookie. Acceso desde el celular con un **túnel rápido de Cloudflare, temporal y a pedido** (`zero panel remote on|off`). Elegido porque funciona sin estar frente a la PC: no requiere administrador ni cuenta. La red privada (Tailscale/Headscale) queda como alternativa más privada |
 
 | 12 | Issues como entrada | **Revisión periódica (polling) de issues con una etiqueta**, no webhooks, porque la PC del dueño no tiene una dirección pública fija. Solo se toman issues **escritos y etiquetados** por personas con permiso de escritura, porque el texto de un desconocido podría editarse después de etiquetado. El issue recibe comentarios por estado, y el PR lo cierra |
+| 13 | Seguridad y fusión automática | **Estación `security` de solo lectura** después de `review`, con sus propias instrucciones y motor configurable, y los mismos hallazgos con citas verificadas. **Fusión por polling** de los pull requests de líneas con `autoMerge`, cuando todos los checks de GitHub terminaron bien y GitHub los declara fundibles (y solo si el último commit sigue siendo el revisado). No se usa el auto-merge nativo de GitHub porque pide configurar protección de ramas en cada repositorio |
 
 La change OpenSpec `add-egress-gate` implementa:
 - la puerta;

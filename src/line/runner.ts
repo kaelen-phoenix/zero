@@ -293,7 +293,7 @@ async function specStation(
   });
 }
 
-/** The build → verify → review loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
+/** The build → verify → review → security loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
 async function buildLoop(
   deps: RunnerDeps,
   jobId: string,
@@ -315,7 +315,7 @@ async function buildLoop(
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
     let job = store.getJob(jobId)!;
     // A job interrupted after building resumes at the station it was in, without rebuilding.
-    const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review");
+    const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security");
     const attempt = resuming ? job.attempt : job.attempt + 1;
     const flagged = await egressStop(deps, jobId, level);
     if (flagged) return flagged;
@@ -409,43 +409,50 @@ async function buildLoop(
       continue;
     }
 
-    store.updateJob(jobId, { station: "review" });
-    const reviewed = await tracer.within("zero.station.review", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "review" } }, async (span) => {
-      for (let tryNo = 1; tryNo <= 2; tryNo++) {
-        const run = await deps.runAgent({
-          station: "review",
-          cwd: copy.cwd,
-          schema: ReviewSchema,
-          signal,
-          maxBudgetUsd: remaining(store.getJob(jobId)!),
-          trace: { tracer, jobId, parentId: span.id },
-          prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\nReview the change with \`git diff ${copy.base}...HEAD\`.`,
-        });
-        addCost(run.costUsd);
-        // Review is read-only: whatever the engine wrote is discarded.
-        if (copy.hasChanges()) {
-          log.warn("review modified the work copy; discarding", { job: jobId });
-          copy.discardChanges();
+    // Two read-only checks of the same change: the general review, then an independent security read.
+    let rejected = false;
+    for (const station of ["review", "security"] as const) {
+      store.updateJob(jobId, { station });
+      const reviewed = await tracer.within(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }, async (span) => {
+        for (let tryNo = 1; tryNo <= 2; tryNo++) {
+          const run = await deps.runAgent({
+            station,
+            cwd: copy.cwd,
+            schema: ReviewSchema,
+            signal,
+            maxBudgetUsd: remaining(store.getJob(jobId)!),
+            trace: { tracer, jobId, parentId: span.id },
+            prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\n${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`,
+          });
+          addCost(run.costUsd);
+          // Both checks are read-only: whatever the engine wrote is discarded.
+          if (copy.hasChanges()) {
+            log.warn(`${station} modified the work copy; discarding`, { job: jobId });
+            copy.discardChanges();
+          }
+          if (signal.aborted || (run.ok && run.output)) {
+            if (!run.output) return undefined;
+            const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);
+            span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length });
+            return { review: run.output, blocking: blockingFindings(valid) };
+          }
         }
-        if (signal.aborted || (run.ok && run.output)) {
-          if (!run.output) return undefined;
-          const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);
-          span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length });
-          return { review: run.output, blocking: blockingFindings(valid) };
-        }
+        return undefined;
+      });
+      if (signal.aborted) throw new Interrupted(reasonOf(signal));
+      if (!reviewed) {
+        failAttempt(`${station === "security" ? "La revisión de seguridad" : "La revisión"} no pudo completarse; reintentando el ciclo.`);
+        rejected = true;
+        break;
       }
-      return undefined;
-    });
-    if (signal.aborted) throw new Interrupted(reasonOf(signal));
-    if (!reviewed) {
-      failAttempt("La revisión no pudo completarse; reintentando el ciclo.");
-      continue;
+      await learn(reviewed.review.learnings);
+      if (reviewed.blocking.length) {
+        failAttempt(findingsFeedback(reviewed.blocking, station));
+        rejected = true;
+        break;
+      }
     }
-    await learn(reviewed.review.learnings);
-    if (reviewed.blocking.length) {
-      failAttempt(findingsFeedback(reviewed.blocking));
-      continue;
-    }
+    if (rejected) continue;
 
     attemptSpan.end("ok");
     store.updateJob(jobId, { checkpoint: "review", feedback: null });

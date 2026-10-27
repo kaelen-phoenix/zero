@@ -9,6 +9,7 @@ import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
 import { finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { intakeProblemKey } from "./intake/keys.js";
+import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource } from "./state/store.js";
 import { formatEgressSites } from "./format.js";
 import { log } from "./log.js";
@@ -147,6 +148,8 @@ export interface FactoryStatus {
   egressMode: FactoryConfig["egress"]["mode"];
   /** Lines taking GitHub issues, and the last problem reaching GitHub. */
   intake: { line: string; label: string; problem?: string }[];
+  /** Pull requests the factory will merge once GitHub says they are ready. */
+  merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   box: { status?: BoxStatus; availability: BoxAvailability };
   daemon: DaemonInfo;
   andon: boolean;
@@ -168,6 +171,11 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     isolation: ctx.config.isolation,
     egressMode: ctx.config.egress.mode,
     intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
+    merges: watchedJobs(ctx).map((job) => {
+      const raw = ctx.store.getKv(mergeKey(job.id));
+      const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
+      return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
+    }),
     box,
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -185,7 +193,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const to = (ctx.now ?? (() => new Date()))();
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }));
+  const unmerged = factoryStatus(ctx).merges.filter((m) => m.status === "blocked");
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged);
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

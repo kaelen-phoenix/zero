@@ -16,7 +16,7 @@ const ref = (p: Post) => ` (${p.line}${p.job ? ` · ${p.job}` : ""})`;
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [
@@ -40,6 +40,7 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     ...(metrics.pendingQuestions ? [`- **${metrics.pendingQuestions} consulta(s) esperando tu respuesta.**`] : []),
     ...ofKind("blocker").map((p) => `- **Bloqueado**${ref(p)}: ${p.topic}. ${p.body}`),
     ...ofKind("proposal").map((p) => `- **Propuesta**${ref(p)}: ${p.body}`),
+    ...unmerged.map((m) => `- **Sin fundir**: ${m.url}: ${m.why ?? "no se puede fundir"}.`),
     ...(egress?.sites ?? [])
       .filter((s) => s.suspicious)
       .map((s) => `- **Salida sospechosa bloqueada**: ${s.host}:${s.port}${s.jobs.length ? ` (${s.jobs.join(", ")})` : ""}: ${s.reason}. Si es legítima: \`zero egress allow ${s.host}\`.`),

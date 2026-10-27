@@ -75,7 +75,7 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
   const pr = await createGitHubTracker(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: opts.title, body: opts.body });
-  return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr } };
+  return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr, ...(line.autoMerge && { autoMerge: true }) } };
 }
 
 export async function integrate(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {

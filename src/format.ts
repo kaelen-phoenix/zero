@@ -62,6 +62,7 @@ export function formatStatus(s: FactoryStatus): string {
     out.push(`Salidas a internet hoy: ${e.connections} conexiones · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas: \`zero egress\`)` : ""} · modo ${s.egressMode}`);
   }
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   out.push(`Presupuesto de hoy: ${usd(s.budget.spentUsd)} de ${usd(s.budget.limitUsd)}${s.budget.reached ? " · ALCANZADO: los trabajos nuevos esperan a mañana" : ""}`);
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo ${usd(t.costUsd)}`);
   const list = (title: string, jobs: Job[]) => {
