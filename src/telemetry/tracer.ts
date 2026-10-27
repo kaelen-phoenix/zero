@@ -57,6 +57,18 @@ function clean(attrs: Attrs): Record<string, unknown> {
 
 const durationMs = (s: SpanRow) => (s.end ? Date.parse(s.end) - Date.parse(s.start) : undefined);
 
+/** How long a span took, as `zero trace` shows it. */
+export function spanTime(s: SpanRow): string {
+  const ms = durationMs(s);
+  return ms === undefined ? "en curso" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** A cost as `zero trace` shows it. */
+export const traceUsd = (n: number) => `$${n.toFixed(3)}`;
+
+/** The engine an agent span ran on, with its model when known. */
+export const spanEngine = (a: Record<string, unknown>) => `${a["zero.engine"]}${a["gen_ai.request.model"] ? ` (${a["gen_ai.request.model"]})` : ""}`;
+
 /** A job's trace as an indented tree, for `zero trace`. */
 export function renderTrace(spans: SpanRow[]): string {
   const children = new Map<string | undefined, SpanRow[]>();
@@ -68,8 +80,7 @@ export function renderTrace(spans: SpanRow[]): string {
   const lines: string[] = [];
   const walk = (parent: string | undefined, depth: number) => {
     for (const s of children.get(parent) ?? []) {
-      const ms = durationMs(s);
-      const time = ms === undefined ? "en curso" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+      const time = spanTime(s);
       const mark = s.status === "error" ? "✗" : s.end ? "✓" : "…";
       const details = describe(s);
       lines.push(`${"  ".repeat(depth)}${mark} ${s.name}  ${time}${details ? `  ${details}` : ""}`);
@@ -84,8 +95,8 @@ function describe(s: SpanRow): string {
   const a = s.attrs;
   const parts: string[] = [];
   if (a["zero.attempt"] !== undefined) parts.push(`intento ${a["zero.attempt"]}`);
-  if (a["gen_ai.agent.name"]) parts.push(`${a["gen_ai.agent.name"]} vía ${a["zero.engine"]}${a["gen_ai.request.model"] ? ` (${a["gen_ai.request.model"]})` : ""}`);
-  if (typeof a["zero.cost.usd"] === "number") parts.push(a["zero.cost.source"] === "unknown" ? "costo desconocido" : `$${(a["zero.cost.usd"] as number).toFixed(3)}`);
+  if (a["gen_ai.agent.name"]) parts.push(`${a["gen_ai.agent.name"]} vía ${spanEngine(a)}`);
+  if (typeof a["zero.cost.usd"] === "number") parts.push(a["zero.cost.source"] === "unknown" ? "costo desconocido" : traceUsd(a["zero.cost.usd"] as number));
   if (a["process.command_line"]) parts.push(`\`${a["process.command_line"]}\` → ${a["process.exit.code"]}`);
   if (a["zero.outcome"]) parts.push(String(a["zero.outcome"]));
   if (a["error.message"]) parts.push(`error: ${a["error.message"]}`);
