@@ -31,14 +31,14 @@ const buildScript = "require('fs').mkdirSync('src', { recursive: true }); requir
 const reviewScript = `${tryWrite}; console.log(JSON.stringify({ summary: 'writable=' + writable, findings: writable ? [{ severity: 'critical', file: 'src/health.ts', line: 1, problem: 'review could write to /work', fix: 'mount read-only' }] : [], learnings: [] }))`;
 
 describe.skipIf(!enabled)("isolation box (real container)", () => {
-  it("builds, verifies and reviews inside the box, read-only where it must be, and delivers", async () => {
+  it("builds, verifies, reviews and checks security inside the box, read-only where it must be, and delivers", async () => {
     const repo = gitRepo();
     const engine = (script: string) => ({ command: ["node", "-e", script] });
     const ctx = testFactory({
       level: "L3",
       isolation: "container",
       engines: { espec: engine(specScript), ebuild: engine(buildScript), ereview: engine(reviewScript) },
-      stations: { spec: { engine: "espec", timeoutMinutes: 5 }, build: { engine: "ebuild", timeoutMinutes: 5 }, review: { engine: "ereview", timeoutMinutes: 5 } },
+      stations: { spec: { engine: "espec", timeoutMinutes: 5 }, build: { engine: "ebuild", timeoutMinutes: 5 }, review: { engine: "ereview", timeoutMinutes: 5 }, security: { engine: "ereview", timeoutMinutes: 5 } },
       lines: [{ name: "demo", repo, maxAttempts: 1, verify: [] }],
     });
     // Inside the box the factory's own directory on the host must not exist, and HOME is the box's.
@@ -53,7 +53,7 @@ describe.skipIf(!enabled)("isolation box (real container)", () => {
     expect(done).toMatchObject({ status: "delivered", isolation: "container" });
     expect(readFileSync(join(repo, "src/health.ts"), "utf8")).toContain("ok");
     const boxRuns = ctx.store.spansForJob(job.id).filter((s) => s.name === "zero.box.run");
-    expect(boxRuns.map((s) => s.attrs["zero.box.mount"])).toEqual(["ro", "rw", "rw", "ro"]);
+    expect(boxRuns.map((s) => s.attrs["zero.box.mount"])).toEqual(["ro", "rw", "rw", "ro", "ro"]);
     expect(boxRuns.every((s) => s.attrs["process.exit.code"] === 0)).toBe(true);
   }, 300_000);
 
