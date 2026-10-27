@@ -241,6 +241,11 @@ describe("box setup", () => {
     expect(probe("win32", exec({ "wsl --status": 1, "wsl --version": 0 }), [], undefined, false).wsl).toBe(true);
   });
 
+  it("installs nothing more when Windows runs without its hypervisor", () => {
+    expect(planBoxSetup(probes({ wsl: true, hypervisor: false }))).toMatchObject([{ id: "manual", title: expect.stringMatching(/sin su hipervisor/) }]);
+    expect(planBoxSetup(probes({ wsl: true, hypervisor: true }))[0]!.id).toBe("install-podman");
+  });
+
   it("asks for administrator permission to install Podman on Windows", () => {
     expect(planBoxSetup(probes({ wsl: true }))[0]).toMatchObject({ id: "install-podman", installs: true, admin: true });
   });

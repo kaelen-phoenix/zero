@@ -18,6 +18,8 @@ export interface Probes {
   /** Runtime that answers `info`, if any. */
   responding?: Runtime;
   wsl?: boolean;
+  /** Windows booted with its hypervisor running, which WSL2 needs. */
+  hypervisor?: boolean;
   brew?: boolean;
   /** Podman machines known (Windows/macOS). */
   podmanMachines?: number;
@@ -39,6 +41,9 @@ export function probe(platform: NodeJS.Platform, run: Exec, runtimes: Runtime[],
     responding,
     // Without a distribution `--status` may fail even when WSL is installed; `--version` only exists once it is.
     wsl: platform === "win32" ? ok("wsl", ["--status"]) || ok("wsl", ["--version"]) : undefined,
+    hypervisor: platform === "win32"
+      ? run("powershell", ["-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystem).HypervisorPresent"], { timeoutMs: 30_000 }).stdout.trim() === "True"
+      : undefined,
     brew: platform === "darwin" ? ok("brew", ["--version"]) : undefined,
     podmanMachines,
     imageBuilt,
@@ -52,12 +57,21 @@ export function planBoxSetup(p: Probes): SetupStep[] {
   const steps: SetupStep[] = [];
   const needsVm = p.platform === "win32" || p.platform === "darwin";
 
+  // Old machines may not boot with the hypervisor on; installing more would not help.
+  if (p.platform === "win32" && p.wsl && p.hypervisor === false && !p.responding) {
+    steps.push(step({
+      id: "manual",
+      title: "WSL está instalado, pero Windows arrancó sin su hipervisor, y sin él no hay contenedores. Si todavía no reiniciaste, reiniciá y volvé a correr `zero box setup`. Si ya reiniciaste, esta PC no puede usar la caja: la fábrica sigue en L2, con copias locales.",
+    }));
+    return steps;
+  }
+
   if (!p.runtimes.length) {
     if (p.platform === "win32") {
       if (!p.wsl) {
         steps.push(step({
           id: "wsl",
-          title: "Habilitar WSL2 (el subsistema de Linux de Windows), necesario para los contenedores. Pide permisos de administrador y reiniciar el equipo.",
+          title: "Habilitar WSL2 (el subsistema de Linux de Windows), necesario para los contenedores. Después hay que reiniciar el equipo",
           command: { bin: "powershell", args: ["-NoProfile", "-Command", "Start-Process wsl -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait"] },
           installs: true, admin: true, reboot: true,
         }));
@@ -149,7 +163,7 @@ export async function runBoxSetup(io: SetupIO, opts: { yes: boolean }): Promise<
     }
     done = next.id;
     if (next.reboot) {
-      io.say("Reiniciá el equipo y volvé a correr `zero box setup` para continuar.");
+      io.say("\nListo. Windows no lo avisa, pero hay que REINICIAR EL EQUIPO para que funcione.\nDespués del reinicio, volvé a correr `zero box setup` para continuar.");
       return "reboot";
     }
   }
