@@ -7,8 +7,9 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { panelLinks, requestWork, setRemotePanel } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
+import { describeJobStatus } from "../src/format.js";
 import { askOwner } from "../src/line/finish.js";
-import { markdown } from "../src/panel/html.js";
+import { esc, markdown } from "../src/panel/html.js";
 import { panelKey, rotatePanelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
 import { downloadCloudflared, downloadPlan, REMOTE_URL_KEY, tunnelKeeper } from "../src/panel/tunnel.js";
@@ -148,6 +149,72 @@ describe("panel pages and actions", () => {
     expect(html).toContain("<h3>Producción</h3>");
     expect(html).toContain("<td>&lt;b&gt;2&lt;/b&gt;</td>");
     expect(html).toContain("<li><b>Bloqueado</b>: <code>x</code></li>");
+  });
+});
+
+describe("panel look", () => {
+  const navLink = (html: string, href: string) => new RegExp(`<a href="${href}"[^>]*>`).exec(html)?.[0] ?? "";
+
+  it("marks the current section in the navigation", async () => {
+    const p = await panel();
+    const egress = await (await p.get("/egress")).text();
+    expect(navLink(egress, "/egress")).toContain(`aria-current="page"`);
+    expect(navLink(egress, "/")).not.toContain("aria-current");
+    expect(navLink(egress, "/briefing")).not.toContain("aria-current");
+    expect(navLink(await (await p.get("/")).text(), "/")).toContain(`aria-current="page"`);
+    expect(navLink(await (await p.get("/briefing")).text(), "/briefing")).toContain(`aria-current="page"`);
+  });
+
+  it("shows the brand but no navigation on the sign-in page", async () => {
+    const html = await (await (await panel()).get("/", {})).text();
+    expect(html).toContain(`class="brand"`);
+    expect(html).toContain("Panel de tu fábrica");
+    expect(html).not.toContain(`href="/egress"`);
+    expect(html).not.toContain(`href="/briefing"`);
+    expect(html).not.toContain("<nav");
+  });
+
+  it("shows each job's status as a badge", async () => {
+    const p = await panel();
+    const { job: queued } = requestWork(p.ctx, { text: "en cola" });
+    expect(await (await p.get("/")).text()).toContain(`<span class="badge badge-queued">${esc(describeJobStatus(p.ctx.store.getJob(queued.id)!))}</span>`);
+    const { job: waiting } = requestWork(p.ctx, { text: "esperando" });
+    askOwner(p.ctx, waiting, { kind: "before-integrate", text: "¿Lo integro?" });
+    expect(await (await p.get(`/job/${waiting.id}`)).text()).toContain(`class="badge badge-waiting"`);
+  });
+
+  it("loads nothing from outside and keeps the content security policy", async () => {
+    const p = await panel();
+    const { job } = requestWork(p.ctx, { text: "x" });
+    for (const path of ["/", "/egress", "/briefing", `/job/${job.id}`]) {
+      const r = await p.get(path);
+      expect(r.status).toBe(200);
+      const html = await r.text();
+      for (const external of [`<link rel="stylesheet"`, "@import", "<script src=", `src="http`]) expect(html).not.toContain(external);
+      expect(r.headers.get("content-security-policy")).toMatch(/default-src 'none'.*script-src 'nonce-[^']+'/);
+    }
+  });
+
+  it("has landmarks, visible focus, phone layout and dark mode", async () => {
+    const p = await panel();
+    const html = await (await p.get("/")).text();
+    const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+    expect(html).toContain("<main");
+    expect(html).toContain(`<nav aria-label=`);
+    expect(style).toContain(":focus-visible");
+    for (const page of [html, await (await p.get("/", {})).text(), await (await p.get("/egress")).text()]) {
+      expect(page).toContain(`name="viewport"`);
+      expect(page).toContain("prefers-color-scheme: dark");
+      expect(page).toMatch(/@media \((max|min)-width:/);
+    }
+  });
+
+  it("escapes the request in the job lists", async () => {
+    const p = await panel();
+    requestWork(p.ctx, { text: "<script>x</script>" });
+    const html = await (await p.get("/")).text();
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>x</script>");
   });
 });
 
