@@ -1,0 +1,11 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Create the OpenSpec change `openspec/changes/improve-panel-ui/` (proposal.md, tasks.md, specs/control-panel/spec.md) with these requirements as ADDED (or MODIFIED if `control-panel` has been archived into `openspec/specs/` by then), and check it with `npx openspec validate --all`.
+- [ ] 1.2 In `src/panel/html.ts`, redesign `STYLE`: design tokens (colors, spacing, radius, shadow, typography) for light and dark; consistent cards, buttons (primary/danger/secondary), inputs, tables and `pre`; stat tiles; `.badge` and `.badge-<status>` for the six JOB_STATUSES; `:focus-visible`; and a width-based `@media` rule for phone layout. Keep everything inline: no external fonts or URLs.
+- [ ] 1.3 Change `page()` to take the current section (e.g. `opts.active: 'overview' | 'egress' | 'briefing'`). Render `<header>` with an inline-SVG or text brand mark and `<nav aria-label="Secciones">`, and set `aria-current="page"` on the active link. Keep `nav: false` for the login page, keep the existing flash and refresh behaviour, and pass the section from `overviewPage`, `egressPage`, `briefingPage` and `jobPage` (job pages have no active section, or use overview).
+- [ ] 1.4 Add a `statusBadge(job)` helper that renders `<span class="badge badge-${job.status}">${esc(describeJobStatus(job))}</span>`, and use it in `jobLine` and in `jobPage` in place of the plain status text. Keep the delivery text next to it.
+- [ ] 1.5 Polish the page layouts without changing routes, form fields or Spanish strings used in tests: a clearer overview hero (factory state, level, box note), a stat grid, section headings, the waiting-question cards, the egress site cards and lists, and briefing tables.
+- [ ] 1.6 Extend `test/panel.test.ts` with: aria-current per section; badge classes for a queued job and a waiting job; no external resources (no `<link rel="stylesheet"`, `@import`, `<script src=`, `src="http`) on every page; landmarks and `:focus-visible`; viewport, dark mode and width media query; and escaping of a request containing `<script>`.
+- [ ] 1.7 Run `npm run typecheck`, `npm test` and `npx openspec validate --all`, and confirm that the existing panel tests pass with unchanged assertions.
