@@ -5,7 +5,9 @@ import { describeDelivery } from "../line/finish.js";
 import { githubRepository } from "../line/integrate.js";
 import { tryGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
-import { intakeProblemKey, issueKey } from "./keys.js";
+import type { AgentRunner } from "../agent.js";
+import { answerComments } from "./comments.js";
+import { FACTORY_MARK, intakeProblemKey, issueKey } from "./keys.js";
 
 /**
  * GitHub issues as requests: for lines with `issues`, open issues carrying the
@@ -22,6 +24,12 @@ export interface Issue {
   isPullRequest: boolean;
 }
 
+export interface IssueComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 /** The slice of GitHub the intake needs; tests use a fake. */
 export interface IssueApi {
   labeled(label: string): Promise<Issue[]>;
@@ -30,6 +38,8 @@ export interface IssueApi {
   /** `admin`, `write`, `read` or `none`. */
   permission(login: string): Promise<string>;
   comment(number: number, body: string): Promise<void>;
+  /** Every comment on the issue, oldest first. */
+  comments(number: number): Promise<IssueComment[]>;
   /** Creates the label if the repository does not have it; true when it had to. */
   ensureLabel(label: string): Promise<boolean>;
 }
@@ -56,7 +66,11 @@ export function githubIssues(token: string, repository: string): IssueApi {
       }
     },
     async comment(number, body) {
-      await gh.issues.createComment({ owner, repo, issue_number: number, body });
+      await gh.issues.createComment({ owner, repo, issue_number: number, body: `${body}\n\n${FACTORY_MARK}` });
+    },
+    async comments(number) {
+      const all = await gh.paginate(gh.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
+      return all.map((c) => ({ author: c.user?.login ?? "", body: c.body ?? "", createdAt: c.created_at }));
     },
     async ensureLabel(label) {
       try {
@@ -71,11 +85,13 @@ export function githubIssues(token: string, repository: string): IssueApi {
 }
 
 /** Write access (admin covers maintain; write covers it too in GitHub's legacy permission field). */
-const TRUSTED = new Set(["admin", "write"]);
+export const TRUSTED = new Set(["admin", "write"]);
 const MAX_REQUEST = 20_000;
 
-interface IssueState {
+export interface IssueState {
   job?: string;
+  /** GitHub time of the last comment the factory handled; later ones are new. */
+  commentsSeen?: string;
   /** Last job status the issue was told about (`waiting:<askedAt>` for each question). */
   reported?: string;
   /** When the label the factory acted on was applied, by GitHub's clock: only a later label asks again. */
@@ -97,10 +113,18 @@ function report(job: Job): { key: string; body: string } | undefined {
     const timeout = job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza";
     return {
       key: `waiting:${job.question.askedAt}`,
-      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\nRespondé desde el panel o el chat (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
+      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\nRespondé comentando acá ("aprobado" o "rechazado"), desde el panel o el chat (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
     };
   }
-  if (job.status === "delivered" && job.delivery) return { key: "delivered", body: `Listo: ${describeDelivery(job.delivery)}.` };
+  if (job.status === "delivered" && job.delivery) {
+    const local =
+      job.delivery.mode === "merge"
+        ? " Quedó en la rama base de tu PC, no en GitHub: para publicarlo, subila (`git push`)."
+        : job.delivery.mode === "branch"
+          ? " La rama quedó en tu PC, sin subir."
+          : "";
+    return { key: "delivered", body: `Listo: ${describeDelivery(job.delivery)}.${local}` };
+  }
   if (job.status === "failed") return { key: "failed", body: `El trabajo ${id} no se pudo completar:\n\n${quote(job.reason ?? "(sin detalle)")}\n\nPara volver a pedirlo, sacale y volvele a poner la etiqueta.` };
   if (job.status === "stopped") return { key: "stopped", body: `El trabajo ${id} se detuvo: ${job.reason ?? "por el dueño"}.` };
   return undefined;
@@ -156,7 +180,7 @@ async function reportIssues(ctx: FactoryContext, repository: string, gh: IssueAp
  * One pass over every line that takes issues. A line's problem (no GitHub
  * remote, no access) is kept for `zero status` and never stops the others.
  */
-export async function pollIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined): Promise<void> {
+export async function pollIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined, opts: { runAgent?: AgentRunner } = {}): Promise<void> {
   for (const line of ctx.config.lines) {
     if (!line.issues) continue;
     const problem = intakeProblemKey(line.name);
@@ -169,6 +193,7 @@ export async function pollIssues(ctx: FactoryContext, api: (repository: string) 
     try {
       await takeIssues(ctx, { ...line, issues: line.issues }, repository, gh);
       await reportIssues(ctx, repository, gh);
+      if (opts.runAgent) await answerComments(ctx, line, repository, gh, opts.runAgent);
       ctx.store.deleteKv(problem);
     } catch (err) {
       ctx.store.setKv(problem, `no se pudo leer GitHub: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300));

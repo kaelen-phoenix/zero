@@ -501,6 +501,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Hace una segunda lectura del cambio buscando solo problemas de seguridad.",
     cannot: "No modifica el código.",
   },
+  reply: {
+    name: "Respuestas (reply)",
+    does: "Lee tus comentarios en los issues y decide si responde, si pide un cambio nuevo o si aprueba o rechaza una consulta pendiente.",
+    cannot: "No ve el repositorio ni modifica el código; dónde está cada cambio lo calcula la fábrica, no el agente.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };

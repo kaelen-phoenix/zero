@@ -83,6 +83,7 @@ Cargás un issue, le ponés la etiqueta `zero`, y la fábrica lo revisa cada min
 - **Comenta en el issue** cuando lo toma, cuando te necesita y cuando termina. El pull request incluye `Closes #N`, así que al aceptarlo se cierra el issue.
 - **Solo toma issues escritos y etiquetados por personas con permiso de escritura.** En un repositorio público cualquiera puede abrir un issue, y su texto se convierte en instrucciones para los agentes.
 - **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
+- **Podés seguir la conversación en el issue.** Cuando el trabajo terminó o te está esperando, la fábrica lee tus comentarios nuevos y te responde: contesta preguntas ("no lo veo publicado"), toma un pedido de ajuste como trabajo nuevo sobre el mismo issue, o aprueba o rechaza la consulta pendiente. Lo decide la estación `reply`, de solo lectura y sin acceso al repositorio, con los hechos que calcula zero (por ejemplo, si el cambio ya está en GitHub). Solo lee comentarios de personas con permiso de escritura.
 
 En las líneas que entregan por `pull-request`, cada trabajo arranca desde la rama base de GitHub. Así incluye lo que aceptaste allá, sin mover tu rama local.
 

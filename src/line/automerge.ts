@@ -1,6 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import type { FactoryContext } from "../app.js";
 import { log } from "../log.js";
+import { FACTORY_MARK } from "../intake/keys.js";
 import type { Job } from "../state/store.js";
 
 /**
@@ -62,7 +63,7 @@ export function githubMerges(token: string, repository: string): MergeApi {
       await gh.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
     },
     async comment(number, body) {
-      await gh.issues.createComment({ owner, repo, issue_number: number, body });
+      await gh.issues.createComment({ owner, repo, issue_number: number, body: `${body}\n\n${FACTORY_MARK}` });
     },
   };
 }

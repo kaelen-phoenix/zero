@@ -184,6 +184,7 @@ L3 es real cuando la caja y las credenciales están listas.
 
 | 12 | Issues como entrada | **Revisión periódica (polling) de issues con una etiqueta**, no webhooks, porque la PC del dueño no tiene una dirección pública fija. Solo se toman issues **escritos y etiquetados** por personas con permiso de escritura, porque el texto de un desconocido podría editarse después de etiquetado. El issue recibe comentarios por estado, y el PR lo cierra |
 | 13 | Seguridad y fusión automática | **Estación `security` de solo lectura** después de `review`, con sus propias instrucciones y motor configurable, y los mismos hallazgos con citas verificadas. **Fusión por polling** de los pull requests de líneas con `autoMerge`, cuando todos los checks de GitHub terminaron bien y GitHub los declara fundibles (y solo si el último commit sigue siendo el revisado). No se usa el auto-merge nativo de GitHub porque pide configurar protección de ramas en cada repositorio |
+| 14 | Comentarios del issue | **Estación `reply` de solo lectura y sin repositorio**, que recibe los hechos del trabajo calculados por zero (dónde está el cambio) y devuelve una decisión estructurada: responder, trabajo nuevo, aprobar o rechazar. zero valida la decisión contra el estado del trabajo. Solo comentarios de personas con permiso de escritura, y nunca los de otras personas como contexto |
 
 La change OpenSpec `add-egress-gate` implementa:
 - la puerta;

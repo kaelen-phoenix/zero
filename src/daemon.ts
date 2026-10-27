@@ -121,7 +121,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const takeIssues = () => {
     if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
     intakeAt = Date.now();
-    intake = pollIssues(ctx, opts.issues ?? realIssues)
+    intake = pollIssues(ctx, opts.issues ?? realIssues, { runAgent: agentRunner(ctx.config) })
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
       .finally(() => (intake = undefined));
   };

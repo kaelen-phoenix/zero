@@ -104,6 +104,8 @@ export const FactorySchema = z
         review: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
         /** A second, security-only read; give it another engine for an independent look. */
         security: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
+        /** Answers the owner's comments on an issue; no repository, only the facts zero computes. */
+        reply: StationSchema.prefault({ maxTurns: 5, timeoutMinutes: 5 }),
       })
       .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
@@ -128,7 +130,7 @@ export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply"];
 
 export class ConfigError extends Error {}
 
