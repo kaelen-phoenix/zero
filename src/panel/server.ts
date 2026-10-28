@@ -62,7 +62,22 @@ export interface PanelOptions {
   /** Reads the current key; the server caches it briefly. */
   key: () => string;
   now?: () => number;
+  /** How often open line streams check the store for changes. */
+  watchMs?: number;
+  /** Longest silence on a line stream before a comment keeps proxies and tunnels from cutting it. */
+  heartbeatMs?: number;
 }
+
+/** One open `/line/events` stream: the session it was opened with and the last fragment it got. */
+interface LineStream {
+  res: ServerResponse;
+  session: string;
+  last: string;
+  wrote: number;
+}
+
+/** A Server-Sent Event with one `data:` line per line of the payload. */
+const sse = (data: string) => `${data.split(/\r\n|\r|\n/).map((l) => `data: ${l}`).join("\n")}\n\n`;
 
 /**
  * The control panel, served by the daemon on 127.0.0.1. Every page and action
@@ -76,17 +91,65 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return cached.key;
   };
 
+  const headers = (nonce: string) => ({
+    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+  });
   const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}) => {
-    res.writeHead(status, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
-      "X-Frame-Options": "DENY",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
-      "Cache-Control": "no-store",
-      ...extra,
-    });
+    res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers(nonce), ...extra });
     res.end(html);
+  };
+
+  // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
+  const watchMs = opts.watchMs ?? 1000;
+  const heartbeatMs = opts.heartbeatMs ?? 25_000;
+  const streams = new Set<LineStream>();
+  let watcher: NodeJS.Timeout | undefined;
+  const write = (s: LineStream, chunk: string) => {
+    if (s.res.destroyed || s.res.writableEnded) return void streams.delete(s);
+    s.res.write(chunk);
+    s.wrote = now();
+  };
+  const drop = (s: LineStream) => {
+    streams.delete(s);
+    if (!s.res.writableEnded && !s.res.destroyed) s.res.end();
+    if (!streams.size && watcher) {
+      clearInterval(watcher);
+      watcher = undefined;
+    }
+  };
+  const tick = () => {
+    try {
+      const session = sessionFor(currentKey());
+      for (const s of [...streams]) if (s.res.destroyed || s.res.writableEnded || !same(s.session, session)) drop(s);
+      if (!streams.size) return;
+      const html = lineView(productionLine(ctx));
+      for (const s of streams) {
+        if (html !== s.last) {
+          s.last = html;
+          write(s, sse(html));
+        } else if (now() - s.wrote >= heartbeatMs) write(s, ": ping\n\n");
+      }
+    } catch (err) {
+      log.warn("panel line stream", { error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  const openStream = (req: IncomingMessage, res: ServerResponse, session: string) => {
+    res.writeHead(200, { ...headers(randomBytes(16).toString("base64")), "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" });
+    const html = lineView(productionLine(ctx));
+    const s: LineStream = { res, session, last: html, wrote: now() };
+    streams.add(s);
+    req.on("close", () => drop(s));
+    res.on("close", () => drop(s));
+    res.on("error", () => drop(s));
+    res.write(sse(html));
+    if (!watcher) {
+      watcher = setInterval(tick, watchMs);
+      watcher.unref();
+    }
   };
   const back = (res: ServerResponse, to: string, msg?: string) => {
     res.writeHead(303, { Location: msg ? `${to}${to.includes("?") ? "&" : "?"}msg=${encodeURIComponent(msg)}` : to, "Cache-Control": "no-store" });
@@ -114,6 +177,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (!authed) return send(res, 401, loginPage(nonce), nonce);
 
     if (req.method === "GET") {
+      if (path === "/line/events") return openStream(req, res, sessionFor(key));
       if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), ctx.config.lines.map((l) => l.name), nonce, flash), nonce);
       if (path === "/line") {
         // The fragment is what the page's script fetches to update its rows in place.
@@ -170,7 +234,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return send(res, 404, page("No existe", "", { nonce }), nonce);
   }
 
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       if (res.headersSent) return void res.end();
@@ -181,4 +245,6 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       send(res, 500, page("Error", `<div class="card bad">${esc(message)}</div><p><a href="/">Volver</a></p>`, { nonce }), nonce);
     });
   });
+  server.on("close", () => [...streams].forEach(drop));
+  return server;
 }
