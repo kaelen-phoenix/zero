@@ -42,7 +42,8 @@ export type EngineExecute = (engine: Engine, req: EngineRequest, trace: { tracer
 const runHere: EngineExecute = (engine, req) => engine.run(req);
 
 /** Only the build station may change the work copy. */
-const ACCESS: Record<AgentStation, Access> = { spec: "read", build: "write", review: "read", security: "read" };
+export const AGENT_ACCESS: Readonly<Record<AgentStation, Access>> = { spec: "read", build: "write", review: "read", security: "read" };
+const ACCESS = AGENT_ACCESS;
 
 const promptCache = new Map<AgentStation, string>();
 
@@ -53,6 +54,11 @@ async function stationInstructions(station: AgentStation): Promise<string> {
     promptCache.set(station, text);
   }
   return text;
+}
+
+/** The original instructions of a station, as its agent receives them. */
+export function agentInstructions(station: AgentStation): Promise<string> {
+  return stationInstructions(station);
 }
 
 /** The last JSON object in a free-form answer: a ```json fence if present, else the last {...} that parses. */

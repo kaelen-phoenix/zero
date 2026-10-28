@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import type { EgressReport, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
+import type { EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
+import type { StationName } from "../config.js";
 import { bytes, describeJobStatus, jobName } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
+import type { PolicyEvent } from "../line/policy.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
 
@@ -70,6 +72,15 @@ ol.stations { list-style:none; margin:0; padding:0; display:grid; grid-template-
 .st[data-state="error"] { animation:shake .5s ease 1; }
 .piece.back { animation:back .9s ease 1; }
 @media (max-width: 600px) { .belt { overflow-x:auto; } .track { min-width:560px; } }
+ol.route { list-style:none; margin:8px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:8px 22px; counter-reset:step; }
+ol.route li { position:relative; flex:1 1 150px; border:1px solid var(--line); border-radius:9px; padding:8px 10px; counter-increment:step; }
+ol.route li b::before { content:counter(step) ". "; color:var(--muted); }
+ol.route li:not(:last-child)::after { content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%); color:var(--accent); }
+ol.route li span { display:block; font-size:.88rem; color:var(--muted); }
+.kv { margin:6px 0 0; padding:0; list-style:none; } .kv li { margin:3px 0; overflow-wrap:anywhere; } .kv code { overflow-wrap:anywhere; white-space:pre-wrap; }
+.badge { display:inline-block; font-size:.8rem; padding:1px 8px; border-radius:9px; border:1px solid currentColor; }
+details.ins summary { cursor:pointer; color:var(--accent); margin-top:8px; }
+@media (max-width: 600px) { ol.route { flex-direction:column; gap:22px; } ol.route li { flex-basis:auto; } ol.route li:not(:last-child)::after { content:"↓"; right:auto; left:50%; top:auto; bottom:-21px; transform:none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 `;
 
@@ -82,7 +93,7 @@ const REFRESH = `setInterval(() => {
 }, 15000);`;
 
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/briefing">Informe</a>`;
+  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/briefing">Informe</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
@@ -407,4 +418,127 @@ const LINE_REFRESH = `(() => {
 export function linePage(data: ProductionLine, nonce: string): string {
   const view = lineView(data);
   return page("Línea de producción", `<h1>Línea de producción</h1><div id="line">${view}</div><script nonce="${nonce}">${LINE_REFRESH}</script>`, { nonce });
+}
+
+/** The path of every request, in the order the line runs it. */
+const ROUTE: [string, string][] = [
+  ["especificación", "Convierte tu pedido en un contrato claro: qué va a cambiar y cómo se comprueba."],
+  ["construcción", "Un agente escribe el código y las pruebas en una copia aparte de tu proyecto."],
+  ["verificación", "La fábrica corre los comandos de verificación de la línea; si fallan, vuelve a construir."],
+  ["revisión", "Otro agente lee el cambio contra la especificación y pide arreglos si algo no cumple."],
+  ["seguridad", "Una segunda lectura busca solo problemas de seguridad."],
+  ["integración", "Entrega el cambio terminado: merge local, rama o pull request, según la línea."],
+];
+
+const ASKS: Record<PolicyEvent, string> = {
+  "spec-ready": "Antes de construir, para que apruebes la especificación.",
+  "before-integrate": "Antes de integrar el cambio terminado.",
+  "protected-path": "Si el cambio toca una ruta protegida.",
+  "budget-exceeded": "Si un trabajo se queda sin presupuesto.",
+  "egress-suspicious": "Si la caja intenta una salida sospechosa a internet.",
+};
+
+export function aboutPage(g: FactoryGuide, nonce: string): string {
+  const item = (p: { event: PolicyEvent }) => `<li>${esc(ASKS[p.event])}</li>`;
+  const asks = g.policy.filter((p) => p.decision === "ask");
+  const consults = asks.length
+    ? `<p>Con el nivel ${esc(g.level.level)} te consulta en estos momentos:</p><ul>${asks.map(item).join("")}</ul>`
+    : `<p>Con el nivel ${esc(g.level.level)} la fábrica nunca te consulta. En estos casos, en lugar de preguntarte, el trabajo se detiene:</p><ul>${g.policy.filter((p) => p.decision === "fail").map(item).join("")}</ul>`;
+  const timeout = g.approvals.onTimeout === "approve" ? "Si no respondés a tiempo, la fábrica aprueba sola y el trabajo sigue." : "Si no respondés a tiempo, el trabajo se rechaza y se detiene.";
+  const labeled = g.lines.filter((l) => l.issues);
+  const github = labeled.length ? `: ${labeled.map((l) => `${esc(l.name)} toma los issues con la etiqueta <b>${esc(l.issues!.label)}</b>`).join("; ")}.` : ". Hoy ninguna línea toma issues.";
+  const box =
+    g.isolation === "container" && g.box.ready
+      ? "activa: los agentes trabajan dentro de una caja aislada."
+      : g.isolation === "container"
+        ? "no está activa: está configurada pero no está lista, así que los trabajos corren en copias locales."
+        : "no está activa: los trabajos corren en copias locales.";
+  return page(
+    "Qué es zero",
+    `<div class="card"><h1>Qué es zero</h1>
+<p>zero es una fábrica de software que trabaja sola en tu PC. Vos le hacés pedidos en tus palabras y ella los convierte en cambios terminados en tus proyectos: los escribe, los prueba, los revisa y te los entrega.</p>
+<p class="muted">Cada pedido pasa por una línea de producción. Agentes de inteligencia artificial hacen cada paso y la fábrica controla que se cumplan las reglas.</p></div>
+<div class="card"><h2>El recorrido de un pedido</h2>
+<ol class="route">${ROUTE.map(([label, what]) => `<li><b>${esc(label)}</b><span>${esc(what)}</span></li>`).join("")}</ol></div>
+<div class="card"><h2>Cuándo te consulta</h2>${consults}
+<p>Cuando te consulta, espera tu respuesta hasta ${esc(g.approvals.timeoutHours)} horas. ${timeout} Mientras tanto la fábrica sigue con otros trabajos.</p></div>
+<div class="card"><h2>Cómo le llegan los pedidos</h2><ul>
+<li><b>chat</b>: desde tu asistente de chat, con las herramientas de zero.</li>
+<li><b>terminal</b>: con <code>zero request</code>.</li>
+<li><b>panel</b>: desde la página Resumen de este panel.</li>
+<li><b>GitHub</b>: issues con la etiqueta de la línea, escritos por alguien con permiso de escritura${github}</li></ul></div>
+<div class="card"><h2>Tu configuración</h2><ul class="kv">
+<li>Nivel de autonomía configurado: <b>${esc(g.level.configured)}</b></li>
+<li>Nivel efectivo: <b>${esc(g.level.level)}</b>${g.level.reason ? ` <span class="muted">(${esc(g.level.reason)})</span>` : ""}</li>
+<li>Motor: <b>${esc(g.engine)}</b></li>
+<li>Límite de gasto por día: <b>${usd(g.limits.usdPerDay)}</b></li>
+<li>Límite de gasto por trabajo: <b>${usd(g.limits.usdPerJob)}</b></li>
+<li>Caja de aislamiento: ${box}</li>
+<li>Líneas: <b>${g.lines.length}</b></li></ul></div>`,
+    { nonce },
+  );
+}
+
+/** What each station does and cannot do, in the owner's words. Its original instructions are shown next to it. */
+const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: string }> = {
+  spec: {
+    name: "Especificación (spec)",
+    does: "Convierte tu pedido en una especificación: requisitos, escenarios que se pueden comprobar y tareas.",
+    cannot: "No modifica el código, solo lee el proyecto. Si el pedido no se puede hacer, lo dice en lugar de inventar.",
+  },
+  build: {
+    name: "Construcción (build)",
+    does: "Escribe el código y las pruebas que pide la especificación, y corre la verificación.",
+    cannot: "No hace commits, no cambia de rama ni toca credenciales; no decide la entrega ni aprueba su propio trabajo.",
+  },
+  review: {
+    name: "Revisión (review)",
+    does: "Lee el cambio contra la especificación y busca errores; aprueba o pide arreglos concretos.",
+    cannot: "No modifica el código.",
+  },
+  security: {
+    name: "Seguridad (security)",
+    does: "Hace una segunda lectura del cambio buscando solo problemas de seguridad.",
+    cannot: "No modifica el código.",
+  },
+};
+
+const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };
+
+const codes = (items: string[], none: string) => (items.length ? items.map((c) => `<code>${esc(c)}</code>`).join(", ") : none);
+
+export function agentsPage(g: FactoryGuide, nonce: string): string {
+  const agents = g.agents
+    .map((a) => {
+      const t = AGENT_SUMMARY[a.station];
+      return `<div class="card agent" data-station="${esc(a.station)}"><h2>${esc(t.name)}</h2>
+<p>${esc(t.does)}</p><p class="muted">${esc(t.cannot)}</p>
+<p>${a.access === "write" ? `<span class="badge warn">puede modificar el código</span>` : `<span class="badge ok">solo lectura</span>`}</p>
+<ul class="kv"><li>Motor: <b>${esc(a.engine)}</b></li>
+<li>Modelo: ${a.model ? `<b>${esc(a.model)}</b>` : "el predeterminado del motor"}</li>
+<li>Máximo de turnos: <b>${a.maxTurns ?? "sin límite"}</b></li>
+<li>Máximo de minutos: <b>${esc(a.timeoutMinutes)}</b></li></ul>
+<details class="ins"><summary>ver instrucciones completas</summary><pre>${esc(a.instructions)}</pre></details></div>`;
+    })
+    .join("");
+  const lines = g.lines.length
+    ? g.lines
+        .map(
+          (l) => `<div class="card line" data-line="${esc(l.name)}"><h3>${esc(l.name)}</h3><ul class="kv">
+<li>Repositorio: <code>${esc(l.repo)}</code></li>
+<li>Rama base: <code>${esc(l.baseBranch)}</code></li>
+<li>Comandos de verificación: ${codes(l.verify, "ninguno")}</li>
+<li>Entrega: <b>${DELIVERY[l.integrate]}</b></li>
+<li>${l.autoMerge ? "Se funde sola cuando GitHub dice que está lista." : "No se funde sola."}</li>
+<li>${l.issues ? `Toma issues de GitHub con la etiqueta <b>${esc(l.issues.label)}</b>.` : "No toma issues de GitHub."}</li>
+<li>Rutas protegidas: ${codes(g.limits.protectedPaths, "ninguna")}</li></ul></div>`,
+        )
+        .join("")
+    : `<div class="card muted">Todavía no hay líneas. Agregá una con <code>zero line add</code>.</div>`;
+  return page(
+    "Agentes",
+    `<div class="card"><h1>Agentes</h1><p class="muted">Cada paso de la línea lo hace un agente con sus propias instrucciones y límites. Los límites los controla la fábrica, no el agente.</p></div>
+${agents}<h2>Líneas</h2>${lines}`,
+    { nonce },
+  );
 }
