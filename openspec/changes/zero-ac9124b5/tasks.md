@@ -1,0 +1,12 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Create the OpenSpec change `openspec/changes/<id>/` with proposal.md, tasks.md and `specs/control-panel/spec.md`. Use ADDED requirements in Spanish matching the ones above, and validate with `npx openspec validate --all`.
+- [ ] 1.2 src/panel/server.ts: add `watchMs?: number` (default 1000) and `heartbeatMs?: number` (default 25000) to `PanelOptions`.
+- [ ] 1.3 src/panel/server.ts: handle `GET /line/events` after the session check. Write headers 200 `text/event-stream; charset=utf-8`, `Cache-Control: no-store`, `X-Accel-Buffering: no`, plus the same CSP and security headers as `send()`. Factor out the shared headers so the CSP stays one string. Then send the current `lineView(productionLine(ctx))` as an SSE event: each line prefixed `data: `, ending in a blank line.
+- [ ] 1.4 Add a small server-side watcher shared by all open streams. It runs a single interval while at least one stream is open: render the fragment once per tick, push it to each stream whose last sent fragment differs, write a `: ping` comment when heartbeatMs has passed, and end any stream whose session no longer equals `sessionFor(currentKey())`. Clear the interval when the last stream closes. Remove a stream on `req`/`res` 'close', and catch store/render errors with `log.warn` without throwing.
+- [ ] 1.5 src/panel/html.ts LINE_REFRESH: keep `update()`. Open `new EventSource("/line/events")` when available and call `update(e.data)` on message, skipping data equal to `last`. Keep the 5000 ms fetch of `/line?fragment=1`, but only when there is no EventSource or its readyState is not OPEN. Add a `visibilitychange` listener that fetches the fragment immediately when the page becomes visible. Use addEventListener, never inline handlers.
+- [ ] 1.6 Update the /line comment in AGENTS.md (panel layout line) to mention the `/line/events` stream.
+- [ ] 1.7 test/panel-line.test.ts: add tests for the stream. Cover: 401 without a session; the first event equal to lineView; a new event within 2 s after a store update (use a small watchMs); a new job appearing; no data events when nothing changes; the stream closing on key rotation (inject `key` and `now`); server close with open streams; and the page script containing EventSource, nonce-only scripts and the polling fallback. Read the stream with fetch + `res.body.getReader()` and an AbortController.
+- [ ] 1.8 Run `npm run typecheck`, `npm test` and `npx openspec validate --all`.
