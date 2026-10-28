@@ -3,10 +3,12 @@ import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
-import { editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig } from "./config.js";
+import { AGENT_ACCESS, agentInstructions } from "./agent.js";
+import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, type Decision } from "./line/answer.js";
+import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
@@ -185,6 +187,58 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     queued: ctx.store.listJobs({ status: ["queued"] }),
     waiting: ctx.store.listJobs({ status: ["waiting"] }),
     recent: ctx.store.finishedSince(new Date(now.getTime() - 7 * 86_400_000)).slice(-5).reverse(),
+  };
+}
+
+export interface AgentGuide {
+  station: StationName;
+  engine: string;
+  /** Absent: the engine's own default model. */
+  model?: string;
+  maxTurns?: number;
+  timeoutMinutes: number;
+  access: "read" | "write";
+  instructions: string;
+}
+
+/** What the read-only "Qué es zero" and "Agentes" pages show: configuration only, never a secret. */
+export interface FactoryGuide {
+  level: EffectiveLevel;
+  engine: string;
+  limits: { usdPerDay: number; usdPerJob: number; protectedPaths: string[] };
+  approvals: FactoryConfig["approvals"];
+  isolation: FactoryConfig["isolation"];
+  box: BoxAvailability;
+  /** What each policy event does at the effective level. */
+  policy: { event: PolicyEvent; decision: PolicyDecision }[];
+  agents: AgentGuide[];
+  lines: Pick<LineConfig, "name" | "repo" | "baseBranch" | "verify" | "integrate" | "autoMerge" | "issues">[];
+}
+
+const POLICY_EVENTS: PolicyEvent[] = ["spec-ready", "before-integrate", "protected-path", "budget-exceeded", "egress-suspicious"];
+
+export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
+  const cfg = ctx.config;
+  const box = currentBox(ctx).availability;
+  const level = effectiveLevel(cfg, box);
+  // Box problems may name a custom engine's secrets; these pages never show them.
+  const names = Object.values(cfg.engines).flatMap((e) => e.secrets);
+  const hide = (text: string) => names.reduce((t, n) => t.split(n).join("(credencial)"), text);
+  return {
+    level: level.reason ? { ...level, reason: hide(level.reason) } : level,
+    engine: cfg.engine,
+    limits: { usdPerDay: cfg.limits.usdPerDay, usdPerJob: cfg.limits.usdPerJob, protectedPaths: cfg.limits.protectedPaths },
+    approvals: cfg.approvals,
+    isolation: cfg.isolation,
+    box,
+    policy: POLICY_EVENTS.map((event) => ({ event, decision: decide(level.level, event) })),
+    agents: await Promise.all(
+      AGENT_STATIONS.map(async (station) => {
+        const s = cfg.stations[station];
+        return { station, engine: s.engine ?? cfg.engine, model: s.model, maxTurns: s.maxTurns, timeoutMinutes: s.timeoutMinutes, access: AGENT_ACCESS[station], instructions: await agentInstructions(station) };
+      }),
+    ),
+    lines: cfg.lines.map(({ name, repo, baseBranch, verify, integrate, autoMerge, issues }) => ({ name, repo, baseBranch, verify, integrate, autoMerge, issues })),
   };
 }
 

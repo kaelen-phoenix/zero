@@ -1,8 +1,8 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, briefing, egressReport, factoryStatus, getJob, productionLine, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, briefing, egressReport, factoryGuide, factoryStatus, getJob, productionLine, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { log } from "../log.js";
-import { briefingPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -194,6 +194,9 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         const b = await briefing(ctx, Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90));
         return send(res, 200, briefingPage(b.title, b.body, nonce), nonce);
       }
+      // Read-only pages: they have no POST route, so a POST to them falls through to the 404 below.
+      if (path === "/about") return send(res, 200, aboutPage(await factoryGuide(ctx), nonce), nonce);
+      if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce), nonce);
       return send(res, 404, page("No existe", `<div class="card">Esa página no existe. <a href="/">Volver</a></div>`, { nonce }), nonce);
     }
 
