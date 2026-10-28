@@ -332,7 +332,7 @@ export function lineView(data: ProductionLine): string {
 }
 
 /**
- * Keeps the line current without reloading: fetches the fragment and patches only what changed,
+ * Keeps the line current without reloading: gets the fragment (pushed on `/line/events`, or polled) and patches only what changed,
  * keeping each row's elements so CSS transitions slide the piece instead of jumping.
  */
 const LINE_REFRESH = `(() => {
@@ -382,16 +382,26 @@ const LINE_REFRESH = `(() => {
       if (rows.children[i] !== r) rows.insertBefore(r, rows.children[i] || null);
     });
   };
-  setInterval(() => {
-    if (document.visibilityState !== "visible") return;
+  const apply = (html) => {
+    if (html && html !== last) update(html);
+    if (html) last = html;
+  };
+  const poll = () =>
     fetch("/line?fragment=1", { credentials: "same-origin", cache: "no-store" })
       .then((r) => (r.ok ? r.text() : ""))
-      .then((html) => {
-        if (html && html !== last) update(html);
-        if (html) last = html;
-      })
+      .then(apply)
       .catch(() => {});
+  // The server pushes the fragment when something changes; polling is the fallback while the stream is not open.
+  const stream = window.EventSource ? new EventSource("/line/events") : null;
+  if (stream) stream.addEventListener("message", (e) => apply(e.data));
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (stream && stream.readyState === EventSource.OPEN) return;
+    poll();
   }, 5000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") poll();
+  });
 })();`;
 
 export function linePage(data: ProductionLine, nonce: string): string {

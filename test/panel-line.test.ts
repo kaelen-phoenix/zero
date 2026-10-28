@@ -1,11 +1,12 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { productionLine, requestWork, type FactoryContext } from "../src/app.js";
 import { askOwner } from "../src/line/finish.js";
+import { log } from "../src/log.js";
 import { lineView } from "../src/panel/html.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
-import { createPanelServer } from "../src/panel/server.js";
+import { createPanelServer, type PanelOptions } from "../src/panel/server.js";
 import { newId, type JobPatch } from "../src/state/store.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
@@ -17,13 +18,55 @@ afterEach(async () => {
 
 const factory = () => testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "tienda", repo: gitRepo(), maxAttempts: 3 }] });
 
-async function panel(ctx: FactoryContext) {
-  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets) });
+async function panel(ctx: FactoryContext, opts: Partial<PanelOptions> = {}) {
+  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), ...opts });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const cookie = `zero_panel=${sessionFor(panelKey(ctx.secrets))}`;
-  return (path: string, headers: Record<string, string> = { cookie }) => fetch(base + path, { headers, redirect: "manual" });
+  return (path: string, headers: Record<string, string> = { cookie }, signal?: AbortSignal) => fetch(base + path, { headers, redirect: "manual", signal });
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Reads a `/line/events` response as it arrives: data events (lines joined like EventSource does) and comments. */
+function events(res: Response) {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const data: string[] = [];
+  const comments: string[] = [];
+  let buffer = "";
+  let done = false;
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        buffer += decoder.decode(r.value, { stream: true });
+        let end;
+        while ((end = buffer.indexOf("\n\n")) > -1) {
+          const lines = buffer.slice(0, end).split("\n");
+          buffer = buffer.slice(end + 2);
+          comments.push(...lines.filter((l) => l.startsWith(":")));
+          const payload = lines.filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
+          if (payload.length) data.push(payload.join("\n"));
+        }
+      }
+    } catch {
+      // aborted by the test
+    }
+    done = true;
+  })();
+  /** Waits until `ok` holds and returns how long it took; fails after `ms`. */
+  const until = async (ok: () => boolean, ms = 2000) => {
+    const start = Date.now();
+    while (!ok()) {
+      if (Date.now() - start > ms) throw new Error("timed out waiting for the stream");
+      await wait(10);
+    }
+    return Date.now() - start;
+  };
+  return { data, comments, until, pump, isDone: () => done };
 }
 
 const T0 = Date.parse("2026-01-01T10:00:00Z");
@@ -273,5 +316,155 @@ describe("production line page", () => {
     expect(reduced).toMatch(/animation: none/);
     expect(reduced).toMatch(/transition: none/);
     expect(css).toMatch(/@media \(max-width: \d+px\) \{[^@]*(overflow-x:\s*auto|flex-direction:\s*column)/);
+  });
+});
+
+describe("production line stream", () => {
+  async function open(ctx: FactoryContext, opts: Partial<PanelOptions> = {}) {
+    const get = await panel(ctx, { watchMs: 20, ...opts });
+    const abort = new AbortController();
+    const res = await get("/line/events", undefined, abort.signal);
+    return { res, abort, stream: events(res), get };
+  }
+
+  it("needs the panel's session and sends no job data without it", async () => {
+    const ctx = factory();
+    const j = job(ctx, "agregá descuentos", { title: "Descuentos" });
+    const r = await (await panel(ctx))("/line/events", {});
+    expect(r.status).toBe(401);
+    expect(r.headers.get("content-type")).not.toContain("text/event-stream");
+    const html = await r.text();
+    expect(html).toContain("Panel de tu fábrica");
+    expect(html).not.toContain(j.id);
+    expect(html).not.toContain("Descuentos");
+  });
+
+  it("opens with a session as an uncached event stream under the panel's policy", async () => {
+    const ctx = factory();
+    const { res, abort, get } = await open(ctx);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const home = (await get("/")).headers.get("content-security-policy")!;
+    expect(res.headers.get("content-security-policy")!.replace(/'nonce-[^']+'/, "")).toBe(home.replace(/'nonce-[^']+'/, ""));
+    abort.abort();
+  });
+
+  it("sends the current line right away, the same fragment as /line?fragment=1", async () => {
+    const ctx = factory();
+    const j = job(ctx, "x", { status: "running", station: "build", attempt: 1 });
+    const attempt = span(ctx, j.id, "zero.attempt", { attrs: { "zero.attempt": 1 } });
+    span(ctx, j.id, "zero.station.build", { parent: attempt });
+    const { abort, stream, get } = await open(ctx);
+    await stream.until(() => stream.data.length > 0);
+    expect(stream.data[0]).toBe(lineView(productionLine(ctx)));
+    expect(stream.data[0]).toBe(await (await get("/line?fragment=1")).text());
+    expect(stations(stream.data[0]!, j.id).build!.state).toBe("active");
+    abort.abort();
+  });
+
+  it("pushes the new fragment within 2 s when a job moves to the next station", async () => {
+    const ctx = factory();
+    const j = job(ctx, "x", { status: "running", station: "build", attempt: 1 });
+    const attempt = span(ctx, j.id, "zero.attempt", { attrs: { "zero.attempt": 1 } });
+    const build = span(ctx, j.id, "zero.station.build", { parent: attempt });
+    const { abort, stream } = await open(ctx, { watchMs: 1000 });
+    await stream.until(() => stream.data.length > 0);
+    ctx.store.updateJob(j.id, { station: "verify" });
+    ctx.store.endSpan(build, at(2), "ok", {});
+    const took = await stream.until(() => stream.data.length > 1, 2000);
+    expect(took).toBeLessThan(2000);
+    expect(states(stream.data.at(-1)!, j.id)).toMatchObject({ build: "lista", verify: "activa" });
+    abort.abort();
+  });
+
+  it("pushes a new job's row", async () => {
+    const ctx = factory();
+    const { abort, stream } = await open(ctx);
+    await stream.until(() => stream.data.length > 0);
+    const { job: j } = requestWork(ctx, { text: "nuevo" });
+    await stream.until(() => stream.data.some((d) => d.includes(`id="job-${j.id}"`)));
+    abort.abort();
+  });
+
+  it("sends no data while nothing changes, only comments to keep the connection alive", async () => {
+    const ctx = factory();
+    job(ctx, "x", { status: "running", station: "build", attempt: 1 });
+    const { abort, stream } = await open(ctx, { heartbeatMs: 50 });
+    await stream.until(() => stream.data.length > 0);
+    await wait(300);
+    expect(stream.data).toHaveLength(1);
+    expect(stream.comments.length).toBeGreaterThan(0);
+    abort.abort();
+  });
+
+  it("ends the stream when the panel key changes", async () => {
+    const ctx = factory();
+    let key = "a".repeat(32);
+    let t = T0;
+    const server = createPanelServer(ctx, { key: () => key, now: () => t, watchMs: 20 });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const res = await fetch(`${base}/line/events`, { headers: { cookie: `zero_panel=${sessionFor(key)}` } });
+    expect(res.status).toBe(200);
+    const stream = events(res);
+    await stream.until(() => stream.data.length > 0);
+    key = "b".repeat(32);
+    t += 11_000;
+    const j = job(ctx, "secreto", { title: "Secreto" });
+    await stream.until(() => stream.isDone());
+    expect(stream.data).toHaveLength(1);
+    expect(stream.data.join("")).not.toContain(j.id);
+  });
+
+  it("does not hold up the daemon's shutdown with streams open", async () => {
+    const ctx = factory();
+    const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), watchMs: 20 });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const cookie = `zero_panel=${sessionFor(panelKey(ctx.secrets))}`;
+    const streams = (await Promise.all([0, 1].map(() => fetch(`${base}/line/events`, { headers: { cookie } })))).map(events);
+    await Promise.all(streams.map((s) => s.until(() => s.data.length > 0)));
+    const start = Date.now();
+    await new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it("stops writing to a client that left, without errors or warnings", async () => {
+    const ctx = factory();
+    const warn = vi.spyOn(log, "warn");
+    try {
+      const j = job(ctx, "x", { status: "running", station: "build", attempt: 1 });
+      const { abort, stream } = await open(ctx);
+      await stream.until(() => stream.data.length > 0);
+      abort.abort();
+      await stream.pump;
+      await wait(50);
+      ctx.store.updateJob(j.id, { station: "verify" });
+      job(ctx, "otro");
+      await wait(150);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("is what the page listens to, with the polling fallback and only nonce'd scripts", async () => {
+    const r = await (await panel(factory()))("/line");
+    const html = await r.text();
+    const nonce = /'nonce-([^']+)'/.exec(r.headers.get("content-security-policy")!)![1];
+    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+    for (const [, attrs] of scripts) expect(attrs).toBe(` nonce="${nonce}"`);
+    const body = scripts.map((m) => m[2]).join("\n");
+    expect(body).toContain('new EventSource("/line/events")');
+    expect(body).toContain('fetch("/line?fragment=1"');
+    expect(body).toMatch(/setInterval\([\s\S]*readyState === EventSource\.OPEN[\s\S]*, 5000\)/);
+    expect(body).toContain('addEventListener("visibilitychange"');
+    expect(body).not.toMatch(/\beval\(|new Function/);
+    expect([...html.matchAll(/<[a-z][^>]*>/gi)].some((t) => /\son[a-z]+\s*=/i.test(t[0]))).toBe(false);
   });
 });
