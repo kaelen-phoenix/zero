@@ -136,6 +136,7 @@ approvals: { timeoutHours: 24, onTimeout: reject }
 stations:                 # motor, modelo y tiempo límite por estación (opcional)
   review: { engine: codex, timeoutMinutes: 15 }
   security: { engine: claude }   # la revisión de seguridad; con otro motor, la mirada es más independiente
+  build: { skills: [pdf] }       # skills de tu Claude Code (personales o de plugins; `plugin:skill` si el nombre se repite)
 engines:                  # cualquier otro CLI de agentes, sin código
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
 lines:
@@ -147,7 +148,11 @@ lines:
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
+    stations:                 # opcional: skills que un agente suma solo en esta línea
+      build: { skills: [nextjs, shadcn] }
 ```
+
+Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
 
 Los secretos **no** van en este archivo: si zero detecta algo con forma de credencial, se niega a cargarlo. Cada motor usa tu propia sesión o las variables de entorno.
 

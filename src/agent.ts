@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { FactoryConfig } from "./config.js";
 import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult } from "./engines/index.js";
 import { log } from "./log.js";
+import { assignedSkills, discoverSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
 
@@ -30,6 +31,8 @@ export interface AgentRequest<T = unknown> {
   /** Spend cap for this call, honoured by engines that support it. */
   maxBudgetUsd?: number;
   signal?: AbortSignal;
+  /** The line the run is for, which may add skills to the station's own. */
+  line?: string;
   /** Where to record the `gen_ai.invoke_agent` span. */
   trace?: { tracer: Tracer; jobId: string; parentId: string };
 }
@@ -90,9 +93,23 @@ export function toEngineSchema(schema: z.ZodType): Record<string, unknown> {
   return rest;
 }
 
-export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute } = {}): AgentRunner {
+/** The station's skills on the line that resolve; the others are logged and skipped (`zero status` lists them). */
+function resolvedSkills(config: FactoryConfig, station: AgentStation, line: string | undefined, claudeHome?: string): Skill[] {
+  const refs = assignedSkills(config, station, line);
+  if (!refs.length) return [];
+  const available = discoverSkills(claudeHome);
+  const out: Skill[] = [];
+  for (const ref of refs) {
+    const { skill, problem } = resolveSkill(ref, available);
+    if (skill) out.push(skill);
+    else log.warn(`agent:${station} skill ${ref} skipped`, { reason: problem });
+  }
+  return out;
+}
+
+export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute; claudeHome?: string } = {}): AgentRunner {
   const execute = opts.execute ?? runHere;
-  return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace }: AgentRequest<T>): Promise<AgentRun<T>> {
+  return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace, line }: AgentRequest<T>): Promise<AgentRun<T>> {
     const stationCfg = config.stations[station];
     const engine = resolveEngine(stationCfg.engine ?? config.engine, config);
     const jsonSchema = schema && toEngineSchema(schema);
@@ -107,18 +124,28 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       attrs: { "gen_ai.agent.name": station, "gen_ai.request.model": stationCfg.model, "zero.engine": engine.name },
     });
     log.info(`agent:${station} start`, { engine: engine.name, model: stationCfg.model });
-    const result = await execute(engine, {
-      instructions: await stationInstructions(station),
-      prompt: fullPrompt,
-      cwd,
-      access: ACCESS[station],
-      schema: jsonSchema,
-      model: stationCfg.model,
-      maxTurns: stationCfg.maxTurns,
-      maxBudgetUsd,
-      timeoutMs: stationCfg.timeoutMinutes * 60_000,
-      signal,
-    }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id }, station);
+    let skills: StagedSkills | undefined;
+    let result: EngineResult;
+    try {
+      const wanted = resolvedSkills(config, station, line, opts.claudeHome);
+      if (wanted.length) skills = await stageSkills(wanted);
+      const instructions = await stationInstructions(station);
+      result = await execute(engine, {
+        instructions: engine.nativeSkills ? instructions : withSkillText(instructions, skills?.skills ?? []),
+        prompt: fullPrompt,
+        cwd,
+        access: ACCESS[station],
+        schema: jsonSchema,
+        model: stationCfg.model,
+        maxTurns: stationCfg.maxTurns,
+        maxBudgetUsd,
+        timeoutMs: stationCfg.timeoutMinutes * 60_000,
+        signal,
+        ...(skills && { skills }),
+      }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id }, station);
+    } finally {
+      await unstageSkills(skills);
+    }
 
     const run: AgentRun<T> = {
       ok: result.ok,

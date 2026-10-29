@@ -11,6 +11,8 @@ export interface BoxRunSpec {
   /** Host directory mounted at /work: the job's own copy, nothing else. */
   copy: string;
   mount: Mount;
+  /** Host directory with the run's staged skills, mounted read-only at /skills for every station. */
+  skills?: string;
   limits: FactoryConfig["box"];
   /** Credential names passed by reference (`-e NAME`); their values come from `env`. */
   secretNames: string[];
@@ -54,6 +56,9 @@ export function proxyEnv(proxy: string): string[] {
   return vars.flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 }
 
+/** Where the staged skills are inside the box. */
+export const BOX_SKILLS = "/skills";
+
 /** TEST-NET-1 (RFC 5737): never routed, so every lookup inside the box fails at once. */
 export const NO_DNS = "192.0.2.1";
 
@@ -81,6 +86,7 @@ export function boxRunArgs(spec: BoxRunSpec): string[] {
     // documentation address that is never routed (a loopback one would make Docker forward from the host).
     ...(spec.egress ? ["--network", spec.egress.network, "--dns", NO_DNS, ...proxyEnv(spec.egress.proxy)] : []),
     "-v", `${spec.copy}:/work${spec.mount === "ro" ? ":ro" : ""}`,
+    ...(spec.skills ? ["-v", `${spec.skills}:${BOX_SKILLS}:ro`] : []),
     "-w", "/work",
     ...spec.secretNames.flatMap((n) => ["-e", n]),
     spec.image,

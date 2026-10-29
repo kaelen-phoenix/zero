@@ -6,7 +6,7 @@ import type { Tracer } from "../telemetry/tracer.js";
 import { engineCredentials } from "./credentials.js";
 import type { GateDoor, GateHost } from "./network.js";
 import { decodeResult, type BoxAgentRequest } from "./protocol.js";
-import { containerName, runInBox, type BoxRunResult, type BoxRunSpec, type Mount } from "./run.js";
+import { BOX_SKILLS, containerName, runInBox, type BoxRunResult, type BoxRunSpec, type Mount } from "./run.js";
 import type { BoxStatus } from "./status.js";
 
 export interface BoxTrace {
@@ -87,13 +87,15 @@ export function createBoxExecutor(config: FactoryConfig, status: BoxStatus, secr
             parentId: trace.parentId,
             attrs: { "zero.box.runtime": runtime, "zero.box.image": status.image, "zero.box.mount": mount },
           });
-          const { signal, cwd, ...request } = req;
+          const { signal, cwd, skills, ...rest } = req;
+          // The box sees the skills at their in-box path, read-only.
+          const request = skills ? { ...rest, skills: { ...skills, dir: BOX_SKILLS } } : rest;
           const payload: BoxAgentRequest = { engine: engine.name, engines: cfg.engines, request };
           const env = Object.fromEntries(creds.names.map((n) => [n, secrets.get(n)!]));
           const jobId = trace?.jobId ?? "agent";
           const r = await throughGate(gate, { jobId, station }, (door) =>
             runInBox(
-              { ...base, copy: cwd, mount, secretNames: creds.names, command: AGENT_ENTRY, name: containerName(jobId), egress: egress(door) },
+              { ...base, copy: cwd, mount, skills: skills?.dir, secretNames: creds.names, command: AGENT_ENTRY, name: containerName(jobId), egress: egress(door) },
               // The engine enforces its own timeout inside; the extra minute covers container start-up.
               { input: JSON.stringify(payload), env, timeoutMs: req.timeoutMs + 60_000, signal },
             ),

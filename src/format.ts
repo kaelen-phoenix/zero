@@ -1,4 +1,5 @@
-import type { EgressReport, FactoryStatus, RequestResult } from "./app.js";
+import type { EgressReport, FactoryStatus, RequestResult, SkillList } from "./app.js";
+import type { SkillProblem } from "./skills.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Job } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
@@ -41,6 +42,20 @@ export function formatJob(job: Job): string {
   return lines.join("\n");
 }
 
+function skillWarning(p: SkillProblem): string {
+  return `Skill ${p.skill} (agente ${p.station}${p.line ? `, línea ${p.line}` : ""}): ${p.reason}; el agente trabaja sin ella`;
+}
+
+export function formatSkills(l: SkillList): string {
+  const out = ["Skills asignadas:"];
+  for (const a of l.assignments) out.push(`- ${a.station}${a.line ? ` (línea ${a.line})` : ""}: ${a.skills.join(", ") || "ninguna"}`);
+  for (const p of l.problems) out.push(`  ${skillWarning(p)}`);
+  out.push("", "Skills disponibles en Claude Code:");
+  if (!l.available.length) out.push("- ninguna (personales en ~/.claude/skills o de plugins instalados)");
+  for (const s of l.available) out.push(`- ${s.fullName}${s.source === "plugin" ? ` (plugin ${s.plugin})` : " (personal)"}`);
+  return out.join("\n");
+}
+
 export function formatStatus(s: FactoryStatus): string {
   const t = s.today;
   const out = [
@@ -62,6 +77,7 @@ export function formatStatus(s: FactoryStatus): string {
     out.push(`Salidas a internet hoy: ${e.connections} conexiones · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas: \`zero egress\`)` : ""} · modo ${s.egressMode}`);
   }
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const p of s.skills) out.push(skillWarning(p));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   out.push(`Presupuesto de hoy: ${usd(s.budget.spentUsd)} de ${usd(s.budget.limitUsd)}${s.budget.reached ? " · ALCANZADO: los trabajos nuevos esperan a mañana" : ""}`);
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo ${usd(t.costUsd)}`);

@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions } from "./agent.js";
+import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, type Skill, type SkillProblem, type SkillStation } from "./skills.js";
 import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
@@ -153,6 +154,8 @@ export interface FactoryStatus {
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   box: { status?: BoxStatus; availability: BoxAvailability };
+  /** Assigned skills that do not resolve; agents run without them. */
+  skills: SkillProblem[];
   daemon: DaemonInfo;
   andon: boolean;
   budget: { spentUsd: number; limitUsd: number; reached: boolean };
@@ -179,6 +182,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
     }),
     box,
+    skills: skillProblems(ctx.config, discoverSkills()),
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: { spentUsd, limitUsd: ctx.config.limits.usdPerDay, reached: dailyBudgetReached(spentUsd, ctx.config.limits.usdPerDay) },
@@ -489,4 +493,67 @@ export async function setIssueIntake(ctx: FactoryContext, input: { line?: string
     else doc.deleteIn(["lines", index, "issues"]);
   });
   return { line: line.name, label };
+}
+
+export interface SkillAssignment {
+  station: SkillStation;
+  line?: string;
+  skills: string[];
+}
+
+export interface SkillList {
+  assignments: SkillAssignment[];
+  available: Skill[];
+  problems: SkillProblem[];
+}
+
+function skillTarget(ctx: FactoryContext, station: string, lineName?: string): { station: SkillStation; path: (string | number)[] } {
+  if (!(SKILL_STATIONS as readonly string[]).includes(station)) {
+    throw new Error(`No existe el agente "${station}". Agentes: ${SKILL_STATIONS.join(", ")}.`);
+  }
+  const s = station as SkillStation;
+  if (lineName === undefined) return { station: s, path: ["stations", s, "skills"] };
+  const index = ctx.config.lines.findIndex((l) => l.name === lineName);
+  if (index < 0) throw new Error(`No existe la línea "${lineName}". Líneas: ${ctx.config.lines.map((l) => l.name).join(", ") || "ninguna"}.`);
+  return { station: s, path: ["lines", index, "stations", s, "skills"] };
+}
+
+function currentSkills(ctx: FactoryContext, station: SkillStation, lineName?: string): string[] {
+  if (lineName === undefined) return ctx.config.stations[station].skills;
+  return ctx.config.lines.find((l) => l.name === lineName)?.stations?.[station]?.skills ?? [];
+}
+
+/** Assigns a skill to an agent, for every line or only one; never from the chat. */
+export async function addSkill(ctx: FactoryContext, input: { skill: string; station: string; line?: string }): Promise<string> {
+  const skill = input.skill.trim();
+  if (!skill) throw new Error("Indicá la skill: zero skill add <skill> --station <agente>");
+  const { station, path } = skillTarget(ctx, input.station, input.line);
+  const where = input.line ? `${station} en la línea ${input.line}` : `${station} en todas las líneas`;
+  const current = currentSkills(ctx, station, input.line);
+  if (current.includes(skill)) return `La skill ${skill} ya estaba asignada a ${where}.`;
+  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(path, doc.createNode([...current, skill])));
+  const { problem } = resolveSkill(skill, discoverSkills());
+  return `Skill ${skill} asignada a ${where}.${problem ? ` Ojo: ${problem}; el agente trabaja sin ella hasta que esté.` : ""}`;
+}
+
+export async function removeSkill(ctx: FactoryContext, input: { skill: string; station: string; line?: string }): Promise<string> {
+  const { station, path } = skillTarget(ctx, input.station, input.line);
+  const where = input.line ? `${station} en la línea ${input.line}` : `${station}`;
+  const current = currentSkills(ctx, station, input.line);
+  if (!current.includes(input.skill)) return `La skill ${input.skill} no estaba asignada a ${where}.`;
+  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(path, doc.createNode(current.filter((s) => s !== input.skill))));
+  return `Skill ${input.skill} quitada de ${where}.`;
+}
+
+export function skillList(ctx: FactoryContext): SkillList {
+  const available = discoverSkills();
+  const assignments: SkillAssignment[] = [];
+  for (const station of SKILL_STATIONS) {
+    assignments.push({ station, skills: ctx.config.stations[station].skills });
+    for (const line of ctx.config.lines) {
+      const skills = line.stations?.[station]?.skills ?? [];
+      if (skills.length) assignments.push({ station, line: line.name, skills });
+    }
+  }
+  return { assignments, available, problems: skillProblems(ctx.config, available) };
 }

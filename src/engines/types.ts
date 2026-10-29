@@ -1,3 +1,5 @@
+import type { StagedSkills } from "../skills.js";
+
 export type Access = "read" | "write";
 
 export interface EngineRequest {
@@ -15,6 +17,8 @@ export interface EngineRequest {
   timeoutMs: number;
   /** Aborted when the owner pulls the andon cord or the daemon shuts down. */
   signal?: AbortSignal;
+  /** Skills zero staged for this run (a local plugin directory); only engines with `nativeSkills` read it. */
+  skills?: StagedSkills;
 }
 
 export interface EngineResult {
@@ -34,6 +38,8 @@ export interface Engine {
   name: string;
   /** True when the engine enforces `schema` itself; otherwise zero asks for JSON in the prompt and parses it. */
   nativeSchema: boolean;
+  /** True when the engine loads `skills` itself; otherwise zero appends each SKILL.md to the instructions. */
+  nativeSkills?: boolean;
   /** Sites the engine must reach to talk to its model; allowed by the egress gate in every mode. */
   hosts?: string[];
   run(req: EngineRequest): Promise<EngineResult>;
