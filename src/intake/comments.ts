@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
 import { answer, requestWork, type FactoryContext } from "../app.js";
+import { budgetState } from "../budget.js";
 import type { LineConfig } from "../config.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { log } from "../log.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
-import { dailyBudgetReached, spentToday } from "../telemetry/metrics.js";
 import { TRUSTED, type IssueApi, type IssueComment, type IssueState } from "./github.js";
 import { FACTORY_MARK, issueKey } from "./keys.js";
 
@@ -126,7 +126,7 @@ async function handle(ctx: FactoryContext, line: LineConfig, repository: string,
 /** Answers new comments on every issue of the line that has a job; one issue's problem never stops the others. */
 export async function answerComments(ctx: FactoryContext, line: LineConfig, repository: string, gh: IssueApi, runAgent: AgentRunner): Promise<void> {
   const now = (ctx.now ?? (() => new Date()))();
-  if (dailyBudgetReached(spentToday(ctx.store, now), ctx.config.limits.usdPerDay)) return;
+  if (budgetState(ctx.store, ctx.config, now).reached) return;
   const trust = new Map<string, Promise<boolean>>();
   const trusted = (login: string) => {
     if (!trust.has(login)) trust.set(login, gh.permission(login).then((p) => TRUSTED.has(p)));

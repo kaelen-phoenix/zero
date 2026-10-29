@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
 import type { StationName } from "../config.js";
-import { bytes, describeJobStatus, jobName } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, jobName, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
@@ -129,6 +129,19 @@ const answerForms = (j: Job) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
 <button class="primary" name="decision" value="approve">Aprobar</button><button class="danger" name="decision" value="reject">Rechazar</button></form>`;
 
+/** The budget tile: the most used subscription window, or the day's spend against its cap. */
+function budgetStat(s: FactoryStatus): string {
+  const b = s.budget;
+  const paused = b.reached ? ` · <span class="bad">PAUSADA${b.until ? ` hasta ${esc(resetTime(b.until))}` : ""}</span>` : "";
+  if (b.billing === "subscription") {
+    const top = [...b.windows].sort((x, y) => (y.utilization ?? 0) - (x.utilization ?? 0))[0];
+    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${paused}</span></div>`;
+    const used = top.utilization === undefined ? "—" : `${Math.round(top.utilization * 100)}%`;
+    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${paused}</span></div>`;
+  }
+  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${paused}</span></div>`;
+}
+
 export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, flash?: string): string {
   const t = s.today;
   const state = s.andon ? `<span class="bad">DETENIDA (andon)</span>` : s.daemon.alive ? `<span class="ok">en marcha</span>` : "apagada";
@@ -151,9 +164,10 @@ ${s.level.reason ? `<p class="muted">${esc(s.level.reason)}</p>` : ""}<p class="
 <div class="grid">
 <div class="stat"><b>${t.delivered}</b><span class="muted">entregados hoy</span></div>
 <div class="stat"><b>${t.failed}</b><span class="muted">fallidos hoy</span></div>
-<div class="stat"><b>${usd(s.budget.spentUsd)}</b><span class="muted">de ${usd(s.budget.limitUsd)} hoy${s.budget.reached ? " · ALCANZADO" : ""}</span></div>
+${budgetStat(s)}
 ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><b>${t.egress.blocked}</b><span class="muted">salidas bloqueadas${t.egress.suspicious ? ` (${t.egress.suspicious} sospechosas)` : ""}</span></div>` : ""}
 </div>
+<p class="muted">${esc(budgetLine(s.budget))}</p>
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
 ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma los issues con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
@@ -472,8 +486,9 @@ export function aboutPage(g: FactoryGuide, nonce: string): string {
 <li>Nivel de autonomía configurado: <b>${esc(g.level.configured)}</b></li>
 <li>Nivel efectivo: <b>${esc(g.level.level)}</b>${g.level.reason ? ` <span class="muted">(${esc(g.level.reason)})</span>` : ""}</li>
 <li>Motor: <b>${esc(g.engine)}</b></li>
-<li>Límite de gasto por día: <b>${usd(g.limits.usdPerDay)}</b></li>
-<li>Límite de gasto por trabajo: <b>${usd(g.limits.usdPerJob)}</b></li>
+<li>Con una suscripción, el límite es el cupo real del plan (5 horas y semana): la fábrica pausa cuando se agota y retoma sola cuando se renueva. Reserva para vos: <b>${g.limits.reservePercent}%</b></li>
+<li>Límite de gasto por día, si se paga por uso: <b>${usd(g.limits.usdPerDay)}</b></li>
+<li>Límite de gasto por trabajo, si se paga por uso: <b>${usd(g.limits.usdPerJob)}</b></li>
 <li>Caja de aislamiento: ${box}</li>
 <li>Líneas: <b>${g.lines.length}</b></li></ul></div>`,
     { nonce },

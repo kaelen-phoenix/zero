@@ -97,8 +97,12 @@ export const FactorySchema = z
     limits: z
       .object({
         /** 0 = only free engines. */
+        /** Calls billed per use only; subscription plans are limited by their own usage windows. 0 = only free engines. */
         usdPerDay: z.number().nonnegative().default(10),
+        /** Per-use billing only, like `usdPerDay`. */
         usdPerJob: z.number().positive().default(3),
+        /** Share of each subscription window (5 hours, week) the factory leaves to the owner, in percent. 0 = use the whole plan. */
+        reservePercent: z.number().min(0).max(99).default(0),
         protectedPaths: z.array(z.string()).default([".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),

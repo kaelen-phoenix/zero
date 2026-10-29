@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { FactoryConfig } from "./config.js";
-import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult } from "./engines/index.js";
+import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult, type QuotaReport } from "./engines/index.js";
 import { log } from "./log.js";
 import { assignedSkills, discoverSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
@@ -21,6 +21,8 @@ export interface AgentRun<T = unknown> {
   costSource: "reported" | "unknown";
   engine: string;
   model?: string;
+  /** Billing and plan usage, when the engine reports it. */
+  quota?: QuotaReport;
 }
 
 export interface AgentRequest<T = unknown> {
@@ -85,6 +87,12 @@ export function extractJson(answer: string): unknown {
     }
   }
   return undefined;
+}
+
+/** How a call's plan reading is kept on its agent span, where the budget reads it back (src/budget.ts). */
+export function quotaAttrs(quota: QuotaReport | undefined): Record<string, string | boolean> {
+  if (!quota) return {};
+  return { "zero.billing": quota.billing, "zero.quota": JSON.stringify(quota.windows), "zero.quota.limited": Boolean(quota.limited) };
 }
 
 /** Plain JSON Schema without the `$schema` meta key, which some engines (Claude Code) reject. */
@@ -162,6 +170,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       costSource: result.costUsd === undefined ? "unknown" : "reported",
       engine: engine.name,
       model: stationCfg.model,
+      ...(result.quota && { quota: result.quota }),
     };
     if (run.ok && schema) {
       const parsed = schema.safeParse(result.output ?? extractJson(result.text));
@@ -176,6 +185,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       "zero.cost.usd": run.costUsd,
       "zero.cost.source": run.costSource,
       "gen_ai.conversation.id": result.sessionId,
+      ...quotaAttrs(result.quota),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
     });
     log.info(`agent:${station} done`, { engine: engine.name, ok: run.ok, costUsd: run.costUsd.toFixed(3) });

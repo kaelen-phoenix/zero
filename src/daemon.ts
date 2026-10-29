@@ -1,6 +1,7 @@
 import { createAgentRunner, type AgentRunner } from "./agent.js";
 import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
+import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
@@ -15,7 +16,6 @@ import { log } from "./log.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
 import { tunnelKeeper } from "./panel/tunnel.js";
-import { dailyBudgetReached, spentToday } from "./telemetry/metrics.js";
 
 export interface DaemonOptions {
   /** How often the loop wakes up to beat, apply andon and start work. */
@@ -165,7 +165,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       }
 
       let startable = false;
-      if (!andon && !dailyBudgetReached(spentToday(store, now()), ctx.config.limits.usdPerDay)) {
+      if (!andon && !budgetState(store, ctx.config, now()).reached) {
         for (const job of store.listJobs({ status: ["queued"] })) {
           if (job.stopRequested) {
             await finalizeJob(ctx, job, "stopped", { reason: "Detenido por el dueño." });

@@ -5,6 +5,7 @@ import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions } from "./agent.js";
 import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
+import { budgetState, type BudgetState } from "./budget.js";
 import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
@@ -18,7 +19,7 @@ import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
-import { computeMetrics, dailyBudgetReached, spentToday, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
+import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngine, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
@@ -158,7 +159,7 @@ export interface FactoryStatus {
   skills: SkillProblem[];
   daemon: DaemonInfo;
   andon: boolean;
-  budget: { spentUsd: number; limitUsd: number; reached: boolean };
+  budget: BudgetState;
   today: Metrics;
   running: Job[];
   queued: Job[];
@@ -169,7 +170,6 @@ export interface FactoryStatus {
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
-  const spentUsd = spentToday(ctx.store, now);
   const box = currentBox(ctx);
   return {
     level: effectiveLevel(ctx.config, box.availability),
@@ -185,7 +185,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     skills: skillProblems(ctx.config, discoverSkills()),
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
-    budget: { spentUsd, limitUsd: ctx.config.limits.usdPerDay, reached: dailyBudgetReached(spentUsd, ctx.config.limits.usdPerDay) },
+    budget: budgetState(ctx.store, ctx.config, now),
     today: computeMetrics(ctx.store, startOfDay(now), now),
     running: ctx.store.listJobs({ status: ["running"] }),
     queued: ctx.store.listJobs({ status: ["queued"] }),
@@ -210,7 +210,7 @@ export interface AgentGuide {
 export interface FactoryGuide {
   level: EffectiveLevel;
   engine: string;
-  limits: { usdPerDay: number; usdPerJob: number; protectedPaths: string[] };
+  limits: { usdPerDay: number; usdPerJob: number; reservePercent: number; protectedPaths: string[] };
   approvals: FactoryConfig["approvals"];
   isolation: FactoryConfig["isolation"];
   box: BoxAvailability;
@@ -233,7 +233,7 @@ export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
   return {
     level: level.reason ? { ...level, reason: hide(level.reason) } : level,
     engine: cfg.engine,
-    limits: { usdPerDay: cfg.limits.usdPerDay, usdPerJob: cfg.limits.usdPerJob, protectedPaths: cfg.limits.protectedPaths },
+    limits: { usdPerDay: cfg.limits.usdPerDay, usdPerJob: cfg.limits.usdPerJob, reservePercent: cfg.limits.reservePercent, protectedPaths: cfg.limits.protectedPaths },
     approvals: cfg.approvals,
     isolation: cfg.isolation,
     box,

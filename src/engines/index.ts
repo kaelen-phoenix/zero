@@ -3,7 +3,7 @@ import { claudeEngine } from "./claude.js";
 import { antigravityEngine, codexEngine, customEngine } from "./cli.js";
 import type { Engine } from "./types.js";
 
-export type { Access, Engine, EngineRequest, EngineResult } from "./types.js";
+export type { Access, Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
 const BUILT_IN: Record<string, Engine> = {
   claude: claudeEngine,

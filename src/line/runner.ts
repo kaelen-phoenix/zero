@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentRunner } from "../agent.js";
+import type { AgentRun, AgentRunner } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
+import { onSubscription } from "../budget.js";
 import { effectiveLevel, findLine, type BoxAvailability, type Level, type LineConfig } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
@@ -45,8 +46,9 @@ type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
 
+/** `quota`: the subscription plan refused a call; the job waits in the queue until the plan renews. */
 class Interrupted extends Error {
-  constructor(readonly why: StopReason) {
+  constructor(readonly why: StopReason | "quota") {
     super(`interrupted: ${why}`);
   }
 }
@@ -141,6 +143,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
       if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: "Detenido por el dueño." });
+      if (why === "quota") log.info("subscription plan used up; job back in the queue until it renews", { job: jobId });
       return store.updateJob(jobId, { status: "queued" });
     }
     log.error("job crashed", { job: jobId, error: err instanceof Error ? err.stack : String(err) });
@@ -209,6 +212,14 @@ async function egressStop(deps: RunnerDeps, jobId: string, level: Level): Promis
 
 const remaining = (job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - job.costUsd, 0.01);
 
+/** The dollar cap of the next call: none on a subscription, whose real limit is the plan itself. */
+const callCap = (deps: RunnerDeps, job: Job) => (onSubscription(deps.store, deps.config) ? undefined : remaining(job));
+
+/** Stops the job when the plan refused the call; it resumes from the same station once the plan renews. */
+function quotaStop(run: AgentRun<unknown>): void {
+  if (run.quota?.limited) throw new Interrupted("quota");
+}
+
 /** What the pull request says: the plain spec, the issue it closes, and what the job cost. */
 export function deliveryBody(spec: Spec, job: Job): string {
   const closes = job.source?.kind === "github-issue" ? `\n\nCloses #${job.source.number}` : "";
@@ -251,7 +262,7 @@ async function specStation(
         cwd: copy.cwd,
         schema: SpecSchema,
         signal,
-        maxBudgetUsd: remaining(store.getJob(job.id)!),
+        maxBudgetUsd: callCap(deps, store.getJob(job.id)!),
         trace: { tracer, jobId: job.id, parentId: span.id },
         prompt: [
           requestBlock(job),
@@ -268,6 +279,7 @@ async function specStation(
         log.warn("spec modified the work copy; discarding", { job: job.id });
         copy.discardChanges();
       }
+      quotaStop(run);
       if (signal.aborted) return undefined;
       if (!run.ok || !run.output) {
         error = run.text;
@@ -323,7 +335,7 @@ async function buildLoop(
     if (attempt > line.maxAttempts) {
       return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
     }
-    if (job.costUsd >= job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0)) {
+    if (job.costUsd >= job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) && !onSubscription(store, config)) {
       if (decide(level, "budget-exceeded") === "fail") {
         return finalizeJob(deps, job, "failed", { reason: `Se agotó el presupuesto del trabajo ($${job.costUsd.toFixed(2)}).` });
       }
@@ -348,7 +360,7 @@ async function buildLoop(
           line: line.name,
           cwd: copy.cwd,
           signal,
-          maxBudgetUsd: remaining(job),
+          maxBudgetUsd: callCap(deps, job),
           trace: { tracer, jobId, parentId: span.id },
           prompt: [
             requestBlock(job),
@@ -365,6 +377,13 @@ async function buildLoop(
       if (signal.aborted) {
         attemptSpan.end("error", { "error.message": "interrupted" });
         throw new Interrupted(reasonOf(signal));
+      }
+      if (run.quota?.limited) {
+        // The plan cut the call short: this attempt does not count, and the build is redone after the renewal.
+        copy.discardChanges();
+        store.updateJob(jobId, { attempt: attempt - 1 });
+        attemptSpan.end("error", { "error.message": "subscription plan used up" });
+        quotaStop(run);
       }
       if (!run.ok) {
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
@@ -423,7 +442,7 @@ async function buildLoop(
             cwd: copy.cwd,
             schema: ReviewSchema,
             signal,
-            maxBudgetUsd: remaining(store.getJob(jobId)!),
+            maxBudgetUsd: callCap(deps, store.getJob(jobId)!),
             trace: { tracer, jobId, parentId: span.id },
             prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\n${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`,
           });
@@ -433,6 +452,8 @@ async function buildLoop(
             log.warn(`${station} modified the work copy; discarding`, { job: jobId });
             copy.discardChanges();
           }
+          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          quotaStop(run);
           if (signal.aborted || (run.ok && run.output)) {
             if (!run.output) return undefined;
             const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);

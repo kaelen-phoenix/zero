@@ -1,5 +1,6 @@
 import type { EgressReport, FactoryStatus, RequestResult, SkillList } from "./app.js";
 import type { SkillProblem } from "./skills.js";
+import type { BudgetState } from "./budget.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Job } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
@@ -16,6 +17,35 @@ const STATUS_TEXT: Record<Job["status"], string> = {
 };
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** When a plan window renews, in the owner's time: "18:30" today, "lun 09:00" another day. */
+export function resetTime(iso: string, now = new Date()): string {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (at.toDateString() === now.toDateString()) return time;
+  return `${at.toLocaleDateString("es-AR", { weekday: "short" }).replace(".", "")} ${time}`;
+}
+
+/** "5 horas al 45% (se renueva 18:30) · semana al 32% (se renueva lun 09:00)". */
+export function planSummary(b: BudgetState, now = new Date()): string {
+  return b.windows
+    .map((w) => `${w.label} ${w.utilization === undefined ? (w.status === "exhausted" ? "agotado" : "sin dato") : `al ${Math.round(w.utilization * 100)}%`}${w.resetsAt ? ` (se renueva ${resetTime(w.resetsAt, now)})` : ""}`)
+    .join(" · ");
+}
+
+/** One line on what limits the factory today: the subscription plan or the daily dollar cap. */
+export function budgetLine(b: BudgetState, now = new Date()): string {
+  const pause = b.reached ? ` · PAUSADA${b.until ? ` hasta ${resetTime(b.until, now)}` : " hasta mañana"}: ${b.reason}` : "";
+  if (b.billing === "subscription") {
+    const reserve = b.reservePercent ? ` · reserva para vos: ${b.reservePercent}%` : "";
+    const billed = b.spentUsd > 0 ? ` · gasto real hoy ${usd(b.spentUsd)} de ${usd(b.limitUsd)}` : "";
+    return `Suscripción: ${planSummary(b, now) || "sin datos del cupo todavía"}${reserve}${pause} · costo estimado hoy ${usd(b.estimatedUsd)} (no se cobra)${billed}`;
+  }
+  if (b.billing === "unknown" && b.estimatedUsd > b.spentUsd) {
+    return `Presupuesto: todavía no se sabe si el motor usa una suscripción o se paga por uso; se ve en la próxima llamada · costo estimado hoy ${usd(b.estimatedUsd)}${pause}`;
+  }
+  return `Presupuesto de hoy: ${usd(b.spentUsd)} de ${usd(b.limitUsd)}${pause}`;
+}
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
@@ -79,8 +109,8 @@ export function formatStatus(s: FactoryStatus): string {
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
-  out.push(`Presupuesto de hoy: ${usd(s.budget.spentUsd)} de ${usd(s.budget.limitUsd)}${s.budget.reached ? " · ALCANZADO: los trabajos nuevos esperan a mañana" : ""}`);
-  out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo ${usd(t.costUsd)}`);
+  out.push(budgetLine(s.budget));
+  out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;
     out.push("", `${title}:`);
