@@ -3,12 +3,12 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addSkill, answer, briefing, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatRequest, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatRequest, formatSkills, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -51,6 +51,9 @@ Panel en el navegador:
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
+  zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
+  zero skill add|remove <skill> --station <agente> [--line <nombre>]
+                                 Asigna o quita una skill (agentes: spec, build, review, security, reply)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
@@ -70,6 +73,7 @@ async function main(argv: string[]): Promise<number> {
       note: { type: "string" },
       days: { type: "string" },
       label: { type: "string" },
+      station: { type: "string" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -225,6 +229,18 @@ async function main(argv: string[]): Promise<number> {
         const started = await ensureDaemon(ctx);
         printPanel(panelLinks(ctx, { rotate: action === "rotate" }), action === "rotate");
         if (started) console.log("\nLa fábrica estaba apagada: la encendí (el panel tarda unos segundos en responder).");
+        return 0;
+      }
+      case "skill": {
+        const [action, skill] = rest;
+        if (action === "list" || !action) {
+          console.log(formatSkills(skillList(ctx)));
+          return 0;
+        }
+        if (action !== "add" && action !== "remove") break;
+        if (!skill || !values.station) throw new Error(`Indicá la skill y el agente: zero skill ${action} <skill> --station <agente> [--line <nombre>]`);
+        const input = { skill, station: values.station, line: values.line };
+        console.log(action === "add" ? await addSkill(ctx, input) : await removeSkill(ctx, input));
         return 0;
       }
       case "egress": {

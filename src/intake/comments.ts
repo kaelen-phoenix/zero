@@ -92,6 +92,7 @@ async function handle(ctx: FactoryContext, line: LineConfig, repository: string,
   await mkdir(cwd, { recursive: true });
   const run = await runAgent({
     station: "reply",
+    line: line.name,
     cwd,
     schema: ReplySchema,
     maxBudgetUsd: 0.5,

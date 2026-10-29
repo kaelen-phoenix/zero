@@ -1,5 +1,5 @@
 import { query, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Access, Engine } from "./types.js";
+import type { Access, Engine, EngineRequest } from "./types.js";
 
 /**
  * Tools per access level. Anything not listed is denied (`dontAsk`), so a run
@@ -10,29 +10,41 @@ const TOOLS: Record<Access, string[]> = {
   write: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
 };
 
+/**
+ * The Agent SDK options for one run. Only the assigned skills are enabled
+ * (none when there are none), loaded from zero's staged copy; skills never
+ * change the tools of the access level.
+ */
+export function claudeOptions(req: EngineRequest, abort: AbortController): Options {
+  return {
+    cwd: req.cwd,
+    model: req.model,
+    maxTurns: req.maxTurns,
+    maxBudgetUsd: req.maxBudgetUsd,
+    abortController: abort,
+    systemPrompt: { type: "preset", preset: "claude_code", append: req.instructions },
+    // Load the target repo's CLAUDE.md/AGENTS.md and project settings, never the runner's user settings.
+    settingSources: ["project"],
+    allowedTools: TOOLS[req.access],
+    permissionMode: "dontAsk",
+    skills: req.skills?.skills.map((s) => s.id) ?? [],
+    ...(req.skills?.skills.length && { plugins: [{ type: "local" as const, path: req.skills.dir }] }),
+    ...(req.schema && { outputFormat: { type: "json_schema", schema: req.schema } }),
+  };
+}
+
 /** Claude Code through the Agent SDK (bundles its own runtime; needs ANTHROPIC_API_KEY). */
 export const claudeEngine: Engine = {
   name: "claude",
   nativeSchema: true,
+  nativeSkills: true,
   hosts: ["api.anthropic.com"],
   async run(req) {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), req.timeoutMs);
     const cancel = () => abort.abort();
     req.signal?.addEventListener("abort", cancel, { once: true });
-    const options: Options = {
-      cwd: req.cwd,
-      model: req.model,
-      maxTurns: req.maxTurns,
-      maxBudgetUsd: req.maxBudgetUsd,
-      abortController: abort,
-      systemPrompt: { type: "preset", preset: "claude_code", append: req.instructions },
-      // Load the target repo's CLAUDE.md/AGENTS.md and project settings, never the runner's user settings.
-      settingSources: ["project"],
-      allowedTools: TOOLS[req.access],
-      permissionMode: "dontAsk",
-      ...(req.schema && { outputFormat: { type: "json_schema", schema: req.schema } }),
-    };
+    const options = claudeOptions(req, abort);
 
     let result: SDKResultMessage | undefined;
     try {

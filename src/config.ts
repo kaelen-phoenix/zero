@@ -7,16 +7,21 @@ import { findSecret } from "./secrets.js";
 export const LEVELS = ["L0", "L1", "L2", "L3"] as const;
 export type Level = (typeof LEVELS)[number];
 
-const StationSchema = z.object({
+const stationSchema = (defaults: { maxTurns: number; timeoutMinutes: number }) => z.object({
   /** Engine for this station; defaults to the factory engine. */
   engine: z.string().optional(),
   /** Model passed to the engine; omitted = the engine's own default. */
   model: z.string().optional(),
   /** Honoured by engines that support it (claude). */
-  maxTurns: z.number().int().positive().optional(),
+  maxTurns: z.number().int().positive().default(defaults.maxTurns),
   /** Hard wall-clock limit, enforced by zero for every engine. */
-  timeoutMinutes: z.number().positive(),
+  timeoutMinutes: z.number().positive().default(defaults.timeoutMinutes),
+  /** Skills installed in the owner's Claude Code, by name (or `plugin:skill`), for every line. */
+  skills: z.array(z.string().min(1)).default([]),
 });
+
+/** Skills a line adds to an agent, on top of the global ones. */
+const LineSkillsSchema = z.object({ skills: z.array(z.string().min(1)).default([]) }).strict();
 
 /** A site for the egress rules: a host name (it covers its subdomains) or an IPv4 address, optionally with `:port`. */
 export const SiteSchema = z
@@ -53,6 +58,12 @@ export const LineSchema = z.object({
   issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
+  /** Per-agent additions for this line only; unknown agents are refused. */
+  stations: z
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema })
+    .partial()
+    .strict()
+    .optional(),
 });
 
 export const FactorySchema = z
@@ -99,13 +110,13 @@ export const FactorySchema = z
       .prefault({}),
     stations: z
       .object({
-        spec: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
-        build: StationSchema.prefault({ maxTurns: 150, timeoutMinutes: 45 }),
-        review: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
+        spec: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
+        build: stationSchema({ maxTurns: 150, timeoutMinutes: 45 }).prefault({}),
+        review: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** A second, security-only read; give it another engine for an independent look. */
-        security: StationSchema.prefault({ maxTurns: 40, timeoutMinutes: 15 }),
+        security: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Answers the owner's comments on an issue; no repository, only the facts zero computes. */
-        reply: StationSchema.prefault({ maxTurns: 5, timeoutMinutes: 5 }),
+        reply: stationSchema({ maxTurns: 5, timeoutMinutes: 5 }).prefault({}),
       })
       .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),

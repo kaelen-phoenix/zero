@@ -247,6 +247,7 @@ async function specStation(
     for (let tryNo = 1; tryNo <= 2 && !spec; tryNo++) {
       const run = await deps.runAgent({
         station: "spec",
+        line: line.name,
         cwd: copy.cwd,
         schema: SpecSchema,
         signal,
@@ -344,6 +345,7 @@ async function buildLoop(
       const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) =>
         deps.runAgent({
           station: "build",
+          line: line.name,
           cwd: copy.cwd,
           signal,
           maxBudgetUsd: remaining(job),
@@ -417,6 +419,7 @@ async function buildLoop(
         for (let tryNo = 1; tryNo <= 2; tryNo++) {
           const run = await deps.runAgent({
             station,
+            line: line.name,
             cwd: copy.cwd,
             schema: ReviewSchema,
             signal,
