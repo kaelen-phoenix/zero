@@ -97,6 +97,8 @@ function describe(s: SpanRow): string {
   if (a["zero.attempt"] !== undefined) parts.push(`intento ${a["zero.attempt"]}`);
   if (a["gen_ai.agent.name"]) parts.push(`${a["gen_ai.agent.name"]} vía ${spanEngine(a)}`);
   if (typeof a["zero.cost.usd"] === "number") parts.push(a["zero.cost.source"] === "unknown" ? "costo desconocido" : traceUsd(a["zero.cost.usd"] as number));
+  if (a["zero.skills"]) parts.push(`skills: ${a["zero.skills"]}`);
+  if (a["zero.skills.missing"]) parts.push(`skills faltantes: ${a["zero.skills.missing"]}`);
   if (a["process.command_line"]) parts.push(`\`${a["process.command_line"]}\` → ${a["process.exit.code"]}`);
   if (a["zero.outcome"]) parts.push(String(a["zero.outcome"]));
   if (a["error.message"]) parts.push(`error: ${a["error.message"]}`);

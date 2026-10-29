@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions } from "./agent.js";
-import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, type Skill, type SkillProblem, type SkillStation } from "./skills.js";
+import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
@@ -203,6 +203,7 @@ export interface AgentGuide {
   timeoutMinutes: number;
   access: "read" | "write";
   instructions: string;
+  skills: Pick<AgentSkills, "general" | "lines">;
 }
 
 /** What the read-only "Qué es zero" and "Agentes" pages show: configuration only, never a secret. */
@@ -228,6 +229,7 @@ export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
   // Box problems may name a custom engine's secrets; these pages never show them.
   const names = Object.values(cfg.engines).flatMap((e) => e.secrets);
   const hide = (text: string) => names.reduce((t, n) => t.split(n).join("(credencial)"), text);
+  const skills = agentSkills(cfg);
   return {
     level: level.reason ? { ...level, reason: hide(level.reason) } : level,
     engine: cfg.engine,
@@ -239,7 +241,17 @@ export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
     agents: await Promise.all(
       AGENT_STATIONS.map(async (station) => {
         const s = cfg.stations[station];
-        return { station, engine: s.engine ?? cfg.engine, model: s.model, maxTurns: s.maxTurns, timeoutMinutes: s.timeoutMinutes, access: AGENT_ACCESS[station], instructions: await agentInstructions(station) };
+        const { general, lines } = skills.find((k) => k.station === station) ?? { general: [], lines: [] };
+        return {
+          station,
+          engine: s.engine ?? cfg.engine,
+          model: s.model,
+          maxTurns: s.maxTurns,
+          timeoutMinutes: s.timeoutMinutes,
+          access: AGENT_ACCESS[station],
+          instructions: await agentInstructions(station),
+          skills: { general, lines },
+        };
       }),
     ),
     lines: cfg.lines.map(({ name, repo, baseBranch, verify, integrate, autoMerge, issues }) => ({ name, repo, baseBranch, verify, integrate, autoMerge, issues })),
@@ -456,6 +468,37 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
 
 export function lines(config: FactoryConfig) {
   return config.lines.map((l) => ({ name: l.name, repo: l.repo, baseBranch: l.baseBranch, integrate: l.integrate, verify: l.verify }));
+}
+
+export interface AgentSkills {
+  station: SkillStation;
+  general: SkillView[];
+  /** Only lines that add skills to this agent. */
+  lines: { line: string; skills: SkillView[] }[];
+}
+
+/** Read-only: each agent's skills, general and per line, as the panel and the chat show them. */
+export function agentSkills(config: FactoryConfig, available: Skill[] = discoverSkills()): AgentSkills[] {
+  return SKILL_STATIONS.map((station) => ({
+    station,
+    general: config.stations[station].skills.map((s) => skillView(s, available)),
+    lines: config.lines.flatMap((l) => {
+      const skills = l.stations?.[station]?.skills ?? [];
+      return skills.length ? [{ line: l.name, skills: skills.map((s) => skillView(s, available)) }] : [];
+    }),
+  }));
+}
+
+/** What the chat's zero_lines returns: the lines and what each agent is given. */
+export function linesWithSkills(config: FactoryConfig) {
+  const agents = agentSkills(config);
+  return {
+    lines: lines(config).map((l) => ({
+      ...l,
+      skills: Object.fromEntries(agents.flatMap((a) => a.lines.filter((x) => x.line === l.name).map((x) => [a.station, x.skills]))),
+    })),
+    skills: Object.fromEntries(agents.map((a) => [a.station, a.general])),
+  };
 }
 
 export interface PanelLinks {

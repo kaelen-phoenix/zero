@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse } from "yaml";
 import type { FactoryConfig } from "./config.js";
 
 /** Stations staffed by an agent, which are the only ones that can get skills. */
@@ -17,6 +18,8 @@ export interface Skill {
   source: "personal" | "plugin";
   plugin?: string;
   dir: string;
+  /** Short description from the SKILL.md frontmatter, when it has one. */
+  description?: string;
 }
 
 /** A skill copied for one agent run; `id` is its directory under `<dir>/skills`. */
@@ -31,6 +34,15 @@ export interface StagedSkill {
 export interface StagedSkills {
   dir: string;
   skills: StagedSkill[];
+}
+
+/** How an assigned skill is shown: what it resolves to, or why it does not. */
+export interface SkillView {
+  /** As assigned. */
+  name: string;
+  fullName?: string;
+  description?: string;
+  missing?: string;
 }
 
 export interface SkillProblem {
@@ -51,6 +63,38 @@ function skillDirs(root: string): string[] {
   } catch {
     return [];
   }
+}
+
+const DESCRIPTION_MAX = 200;
+
+/** One line of at most 200 characters, cut with an ellipsis. */
+export function shortDescription(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > DESCRIPTION_MAX ? `${line.slice(0, DESCRIPTION_MAX - 1).trimEnd()}…` : line;
+}
+
+/** The frontmatter `description`; anything missing or unparseable means no description. */
+export function skillDescription(text: string): string | undefined {
+  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!m) return undefined;
+  try {
+    const data = parse(m[1]!) as unknown;
+    const d = data && typeof data === "object" ? (data as Record<string, unknown>).description : undefined;
+    return typeof d === "string" && d.trim() ? shortDescription(d) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withDescription(skill: Skill): Skill {
+  let text: string;
+  try {
+    text = readFileSync(join(skill.dir, "SKILL.md"), "utf8");
+  } catch {
+    return skill;
+  }
+  const description = skillDescription(text);
+  return description ? { ...skill, description } : skill;
 }
 
 /** Personal skills and those of installed plugins; anything missing or unreadable is simply left out. */
@@ -78,7 +122,7 @@ export function discoverSkills(claudeHome = defaultClaudeHome()): Skill[] {
       }
     }
   }
-  return out;
+  return out.map(withDescription);
 }
 
 /** `plugin:skill` resolves by full name; a short name only when exactly one skill has it. */
@@ -91,6 +135,12 @@ export function resolveSkill(ref: string, available: Skill[]): { skill?: Skill; 
   if (matches.length === 1) return { skill: matches[0] };
   if (matches.length > 1) return { problem: `hay varias skills con ese nombre; usá el nombre completo: ${matches.map((s) => s.fullName).join(", ")}` };
   return { problem: "no está instalada en Claude Code" };
+}
+
+export function skillView(ref: string, available: Skill[]): SkillView {
+  const { skill, problem } = resolveSkill(ref, available);
+  if (!skill) return { name: ref, missing: problem };
+  return { name: ref, fullName: skill.fullName, ...(skill.description && { description: skill.description }) };
 }
 
 /** The global list for the agent plus the line's own, without duplicates. */
