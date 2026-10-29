@@ -1,18 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentInstructions, createAgentRunner, type EngineExecute } from "../src/agent.js";
-import { addSkill, factoryStatus, removeSkill, skillList } from "../src/app.js";
+import { addSkill, agentSkills, factoryStatus, removeSkill, skillList, trace } from "../src/app.js";
 import { boxRunArgs, type BoxRunSpec } from "../src/box/run.js";
 import { parseFactory } from "../src/config.js";
 import { claudeOptions } from "../src/engines/claude.js";
 import type { EngineRequest } from "../src/engines/types.js";
 import { formatSkills, formatStatus } from "../src/format.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
-import { assignedSkills, discoverSkills, resolveSkill, stageSkills, stripAllowedTools, unstageSkills, type Skill } from "../src/skills.js";
+import { panelKey, sessionFor } from "../src/panel/key.js";
+import { createPanelServer } from "../src/panel/server.js";
+import { assignedSkills, discoverSkills, resolveSkill, shortDescription, skillDescription, skillView, stageSkills, stripAllowedTools, unstageSkills, type Skill } from "../src/skills.js";
 import { cleanup, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 /** A Claude home with a personal skill `pdf` and the plugin `vercel@mkt` carrying `nextjs`. */
@@ -263,5 +266,164 @@ describe("skills in the box", () => {
 
   it("adds no mount without skills", () => {
     expect(boxRunArgs(spec()).join(" ")).not.toContain("/skills");
+  });
+});
+
+describe("skill descriptions", () => {
+  it("reads the frontmatter description", () => {
+    const home = claudeHome({ "skills/pdf/SKILL.md": "---\nname: pdf\ndescription: Lee y genera PDF\n---\nPDF-BODY\n" });
+    expect(discoverSkills(home).find((s) => s.name === "pdf")!.description).toBe("Lee y genera PDF");
+  });
+
+  it("discovers skills without frontmatter or with invalid YAML, without a description", () => {
+    const home = claudeHome({ "skills/plain/SKILL.md": "just text\n", "skills/broken/SKILL.md": "---\ndescription: [unclosed\n  : : x\n---\nbody\n" });
+    const found = discoverSkills(home);
+    for (const name of ["plain", "broken"]) {
+      const s = found.find((k) => k.name === name)!;
+      expect(s).toBeDefined();
+      expect(s.description).toBeUndefined();
+    }
+    expect(skillDescription("---\ndescription: 3\n---\n")).toBeUndefined();
+  });
+
+  it("cuts long descriptions to one line of at most 200 characters", () => {
+    const long = Array.from({ length: 10 }, () => "palabra ".repeat(6).trim()).join("\n  ");
+    const text = `---\ndescription: |\n  ${long}\n  ${"x".repeat(500 - long.length)}\n---\n`;
+    const d = skillDescription(text)!;
+    expect(d).not.toContain("\n");
+    expect(d.length).toBeLessThanOrEqual(200);
+    expect(d.endsWith("…")).toBe(true);
+    expect(shortDescription("a\n  b")).toBe("a b");
+  });
+});
+
+/** A Claude home where pdf and vercel:nextjs have descriptions; the second one carries markup. */
+function describedHome(): string {
+  const home = tempDir("claude-home-");
+  const plugin = tempDir("plugin-");
+  writeTree(home, { "skills/pdf/SKILL.md": "---\nname: pdf\ndescription: Lee y genera PDF\n---\nPDF-BODY\n" });
+  writeTree(plugin, { "skills/nextjs/SKILL.md": "---\nname: nextjs\ndescription: Next.js <script>alert(1)</script>\n---\nNEXT-BODY\n" });
+  writeTree(home, { "plugins/installed_plugins.json": JSON.stringify({ version: 2, plugins: { "vercel@mkt": [{ scope: "user", installPath: plugin, version: "1" }] } }) });
+  return home;
+}
+
+const assigned = () => ({
+  stations: { build: { skills: ["pdf"] }, review: { skills: ["nope"] } },
+  lines: [{ name: "solilok", repo: gitRepo(), stations: { build: { skills: ["vercel:nextjs"] } } }],
+});
+
+describe("skills per agent", () => {
+  beforeEach(() => {
+    process.env.CLAUDE_CONFIG_DIR = describedHome();
+  });
+
+  it("views a skill as resolved or missing", () => {
+    const available = discoverSkills();
+    expect(skillView("pdf", available)).toEqual({ name: "pdf", fullName: "pdf", description: "Lee y genera PDF" });
+    expect(skillView("nope", available)).toEqual({ name: "nope", missing: "no está instalada en Claude Code" });
+  });
+
+  it("lists general and per-line skills for every agent", () => {
+    const all = agentSkills(testFactory(assigned()).config);
+    expect(all.map((a) => a.station)).toEqual(["spec", "build", "review", "security", "reply"]);
+    const build = all.find((a) => a.station === "build")!;
+    expect(build.general).toEqual([{ name: "pdf", fullName: "pdf", description: "Lee y genera PDF" }]);
+    expect(build.lines).toEqual([{ line: "solilok", skills: [{ name: "vercel:nextjs", fullName: "vercel:nextjs", description: expect.stringContaining("Next.js") }] }]);
+    expect(all.find((a) => a.station === "review")!.general).toEqual([{ name: "nope", missing: "no está instalada en Claude Code" }]);
+    expect(all.find((a) => a.station === "spec")).toEqual({ station: "spec", general: [], lines: [] });
+  });
+
+  it("are shown read-only on the panel's agents page", async () => {
+    const ctx = testFactory(assigned());
+    const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets) });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const cookie = `zero_panel=${sessionFor(panelKey(ctx.secrets))}`;
+      const html = await (await fetch(base + "/agents", { headers: { cookie } })).text();
+      const card = (station: string) => html.split(`class="card agent" data-station="${station}"`)[1]!.split('class="card')[0]!;
+      const build = card("build");
+      expect(build).toContain("<code>pdf</code>");
+      expect(build).toContain("Lee y genera PDF");
+      const group = build.split('data-line="solilok"')[1]!;
+      expect(group).toContain("<b>solilok</b>");
+      expect(group).toContain("<code>vercel:nextjs</code>");
+      expect(card("review")).toMatch(/nope[\s\S]*faltante[\s\S]*no está instalada en Claude Code/);
+      expect(card("spec")).toContain("No tiene skills asignadas.");
+      expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+      expect(html).not.toContain("<script>alert(1)");
+      for (const tag of ["<form", "<button", "<input"]) expect(html).not.toContain(tag);
+      const before = readFileSync(ctx.home.config, "utf8");
+      const r = await fetch(base + "/agents", { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: "skill=pdf", redirect: "manual" });
+      expect(r.status).toBe(404);
+      expect(readFileSync(ctx.home.config, "utf8")).toBe(before);
+    } finally {
+      await new Promise((r) => (server.closeAllConnections(), server.close(r)));
+    }
+  });
+
+  it("are shown to the chat by zero_lines, which stays read-only", async () => {
+    const ctx = testFactory(assigned());
+    const server = createZeroMcpServer(ctx.home, { autoStart: false });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(clientSide);
+    expect((await client.listTools()).tools.find((t) => t.name === "zero_lines")!.annotations?.readOnlyHint).toBe(true);
+    const r = (await client.callTool({ name: "zero_lines", arguments: {} })) as { content: { text: string }[] };
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.skills.build).toEqual([{ name: "pdf", fullName: "pdf", description: "Lee y genera PDF" }]);
+    expect(out.skills.review).toEqual([{ name: "nope", missing: "no está instalada en Claude Code" }]);
+    expect(out.lines[0]).toMatchObject({ name: "solilok", repo: ctx.config.lines[0]!.repo, baseBranch: ctx.config.lines[0]!.baseBranch });
+    expect(out.lines[0].skills.build).toEqual([{ name: "vercel:nextjs", fullName: "vercel:nextjs", description: expect.stringContaining("Next.js") }]);
+  });
+});
+
+describe("skills in the trace", () => {
+  const ok: EngineExecute = async () => ({ ok: true, text: "ok", costUsd: 0.01 });
+  const agentSpans = (ctx: ReturnType<typeof testFactory>, job: string) => ctx.store.spansForJob(job).filter((s) => s.name === "gen_ai.invoke_agent");
+
+  const jobTrace = (ctx: ReturnType<typeof testFactory>) => {
+    const job = ctx.store.createJob({ line: "solilok", kind: "request", request: "x", budgetUsd: 3 });
+    return { job, trace: { tracer: ctx.tracer, jobId: job.id, parentId: ctx.tracer.start("zero.job", { jobId: job.id }).id } };
+  };
+
+  async function tracedRun(definition: Record<string, unknown>, station: "build" | "spec" = "build") {
+    const ctx = testFactory(definition);
+    const { job, trace: t } = jobTrace(ctx);
+    await createAgentRunner(ctx.config, { execute: ok })({ station, prompt: "p", cwd: tempDir(), line: "solilok", trace: t });
+    return { attrs: agentSpans(ctx, job.id)[0]!.attrs, text: trace(ctx, job.id) };
+  }
+  const line = (build?: string[]) => [{ name: "solilok", repo: gitRepo(), ...(build && { stations: { build: { skills: build } } }) }];
+
+  it("records the skills of each run", async () => {
+    const { attrs, text } = await tracedRun({ stations: { build: { skills: ["pdf"] } }, lines: line(["vercel:nextjs"]) });
+    expect(attrs["zero.skills"]).toBe("pdf, vercel:nextjs");
+    expect(attrs).not.toHaveProperty("zero.skills.missing");
+    expect(text).toContain("skills: pdf, vercel:nextjs");
+    expect(text).not.toContain("skills faltantes");
+  });
+
+  it("records the missing ones", async () => {
+    const { attrs, text } = await tracedRun({ stations: { build: { skills: ["pdf", "nope"] } }, lines: line(["vercel:nextjs"]) });
+    expect(attrs["zero.skills"]).toBe("pdf, vercel:nextjs");
+    expect(attrs["zero.skills.missing"]).toBe("nope");
+    expect(text).toContain("skills faltantes: nope");
+  });
+
+  it("records nothing without skills", async () => {
+    const { attrs, text } = await tracedRun({ lines: line() }, "spec");
+    expect(attrs).not.toHaveProperty("zero.skills");
+    expect(attrs).not.toHaveProperty("zero.skills.missing");
+    expect(text).not.toContain("skills");
+  });
+
+  it("records each run on its own span", async () => {
+    const ctx = testFactory({ stations: { build: { skills: ["pdf"] } }, lines: line() });
+    const { job, trace: t } = jobTrace(ctx);
+    const req = { station: "build" as const, prompt: "p", cwd: tempDir(), line: "solilok", trace: t };
+    await createAgentRunner(ctx.config, { execute: ok })(req);
+    await createAgentRunner(parseFactory(readFileSync(ctx.home.config, "utf8").replace("- pdf", "- vercel:nextjs")), { execute: ok })(req);
+    expect(agentSpans(ctx, job.id).map((s) => s.attrs["zero.skills"])).toEqual(["pdf", "vercel:nextjs"]);
   });
 });

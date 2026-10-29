@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import type { EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
+import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
 import type { StationName } from "../config.js";
 import { bytes, describeJobStatus, jobName } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
+import type { SkillView } from "../skills.js";
 
 /** Pages of the control panel: plain HTML rendered on the server, made for a phone first. */
 
@@ -512,6 +513,22 @@ const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { m
 
 const codes = (items: string[], none: string) => (items.length ? items.map((c) => `<code>${esc(c)}</code>`).join(", ") : none);
 
+function skillItems(skills: SkillView[]): string {
+  return `<ul class="skills">${skills
+    .map(
+      (s) =>
+        `<li data-skill="${esc(s.name)}"><code>${esc(s.name)}</code>${s.missing ? ` <span class="badge warn">faltante</span> <span class="muted">${esc(s.missing)}</span>` : s.description ? ` — ${esc(s.description)}` : ""}</li>`,
+    )
+    .join("")}</ul>`;
+}
+
+function agentSkillsSection(s: AgentGuide["skills"]): string {
+  if (!s.general.length && !s.lines.length) return `<div class="skills"><h3>Skills</h3><p class="muted">No tiene skills asignadas.</p></div>`;
+  const general = s.general.length ? `<p>Generales:</p>${skillItems(s.general)}` : `<p class="muted">Sin skills generales.</p>`;
+  const lines = s.lines.map((l) => `<div class="skills-line" data-line="${esc(l.line)}"><p>Suma la línea <b>${esc(l.line)}</b>:</p>${skillItems(l.skills)}</div>`).join("");
+  return `<div class="skills"><h3>Skills</h3>${general}${lines}</div>`;
+}
+
 export function agentsPage(g: FactoryGuide, nonce: string): string {
   const agents = g.agents
     .map((a) => {
@@ -523,6 +540,7 @@ export function agentsPage(g: FactoryGuide, nonce: string): string {
 <li>Modelo: ${a.model ? `<b>${esc(a.model)}</b>` : "el predeterminado del motor"}</li>
 <li>Máximo de turnos: <b>${a.maxTurns ?? "sin límite"}</b></li>
 <li>Máximo de minutos: <b>${esc(a.timeoutMinutes)}</b></li></ul>
+${agentSkillsSection(a.skills)}
 <details class="ins"><summary>ver instrucciones completas</summary><pre>${esc(a.instructions)}</pre></details></div>`;
     })
     .join("");

@@ -94,17 +94,21 @@ export function toEngineSchema(schema: z.ZodType): Record<string, unknown> {
 }
 
 /** The station's skills on the line that resolve; the others are logged and skipped (`zero status` lists them). */
-function resolvedSkills(config: FactoryConfig, station: AgentStation, line: string | undefined, claudeHome?: string): Skill[] {
+function resolvedSkills(config: FactoryConfig, station: AgentStation, line: string | undefined, claudeHome?: string): { skills: Skill[]; missing: string[] } {
   const refs = assignedSkills(config, station, line);
-  if (!refs.length) return [];
+  if (!refs.length) return { skills: [], missing: [] };
   const available = discoverSkills(claudeHome);
-  const out: Skill[] = [];
+  const skills: Skill[] = [];
+  const missing: string[] = [];
   for (const ref of refs) {
     const { skill, problem } = resolveSkill(ref, available);
-    if (skill) out.push(skill);
-    else log.warn(`agent:${station} skill ${ref} skipped`, { reason: problem });
+    if (skill) skills.push(skill);
+    else {
+      missing.push(ref);
+      log.warn(`agent:${station} skill ${ref} skipped`, { reason: problem });
+    }
   }
-  return out;
+  return { skills, missing };
 }
 
 export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute; claudeHome?: string } = {}): AgentRunner {
@@ -127,7 +131,11 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
     let skills: StagedSkills | undefined;
     let result: EngineResult;
     try {
-      const wanted = resolvedSkills(config, station, line, opts.claudeHome);
+      const { skills: wanted, missing } = resolvedSkills(config, station, line, opts.claudeHome);
+      span?.set({
+        "zero.skills": wanted.length ? wanted.map((s) => s.fullName).join(", ") : undefined,
+        "zero.skills.missing": missing.length ? missing.join(", ") : undefined,
+      });
       if (wanted.length) skills = await stageSkills(wanted);
       const instructions = await stationInstructions(station);
       result = await execute(engine, {

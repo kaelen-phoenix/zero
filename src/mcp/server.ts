@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, lines, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { formatEgress, formatJob, formatRequest, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 
@@ -159,8 +159,8 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
 
   server.registerTool(
     "zero_lines",
-    { title: "Proyectos de la fábrica", description: "The projects (lines) this factory works on.", inputSchema: {}, annotations: { readOnlyHint: true } },
-    () => withFactory(home, (ctx) => JSON.stringify(lines(ctx.config), null, 2)),
+    { title: "Proyectos de la fábrica", description: "The projects (lines) this factory works on, and what each agent is given in general and per line.", inputSchema: {}, annotations: { readOnlyHint: true } },
+    () => withFactory(home, (ctx) => JSON.stringify(linesWithSkills(ctx.config), null, 2)),
   );
 
   return server;
