@@ -229,6 +229,15 @@ npm run typecheck && npm test && npm run build
 
 zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y las convenciones para agentes en `AGENTS.md`.
 
+## Hacia dónde va: la intención es el producto
+
+Todo orquestador de IA parte del mismo supuesto: el código es el producto y los agentes son obreros que lo tocan. zero apunta a dar vuelta eso. **El producto es la intención del dueño; el código es su consecuencia**, algo que la fábrica puede volver a producir cuando haga falta.
+
+- **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. El dueño lee y edita intenciones, en su idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
+- **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
+- **Turno nocturno (en camino).** Cuando no hay trabajo y sobra presupuesto, la estación de solo lectura `scout` revisa el townhall, las trazas y las specs sin cubrir, y escribe propuestas de trabajo. El dueño se despierta con ellas en el informe y las aprueba o las rechaza; la fábrica aprende de los rechazos. Pasa de esperar pedidos a tener iniciativa, con la regla de siempre: nada sale hacia afuera sin el ok del dueño.
+- **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
+
 ## Próximas etapas
 
-Responder consultas desde el issue · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · entrada desde GitHub/Linear/Jira · MCP gobernado para los agentes de las estaciones.
+Skills asignables por agente y por línea · simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · MCP gobernado para los agentes de las estaciones.
