@@ -59,6 +59,7 @@ export function proposalIssueBody(proposal: Proposal, line: Pick<LineConfig, "re
     `## Por qué\n${proposal.why}`,
     `## Qué cambiaría\n${proposal.change}`,
     `## Archivos que tocaría\n${files}`,
+    ...(proposal.sourceIssue !== undefined && proposal.sourceIssueUrl ? [`Nació del issue #${proposal.sourceIssue}: ${proposal.sourceIssueUrl}`] : []),
     `Costo estimado: $${proposal.estimatedUsd.toFixed(2)} · propuesta \`${proposal.id}\``,
     howToDecide(proposal, line.issues?.label ?? "zero", proposalAutonomy(config, line, proposal)),
   ].join("\n\n");

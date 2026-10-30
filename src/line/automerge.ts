@@ -17,6 +17,8 @@ export interface PullRequestState {
   /** `null` while GitHub is still working it out. */
   mergeable: boolean | null;
   headSha: string;
+  /** The commit GitHub merged it with (merge or squash), once merged. */
+  mergeCommitSha?: string;
 }
 
 export interface Check {
@@ -31,8 +33,8 @@ export interface MergeApi {
   pullRequest(number: number): Promise<PullRequestState>;
   /** Check runs and commit statuses of a commit. */
   checks(sha: string): Promise<Check[]>;
-  /** Merges only if the head is still `sha`, so nothing pushed after the checks gets in. */
-  merge(number: number, sha: string): Promise<void>;
+  /** Merges only if the head is still `sha`, so nothing pushed after the checks gets in; returns the merge commit. */
+  merge(number: number, sha: string): Promise<string | undefined>;
   deleteBranch(branch: string): Promise<void>;
   comment(number: number, body: string): Promise<void>;
 }
@@ -46,7 +48,7 @@ export function githubMerges(token: string, repository: string): MergeApi {
   return {
     async pullRequest(number) {
       const { data } = await gh.pulls.get({ owner, repo, pull_number: number });
-      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha };
+      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha, mergeCommitSha: data.merged ? (data.merge_commit_sha ?? undefined) : undefined };
     },
     async checks(sha) {
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
@@ -57,7 +59,7 @@ export function githubMerges(token: string, repository: string): MergeApi {
       ];
     },
     async merge(number, sha) {
-      await gh.pulls.merge({ owner, repo, pull_number: number, sha, merge_method: "merge" });
+      return (await gh.pulls.merge({ owner, repo, pull_number: number, sha, merge_method: "merge" })).data.sha;
     },
     async deleteBranch(branch) {
       await gh.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
@@ -107,6 +109,12 @@ export function pullRequestOf(url: string): { repository: string; number: number
   return m ? { repository: m[1]!, number: Number(m[2]) } : undefined;
 }
 
+/** Keeps the commit a job's pull request was merged with, so a later revert of it can be recognised. */
+export function recordMergeCommit(ctx: FactoryContext, job: Job, commit: string | undefined): Job {
+  if (!commit || !job.delivery || job.delivery.commit === commit) return job;
+  return ctx.store.updateJob(job.id, { delivery: { ...job.delivery, commit } });
+}
+
 /** Delivered jobs whose pull request the factory still has to merge. */
 export function watchedJobs(ctx: FactoryContext): Job[] {
   return ctx.store.listJobs({ status: ["delivered"], limit: 200 }).filter((job) => {
@@ -126,6 +134,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
 
   const pr = await gh.pullRequest(number);
   const decision = mergeDecision(pr, pr.open ? await gh.checks(pr.headSha) : [], since);
+  if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
   if (since > WATCH_MS) return save({ status: "expired", why: "pasaron 14 días sin poder fundirlo" });
   if (decision.kind === "wait") return save({ ...state, status: "waiting", why: decision.why });
@@ -136,7 +145,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     return save({ status: "blocked", why: decision.why, reported: decision.key });
   }
 
-  await gh.merge(number, pr.headSha);
+  recordMergeCommit(ctx, job, await gh.merge(number, pr.headSha));
   save({ status: "merged", why: "fundido por la fábrica" });
   log.info("pull request merged", { job: job.id, url: job.delivery!.url });
   await gh.deleteBranch(job.delivery!.branch).catch((err) => log.warn("could not delete merged branch", { job: job.id, error: String(err) }));

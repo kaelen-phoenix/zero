@@ -20,6 +20,7 @@ function fakeGitHub(opts: { failCreate?: boolean; permissions?: Record<string, s
   let clock = 0;
   const api: IssueApi = {
     labeled: async (label) => issues.filter((i) => i.state === "open" && i.labels.includes(label)),
+    unlabeled: async () => [],
     issue: async (n) => {
       const i = issues.find((x) => x.number === n)!;
       return { state: i.state, labels: [...i.labels], closedBy: i.closedBy };

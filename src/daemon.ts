@@ -164,7 +164,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const findReverts = () => {
     if (checkingReverts || !ctx.config.lines.length || Date.now() - revertsAt < (opts.once ? 0 : INTAKE_MS)) return;
     revertsAt = Date.now();
-    checkingReverts = detectReverts(ctx)
+    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges)
       .catch((err) => log.warn("revert detection failed", { error: String(err) }))
       .finally(() => (checkingReverts = undefined));
   };
@@ -173,7 +173,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   let scouting: Promise<void> | undefined;
   const scout = () => {
     if (scouting || !(opts.scout ?? !opts.once) || ctx.config.nightShift === "off" || running.size) return;
-    scouting = scoutPass(ctx, agentRunner(ctx.config), now())
+    scouting = scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues)
       .catch((err) => log.warn("night shift failed", { error: String(err) }))
       .finally(() => (scouting = undefined));
   };

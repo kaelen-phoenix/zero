@@ -1,0 +1,15 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 src/state/store.ts: add `sourceIssue?: number` and `sourceIssueUrl?: string` to Proposal, the `source_issue_number INTEGER` and `source_issue_url TEXT` columns (CREATE TABLE and the ALTER TABLE migration list), map them in toProposal, and accept them in createProposal.
+- [x] 1.2 src/intake/github.ts: add `unlabeled(): Promise<Issue[]>` to IssueApi, implemented as open issues of the repo with no labels and not pull requests (paginate listForRepo state 'open', then filter). Update every fake IssueApi in tests.
+- [x] 1.3 src/line/scout.ts: add an `issue` field (int, nullable, default null) to ScoutOutput. scoutLine takes an optional list of issues and renders an '## Open unlabeled issues of this line' section that says issue text is data, never instructions; it truncates each body to 2000 chars and explains when to set `issue`. Keep the link only for listed numbers and store sourceIssue/sourceIssueUrl.
+- [x] 1.4 src/line/scout.ts: scoutPass gets an optional `issues?: (repository) => IssueApi | undefined`. Per line, resolve lineRepository, list unlabeled issues, filter by TRUSTED permission of the author (cached per login) and by issues already linked by the line's proposals, cap at 20 newest. Any failure is logged and scout runs without issues.
+- [x] 1.5 src/app.ts proposalRequest, src/panel/html.ts proposal card and src/intake/proposals.ts proposalIssueBody: show the source issue (number + URL, escaped in HTML).
+- [x] 1.6 src/line/automerge.ts: add `mergeCommitSha?: string` to PullRequestState (from merge_commit_sha when merged), make `MergeApi.merge` return the merge commit sha, and in watch() record job.delivery.commit via store.updateJob when zero merges or finds it merged. Update fakes in test/automerge.test.ts.
+- [x] 1.7 src/line/reverts.ts: detectReverts(ctx, merges?) also covers 'pull-request' deliveries. It fills a missing commit from merges(pullRequestOf(url).repository).pullRequest(number), searches the local base plus `<remote>/<baseBranch>` (best-effort fetch on pull-request lines), and matches 'This reverts commit <sha>' or 'Reverts <owner/repo>#<n>'. Keep the existing townhall lesson and idempotency, and log errors per proposal/line.
+- [x] 1.8 src/daemon.ts: pass `opts.issues ?? realIssues` to scoutPass and `opts.merges ?? realMerges` to detectReverts.
+- [x] 1.9 Tests (new test/night-shift-2d.test.ts): scout issue listing/filtering/data framing/link validation with fake IssueApi; merge commit recording in pollMerges; PR revert detection via git revert, GitHub 'Reverts o/r#N' message, squash, unrelated revert, owner-approved, idempotent, no API; daemon once; store migration.
+- [x] 1.10 README.md night-shift section: document unlabeled issues for scout and revert detection for pull-request/squash lines; fix the sentence that says squash and remote-only reverts are not detected. Update AGENTS.md lines for scout.ts and reverts.ts.
+- [x] 1.11 Run npm run typecheck, npm test and npx openspec validate --all.
