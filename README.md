@@ -6,6 +6,8 @@ zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo
 
 Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
+El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz.
+
 ## Cómo funciona
 
 ```
