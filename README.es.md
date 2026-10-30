@@ -232,7 +232,7 @@ Los agentes globales leen sus instrucciones relativas a la carpeta de la fábric
 
 **Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
 
-Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de la copia del dueño del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web.
+Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de la copia del dueño del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web. `.zero/**` es siempre una ruta protegida, diga lo que diga `limits.protectedPaths`: un trabajo que cambia instrucciones de agentes te espera (o falla en L3) antes de poder entregarse.
 
 ## Turno nocturno
 

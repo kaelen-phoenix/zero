@@ -232,7 +232,7 @@ Global agents read their instructions relative to the factory folder (where `zer
 
 **Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
 
-Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web.
+Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
 
 ## Night shift
 

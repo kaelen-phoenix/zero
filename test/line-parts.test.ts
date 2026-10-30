@@ -77,6 +77,11 @@ describe("verification", () => {
     expect(protectedTouched(files, [".github/**"], [".github/workflows/ci.yml"])).toEqual([]);
   });
 
+  it("always protects the line's agent instructions", () => {
+    const files = [{ status: "M", path: ".zero/agents/security.md" }, { status: "A", path: ".Zero/agents/a11y.md" }, { status: "A", path: "src/zero.ts" }];
+    expect(protectedTouched(files, [])).toEqual([".zero/agents/security.md", ".Zero/agents/a11y.md"]);
+  });
+
   it("detects deleted and disabled tests", () => {
     const problems = testTampering(
       [{ status: "D", path: "test/api.test.ts" }, { status: "D", path: "src/old.ts" }],

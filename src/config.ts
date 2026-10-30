@@ -186,7 +186,7 @@ export const FactorySchema = z
         reservePercent: z.number().min(0).max(99).default(0),
         /** What the scout and research stations may spend together per night shift period; per-use billing only. */
         usdPerNight: z.number().nonnegative().default(1),
-        protectedPaths: z.array(z.string()).default([".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
+        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),
     approvals: z
