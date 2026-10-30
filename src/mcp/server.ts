@@ -103,7 +103,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     },
     ({ id, decision, note }) =>
       withFactory(home, async (ctx) => {
-        if (decision === "reject") return `Propuesta ${rejectProposal(ctx, id, note).id} rechazada y archivada.`;
+        if (decision === "reject") return `Propuesta ${(await rejectProposal(ctx, id, note)).id} rechazada y archivada.`;
         const r = approveProposal(ctx, id);
         const started = await ensureDaemon(ctx);
         return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;

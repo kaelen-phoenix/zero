@@ -204,7 +204,7 @@ describe("proposals", () => {
   it("refuses protected paths, new credentials and repeated titles; keeps at most three", async () => {
     const { ctx } = factory({ lines: [{ name: "tienda", repo: gitRepo() }] });
     const rejected = ctx.store.createProposal({ ...idea("Mejorar Caché"), line: "tienda" });
-    rejectProposal(ctx, rejected.id);
+    await rejectProposal(ctx, rejected.id);
     const agents = scouting([
       idea("mejorar  cache"),
       idea("Tocar CI", { paths: [".github/workflows/ci.yml"] }),
@@ -233,14 +233,56 @@ describe("proposals", () => {
     expect(ctx.store.listJobs()).toHaveLength(1);
   });
 
-  it("rejects with a note and creates no job", () => {
+  it("rejects with a note and creates no job", async () => {
     const { ctx } = factory();
     const p = ctx.store.createProposal({ ...idea("Otra"), line: "blog" });
-    rejectProposal(ctx, p.id, "no hace falta");
+    await rejectProposal(ctx, p.id, "no hace falta");
     expect(ctx.store.getProposal(p.id)).toMatchObject({ status: "rejected", note: "no hace falta", decidedAt: expect.any(String) });
-    expect(() => rejectProposal(ctx, p.id)).toThrow(/ya fue rechazada/);
-    expect(() => rejectProposal(ctx, "00000000")).toThrow(/No existe la propuesta/);
+    await expect(rejectProposal(ctx, p.id)).rejects.toThrow(/ya fue rechazada/);
+    await expect(rejectProposal(ctx, "00000000")).rejects.toThrow(/No existe la propuesta/);
     expect(ctx.store.listJobs()).toHaveLength(0);
+  });
+});
+
+describe("learning from rejections", () => {
+  it("leaves the owner's reason in the line's townhall", async () => {
+    const { ctx } = factory();
+    const p = ctx.store.createProposal({ ...idea("Rehacer el checkout"), line: "tienda" });
+    await rejectProposal(ctx, p.id, "no tocar el checkout");
+    const posts = await ctx.townhall.recall({ line: "tienda" });
+    expect(posts).toContainEqual(expect.objectContaining({ kind: "lesson", body: expect.stringMatching(/Rehacer el checkout.*no tocar el checkout/) }));
+  });
+
+  it("records a rejection without a reason too", async () => {
+    const { ctx } = factory();
+    const p = ctx.store.createProposal({ ...idea("Cambiar logs"), line: "blog" });
+    await rejectProposal(ctx, p.id);
+    expect(ctx.store.getProposal(p.id)!.status).toBe("rejected");
+    expect((await ctx.townhall.recall({ line: "blog" })).filter((x) => x.kind === "lesson" && x.body.includes("Cambiar logs"))).toHaveLength(1);
+  });
+
+  it("still rejects when the townhall fails", async () => {
+    const { ctx } = factory();
+    const p = ctx.store.createProposal({ ...idea("Algo"), line: "blog" });
+    const broken = { ...ctx, townhall: { publish: async () => { throw new Error("disco lleno"); }, recall: async () => [] } };
+    await expect(rejectProposal(broken, p.id, "no")).resolves.toMatchObject({ status: "rejected" });
+  });
+
+  it("reminds scout of the line's last 20 rejections, most recent first", async () => {
+    const { ctx, set } = factory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    for (let i = 1; i <= 25; i++) {
+      const p = ctx.store.createProposal({ ...idea(`Idea número ${i}`), line: "tienda" });
+      set(at(3, i));
+      await rejectProposal(ctx, p.id, `motivo ${i}`);
+    }
+    const agents = scouting([]);
+    set(at(4));
+    await scoutPass(ctx, agents.runner, at(4));
+    const prompt = agents.calls[0]!.prompt;
+    const section = prompt.slice(prompt.indexOf("## Rejected proposals"), prompt.indexOf("## Constraints"));
+    for (let i = 6; i <= 25; i++) expect(section).toContain(`- Idea número ${i} — owner's reason: motivo ${i}\n`);
+    for (let i = 1; i <= 5; i++) expect(section).not.toContain(`Idea número ${i} —`);
+    expect(section.indexOf("Idea número 25")).toBeLessThan(section.indexOf("Idea número 24"));
   });
 });
 

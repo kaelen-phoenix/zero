@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "../src/state/store.js";
@@ -6,6 +7,8 @@ import { renderTrace, Tracer } from "../src/telemetry/tracer.js";
 import { cleanup, tempDir } from "./helpers.js";
 
 afterEach(cleanup);
+
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
 describe("store", () => {
   it("creates, updates and finishes jobs", () => {
@@ -32,6 +35,34 @@ describe("store", () => {
     expect(a.getKv("andon")).toBe("on");
     a.close();
     b.close();
+  });
+
+  it("adds the proposal issue columns to factories created before them", () => {
+    const path = join(tempDir(), "state.db");
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE proposals (id TEXT PRIMARY KEY, line TEXT NOT NULL, title TEXT NOT NULL, why TEXT NOT NULL, change TEXT NOT NULL, estimated_usd REAL NOT NULL DEFAULT 0, paths TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT, note TEXT, job_id TEXT)");
+    old.close();
+    const store = new Store(path);
+    const p = store.createProposal({ line: "api", title: "x", why: "y", change: "z", estimatedUsd: 1, paths: [] });
+    store.setProposalIssue(p.id, { number: 3, url: "https://github.com/a/b/issues/3" });
+    store.updateProposal(p.id, { status: "rejected", note: "no" });
+    store.markProposalIssueTold(p.id, "rejected");
+    expect(store.getProposal(p.id)).toMatchObject({ issueNumber: 3, issueUrl: "https://github.com/a/b/issues/3", issueTold: "rejected" });
+    store.close();
+  });
+
+  it("lists a line's rejections, most recently decided first", () => {
+    let clock = new Date("2030-01-01T00:00:00Z");
+    const store = new Store(":memory:", () => clock);
+    const make = (title: string, line = "api") => store.createProposal({ line, title, why: "y", change: "z", estimatedUsd: 1, paths: [] });
+    const [a, b, other] = [make("a"), make("b"), make("d", "web")];
+    make("c");
+    for (const p of [b, a, other]) {
+      clock = new Date(clock.getTime() + 60_000);
+      store.updateProposal(p!.id, { status: "rejected" });
+    }
+    expect(store.recentRejected("api", 20).map((p) => p.title)).toEqual(["a", "b"]);
+    expect(store.recentRejected("api", 1).map((p) => p.title)).toEqual(["a"]);
   });
 });
 
