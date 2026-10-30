@@ -186,6 +186,54 @@ stations:
 
 Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué.
 
+## Agentes a medida
+
+Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Por ahora son revisores de solo lectura que corren después de `review` y `security`, sobre el mismo cambio: primero los globales y después los de la línea, cada grupo en el orden del archivo.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: a11y                        # minúsculas, dígitos y guiones
+        instructions: .zero/agents/a11y.md   # en el repo de la línea (el valor por defecto)
+        blocking: true                    # los hallazgos high o critical verificados devuelven el cambio a build
+        engine: codex                     # opcional, como cualquier estación: engine, model, maxTurns, timeoutMinutes, skills
+        timeoutMinutes: 10
+      - name: seo
+        blocking: false                   # solo informa: sus hallazgos nunca frenan el trabajo
+```
+
+`.zero/agents/a11y.md`, en el repo de la línea:
+
+```markdown
+# Agent: a11y
+
+You review the accessibility of every change to the web pages.
+
+## What to check
+- Every image has a meaningful `alt`; decorative images have `alt=""`.
+- Every form field has a label, and every button has a name a screen reader can say.
+- Colors keep a contrast of at least 4.5:1 for text.
+
+## How to report
+- One finding per problem, with the file and line, the problem and the fix.
+- Use `high` or `critical` only when a person using a screen reader or a keyboard cannot use the page.
+```
+
+```sh
+zero agent list --line web
+zero agent add a11y --line web                 # crea .zero/agents/a11y.md con una plantilla y suma el agente
+zero agent add seo --line web --informativo    # un agente que solo informa
+zero agent remove seo --line web               # sale de la configuración; el archivo queda
+```
+
+Los agentes globales leen sus instrucciones relativas a la carpeta de la fábrica (donde está `zero.factory.yaml`). Cada agente recibe el pedido, la especificación y el cambio (`git diff` contra la base), y responde como `review`: hallazgos con archivo y línea, que zero verifica, y aprendizajes para el townhall. Un agente bloqueante con hallazgos `high` o `critical` verificados rechaza el intento, y build los recibe como feedback, con el nombre del agente; uno informativo solo los deja en su traza. Si falta el archivo de instrucciones de un agente bloqueante, el trabajo falla nombrando la ruta; uno informativo se saltea con una advertencia. Sus llamadas aparecen en la traza, el estado y el presupuesto como las de cualquier estación (`zero.station.<nombre>`).
+
+**Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
+
+Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de la copia del dueño del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web.
+
 ## Turno nocturno
 
 Cuando la fábrica está libre (sin pedidos tuyos en cola ni en curso, con el andon apagado y con presupuesto), la estación de solo lectura `scout` mira cada línea una vez por período: el townhall, las trazas de los últimos 30 días, las specs sin tests, las notas de investigación de la línea y, en las líneas de GitHub, los issues abiertos sin etiqueta escritos por personas con permiso de escritura (hasta 20, los más nuevos, sin los que ya tienen una propuesta). Lo escrito en un issue es dato, nunca instrucciones. Si `scout` propone tomar uno, la propuesta enlaza el issue (en el pedido del trabajo, en el panel y en el issue de la propuesta). Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título. Si se paga por uso, `scout` y `research` comparten el tope de `limits.usdPerNight`.

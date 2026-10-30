@@ -45,6 +45,8 @@ export function blockingFindings(valid: Finding[]): Finding[] {
   return valid.filter((f) => BLOCKING.has(f.severity));
 }
 
-export function findingsFeedback(findings: Finding[], station: "review" | "security" = "review"): string {
-  return `${station === "security" ? "La revisión de seguridad encontró problemas" : "La revisión encontró defectos"} que hay que corregir:\n${findings.map((f) => `- [${f.severity}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
+/** What build hears about the findings of a reviewer: review, security or a custom agent, by name. */
+export function findingsFeedback(findings: Finding[], station: string = "review"): string {
+  const who = station === "security" ? "La revisión de seguridad encontró problemas" : station === "review" ? "La revisión encontró defectos" : `El agente ${station} encontró problemas`;
+  return `${who} que hay que corregir:\n${findings.map((f) => `- [${f.severity}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
 }

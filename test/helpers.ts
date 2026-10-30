@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
-import { quotaAttrs, type AgentRequest, type AgentRun, type AgentRunner, type AgentStation } from "../src/agent.js";
+import { agentName, quotaAttrs, type AgentRequest, type AgentRun, type AgentRunner, type AgentStation } from "../src/agent.js";
 import { openTownhall, type FactoryContext } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { factoryHome } from "../src/home.js";
@@ -105,21 +105,22 @@ export const cleanReview = (over: Partial<Review> = {}): Review => ({ summary: "
 type Handler = (req: AgentRequest<any>, call: number) => Partial<AgentRun<any>> | void | Promise<Partial<AgentRun<any>> | void>;
 
 /**
- * An agent runner that never calls a model: each station runs a handler that
- * can write files in `req.cwd` and return structured output. Records an
- * agent span like the real runner does.
+ * An agent runner that never calls a model: each station (or custom agent, by
+ * its name) runs a handler that can write files in `req.cwd` and return
+ * structured output. Records an agent span like the real runner does.
  */
-export function fakeAgents(handlers: Partial<Record<AgentStation, Handler>>, costPerCall = 0.1) {
+export function fakeAgents(handlers: Partial<Record<AgentStation | (string & {}), Handler>>, costPerCall = 0.1) {
   const calls: AgentRequest<any>[] = [];
   const count: Record<string, number> = {};
   const runner: AgentRunner = async <T>(req: AgentRequest<T>): Promise<AgentRun<T>> => {
     calls.push(req);
-    count[req.station] = (count[req.station] ?? 0) + 1;
+    const name = agentName(req);
+    count[name] = (count[name] ?? 0) + 1;
     const engine = req.engine?.name ?? "fake";
-    const span = req.trace?.tracer.start(AGENT_SPAN, { jobId: req.trace.jobId, parentId: req.trace.parentId, attrs: { "gen_ai.agent.name": req.station, "gen_ai.request.model": req.engine?.model, "zero.engine": engine, "zero.engine.replaces": req.engine?.replaces, "zero.engine.reason": req.engine?.reason } });
+    const span = req.trace?.tracer.start(AGENT_SPAN, { jobId: req.trace.jobId, parentId: req.trace.parentId, attrs: { "gen_ai.agent.name": name, "gen_ai.request.model": req.engine?.model, "zero.engine": engine, "zero.engine.replaces": req.engine?.replaces, "zero.engine.reason": req.engine?.reason } });
     const fallback: Partial<AgentRun<any>> =
       req.station === "spec" ? { output: validSpec() } : req.station === "review" || req.station === "security" ? { output: cleanReview() } : {};
-    const result = { ok: true, text: "done", costUsd: costPerCall, costSource: "reported" as const, engine, ...fallback, ...((await handlers[req.station]?.(req, count[req.station]!)) ?? {}) };
+    const result = { ok: true, text: "done", costUsd: costPerCall, costSource: "reported" as const, engine, ...fallback, ...((await handlers[name]?.(req, count[name]!)) ?? {}) };
     span?.end(result.ok ? "ok" : "error", { "zero.cost.usd": result.costUsd, "zero.cost.source": result.costSource, ...quotaAttrs(result.quota) });
     return result as AgentRun<T>;
   };

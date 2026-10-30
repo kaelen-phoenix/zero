@@ -1,4 +1,4 @@
-import { AGENT_STATIONS, stationChain, type FactoryConfig, type StationName } from "./config.js";
+import { AGENT_STATIONS, customAgentChain, stationChain, type ChainLink, type CustomAgent, type FactoryConfig, type StationName } from "./config.js";
 import type { QuotaReport, QuotaWindow } from "./engines/index.js";
 import type { SpanRow, Store } from "./state/store.js";
 import { AGENT_SPAN, dailyBudgetReached, spentToday, startOfDay } from "./telemetry/metrics.js";
@@ -200,8 +200,18 @@ export interface EngineChoice {
  * ever chosen.
  */
 export function pickEngine(store: Store, config: BudgetConfig, station: StationName, now = new Date()): EngineChoice {
-  const chain = stationChain(config, station);
+  return pickFromChain(store, config, stationChain(config, station), now);
+}
+
+/** pickEngine for a custom agent, on its own chain (see customAgentChain). */
+export function pickAgentEngine(store: Store, config: BudgetConfig, agent: Pick<CustomAgent, "engine" | "model">, now = new Date()): EngineChoice {
+  return pickFromChain(store, config, customAgentChain(config, agent), now);
+}
+
+function pickFromChain(store: Store, config: BudgetConfig, chain: ChainLink[], now: Date): EngineChoice {
   const budgets = engineBudgets(store, config, now);
+  const all = readings(store, now);
+  for (const { engine } of chain) if (!budgets.has(engine)) budgets.set(engine, engineBudget(store, config, engine, all, now, []));
   const own = chain[0]!;
   const ownBudget = budgets.get(own.engine)!;
   const index = chain.findIndex((l) => !budgets.get(l.engine)!.paused);
