@@ -62,8 +62,11 @@ export type JobSource =
       number: number;
       url: string;
     }
-  /** A proposal of the scout station, approved by the owner. */
-  | { kind: "night-shift"; proposal: string }
+  /**
+   * A proposal of the scout station: approved by the owner (no autonomy), or
+   * taken by the night shift on its own under the line's `build` or `auto` autonomy.
+   */
+  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto" }
   /** A research note the owner turned into work. */
   | { kind: "research"; note: string };
 
@@ -137,6 +140,12 @@ export interface Proposal {
   note?: string;
   /** The job an approval opened. */
   jobId?: string;
+  /** Who decided it: the owner, or the night shift on its own (line autonomy `build` or `auto`). */
+  decidedBy?: "owner" | "night-shift";
+  /** The research note it was born from, when scout cited one of the line's notes. */
+  researchNote?: string;
+  /** Scout said it adds a dependency, a third-party skill, an MCP server or third-party code. */
+  thirdParty: boolean;
   /** The GitHub issue that records it, once published. */
   issueNumber?: number;
   issueUrl?: string;
@@ -237,7 +246,10 @@ CREATE TABLE IF NOT EXISTS proposals (
   job_id TEXT,
   issue_number INTEGER,
   issue_url TEXT,
-  issue_told TEXT
+  issue_told TEXT,
+  research_note TEXT,
+  third_party INTEGER NOT NULL DEFAULT 0,
+  decided_by TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -319,6 +331,9 @@ function toProposal(r: Row): Proposal {
     decidedAt: str(r.decided_at),
     note: str(r.note),
     jobId: str(r.job_id),
+    decidedBy: str(r.decided_by) as Proposal["decidedBy"],
+    researchNote: str(r.research_note),
+    thirdParty: Number(r.third_party ?? 0) === 1,
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
     issueTold: str(r.issue_told) as Proposal["issueTold"],
@@ -389,7 +404,14 @@ export class Store {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
     for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
     const proposalColumns = new Set((this.db.prepare("PRAGMA table_info(proposals)").all() as Row[]).map((c) => String(c.name)));
-    for (const [column, type] of [["issue_number", "INTEGER"], ["issue_url", "TEXT"], ["issue_told", "TEXT"]] as const) {
+    for (const [column, type] of [
+      ["issue_number", "INTEGER"],
+      ["issue_url", "TEXT"],
+      ["issue_told", "TEXT"],
+      ["research_note", "TEXT"],
+      ["third_party", "INTEGER NOT NULL DEFAULT 0"],
+      ["decided_by", "TEXT"],
+    ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
   }
@@ -535,11 +557,11 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[] }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean }): Proposal {
     const id = newId();
     this.db
-      .prepare("INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)")
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), this.stamp());
+      .prepare("INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)")
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, this.stamp());
     return this.getProposal(id)!;
   }
 
@@ -568,12 +590,24 @@ export class Store {
     return (this.db.prepare(sql).all(...values) as Row[]).map(toProposal);
   }
 
-  /** Decides a pending proposal; false when it was no longer pending. */
-  updateProposal(id: string, patch: { status: "approved" | "rejected"; note?: string; jobId?: string }): boolean {
+  /**
+   * Decides a proposal that is still `from` (pending by default; approved when
+   * the owner rejects work the night shift took on its own); false when it no
+   * longer was. The job and who decided are kept when not given.
+   */
+  updateProposal(id: string, patch: { status: "approved" | "rejected"; note?: string; jobId?: string; decidedBy?: "owner" | "night-shift"; from?: ProposalStatus }): boolean {
     const r = this.db
-      .prepare("UPDATE proposals SET status = ?, decided_at = ?, note = ?, job_id = ? WHERE id = ? AND status = 'pending'")
-      .run(patch.status, this.stamp(), patch.note ?? null, patch.jobId ?? null, id);
+      .prepare("UPDATE proposals SET status = ?, decided_at = ?, note = ?, job_id = COALESCE(?, job_id), decided_by = COALESCE(?, decided_by) WHERE id = ? AND status = ?")
+      .run(patch.status, this.stamp(), patch.note ?? null, patch.jobId ?? null, patch.decidedBy ?? null, id, patch.from ?? "pending");
     return Number(r.changes) === 1;
+  }
+
+  /** Jobs the night shift opened on its own (with an autonomy) since `since`, across every line. */
+  autonomousJobsSince(since: Date): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND json_extract(source, '$.kind') = 'night-shift' AND json_extract(source, '$.autonomy') IS NOT NULL")
+      .get(since.toISOString()) as Row;
+    return Number(row.n);
   }
 
   /** The owner's latest rejections on a line, most recently decided first. */

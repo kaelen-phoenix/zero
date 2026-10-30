@@ -43,8 +43,9 @@ const NightShiftSchema = z.union([
     .object({
       /** Limits the night shift to these local hours; absent: any time the factory is idle. */
       hours: HoursSchema.optional(),
+      /** How far proposals go on their own on lines without a `nightShift.autonomy` of their own. */
       autonomy: AutonomySchema.default("propose"),
-      /** Jobs the night shift builds on its own per day, across every line. */
+      /** Jobs the night shift opens on its own per local day, across every line; past it, proposals wait for the owner. */
       maxAutoJobsPerDay: z.number().int().min(0).default(3),
     })
     .strict(),
@@ -59,7 +60,10 @@ const ResearchSchema = z.union([
       topics: z.array(z.string().min(1)).default([]),
       /** Notes each line keeps per local day; 0 turns research off. */
       perLinePerDay: z.number().int().min(0).default(1),
-      /** How far proposals born from research notes go on their own (parsed; for now they all wait for the owner). */
+      /**
+       * How far research-born proposals that add something third party (a dependency, a skill, an MCP server or code) go on
+       * their own: the stricter of this and the line's autonomy. Other research-born proposals follow the line.
+       */
       autonomy: AutonomySchema.default("propose"),
     })
     .strict(),

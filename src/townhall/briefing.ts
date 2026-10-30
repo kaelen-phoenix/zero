@@ -3,9 +3,15 @@ import type { Job, Proposal, ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
 
-/** What the night shift did in the period: new proposals, and the jobs born from one that finished. */
+/**
+ * What the night shift did in the period: new proposals left for the owner,
+ * jobs it built on its own that wait to be integrated, jobs it integrated on
+ * its own, and the other jobs born from a proposal that finished.
+ */
 export interface NightShiftReport {
   proposals: Proposal[];
+  built?: Job[];
+  integrated?: Job[];
   jobs: Job[];
 }
 
@@ -27,19 +33,31 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
-  if (night.proposals.length || night.jobs.length) {
+  const built = night.built ?? [];
+  const integrated = night.integrated ?? [];
+  if (night.proposals.length || built.length || integrated.length || night.jobs.length) {
     const outcome = (j: Job) => (j.status === "delivered" ? `entregado${j.delivery ? ` (${j.delivery.url ?? j.delivery.branch})` : ""}` : (j.reason ?? j.status));
+    const name = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.split("\n")[0]}`;
+    const proposalOf = (j: Job) => (j.source?.kind === "night-shift" ? j.source.proposal : j.id);
     sections.push(
       [
         "## Turno nocturno",
         ...(night.proposals.length
           ? [
-              "Propuestas nuevas:",
-              ...night.proposals.map((p) => `- \`${p.id}\` (${p.line}) **${p.title}** · costo estimado ${usd(p.estimatedUsd)}`),
+              "### Propuesto (espera tu decisión)",
+              ...night.proposals.map((p) => `- \`${p.id}\` (${p.line}) **${p.title}** · costo estimado ${usd(p.estimatedUsd)}${p.researchNote ? ` · nace de la nota \`${p.researchNote}\`` : ""}`),
               "Aprobar: `zero proposals approve <id>` · Rechazar: `zero proposals reject <id>` (también desde el chat).",
             ]
           : []),
-        ...(night.jobs.length ? ["Trabajos del turno nocturno:", ...night.jobs.map((j) => `- \`${j.id}\` (${j.line}) ${j.title ?? j.request.split("\n")[0]}: ${outcome(j)}`)] : []),
+        ...(built.length
+          ? [
+              "### Construido solo (espera tu aprobación para integrar)",
+              ...built.map((j) => `- ${name(j)} · propuesta \`${proposalOf(j)}\``),
+              "Integrar: `zero proposals approve <propuesta>` · Descartar: `zero proposals reject <propuesta>`.",
+            ]
+          : []),
+        ...(integrated.length ? ["### Integrado solo", ...integrated.map((j) => `- ${name(j)}: ${outcome(j)}`)] : []),
+        ...(night.jobs.length ? ["### Otros trabajos del turno nocturno", ...night.jobs.map((j) => `- ${name(j)}: ${outcome(j)}`)] : []),
       ].join("\n"),
     );
   }

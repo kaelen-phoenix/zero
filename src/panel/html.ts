@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
-import type { StationName } from "../config.js";
+import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, StationState, StationView } from "../app.js";
+import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, jobCost, jobName, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
@@ -94,7 +94,7 @@ const REFRESH = `setInterval(() => {
 }, 15000);`;
 
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/briefing">Informe</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
+  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/briefing">Informe</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
@@ -276,6 +276,72 @@ export function markdown(text: string): string {
   }
   flush();
   return out.join("\n");
+}
+
+const AUTONOMY: Record<Autonomy, string> = {
+  propose: "propose: cada propuesta espera tu decisión",
+  build: "build: se construye sola y espera tu aprobación para integrarse",
+  auto: "auto: se construye y se integra sola",
+};
+
+const STAGES: [ProposalStage, string][] = [
+  ["pending", "Pendientes"],
+  ["building", "Construyéndose"],
+  ["delivered", "Entregadas"],
+  ["ended", "Terminadas sin entregar"],
+  ["rejected", "Rechazadas"],
+];
+
+function proposalCard(p: ProposalView): string {
+  const decidable = p.stage === "pending" || p.awaitsIntegration;
+  const by = p.decidedBy === "night-shift" ? "el turno nocturno, solo" : p.decidedBy === "owner" ? "vos" : "";
+  const job = p.job
+    ? `<p class="muted">Trabajo <a href="/job/${esc(p.job.id)}">${esc(p.job.id)}</a> · ${esc(p.job.status)}${p.awaitsIntegration ? ` · <span class="warn">construido, espera tu aprobación para integrarse</span>` : ""}${p.job.delivery ? ` · ${p.job.delivery.url ? `<a href="${esc(p.job.delivery.url)}">${esc(describeDelivery(p.job.delivery))}</a>` : esc(describeDelivery(p.job.delivery))}` : ""}</p>`
+    : "";
+  const actions = decidable
+    ? `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">${p.awaitsIntegration ? "Aprobar e integrar" : "Aprobar"}</button></form>
+<form method="post" action="/proposals/${esc(p.id)}/reject"><label for="r-${esc(p.id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(p.id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`
+    : "";
+  return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}</span></h3>
+<p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
+<p class="muted">Costo estimado ${usd(p.estimatedUsd)}${p.paths.length ? ` · ${esc(p.paths.join(", "))}` : ""}${by ? ` · aprobada por ${by}` : ""}</p>
+${p.researchNote ? `<p class="muted">Nació de la nota de investigación ${esc(p.researchNote)}${p.thirdParty ? " · agrega algo de terceros" : ""}</p>` : ""}
+${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.issueUrl)}</a></p>` : ""}
+${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${job}${actions}</div>`;
+}
+
+function proposalLine(l: ProposalLine): string {
+  const groups = STAGES.map(([stage, title]) => {
+    const items = l.proposals.filter((p) => p.stage === stage);
+    return items.length ? `<h3>${title} (${items.length})</h3>${items.map(proposalCard).join("")}` : "";
+  }).join("");
+  return `<h2>${esc(l.line)}</h2><p class="muted">Autonomía del turno nocturno: <b>${esc(AUTONOMY[l.autonomy])}</b></p>${groups || `<p class="muted">Sin propuestas todavía.</p>`}`;
+}
+
+/** The night shift's proposals of every line, grouped by where they stand, with each line's autonomy. */
+export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[] }, nonce: string, flash?: string): string {
+  const research = data.research === "off" ? "apagada" : AUTONOMY[data.research];
+  return page(
+    "Propuestas",
+    `<div class="card"><h1>Propuestas del turno nocturno</h1>
+<p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una investigación que agregan algo de terceros las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
+${data.lines.map(proposalLine).join("")}`,
+    { nonce, flash, refresh: true },
+  );
+}
+
+/** The step before approving a proposal: approving opens a job or integrates one, so the owner confirms it. */
+export function confirmProposalPage(p: ProposalView, nonce: string): string {
+  const what = p.awaitsIntegration
+    ? `El trabajo ${esc(p.job?.id)} ya está construido: aprobar lo integra según la configuración de la línea ${esc(p.line)}.`
+    : `Aprobar abre un trabajo normal en la línea ${esc(p.line)}.`;
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Aprobar «${esc(p.title)}»?</h1><p>${what}</p><pre>${esc(p.change)}</pre>
+<form method="post" action="/proposals/${esc(p.id)}/approve"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, aprobar</button></form>
+<p><a href="/proposals">Cancelar</a></p></div>`,
+    { nonce },
+  );
 }
 
 export function briefingPage(title: string, body: string, nonce: string): string {

@@ -1,9 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, briefing, egressReport, factoryGuide, factoryStatus, getJob, productionLine, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, productionLine, proposalsView, rejectProposal, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
-import { aboutPage, agentsPage, briefingPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -56,6 +56,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 function returnTo(path: string): string {
   const job = /^\/job\/([0-9a-f]{8})\//.exec(path)?.[1];
   if (job) return `/job/${job}`;
+  if (path.startsWith("/proposals")) return "/proposals";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -191,6 +192,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90);
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
       }
+      if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/briefing") {
         const b = await briefing(ctx, Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90));
         return send(res, 200, briefingPage(b.title, b.body, nonce), nonce);
@@ -228,6 +230,22 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const decision = form.get("decision") === "approve" ? "approve" : "reject";
       await answer(ctx, id, decision, form.get("note") || undefined);
       return back(res, `/job/${id}`, decision === "approve" ? "Aprobado: el trabajo sigue." : "Rechazado: el trabajo se detuvo.");
+    }
+    const proposalAction = /^\/proposals\/([0-9a-f]{8})\/(approve|reject)$/.exec(path);
+    if (proposalAction) {
+      const [, id, action] = proposalAction as unknown as [string, string, string];
+      if (action === "reject") {
+        await rejectProposal(ctx, id, form.get("note") || undefined);
+        return back(res, "/proposals", "Propuesta rechazada.");
+      }
+      // Approving opens a job or integrates one, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") {
+        const proposal = proposalsView(ctx).lines.flatMap((l) => l.proposals).find((p) => p.id === id);
+        if (!proposal) throw new Error(`No existe la propuesta ${id}.`);
+        return send(res, 200, confirmProposalPage(proposal, nonce), nonce);
+      }
+      const r = approveProposal(ctx, id);
+      return back(res, "/proposals", `Propuesta aprobada: trabajo ${r.job.id}. ${r.next}`);
     }
     if (path === "/egress/rule") {
       const action = form.get("action");

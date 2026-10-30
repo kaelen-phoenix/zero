@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickEngine, type EngineChoice } from "../budget.js";
-import { effectiveLevel, findLine, stationChain, type BoxAvailability, type Level, type LineConfig } from "../config.js";
+import { effectiveLevel, findLine, stationChain, type Autonomy, type BoxAvailability, type Level, type LineConfig } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { git, sh, type ShellResult } from "../shell.js";
@@ -15,7 +15,7 @@ import { memoryBlock, type Learning, type NewPost, type Townhall } from "../town
 import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
-import { decide } from "./policy.js";
+import { decide, decideNightShift, researchAutonomy, stricter, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, ReviewSchema } from "./review.js";
 import {
   capabilityExists,
@@ -120,8 +120,17 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 
     const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
     if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
-    if (!job.approvals.integrate && decide(level, "before-integrate") === "ask") {
-      return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
+    if (!job.approvals.integrate) {
+      const held = nightShiftHold(deps, job, copy);
+      if (held) {
+        // The branch reaches the line's repository now, so it survives a rejection even from the box.
+        copy.publish();
+        // Never integrated without a human: a timeout rejects it, whatever approvals.onTimeout says.
+        return askOwner(deps, job, { kind: "before-integrate", text: held }, { onTimeout: "reject" });
+      }
+      if (decide(level, "before-integrate") === "ask") {
+        return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
+      }
     }
     check();
     job = store.updateJob(jobId, { station: "integrate" });
@@ -238,7 +247,26 @@ function quotaStop(run: AgentRun<unknown>): void {
   if (run.quota?.limited) throw new Interrupted("quota");
 }
 
-/** What the pull request says: the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
+/**
+ * For a job the night shift took on its own, the question to ask before
+ * integrating, or undefined when its autonomy lets it go on. A research-born
+ * job whose changes touch a dependency or MCP manifest is also held to
+ * `research.autonomy`, whatever scout said about it.
+ */
+function nightShiftHold(deps: RunnerDeps, job: Job, copy: WorkCopy): string | undefined {
+  const source = job.source;
+  if (source?.kind !== "night-shift" || !source.autonomy) return undefined;
+  let autonomy: Autonomy = source.autonomy;
+  const proposal = deps.store.getProposal(source.proposal);
+  const manifest = Boolean(proposal?.researchNote) && touchesManifest(copy.changedFiles().map((f) => f.path));
+  if (manifest) autonomy = stricter(autonomy, researchAutonomy(deps.config));
+  if (decideNightShift(autonomy) !== "ask") return undefined;
+  const why = manifest ? "Nace de una nota de investigación y agrega dependencias o servidores de terceros" : "La línea tiene autonomía `build`";
+  const title = proposal?.title ?? job.title ?? job.id;
+  return `El turno nocturno construyó por su cuenta la propuesta "${title}" y pasó la verificación y la revisión. ${why}: no se integra sin vos. ¿Lo integro? (\`zero proposals approve ${source.proposal}\` o \`zero proposals reject ${source.proposal}\`)`;
+}
+
+/** What the pull request says:the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
 export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">): string {
   const issue = job.source?.kind === "github-issue" ? job.source.number : job.source?.kind === "night-shift" ? store?.getProposal(job.source.proposal)?.issueNumber : undefined;
   const closes = issue !== undefined ? `\n\nCloses #${issue}` : "";

@@ -23,12 +23,17 @@ export function describeDelivery(d: Delivery): string {
   return `rama ${d.branch} lista`;
 }
 
-/** Parks a job until the owner answers, recording how long the factory waited. */
-export function askOwner(deps: LedgerDeps, job: Job, q: Omit<Question, "askedAt" | "expiresAt" | "onTimeout">): Job {
+/**
+ * Parks a job until the owner answers, recording how long the factory waited.
+ * `onTimeout` overrides the configured default answer, for gates that must
+ * never pass without a human.
+ */
+export function askOwner(deps: LedgerDeps, job: Job, q: Omit<Question, "askedAt" | "expiresAt" | "onTimeout">, opts: { onTimeout?: Question["onTimeout"] } = {}): Job {
   const now = (deps.now ?? (() => new Date()))();
   const spanId = `approval-${job.id}-${now.getTime()}`;
   deps.tracer.start(APPROVAL_SPAN, { id: spanId, jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.question": q.kind } });
-  const { timeoutHours, onTimeout } = deps.config.approvals;
+  const { timeoutHours } = deps.config.approvals;
+  const onTimeout = opts.onTimeout ?? deps.config.approvals.onTimeout;
   return deps.store.updateJob(job.id, {
     status: "waiting",
     question: {

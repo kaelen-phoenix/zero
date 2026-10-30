@@ -16,6 +16,7 @@ import { runJob, type StopReason } from "./line/runner.js";
 import { researchPass } from "./line/research.js";
 import { scoutPass } from "./line/scout.js";
 import { log } from "./log.js";
+import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
 import { tunnelKeeper } from "./panel/tunnel.js";
@@ -203,11 +204,13 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
 
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
-        for (const job of store.listJobs({ status: ["queued"] })) {
+        for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
           if (job.stopRequested) {
             await finalizeJob(ctx, job, "stopped", { reason: "Detenido por el dueño." });
             continue;
           }
+          // The night shift's own jobs never go ahead of other work: one at a time, and only while no other job is queued or running.
+          if (autonomous(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !autonomous(j)))) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           if (!ctx.config.lines.some((l) => l.name === job.line)) {
@@ -256,6 +259,14 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     if (mine.pid === process.pid) store.deleteKv(DAEMON_KEY);
     log.info("factory stopped", { pid: process.pid });
   }
+}
+
+/** A job the night shift opened on its own, under the line's `build` or `auto` autonomy. */
+const autonomous = (job: Job) => job.source?.kind === "night-shift" && Boolean(job.source.autonomy);
+
+/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own after. */
+export function ownerFirst(jobs: Job[]): Job[] {
+  return [...jobs.filter((j) => !autonomous(j)), ...jobs.filter(autonomous)];
 }
 
 /** Questions nobody answered in time get their default answer. */
