@@ -53,11 +53,18 @@ export function formatRequest(r: RequestResult): string {
   return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}".`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
 }
 
-export function formatJob(job: Job): string {
+/** A job's cost: an estimate with no cap on a subscription, spend against the job's budget otherwise. */
+export function jobCost(job: Job, subscription: boolean): string {
+  return subscription
+    ? `costo estimado ${usd(job.costUsd)} (con la suscripción no se cobra)`
+    : `costo ${usd(job.costUsd)} de ${usd(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0))}`;
+}
+
+export function formatJob(job: Job, opts: { subscription?: boolean } = {}): string {
   const lines = [
     `Trabajo ${job.id} · ${jobName(job)}`,
     `Estado: ${describeJobStatus(job)}`,
-    `Línea: ${job.line} · Costo: ${usd(job.costUsd)} de ${usd(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0))}`,
+    `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
   ];
   if (job.question) {
     lines.push("", "Pregunta para vos:", job.question.text, "", `Respondé con "aprobar" o "rechazar" (vence ${job.question.expiresAt}; si nadie responde: ${job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}).`);

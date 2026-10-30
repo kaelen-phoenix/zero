@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatRequest, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 
@@ -61,7 +62,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       inputSchema: { job: z.string().optional().describe("Job id for details; omit for the factory overview.") },
       annotations: { readOnlyHint: true },
     },
-    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job)) : formatStatus(factoryStatus(ctx)))),
+    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config) }) : formatStatus(factoryStatus(ctx)))),
   );
 
   server.registerTool(
@@ -75,7 +76,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         note: z.string().optional().describe("The owner's reason or instructions, if they gave any."),
       },
     },
-    ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note))),
+    ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config) })),
   );
 
   server.registerTool(
@@ -90,7 +91,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       withFactory(home, async (ctx) => {
         const r = await stop(ctx, job);
         if (r.factory) return "Fábrica detenida. Los trabajos en curso se pausan y vuelven a la cola; nada nuevo empieza hasta que la reanudes.";
-        return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!);
+        return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config) });
       }),
   );
 

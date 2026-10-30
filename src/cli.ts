@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
 import { addSkill, answer, briefing, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
@@ -170,16 +171,16 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "status":
-        console.log(rest[0] ? formatJob(getJob(ctx, rest[0])) : formatStatus(factoryStatus(ctx)));
+        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config) }) : formatStatus(factoryStatus(ctx)));
         return 0;
       case "approve": {
         if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");
-        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note)));
+        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note), { subscription: onSubscription(ctx.store, ctx.config) }));
         return 0;
       }
       case "stop": {
         const r = await stop(ctx, rest[0]);
-        console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!));
+        console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config) }));
         return 0;
       }
       case "resume":
