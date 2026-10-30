@@ -69,6 +69,9 @@ export const traceUsd = (n: number) => `$${n.toFixed(3)}`;
 /** The engine an agent span ran on, with its model when known. */
 export const spanEngine = (a: Record<string, unknown>) => `${a["zero.engine"]}${a["gen_ai.request.model"] ? ` (${a["gen_ai.request.model"]})` : ""}`;
 
+/** The engine with why it replaced the station's own, when it did: "codex (claude pausado hasta 23:20)". */
+export const spanEngineWhy = (a: Record<string, unknown>) => `${spanEngine(a)}${a["zero.engine.reason"] ? ` (${a["zero.engine.reason"]})` : ""}`;
+
 /** A job's trace as an indented tree, for `zero trace`. */
 export function renderTrace(spans: SpanRow[]): string {
   const children = new Map<string | undefined, SpanRow[]>();
@@ -95,7 +98,7 @@ function describe(s: SpanRow): string {
   const a = s.attrs;
   const parts: string[] = [];
   if (a["zero.attempt"] !== undefined) parts.push(`intento ${a["zero.attempt"]}`);
-  if (a["gen_ai.agent.name"]) parts.push(`${a["gen_ai.agent.name"]} vía ${spanEngine(a)}`);
+  if (a["gen_ai.agent.name"]) parts.push(`${a["gen_ai.agent.name"]} vía ${spanEngineWhy(a)}`);
   if (typeof a["zero.cost.usd"] === "number") parts.push(a["zero.cost.source"] === "unknown" ? "costo desconocido" : traceUsd(a["zero.cost.usd"] as number));
   if (a["zero.skills"]) parts.push(`skills: ${a["zero.skills"]}`);
   if (a["zero.skills.missing"]) parts.push(`skills faltantes: ${a["zero.skills.missing"]}`);

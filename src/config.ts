@@ -2,10 +2,14 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
+import { BUILT_IN_ENGINES } from "./engines/index.js";
 import { findSecret } from "./secrets.js";
 
 export const LEVELS = ["L0", "L1", "L2", "L3"] as const;
 export type Level = (typeof LEVELS)[number];
+
+/** A replacement engine for when a station's own is paused by its plan: its name, or the engine with a model. */
+const FallbackSchema = z.union([z.string().min(1), z.object({ engine: z.string().min(1), model: z.string().optional() }).strict()]);
 
 const stationSchema = (defaults: { maxTurns: number; timeoutMinutes: number }) => z.object({
   /** Engine for this station; defaults to the factory engine. */
@@ -18,6 +22,8 @@ const stationSchema = (defaults: { maxTurns: number; timeoutMinutes: number }) =
   timeoutMinutes: z.number().positive().default(defaults.timeoutMinutes),
   /** Skills installed in the owner's Claude Code, by name (or `plugin:skill`), for every line. */
   skills: z.array(z.string().min(1)).default([]),
+  /** Replacement engines for this station, in order; replaces the global list. */
+  fallback: z.array(FallbackSchema).optional(),
 });
 
 /** Skills a line adds to an agent, on top of the global ones. */
@@ -92,6 +98,8 @@ export const FactorySchema = z
       .prefault({}),
     engine: z.string().default("claude"),
     engines: z.record(z.string(), CustomEngineSchema).default({}),
+    /** Replacement engines, in order, for stations whose engine is paused by its plan. Only these are ever used. */
+    fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
     concurrency: z.number().int().min(1).default(2),
     limits: z
@@ -129,6 +137,19 @@ export const FactorySchema = z
     lines: z.array(LineSchema).default([]),
   })
   .superRefine((cfg, ctx) => {
+    const known = [...BUILT_IN_ENGINES, ...Object.keys(cfg.engines)];
+    const lists = [
+      { path: ["fallback"], list: cfg.fallback },
+      ...Object.entries(cfg.stations).map(([name, s]) => ({ path: ["stations", name, "fallback"], list: s.fallback ?? [] })),
+    ];
+    for (const { path, list } of lists) {
+      for (const [i, item] of list.entries()) {
+        const engine = typeof item === "string" ? item : item.engine;
+        if (!known.includes(engine)) {
+          ctx.addIssue({ code: "custom", path: [...path, i], message: `el motor de reemplazo "${engine}" no existe; motores conocidos: ${known.join(", ")}` });
+        }
+      }
+    }
     const seen = new Set<string>();
     for (const [i, line] of cfg.lines.entries()) {
       if (seen.has(line.name)) ctx.addIssue({ code: "custom", path: ["lines", i, "name"], message: `duplicate line "${line.name}"` });
@@ -146,6 +167,27 @@ export type StationName = keyof FactoryConfig["stations"];
 
 /** Every station that runs an agent, in line order. */
 export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply"];
+
+/** One engine a station may run on, with its model (absent: the engine's own default). */
+export interface ChainLink {
+  engine: string;
+  model?: string;
+}
+
+/**
+ * The engines a station may run on, in order: its own first, then its
+ * replacements (the station's list, or else the global one). Only the owner's
+ * configuration adds engines here.
+ */
+export function stationChain(config: Pick<FactoryConfig, "engine" | "stations" | "fallback">, station: StationName): ChainLink[] {
+  const own = config.stations[station];
+  const chain: ChainLink[] = [{ engine: own.engine ?? config.engine, ...(own.model && { model: own.model }) }];
+  for (const item of own.fallback ?? config.fallback ?? []) {
+    const link = typeof item === "string" ? { engine: item } : { engine: item.engine, ...(item.model && { model: item.model }) };
+    if (!chain.some((l) => l.engine === link.engine)) chain.push(link);
+  }
+  return chain;
+}
 
 export class ConfigError extends Error {}
 

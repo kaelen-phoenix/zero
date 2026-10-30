@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import type { FactoryConfig } from "./config.js";
+import { stationChain, type FactoryConfig } from "./config.js";
 import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult, type QuotaReport } from "./engines/index.js";
 import { log } from "./log.js";
 import { assignedSkills, discoverSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
@@ -35,6 +35,8 @@ export interface AgentRequest<T = unknown> {
   signal?: AbortSignal;
   /** The line the run is for, which may add skills to the station's own. */
   line?: string;
+  /** The engine of the station's chain to run on (see pickEngine); absent: the station's own. */
+  engine?: { name: string; model?: string; replaces?: string; reason?: string };
   /** Where to record the `gen_ai.invoke_agent` span. */
   trace?: { tracer: Tracer; jobId: string; parentId: string };
 }
@@ -121,9 +123,15 @@ function resolvedSkills(config: FactoryConfig, station: AgentStation, line: stri
 
 export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute; claudeHome?: string } = {}): AgentRunner {
   const execute = opts.execute ?? runHere;
-  return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace, line }: AgentRequest<T>): Promise<AgentRun<T>> {
+  return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace, line, engine: choice }: AgentRequest<T>): Promise<AgentRun<T>> {
     const stationCfg = config.stations[station];
-    const engine = resolveEngine(stationCfg.engine ?? config.engine, config);
+    // A replacement is only ever an engine the owner put in the station's chain.
+    if (choice && !stationChain(config, station).some((l) => l.engine === choice.name)) {
+      throw new Error(`engine ${choice.name} is not configured for station ${station}`);
+    }
+    const engine = resolveEngine(choice?.name ?? stationCfg.engine ?? config.engine, config);
+    const model = choice ? choice.model : stationCfg.model;
+    const replaced = choice?.replaces && choice.replaces !== engine.name ? choice.replaces : undefined;
     const jsonSchema = schema && toEngineSchema(schema);
     const fullPrompt =
       jsonSchema && !engine.nativeSchema
@@ -133,9 +141,15 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
     const span = trace?.tracer.start(AGENT_SPAN, {
       jobId: trace.jobId,
       parentId: trace.parentId,
-      attrs: { "gen_ai.agent.name": station, "gen_ai.request.model": stationCfg.model, "zero.engine": engine.name },
+      attrs: {
+        "gen_ai.agent.name": station,
+        "gen_ai.request.model": model,
+        "zero.engine": engine.name,
+        "zero.engine.replaces": replaced,
+        "zero.engine.reason": replaced ? choice?.reason : undefined,
+      },
     });
-    log.info(`agent:${station} start`, { engine: engine.name, model: stationCfg.model });
+    log.info(`agent:${station} start`, { engine: engine.name, model, ...(replaced && { replaces: replaced }) });
     let skills: StagedSkills | undefined;
     let result: EngineResult;
     try {
@@ -152,7 +166,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
         cwd,
         access: ACCESS[station],
         schema: jsonSchema,
-        model: stationCfg.model,
+        model,
         maxTurns: stationCfg.maxTurns,
         maxBudgetUsd,
         timeoutMs: stationCfg.timeoutMinutes * 60_000,
@@ -169,7 +183,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       costUsd: result.costUsd ?? 0,
       costSource: result.costUsd === undefined ? "unknown" : "reported",
       engine: engine.name,
-      model: stationCfg.model,
+      model,
       ...(result.quota && { quota: result.quota }),
     };
     if (run.ok && schema) {
