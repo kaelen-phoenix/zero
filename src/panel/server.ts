@@ -186,7 +186,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, linePage(productionLine(ctx), nonce), nonce);
       }
       const job = /^\/job\/([0-9a-f]{8})$/.exec(path)?.[1];
-      if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config)), nonce);
+      if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine)), nonce);
       if (path === "/egress") {
         const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90);
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);

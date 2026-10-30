@@ -171,16 +171,16 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "status":
-        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config) }) : formatStatus(factoryStatus(ctx)));
+        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)));
         return 0;
       case "approve": {
         if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");
-        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note), { subscription: onSubscription(ctx.store, ctx.config) }));
+        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
         return 0;
       }
       case "stop": {
         const r = await stop(ctx, rest[0]);
-        console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config) }));
+        console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) }));
         return 0;
       }
       case "resume":
