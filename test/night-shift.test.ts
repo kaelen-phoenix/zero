@@ -290,17 +290,23 @@ describe("scheduling", () => {
 });
 
 describe("README", () => {
-  it("documents the night shift and fallback", () => {
-    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+
+  it.each(["README.md", "README.es.md"])("%s documents the night shift and fallback", (file) => {
+    const readme = read(file);
     for (const s of ["maxAutoJobsPerDay", "autonomy", "zero proposals", "fallback", "nightShift", "research:"]) expect(readme).toContain(s);
     expect(readme).not.toContain("Turno nocturno (en camino)");
   });
 
-  it("documents deciding proposals from GitHub and research issues", () => {
-    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  it.each(["README.md", "README.es.md"])("%s documents proposal and research issues", (file) => {
+    const readme = read(file);
     expect(readme).toContain("zero:propuesta");
-    expect(readme).toMatch(/le pone la etiqueta de trabajo[^\n]*aprobada[^\n]*cierra el issue sin esa etiqueta[^\n]*rechazada/);
     expect(readme).toContain("zero:investigacion");
+  });
+
+  it("documents deciding proposals from GitHub", () => {
+    expect(read("README.es.md")).toMatch(/le pone la etiqueta de trabajo[^\n]*aprobada[^\n]*cierra el issue sin esa etiqueta[^\n]*rechazada/);
+    expect(read("README.md")).toMatch(/gives it the line's work label[^\n]*approved[^\n]*closes the issue without that label[^\n]*rejected/);
   });
 });
 

@@ -5,7 +5,7 @@
 
 ## Contexto
 
-zero es la base de la red de agentes de Kaelen Global Defence: *"Autonomous agent network. Continuous execution. Zero human intervention required."* Requisitos:
+zero es una fábrica de software autónoma: ocupa el lugar del humano en el circuito y el dueño decide dónde vuelve a entrar. Requisitos:
 
 | # | Requisito |
 |---|---|
@@ -83,7 +83,7 @@ Limitaciones: no tiene salida estructurada, el informe de coste es opcional y lo
 
 **Construir zero propio, open source y gratuito.** Ningún orquestador cumple R2, R8 y R9 a la vez, y los frameworks genéricos no aportan valor para orquestar CLIs que traen su propio bucle. Construir el núcleo no significa reinventarlo todo:
 
-1. **Núcleo propio:** la línea de producción, las puertas de calidad, el townhall y la observabilidad son lo diferencial de Kaelen.
+1. **Núcleo propio:** la línea de producción, las puertas de calidad, el townhall y la observabilidad son lo diferencial de zero.
 2. **Capa de motores sobre estándares:**
    - Añadir un motor `acp` genérico con `@agentclientprotocol/sdk` (versión fijada, protocolo v1). Pasa a ser la vía agnóstica por defecto.
    - Mantener los adaptadores nativos donde aportan garantías que ACP no da: `codex` (sandbox del SO y `--output-schema`) y `opencode`, que entra como motor por defecto y vía gratuita.

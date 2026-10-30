@@ -350,10 +350,20 @@ describe("revert detection on pull-request lines", () => {
 
 describe("README", () => {
   it("documents part 2d", () => {
-    const readme = readFileSync("README.md", "utf8");
+    const readme = readFileSync("README.es.md", "utf8");
     expect(readme).toMatch(/sin etiqueta/);
+    expect(readme).not.toMatch(/squash[^.\n]*no se detecta|no se detectan[^.\n]*squash/i);
+  });
+
+  it.each(["README.md", "README.es.md"])("%s documents squash and Revert", (file) => {
+    const readme = readFileSync(file, "utf8");
     expect(readme).toMatch(/squash/);
     expect(readme).toMatch(/Revert/);
-    expect(readme).not.toMatch(/squash[^.\n]*no se detecta|no se detectan[^.\n]*squash/i);
+  });
+
+  it("documents part 2d in English", () => {
+    const readme = readFileSync("README.md", "utf8");
+    expect(readme).toMatch(/unlabeled/);
+    expect(readme).not.toMatch(/squash[^.\n]*not detected|not detected[^.\n]*squash/i);
   });
 });
