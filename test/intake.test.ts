@@ -89,6 +89,9 @@ function fakeGitHub(opts: { permissions?: Record<string, string> } = {}) {
     },
     comments: async (number) => thread.filter((c) => c.number === number),
     ensureLabel: async () => false,
+    createIssue: async () => ({ number: 0, url: "" }),
+    addLabels: async () => {},
+    close: async () => {},
   };
   const label = (number: number, actor = "owner") => {
     const issue = issues.find((i) => i.number === number)!;

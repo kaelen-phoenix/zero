@@ -11,6 +11,8 @@ import { protectedTouched } from "./verify.js";
 /** Proposals stored per line per pass, whatever the agent returns. */
 export const PROPOSALS_PER_PASS = 3;
 const DIGEST_DAYS = 30;
+/** The owner's latest rejections scout is reminded of. */
+export const REJECTIONS_IN_PROMPT = 20;
 const DAY = 86_400_000;
 
 export const ScoutOutput = z.object({
@@ -108,12 +110,14 @@ export async function scoutLine(ctx: FactoryContext, line: LineConfig, runAgent:
   const posts = await ctx.townhall.recall({ line: line.name, limit: ctx.config.townhall.recallLimit });
   const memory = posts.length ? posts.map((p) => `- [${p.kind}] ${p.topic}: ${p.body}`).join("\n") : "(empty)";
   const taken = ctx.store.listProposals({ line: line.name, status: ["pending", "rejected", "approved"] }).map((p) => p.title);
+  const rejected = ctx.store.recentRejected(line.name, REJECTIONS_IN_PROMPT).map((p) => `- ${p.title} — owner's reason: ${p.note ?? "(none given)"}`);
   const choice = pickEngine(ctx.store, ctx.config, "scout", now);
   const prompt = [
     `Line: ${line.name} (repository at the working directory, base branch ${line.baseBranch}).`,
     `## Townhall posts for this line\n${memory}`,
     `## Digest of the last ${DIGEST_DAYS} days, computed by zero\n${scoutDigest(ctx.store, line.name, now)}`,
     `## Existing proposals (never repeat these titles)\n${taken.length ? taken.map((t) => `- ${t}`).join("\n") : "(none)"}`,
+    `## Rejected proposals (never propose these or anything similar)\nThe owner turned these down, most recent first. Read their reasons as preferences.\n${rejected.length ? rejected.join("\n") : "(none)"}`,
     `## Constraints\nProtected paths (never propose touching them): ${ctx.config.limits.protectedPaths.join(", ")}.\nPropose at most ${PROPOSALS_PER_PASS} pieces of work.`,
   ].join("\n\n");
   const run = await runAgent({

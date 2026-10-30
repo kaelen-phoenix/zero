@@ -303,13 +303,19 @@ export function approveProposal(ctx: FactoryContext, id: string): RequestResult 
   });
 }
 
-/** Archives a pending proposal, with the owner's reason when given. */
-export function rejectProposal(ctx: FactoryContext, id: string, note?: string): Proposal {
-  return ctx.store.transaction(() => {
+/** Archives a pending proposal, with the owner's reason when given, and leaves the lesson in the townhall so scout does not propose it again. */
+export async function rejectProposal(ctx: FactoryContext, id: string, note?: string): Promise<Proposal> {
+  const proposal = ctx.store.transaction(() => {
     pendingProposal(ctx, id);
     ctx.store.updateProposal(id, { status: "rejected", note: note?.trim() || undefined });
     return ctx.store.getProposal(id)!;
   });
+  try {
+    await ctx.townhall.publish([{ kind: "lesson", line: proposal.line, topic: "propuesta rechazada", source: "", body: `"${proposal.title}": ${proposal.note ?? "sin motivo"}` }]);
+  } catch (err) {
+    log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
+  }
+  return proposal;
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

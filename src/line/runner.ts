@@ -130,7 +130,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       return integrate(line, copy, {
         jobId,
         title: spec.title,
-        body: deliveryBody(spec, job!),
+        body: deliveryBody(spec, job!, store),
         scratchDir: join(deps.home.worktrees, line.name),
       });
     });
@@ -238,9 +238,10 @@ function quotaStop(run: AgentRun<unknown>): void {
   if (run.quota?.limited) throw new Interrupted("quota");
 }
 
-/** What the pull request says: the plain spec, the issue it closes, and what the job cost. */
-export function deliveryBody(spec: Spec, job: Job): string {
-  const closes = job.source?.kind === "github-issue" ? `\n\nCloses #${job.source.number}` : "";
+/** What the pull request says: the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
+export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">): string {
+  const issue = job.source?.kind === "github-issue" ? job.source.number : job.source?.kind === "night-shift" ? store?.getProposal(job.source.proposal)?.issueNumber : undefined;
+  const closes = issue !== undefined ? `\n\nCloses #${issue}` : "";
   return `${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`;
 }
 

@@ -201,7 +201,7 @@ async function main(argv: string[]): Promise<number> {
         }
         if ((rest[0] !== "approve" && rest[0] !== "reject") || !rest[1]) break;
         if (rest[0] === "reject") {
-          console.log(`Propuesta ${rejectProposal(ctx, rest[1], values.note).id} rechazada y archivada.`);
+          console.log(`Propuesta ${(await rejectProposal(ctx, rest[1], values.note)).id} rechazada y archivada.`);
           return 0;
         }
         const r = approveProposal(ctx, rest[1]);

@@ -41,7 +41,11 @@ export interface IssueApi {
   /** Every comment on the issue, oldest first. */
   comments(number: number): Promise<IssueComment[]>;
   /** Creates the label if the repository does not have it; true when it had to. */
-  ensureLabel(label: string): Promise<boolean>;
+  ensureLabel(label: string, description?: string): Promise<boolean>;
+  createIssue(title: string, body: string, labels: string[]): Promise<{ number: number; url: string }>;
+  addLabels(number: number, labels: string[]): Promise<void>;
+  /** Closes the issue as not planned. */
+  close(number: number): Promise<void>;
 }
 
 export function githubIssues(token: string, repository: string): IssueApi {
@@ -72,14 +76,24 @@ export function githubIssues(token: string, repository: string): IssueApi {
       const all = await gh.paginate(gh.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
       return all.map((c) => ({ author: c.user?.login ?? "", body: c.body ?? "", createdAt: c.created_at }));
     },
-    async ensureLabel(label) {
+    async ensureLabel(label, description = "Trabajo para la fábrica zero") {
       try {
         await gh.issues.getLabel({ owner, repo, name: label });
         return false;
       } catch {
-        await gh.issues.createLabel({ owner, repo, name: label, color: "5319e7", description: "Trabajo para la fábrica zero" });
+        await gh.issues.createLabel({ owner, repo, name: label, color: "5319e7", description });
         return true;
       }
+    },
+    async createIssue(title, body, labels) {
+      const { data } = await gh.issues.create({ owner, repo, title, body, labels });
+      return { number: data.number, url: data.html_url };
+    },
+    async addLabels(number, labels) {
+      await gh.issues.addLabels({ owner, repo, issue_number: number, labels });
+    },
+    async close(number) {
+      await gh.issues.update({ owner, repo, issue_number: number, state: "closed", state_reason: "not_planned" });
     },
   };
 }

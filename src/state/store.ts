@@ -135,6 +135,11 @@ export interface Proposal {
   note?: string;
   /** The job an approval opened. */
   jobId?: string;
+  /** The GitHub issue that records it, once published. */
+  issueNumber?: number;
+  issueUrl?: string;
+  /** The decision the issue was already told about. */
+  issueTold?: "approved" | "rejected";
 }
 
 /** A connection recorded by the egress gate, numbered in the order the host read it. */
@@ -212,7 +217,10 @@ CREATE TABLE IF NOT EXISTS proposals (
   created_at TEXT NOT NULL,
   decided_at TEXT,
   note TEXT,
-  job_id TEXT
+  job_id TEXT,
+  issue_number INTEGER,
+  issue_url TEXT,
+  issue_told TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS kv (
@@ -283,6 +291,9 @@ function toProposal(r: Row): Proposal {
     decidedAt: str(r.decided_at),
     note: str(r.note),
     jobId: str(r.job_id),
+    issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
+    issueUrl: str(r.issue_url),
+    issueTold: str(r.issue_told) as Proposal["issueTold"],
   };
 }
 
@@ -336,6 +347,10 @@ export class Store {
   private migrate() {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
     for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
+    const proposalColumns = new Set((this.db.prepare("PRAGMA table_info(proposals)").all() as Row[]).map((c) => String(c.name)));
+    for (const [column, type] of [["issue_number", "INTEGER"], ["issue_url", "TEXT"], ["issue_told", "TEXT"]] as const) {
+      if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
+    }
   }
 
   close() {
@@ -518,6 +533,22 @@ export class Store {
       .prepare("UPDATE proposals SET status = ?, decided_at = ?, note = ?, job_id = ? WHERE id = ? AND status = 'pending'")
       .run(patch.status, this.stamp(), patch.note ?? null, patch.jobId ?? null, id);
     return Number(r.changes) === 1;
+  }
+
+  /** The owner's latest rejections on a line, most recently decided first. */
+  recentRejected(line: string, limit: number): Proposal[] {
+    const rows = this.db
+      .prepare("SELECT * FROM proposals WHERE line = ? AND status = 'rejected' ORDER BY decided_at DESC, rowid DESC LIMIT ?")
+      .all(line, limit) as Row[];
+    return rows.map(toProposal);
+  }
+
+  setProposalIssue(id: string, issue: { number: number; url: string }) {
+    this.db.prepare("UPDATE proposals SET issue_number = ?, issue_url = ? WHERE id = ?").run(issue.number, issue.url, id);
+  }
+
+  markProposalIssueTold(id: string, status: "approved" | "rejected") {
+    this.db.prepare("UPDATE proposals SET issue_told = ? WHERE id = ?").run(status, id);
   }
 
   getKv(key: string): string | undefined {
