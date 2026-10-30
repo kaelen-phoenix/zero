@@ -148,8 +148,30 @@
       </ul>
     </section>
 
+    <section id="ci" aria-labelledby="ci-h">
+      <p class="label"><span class="marker">06</span> <span data-i18n="ci.label">Tu CI y tus herramientas de calidad</span></p>
+      <h2 id="ci-h" data-i18n="ci.title">zero no reemplaza tu CI: trabaja con él.</h2>
+      <p data-i18n="ci.intro">zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad.</p>
+      <ol class="path">
+        <li data-i18n="ci.path.1">Tu pedido</li>
+        <li data-i18n="ci.path.2">zero: <code>spec</code>, <code>build</code>, <code>verify</code>, <code>review</code>, <code>security</code></li>
+        <li data-i18n="ci.path.3">El pull request</li>
+        <li data-i18n="ci.path.4">El CI y los checks de calidad de GitHub</li>
+        <li data-i18n="ci.path.5">El merge</li>
+        <li data-i18n="ci.path.6">El despliegue de la plataforma</li>
+      </ol>
+      <ul class="points">
+        <li data-i18n="ci.verify">zero corre la verificación de la línea en local antes de entregar.</li>
+        <li data-i18n="ci.merge">Con integrate <code>pull-request</code> y <code>autoMerge</code>, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check.</li>
+        <li data-i18n="ci.nochecks">Si el repositorio no tiene ningún check, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.</li>
+        <li data-i18n="ci.second">Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.</li>
+        <li data-i18n="ci.deploy">Los despliegues los sigue haciendo la plataforma (por ejemplo Vercel o los workflows de GitHub), no zero.</li>
+      </ul>
+      <p class="note" data-i18n="ci.recommend">Recomendación: tener CI y al menos un análisis estático en cada repositorio. Sin eso, zero solo tiene su verificación local y sus propias revisiones.</p>
+    </section>
+
     <section id="install" aria-labelledby="install-h">
-      <p class="label"><span class="marker">06</span> <span data-i18n="install.label">Instalación</span></p>
+      <p class="label"><span class="marker">07</span> <span data-i18n="install.label">Instalación</span></p>
       <h2 id="install-h" data-i18n="install.title">Instalación y primeros pasos.</h2>
       <p data-i18n="install.intro">zero se instala desde el repositorio y necesita Node 22.</p>
       <div class="code">
@@ -174,7 +196,7 @@ node dist/cli.js box setup</code></pre>
     </section>
 
     <section id="workflow" aria-labelledby="workflow-h">
-      <p class="label"><span class="marker">07</span> <span data-i18n="workflow.label">Flujo de trabajo</span></p>
+      <p class="label"><span class="marker">08</span> <span data-i18n="workflow.label">Flujo de trabajo</span></p>
       <h2 id="workflow-h" data-i18n="workflow.title">Desde la terminal o desde el chat.</h2>
       <ol class="flow">
         <li><code>zero request "…"</code><p data-i18n="workflow.request">Pide un trabajo; la fábrica se enciende sola si estaba apagada.</p></li>
@@ -189,7 +211,7 @@ node dist/cli.js box setup</code></pre>
     </section>
 
     <section id="compatibility" aria-labelledby="compat-h">
-      <p class="label"><span class="marker">08</span> <span data-i18n="compat.label">Compatibilidad</span></p>
+      <p class="label"><span class="marker">09</span> <span data-i18n="compat.label">Compatibilidad</span></p>
       <h2 id="compat-h" data-i18n="compat.title">Lo que soporta hoy.</h2>
       <div class="compat">
         <div>
@@ -215,7 +237,7 @@ node dist/cli.js box setup</code></pre>
     </section>
 
     <section id="links" aria-labelledby="links-h">
-      <p class="label"><span class="marker">09</span> <span data-i18n="links.label">Enlaces</span></p>
+      <p class="label"><span class="marker">10</span> <span data-i18n="links.label">Enlaces</span></p>
       <h2 id="links-h" data-i18n="links.title">Seguir leyendo.</h2>
       <ul class="grid dense links">
         <li><a href="https://github.com/kaelen-phoenix/zero">GitHub</a></li>

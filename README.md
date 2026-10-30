@@ -96,6 +96,27 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
 
+## zero, your CI and your quality tools
+
+zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
+
+```
+request
+  → zero: spec → build → verify → review → security
+  → pull request
+  → GitHub CI and quality checks
+  → merge
+  → the platform's deploy
+```
+
+- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
+- **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
+- **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
+- **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
+
+Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.
+
 ## Browser panel
 
 With the factory running, the panel shows:
