@@ -154,7 +154,7 @@ export function startOfDay(now = new Date()): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
-/** Spend so far today across all agent calls. */
+/** Estimated spend so far today across all agent calls (what is really billed is in src/budget.ts). */
 export function spentToday(store: Store, now = new Date()): number {
   return store.spansSince(AGENT_SPAN, startOfDay(now)).reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
 }

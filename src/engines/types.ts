@@ -31,6 +31,33 @@ export interface EngineResult {
   costUsd?: number;
   /** The engine's own session id, when it reports one (for transcript and cost lookups). */
   sessionId?: string;
+  /** How the engine's account is billed and how much of its plan is used, when it reports it. */
+  quota?: QuotaReport;
+}
+
+/**
+ * A usage window of a subscription plan (for example five hours or a week).
+ * `utilization` is the used fraction, 0 to 1.
+ */
+export interface QuotaWindow {
+  name: string;
+  /** Spanish label for the owner ("5 horas", "semana"). */
+  label: string;
+  utilization?: number;
+  status: "ok" | "warning" | "exhausted";
+  /** ISO time when the window renews. */
+  resetsAt?: string;
+}
+
+/**
+ * `subscription`: a flat-rate plan whose real limit is its usage windows, so
+ * reported costs are only estimates. `api`: pay per use, costs are real.
+ */
+export interface QuotaReport {
+  billing: "subscription" | "api";
+  windows: QuotaWindow[];
+  /** True when the plan refused this call because a window is used up. */
+  limited?: boolean;
 }
 
 /** A coding agent zero can drive headlessly: Claude Code, Codex, Antigravity, or any CLI. */

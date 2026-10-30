@@ -54,9 +54,9 @@ describe("daemon", () => {
     expect(ctx.store.getJob(job.id)!.status).toBe("queued");
   });
 
-  it("holds new jobs once the daily budget is spent", async () => {
+  it("holds new jobs once the daily budget billed per use is spent", async () => {
     const ctx = factory({ limits: { usdPerDay: 1 } });
-    ctx.tracer.start(AGENT_SPAN, { attrs: { "zero.engine": "claude" } }).end("ok", { "zero.cost.usd": 1.2, "zero.cost.source": "reported" });
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "zero.engine": "claude" } }).end("ok", { "zero.cost.usd": 1.2, "zero.cost.source": "reported", "zero.billing": "api" });
     const job = requestWork(ctx, { text: "tomorrow" }).job;
     await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => builder().runner });
     expect(ctx.store.getJob(job.id)!.status).toBe("queued");

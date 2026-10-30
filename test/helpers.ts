@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
-import type { AgentRequest, AgentRun, AgentRunner, AgentStation } from "../src/agent.js";
+import { quotaAttrs, type AgentRequest, type AgentRun, type AgentRunner, type AgentStation } from "../src/agent.js";
 import { openTownhall, type FactoryContext } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { factoryHome } from "../src/home.js";
@@ -119,7 +119,7 @@ export function fakeAgents(handlers: Partial<Record<AgentStation, Handler>>, cos
     const fallback: Partial<AgentRun<any>> =
       req.station === "spec" ? { output: validSpec() } : req.station === "review" || req.station === "security" ? { output: cleanReview() } : {};
     const result = { ok: true, text: "done", costUsd: costPerCall, costSource: "reported" as const, engine: "fake", ...fallback, ...((await handlers[req.station]?.(req, count[req.station]!)) ?? {}) };
-    span?.end(result.ok ? "ok" : "error", { "zero.cost.usd": result.costUsd, "zero.cost.source": result.costSource });
+    span?.end(result.ok ? "ok" : "error", { "zero.cost.usd": result.costUsd, "zero.cost.source": result.costSource, ...quotaAttrs(result.quota) });
     return result as AgentRun<T>;
   };
   return { runner, calls, count };

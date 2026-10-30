@@ -40,7 +40,7 @@ Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie
 |---|---|
 | L0 asistida | La especificación y la integración |
 | L1 supervisada | Solo la especificación ("vas a obtener esto") |
-| L2 vigilada | Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto |
+| L2 vigilada | Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto pagado por uso |
 | L3 a oscuras | Nada; las políticas son límites duros, y está el botón de parada |
 
 Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamiento** lista (ver abajo); mientras falte algo, **trabaja en L2 y dice exactamente qué falta**. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.
@@ -128,9 +128,10 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
-limits:
-  usdPerDay: 10           # 0 = solo motores gratuitos
-  usdPerJob: 3
+limits:                   # con una suscripción (claude.ai) el límite es el cupo real del plan: 5 horas y semana
+  reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
+  usdPerDay: 10           # solo si se paga por uso (clave de API) · 0 = solo motores gratuitos
+  usdPerJob: 3            # solo si se paga por uso
   protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
 stations:                 # motor, modelo y tiempo límite por estación (opcional)
