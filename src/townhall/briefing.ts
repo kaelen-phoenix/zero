@@ -1,6 +1,13 @@
 import { bytes } from "../format.js";
+import type { Job, Proposal } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
+
+/** What the night shift did in the period: new proposals, and the jobs born from one that finished. */
+export interface NightShiftReport {
+  proposals: Proposal[];
+  jobs: Job[];
+}
 
 export interface Briefing {
   title: string;
@@ -16,10 +23,27 @@ const ref = (p: Post) => ` (${p.line}${p.job ? ` · ${p.job}` : ""})`;
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
-  const sections: string[] = [
+  const sections: string[] = [];
+  if (night.proposals.length || night.jobs.length) {
+    const outcome = (j: Job) => (j.status === "delivered" ? `entregado${j.delivery ? ` (${j.delivery.url ?? j.delivery.branch})` : ""}` : (j.reason ?? j.status));
+    sections.push(
+      [
+        "## Turno nocturno",
+        ...(night.proposals.length
+          ? [
+              "Propuestas nuevas:",
+              ...night.proposals.map((p) => `- \`${p.id}\` (${p.line}) **${p.title}** · costo estimado ${usd(p.estimatedUsd)}`),
+              "Aprobar: `zero proposals approve <id>` · Rechazar: `zero proposals reject <id>` (también desde el chat).",
+            ]
+          : []),
+        ...(night.jobs.length ? ["Trabajos del turno nocturno:", ...night.jobs.map((j) => `- \`${j.id}\` (${j.line}) ${j.title ?? j.request.split("\n")[0]}: ${outcome(j)}`)] : []),
+      ].join("\n"),
+    );
+  }
+  sections.push(
     `Período: ${metrics.from} → ${metrics.to}`,
     [
       "## Producción",
@@ -27,7 +51,7 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
       "|---|---|---|---|---|---|---|---|",
       `| ${metrics.delivered} | ${metrics.failed} | ${metrics.stopped} | ${pct(metrics.successRate)} | ${metrics.avgDurationMin === null ? "—" : `${metrics.avgDurationMin.toFixed(1)} min`} | ${usd(metrics.costUsd)} | ${usd(metrics.costPerDeliveryUsd)} | ${metrics.humanWaitMin.toFixed(0)} min |`,
     ].join("\n"),
-  ];
+  );
 
   const engines = Object.entries(metrics.byEngine);
   if (engines.length) {

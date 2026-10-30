@@ -12,6 +12,7 @@ import { loadFactory, type FactoryConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
+import { scoutPass } from "./line/scout.js";
 import { log } from "./log.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
@@ -34,6 +35,8 @@ export interface DaemonOptions {
   merges?: (repository: string) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
   panel?: boolean;
+  /** Run the night shift (scout) while the factory is idle. Defaults to on, except in `once` runs. */
+  scout?: boolean;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -136,6 +139,15 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .finally(() => (merging = undefined));
   };
 
+  // The night shift: scout proposes work while the factory is idle, one pass at a time, never holding up the owner's jobs.
+  let scouting: Promise<void> | undefined;
+  const scout = () => {
+    if (scouting || !(opts.scout ?? !opts.once) || ctx.config.nightShift === "off" || running.size) return;
+    scouting = scoutPass(ctx, agentRunner(ctx.config), now())
+      .catch((err) => log.warn("night shift failed", { error: String(err) }))
+      .finally(() => (scouting = undefined));
+  };
+
   try {
     while (!stopping) {
       beat();
@@ -193,6 +205,8 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
         }
       }
 
+      if (!andon && !startable) scout();
+
       if (opts.once && !running.size && !startable) break;
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
@@ -200,6 +214,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
     await merging;
+    await scouting;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();

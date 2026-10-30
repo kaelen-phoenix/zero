@@ -522,6 +522,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Lee tus comentarios en los issues y decide si responde, si pide un cambio nuevo o si aprueba o rechaza una consulta pendiente.",
     cannot: "No ve el repositorio ni modifica el código; dónde está cada cambio lo calcula la fábrica, no el agente.",
   },
+  scout: {
+    name: "Turno nocturno (scout)",
+    does: "Cuando la fábrica está libre, mira el código, el townhall, las trazas de los últimos 30 días y las specs sin tests, y propone mejoras que vos aprobás o rechazás.",
+    cannot: "No modifica el código ni construye nada; nunca propone tocar rutas protegidas ni cambios que pidan credenciales nuevas.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };

@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, briefing, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, rejectProposal, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatEgress, formatJob, formatRequest, formatStatus } from "../format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
@@ -77,6 +77,37 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       },
     },
     ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) })),
+  );
+
+  server.registerTool(
+    "zero_proposals",
+    {
+      title: "Propuestas del turno nocturno",
+      description: "Work the factory's scout station proposed on its own while idle, still waiting for the owner: id, line, title, why, what would change and estimated cost.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true)),
+  );
+
+  server.registerTool(
+    "zero_proposal_decide",
+    {
+      title: "Aprobar o rechazar una propuesta",
+      description: "Pass the owner's decision on a scout proposal. 'approve' turns it into a normal job of its line; 'reject' archives it. Only use the owner's actual answer.",
+      inputSchema: {
+        id: z.string(),
+        decision: z.enum(["approve", "reject"]),
+        note: z.string().optional().describe("The owner's reason, if they gave one."),
+      },
+    },
+    ({ id, decision, note }) =>
+      withFactory(home, async (ctx) => {
+        if (decision === "reject") return `Propuesta ${rejectProposal(ctx, id, note).id} rechazada y archivada.`;
+        const r = approveProposal(ctx, id);
+        const started = await ensureDaemon(ctx);
+        return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+      }),
   );
 
   server.registerTool(

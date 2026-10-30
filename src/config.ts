@@ -29,6 +29,27 @@ const stationSchema = (defaults: { maxTurns: number; timeoutMinutes: number }) =
 /** Skills a line adds to an agent, on top of the global ones. */
 const LineSkillsSchema = z.object({ skills: z.array(z.string().min(1)).default([]) }).strict();
 
+/** `propose`: proposals wait for the owner; `build`: built but left unintegrated; `auto`: built and integrated. */
+const AutonomySchema = z.enum(["propose", "build", "auto"]);
+export type Autonomy = z.infer<typeof AutonomySchema>;
+
+/** A local time window, `HH:MM-HH:MM` on a 24-hour clock; a start later than the end wraps past midnight. */
+const HoursSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d$/, "use HH:MM-HH:MM, from 00:00 to 23:59");
+
+/** The scout station's own work while the factory is idle, or `off`. */
+const NightShiftSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Limits the night shift to these local hours; absent: any time the factory is idle. */
+      hours: HoursSchema.optional(),
+      autonomy: AutonomySchema.default("propose"),
+      /** Jobs the night shift builds on its own per day, across every line. */
+      maxAutoJobsPerDay: z.number().int().min(0).default(3),
+    })
+    .strict(),
+]);
+
 /** A site for the egress rules: a host name (it covers its subdomains) or an IPv4 address, optionally with `:port`. */
 export const SiteSchema = z
   .string()
@@ -66,10 +87,12 @@ export const LineSchema = z.object({
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema })
     .partial()
     .strict()
     .optional(),
+  /** How far the night shift goes on its own on this line; absent: the global `nightShift.autonomy`. */
+  nightShift: z.object({ autonomy: AutonomySchema }).strict().optional(),
 });
 
 export const FactorySchema = z
@@ -111,6 +134,8 @@ export const FactorySchema = z
         usdPerJob: z.number().positive().default(3),
         /** Share of each subscription window (5 hours, week) the factory leaves to the owner, in percent. 0 = use the whole plan. */
         reservePercent: z.number().min(0).max(99).default(0),
+        /** What the scout station may spend per night shift period; per-use billing only. */
+        usdPerNight: z.number().nonnegative().default(1),
         protectedPaths: z.array(z.string()).default([".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),
@@ -129,8 +154,12 @@ export const FactorySchema = z
         security: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Answers the owner's comments on an issue; no repository, only the facts zero computes. */
         reply: stationSchema({ maxTurns: 5, timeoutMinutes: 5 }).prefault({}),
+        /** Proposes work on its own while the factory is idle; read-only, never builds anything. */
+        scout: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
       })
       .prefault({}),
+    /** Absent: on, at any hour the factory is idle. */
+    nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
@@ -166,7 +195,12 @@ export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout"];
+
+/** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
+export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {
+  return line.nightShift?.autonomy ?? (config.nightShift === "off" ? "propose" : config.nightShift.autonomy);
+}
 
 /** One engine a station may run on, with its model (absent: the engine's own default). */
 export interface ChainLink {
