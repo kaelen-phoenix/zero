@@ -7,7 +7,7 @@ import { tryGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
 import type { AgentRunner } from "../agent.js";
 import { answerComments } from "./comments.js";
-import { FACTORY_MARK, intakeProblemKey, issueKey } from "./keys.js";
+import { FACTORY_MARK, intakeProblemKey, issueKey, PROPOSAL_LABEL } from "./keys.js";
 
 /**
  * GitHub issues as requests: for lines with `issues`, open issues carrying the
@@ -22,6 +22,7 @@ export interface Issue {
   author: string;
   url: string;
   isPullRequest: boolean;
+  labels: string[];
 }
 
 export interface IssueComment {
@@ -33,6 +34,8 @@ export interface IssueComment {
 /** The slice of GitHub the intake needs; tests use a fake. */
 export interface IssueApi {
   labeled(label: string): Promise<Issue[]>;
+  /** The issue's state and labels now, and who closed it when it is closed. */
+  issue(number: number): Promise<{ state: "open" | "closed"; labels: string[]; closedBy?: string }>;
   /** Who applied the label last, and when. */
   lastLabeled(number: number, label: string): Promise<{ actor: string; at: string } | undefined>;
   /** `admin`, `write`, `read` or `none`. */
@@ -44,9 +47,12 @@ export interface IssueApi {
   ensureLabel(label: string, description?: string): Promise<boolean>;
   createIssue(title: string, body: string, labels: string[]): Promise<{ number: number; url: string }>;
   addLabels(number: number, labels: string[]): Promise<void>;
-  /** Closes the issue as not planned. */
-  close(number: number): Promise<void>;
+  /** Closes the issue, as not planned unless said otherwise. */
+  close(number: number, reason?: "completed" | "not_planned"): Promise<void>;
 }
+
+/** GitHub lists labels as names or as objects. */
+const labelNames = (labels: (string | { name?: string })[]) => labels.map((l) => (typeof l === "string" ? l : (l.name ?? ""))).filter(Boolean);
 
 export function githubIssues(token: string, repository: string): IssueApi {
   const [owner, repo] = repository.split("/") as [string, string];
@@ -55,7 +61,11 @@ export function githubIssues(token: string, repository: string): IssueApi {
   return {
     async labeled(label) {
       const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
-      return issues.map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request) }));
+      return issues.map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request), labels: labelNames(i.labels) }));
+    },
+    async issue(number) {
+      const { data } = await gh.issues.get({ owner, repo, issue_number: number });
+      return { state: data.state === "closed" ? "closed" : "open", labels: labelNames(data.labels), closedBy: data.closed_by?.login };
     },
     async lastLabeled(number, label) {
       const events = await gh.paginate(gh.issues.listEvents, { owner, repo, issue_number: number, per_page: 100 });
@@ -92,8 +102,8 @@ export function githubIssues(token: string, repository: string): IssueApi {
     async addLabels(number, labels) {
       await gh.issues.addLabels({ owner, repo, issue_number: number, labels });
     },
-    async close(number) {
-      await gh.issues.update({ owner, repo, issue_number: number, state: "closed", state_reason: "not_planned" });
+    async close(number, reason = "not_planned") {
+      await gh.issues.update({ owner, repo, issue_number: number, state: "closed", state_reason: reason });
     },
   };
 }
@@ -151,7 +161,8 @@ async function takeIssues(ctx: FactoryContext, line: LineConfig & { issues: { la
     return trust.get(login)!;
   };
   for (const issue of await gh.labeled(line.issues.label)) {
-    if (issue.isPullRequest) continue;
+    // Proposal issues are decided by the proposal sync, never taken as plain requests.
+    if (issue.isPullRequest || issue.labels.includes(PROPOSAL_LABEL)) continue;
     const key = issueKey(repository, issue.number);
     const raw = ctx.store.getKv(key);
     const state: IssueState | undefined = raw ? JSON.parse(raw) : undefined;

@@ -81,6 +81,7 @@ function fakeGitHub(opts: { permissions?: Record<string, string> } = {}) {
   const at = () => new Date(Date.UTC(2030, 0, 1, 0, 0, ++clock)).toISOString();
   const api: IssueApi = {
     labeled: async (label) => issues.filter((i) => i.labels.includes(label)),
+    issue: async (n) => ({ state: "open", labels: issues.find((i) => i.number === n)?.labels ?? [] }),
     lastLabeled: async (n) => labeledAt.get(n),
     permission: async (login) => opts.permissions?.[login] ?? (login === "owner" ? "admin" : "read"),
     comment: async (number, body) => {
@@ -128,6 +129,15 @@ describe("GitHub issues as requests", () => {
       source: { kind: "github-issue", repository: "kaelen/demo", number: 7, url: "https://github.com/kaelen/demo/issues/7" },
     });
     expect(gh.comments).toEqual([{ number: 7, body: expect.stringContaining(`trabajo \`${jobs[0]!.id}\``) }]);
+  });
+
+  it("leaves night-shift proposal issues to the proposal sync, even when labeled by a writer", async () => {
+    const ctx = issueFactory();
+    const gh = fakeGitHub();
+    gh.open(9, { labels: ["zero:propuesta"] });
+    await pollIssues(ctx, () => gh.api);
+    expect(ctx.store.listJobs().filter((j) => j.source?.kind === "github-issue")).toEqual([]);
+    expect(gh.comments).toEqual([]);
   });
 
   it("closes the issue from the pull request", () => {

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { approveProposal, rejectProposal, requestWork } from "../src/app.js";
 import { pollIssues, type Issue, type IssueApi, type IssueState } from "../src/intake/github.js";
 import { issueKey } from "../src/intake/keys.js";
-import { PROPOSAL_LABEL, syncProposalIssues } from "../src/intake/proposals.js";
+import { PROPOSAL_LABEL, proposalIssueBody, syncProposalIssues } from "../src/intake/proposals.js";
 import { deliveryBody } from "../src/line/runner.js";
 import { cleanup, gitIn, gitRepo, testFactory, validSpec } from "./helpers.js";
 
@@ -13,15 +13,19 @@ afterEach(cleanup);
 const idea = { title: "Cubrir el egress con tests", why: "falla seguido", change: "agregar tests", estimatedUsd: 0.5, paths: ["test/egress.test.ts"] };
 
 /** GitHub in memory: records every call the sync makes. */
-function fakeGitHub(opts: { failCreate?: boolean } = {}) {
-  const calls: { op: string; number?: number; title?: string; body?: string; labels?: string[] }[] = [];
-  const issues: (Issue & { labels: string[]; state: "open" | "closed" })[] = [];
+function fakeGitHub(opts: { failCreate?: boolean; permissions?: Record<string, string> } = {}) {
+  const calls: { op: string; number?: number; title?: string; body?: string; labels?: string[]; reason?: string }[] = [];
+  const issues: (Issue & { state: "open" | "closed"; closedBy?: string })[] = [];
   const labeledAt = new Map<number, { actor: string; at: string }>();
   let clock = 0;
   const api: IssueApi = {
     labeled: async (label) => issues.filter((i) => i.state === "open" && i.labels.includes(label)),
+    issue: async (n) => {
+      const i = issues.find((x) => x.number === n)!;
+      return { state: i.state, labels: [...i.labels], closedBy: i.closedBy };
+    },
     lastLabeled: async (n) => labeledAt.get(n),
-    permission: async (login) => (login === "owner" ? "admin" : "read"),
+    permission: async (login) => opts.permissions?.[login] ?? (login === "owner" ? "admin" : "read"),
     comment: async (number, body) => void calls.push({ op: "comment", number, body }),
     comments: async () => [],
     ensureLabel: async (label) => {
@@ -40,13 +44,25 @@ function fakeGitHub(opts: { failCreate?: boolean } = {}) {
       labeledAt.set(number, { actor: "owner", at: new Date(Date.UTC(2030, 0, 1, 0, 0, ++clock)).toISOString() });
       calls.push({ op: "addLabels", number, labels });
     },
-    close: async (number) => {
+    close: async (number, reason) => {
       issues.find((i) => i.number === number)!.state = "closed";
-      calls.push({ op: "close", number });
+      calls.push({ op: "close", number, reason });
     },
   };
   const ops = (op: string, number?: number) => calls.filter((c) => c.op === op && (number === undefined || c.number === number));
-  return { api, calls, ops };
+  /** What people do on GitHub, recorded as GitHub would, not as a call of the factory. */
+  const people = {
+    label: (number: number, actor: string, label = "zero") => {
+      issues.find((i) => i.number === number)!.labels.push(label);
+      labeledAt.set(number, { actor, at: new Date(Date.UTC(2030, 0, 1, 0, 0, ++clock)).toISOString() });
+    },
+    close: (number: number, actor: string) => {
+      const issue = issues.find((i) => i.number === number)!;
+      issue.state = "closed";
+      issue.closedBy = actor;
+    },
+  };
+  return { api, calls, ops, people };
 }
 
 function githubRepo(remote = "https://github.com/kaelen/demo.git") {
@@ -55,7 +71,7 @@ function githubRepo(remote = "https://github.com/kaelen/demo.git") {
   return repo;
 }
 
-function factory(lines = [{ name: "demo", repo: githubRepo() }]) {
+function factory(lines: ({ name: string; repo: string } & Record<string, unknown>)[] = [{ name: "demo", repo: githubRepo() }]) {
   return testFactory({ level: "L2", isolation: "worktree", lines: lines.map((l) => ({ integrate: "pull-request", ...l })) });
 }
 
@@ -194,7 +210,7 @@ describe("proposals as GitHub issues", () => {
     const { job } = approveProposal(ctx, p.id);
     const gh = fakeGitHub();
     await syncProposalIssues(ctx, () => gh.api);
-    expect(gh.calls.map((c) => c.op)).toEqual(["ensureLabel", "createIssue", "comment", "addLabels"]);
+    expect(gh.calls.map((c) => c.op)).toEqual(["ensureLabel", "createIssue", "addLabels", "comment"]);
     expect(gh.ops("comment", 5)[0]!.body).toContain(job.id);
   });
 
@@ -225,5 +241,109 @@ describe("the pull request closes the proposal's issue", () => {
     expect(deliveryBody(validSpec(), job, ctx.store)).not.toContain("Closes");
     ctx.store.setProposalIssue(p.id, { number: 5, url: "https://github.com/kaelen/demo/issues/5" });
     expect(deliveryBody(validSpec(), job, ctx.store)).toContain("\n\nCloses #5\n");
+  });
+});
+
+describe("deciding a proposal from its issue", () => {
+  /** A pending proposal, published as issue #5. */
+  async function published(lines?: Parameters<typeof factory>[0], permissions?: Record<string, string>) {
+    const ctx = factory(lines);
+    const p = ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub({ permissions });
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(ctx.store.getProposal(p.id)!.issueNumber).toBe(5);
+    return { ctx, p, gh };
+  }
+
+  it("approves it when a writer puts the work label on, once", async () => {
+    const { ctx, p, gh } = await published();
+    gh.people.label(5, "owner");
+    await syncProposalIssues(ctx, () => gh.api);
+
+    const approved = ctx.store.getProposal(p.id)!;
+    expect(approved).toMatchObject({ status: "approved", decidedBy: "owner", jobId: expect.any(String), issueTold: "approved" });
+    expect(ctx.store.getJob(approved.jobId!)!.source).toEqual({ kind: "night-shift", proposal: p.id });
+    expect(gh.ops("comment", 5)).toEqual([{ op: "comment", number: 5, body: expect.stringContaining("desde GitHub") }]);
+
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(ctx.store.listJobs()).toHaveLength(1);
+    expect(gh.ops("comment", 5)).toHaveLength(1);
+  });
+
+  it("rejects it when a writer closes it without the label, without closing it again", async () => {
+    const { ctx, p, gh } = await published(undefined, { maintainer: "write" });
+    gh.people.close(5, "maintainer");
+    await syncProposalIssues(ctx, () => gh.api);
+    await syncProposalIssues(ctx, () => gh.api);
+
+    const rejected = ctx.store.getProposal(p.id)!;
+    expect(rejected).toMatchObject({ status: "rejected", note: expect.stringMatching(/GitHub/), issueTold: "rejected" });
+    expect(gh.ops("close", 5)).toEqual([]);
+    expect(gh.ops("comment", 5)).toEqual([]);
+    const lessons = (await ctx.townhall.recall({ line: "demo" })).filter((x) => x.kind === "lesson" && x.topic === "propuesta rechazada");
+    expect(lessons).toHaveLength(1);
+  });
+
+  it("ignores the label of someone without write access", async () => {
+    const { ctx, p, gh } = await published();
+    gh.people.label(5, "stranger");
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(ctx.store.getProposal(p.id)!.status).toBe("pending");
+    expect(ctx.store.listJobs()).toEqual([]);
+  });
+
+  it("ignores a close by someone without write access", async () => {
+    const { ctx, p, gh } = await published();
+    gh.people.close(5, "stranger");
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(ctx.store.getProposal(p.id)!.status).toBe("pending");
+  });
+
+  it("decides nothing from the issue on a build line", async () => {
+    const { ctx, p, gh } = await published([{ name: "demo", repo: githubRepo(), nightShift: { autonomy: "build" } }]);
+    gh.people.label(5, "owner");
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(ctx.store.getProposal(p.id)!.status).toBe("pending");
+    expect(ctx.store.listJobs()).toEqual([]);
+  });
+
+  it("closes the issue once as completed when the job was delivered without a pull request", async () => {
+    const { ctx, p, gh } = await published([{ name: "demo", repo: githubRepo(), integrate: "merge", nightShift: { autonomy: "build" } }]);
+    const { job } = requestWork(ctx, { text: idea.title, line: "demo", source: { kind: "night-shift", proposal: p.id, autonomy: "build" } });
+    ctx.store.updateProposal(p.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(gh.ops("close", 5)).toEqual([]);
+
+    ctx.store.finishJob(job.id, "delivered", { delivery: { mode: "merge", branch: "main" } });
+    await syncProposalIssues(ctx, () => gh.api);
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(gh.ops("close", 5)).toEqual([{ op: "close", number: 5, reason: "completed" }]);
+    expect(ctx.store.getProposal(p.id)!.issueClosed).toBe(true);
+  });
+
+  it("leaves pull-request deliveries to their Closes #n", async () => {
+    const { ctx, p, gh } = await published();
+    const { job } = approveProposal(ctx, p.id);
+    ctx.store.finishJob(job.id, "delivered", { delivery: { mode: "pull-request", branch: "zero/x", url: "https://github.com/kaelen/demo/pull/1" } });
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(gh.ops("close", 5)).toEqual([]);
+  });
+});
+
+describe("the proposal issue says how to decide it", () => {
+  const proposal = (ctx: ReturnType<typeof factory>) => ctx.store.createProposal({ ...idea, line: "demo" });
+
+  it("on a propose line: the work label approves, closing rejects", () => {
+    const ctx = factory();
+    const body = proposalIssueBody(proposal(ctx), ctx.config.lines[0]!, ctx.config);
+    expect(body).toContain("etiqueta `zero`");
+    expect(body).toContain("cerrá el issue");
+  });
+
+  it("on a build line: a record that closes with the delivery", () => {
+    const ctx = factory([{ name: "demo", repo: githubRepo(), nightShift: { autonomy: "build" } }]);
+    const body = proposalIssueBody(proposal(ctx), ctx.config.lines[0]!, ctx.config);
+    expect(body).toContain("es un registro");
+    expect(body).toContain("Se cierra con la entrega");
   });
 });
