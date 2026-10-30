@@ -123,6 +123,62 @@ describe("documentation up to date", () => {
   });
 });
 
+describe("zero, CI and quality tools", () => {
+  const EN_HEADING = "## zero, your CI and your quality tools";
+  const ES_HEADING = "## zero, tu CI y tus herramientas de calidad";
+  const enCi = section(en, EN_HEADING);
+  const esCi = section(es, ES_HEADING);
+
+  it("sits after auto-merge and before the browser panel", () => {
+    for (const [text, heading, after, before] of [
+      [en, EN_HEADING, "### Auto-merge", "## Browser panel"],
+      [es, ES_HEADING, "### Fusión automática", "## Panel en el navegador"],
+    ] as const) {
+      const lines = text.split("\n");
+      const at = (h: string) => lines.findIndex((l) => l === h);
+      expect(at(heading)).toBeGreaterThan(at(after));
+      expect(at(after)).toBeGreaterThan(-1);
+      expect(at(before)).toBeGreaterThan(at(heading));
+    }
+  });
+
+  it("names CI and the quality tools, and says zero does not replace them", () => {
+    for (const text of [enCi, esCi]) {
+      for (const tool of ["GitHub Actions", "CI/CD", "SonarQube", "SonarCloud", "CodeQL", "Dependabot", "Snyk"]) expect(text, tool).toContain(tool);
+    }
+    expect(enCi).toContain("does not replace");
+    expect(esCi).toContain("no reemplaza");
+  });
+
+  it("describes local verification, auto-merge on checks, the no-checks caveat and the platform's deploys", () => {
+    for (const text of [enCi, esCi]) {
+      for (const fact of ["`pull-request`", "`autoMerge`", "Vercel", "checks"]) expect(text, fact).toContain(fact);
+    }
+    expect(enCi).toContain("verification");
+    expect(esCi).toContain("verificación");
+    expect(enCi).toContain("no checks");
+    expect(esCi).toContain("ningún check");
+  });
+
+  it("recommends CI and static analysis", () => {
+    expect(enCi).toContain("Recommendation");
+    expect(enCi).toContain("static analysis");
+    expect(esCi).toContain("Recomendación");
+    expect(esCi).toContain("análisis estático");
+  });
+
+  it("draws the path from the request to the platform's deploy", () => {
+    for (const [text, deploy] of [[enCi, "deploy"], [esCi, "despliegue"]] as const) {
+      const diagram = blocks(text).find((b) => b.info === "")!;
+      expect(diagram).toBeDefined();
+      const at = ["spec", "build", "verify", "review", "security", "pull request", "merge"].map((w) => diagram.body.indexOf(w));
+      expect(at.every((i) => i > -1)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+      expect(diagram.body).toContain(deploy);
+    }
+  });
+});
+
 describe("AGENTS.md", () => {
   it("states the language rule for the documentation", () => {
     const conventions = read("AGENTS.md").split("## Conventions")[1]!;

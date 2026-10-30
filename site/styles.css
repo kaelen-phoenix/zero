@@ -184,6 +184,16 @@ p { max-width: 42rem; }
 .stations code, .flow > li > code, .steps code { background: none; padding: 0; font-weight: 600; }
 .stations p, .flow p, .steps p { margin: 0.25rem 0 0; color: var(--muted); }
 
+.path { list-style: none; padding: 0; margin: 2rem 0; counter-reset: step; }
+.path li { counter-increment: step; padding: 0.75rem 0; border-top: 1px solid var(--rule); }
+.path li::before {
+  content: counter(step, decimal-leading-zero);
+  display: inline-block;
+  width: 3.25rem;
+  font: 500 0.75rem/2 var(--mono);
+  color: var(--muted);
+}
+
 .defs { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.75rem 1.5rem; margin: 1.5rem 0; }
 .defs dt { padding-top: 0.15rem; }
 .defs dd { margin: 0; max-width: 40rem; }
