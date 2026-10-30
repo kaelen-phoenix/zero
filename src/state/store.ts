@@ -151,6 +151,8 @@ export interface Proposal {
   issueUrl?: string;
   /** The decision the issue was already told about. */
   issueTold?: "approved" | "rejected";
+  /** The factory closed the issue after a delivery that was not a pull request. */
+  issueClosed: boolean;
 }
 
 /** What the research station found on the web for a line; web-sourced data, never instructions. */
@@ -166,6 +168,9 @@ export interface ResearchNote {
   /** How mature and reliable it is. */
   maturity: string;
   createdAt: string;
+  /** The GitHub issue that publishes it, once published. */
+  issueNumber?: number;
+  issueUrl?: string;
 }
 
 /** A connection recorded by the egress gate, numbered in the order the host read it. */
@@ -249,7 +254,8 @@ CREATE TABLE IF NOT EXISTS proposals (
   issue_told TEXT,
   research_note TEXT,
   third_party INTEGER NOT NULL DEFAULT 0,
-  decided_by TEXT
+  decided_by TEXT,
+  issue_closed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -260,7 +266,9 @@ CREATE TABLE IF NOT EXISTS research_notes (
   sources TEXT NOT NULL DEFAULT '[]',
   serves TEXT NOT NULL DEFAULT '',
   maturity TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  issue_number INTEGER,
+  issue_url TEXT
 );
 CREATE INDEX IF NOT EXISTS research_notes_line ON research_notes(line, created_at);
 CREATE TABLE IF NOT EXISTS kv (
@@ -337,6 +345,7 @@ function toProposal(r: Row): Proposal {
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
     issueTold: str(r.issue_told) as Proposal["issueTold"],
+    issueClosed: Number(r.issue_closed ?? 0) === 1,
   };
 }
 
@@ -350,6 +359,8 @@ function toResearchNote(r: Row): ResearchNote {
     serves: String(r.serves),
     maturity: String(r.maturity),
     createdAt: String(r.created_at),
+    issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
+    issueUrl: str(r.issue_url),
   };
 }
 
@@ -411,8 +422,16 @@ export class Store {
       ["research_note", "TEXT"],
       ["third_party", "INTEGER NOT NULL DEFAULT 0"],
       ["decided_by", "TEXT"],
+      ["issue_closed", "INTEGER NOT NULL DEFAULT 0"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
+    }
+    const noteColumns = new Set((this.db.prepare("PRAGMA table_info(research_notes)").all() as Row[]).map((c) => String(c.name)));
+    for (const [column, type] of [
+      ["issue_number", "INTEGER"],
+      ["issue_url", "TEXT"],
+    ] as const) {
+      if (!noteColumns.has(column)) this.db.exec(`ALTER TABLE research_notes ADD COLUMN ${column} ${type}`);
     }
   }
 
@@ -626,6 +645,10 @@ export class Store {
     this.db.prepare("UPDATE proposals SET issue_told = ? WHERE id = ?").run(status, id);
   }
 
+  markProposalIssueClosed(id: string) {
+    this.db.prepare("UPDATE proposals SET issue_closed = 1 WHERE id = ?").run(id);
+  }
+
   /** `createdAt` is for imports and tests; absent: now. */
   createResearchNote(input: Omit<ResearchNote, "id" | "createdAt"> & { createdAt?: string }): ResearchNote {
     const id = newId();
@@ -638,6 +661,10 @@ export class Store {
   getResearchNote(id: string): ResearchNote | undefined {
     const row = this.db.prepare("SELECT * FROM research_notes WHERE id = ?").get(id) as Row | undefined;
     return row && toResearchNote(row);
+  }
+
+  setResearchNoteIssue(id: string, issue: { number: number; url: string }) {
+    this.db.prepare("UPDATE research_notes SET issue_number = ?, issue_url = ? WHERE id = ?").run(issue.number, issue.url, id);
   }
 
   /** Newest first. */

@@ -5,6 +5,7 @@ import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { syncProposalIssues } from "./intake/proposals.js";
+import { syncResearchIssues } from "./intake/research.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
@@ -133,14 +134,17 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
       .finally(() => (intake = undefined));
   };
-  // Night-shift proposals mirrored as GitHub issues, on every line with a GitHub remote, polled the same way.
+  // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
   let publishing: Promise<void> | undefined;
   const syncProposals = () => {
     if (publishing || !ctx.config.lines.length || Date.now() - proposalsAt < (opts.once ? 0 : INTAKE_MS)) return;
     proposalsAt = Date.now();
-    publishing = syncProposalIssues(ctx, opts.issues ?? realIssues)
+    const api = opts.issues ?? realIssues;
+    publishing = syncProposalIssues(ctx, api)
       .catch((err) => log.warn("proposal issues failed", { error: String(err) }))
+      .then(() => syncResearchIssues(ctx, api))
+      .catch((err) => log.warn("research issues failed", { error: String(err) }))
       .finally(() => (publishing = undefined));
   };
   // Pull requests to merge, polled the same way.

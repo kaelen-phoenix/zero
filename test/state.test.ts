@@ -51,6 +51,19 @@ describe("store", () => {
     store.close();
   });
 
+  it("adds the research note issue columns to factories created before them", () => {
+    const path = join(tempDir(), "state.db");
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE research_notes (id TEXT PRIMARY KEY, line TEXT NOT NULL, topic TEXT NOT NULL, findings TEXT NOT NULL, sources TEXT NOT NULL DEFAULT '[]', serves TEXT NOT NULL DEFAULT '', maturity TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
+    old.close();
+    const store = new Store(path);
+    const n = store.createResearchNote({ line: "api", topic: "t", findings: "f", sources: ["https://a.b"], serves: "s", maturity: "m" });
+    expect(store.getResearchNote(n.id)!.issueNumber).toBeUndefined();
+    store.setResearchNoteIssue(n.id, { number: 4, url: "https://github.com/a/b/issues/4" });
+    expect(store.getResearchNote(n.id)).toMatchObject({ issueNumber: 4, issueUrl: "https://github.com/a/b/issues/4" });
+    store.close();
+  });
+
   it("lists a line's rejections, most recently decided first", () => {
     let clock = new Date("2030-01-01T00:00:00Z");
     const store = new Store(":memory:", () => clock);

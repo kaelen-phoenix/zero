@@ -4,3 +4,6 @@ export const intakeProblemKey = (line: string) => `intake.problem.${line}`;
 
 /** Hidden mark on every comment the factory posts, so it never answers itself (it comments as the owner). */
 export const FACTORY_MARK = "<!-- zero -->";
+
+/** Label of the issues that record night-shift proposals: decided by the proposal sync, never taken by the intake. */
+export const PROPOSAL_LABEL = "zero:propuesta";
