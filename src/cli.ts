@@ -3,13 +3,13 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addSkill, answer, briefing, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addSkill, answer, approveProposal, briefing, listProposals, rejectProposal, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatRequest, formatSkills, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatSkills, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -31,6 +31,8 @@ Uso diario (también desde el chat):
   zero resume                    Reanuda la fábrica
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero trace <trabajo>           Traza paso a paso de un trabajo
+  zero proposals                 Propuestas del turno nocturno que esperan tu decisión
+  zero proposals approve|reject <id>   Aprueba (crea el trabajo) o rechaza una propuesta   [--note "<motivo>"]
 
 Caja de aislamiento y credenciales:
   zero box status                Revisa la caja (contenedores) donde trabajan los agentes
@@ -54,7 +56,7 @@ Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
-                                 Asigna o quita una skill (agentes: spec, build, review, security, reply)
+                                 Asigna o quita una skill (agentes: spec, build, review, security, reply, scout)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
@@ -190,6 +192,21 @@ async function main(argv: string[]): Promise<number> {
       case "briefing": {
         const b = await briefing(ctx, values.days ? Number(values.days) : 1);
         console.log(`# ${b.title}\n\n${b.body}`);
+        return 0;
+      }
+      case "proposals": {
+        if (!rest[0]) {
+          console.log(formatProposals(listProposals(ctx)));
+          return 0;
+        }
+        if ((rest[0] !== "approve" && rest[0] !== "reject") || !rest[1]) break;
+        if (rest[0] === "reject") {
+          console.log(`Propuesta ${rejectProposal(ctx, rest[1], values.note).id} rechazada y archivada.`);
+          return 0;
+        }
+        const r = approveProposal(ctx, rest[1]);
+        const started = await ensureDaemon(ctx);
+        console.log(`Propuesta ${rest[1]} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
         return 0;
       }
       case "issues": {

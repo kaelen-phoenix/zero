@@ -29,7 +29,18 @@ describe("chat interface (MCP)", () => {
   it("offers the factory's tools", async () => {
     const { client } = await connect(testFactory({ lines: [{ name: "demo", repo: gitRepo() }] }));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["zero_answer", "zero_briefing", "zero_egress", "zero_egress_block", "zero_lines", "zero_request", "zero_resume", "zero_status", "zero_stop", "zero_trace"]);
+    expect(names).toEqual(["zero_answer", "zero_briefing", "zero_egress", "zero_egress_block", "zero_lines", "zero_proposal_decide", "zero_proposals", "zero_request", "zero_resume", "zero_status", "zero_stop", "zero_trace"]);
+  });
+
+  it("lists and decides scout proposals", async () => {
+    const ctx = testFactory({ lines: [{ name: "demo", repo: gitRepo() }] });
+    const { call } = await connect(ctx);
+    const p = ctx.store.createProposal({ line: "demo", title: "Cubrir egress", why: "falla", change: "tests", estimatedUsd: 0.5, paths: [] });
+    expect((await call("zero_proposals", {})).text).toContain(`${p.id} · demo · Cubrir egress`);
+    expect((await call("zero_proposal_decide", { id: p.id, decision: "reject", note: "no hace falta" })).text).toContain("rechazada");
+    expect(ctx.store.getProposal(p.id)).toMatchObject({ status: "rejected", note: "no hace falta" });
+    expect(await call("zero_proposal_decide", { id: p.id, decision: "approve" })).toMatchObject({ isError: true, text: expect.stringContaining("ya fue rechazada") });
+    expect(ctx.store.listJobs()).toHaveLength(0);
   });
 
   it("queues a request and answers at once", async () => {
@@ -123,5 +134,20 @@ describe("zero secret (CLI)", () => {
     writeFileSync(join(home, "secrets.json"), JSON.stringify(["CLAUDE_CODE_OAUTH_TOKEN"]));
     const r = cli(["secret", "list"], home);
     expect(r.stdout.trim()).toBe("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+});
+
+describe("zero proposals (CLI)", () => {
+  const cli = (args: string[], home: string) =>
+    spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, ZERO_HOME: home }, input: "" });
+
+  it("lists pending proposals and rejects one with a note", () => {
+    const ctx = testFactory({ lines: [{ name: "demo", repo: gitRepo() }] });
+    const p = ctx.store.createProposal({ line: "demo", title: "Cubrir egress", why: "falla", change: "tests", estimatedUsd: 0.5, paths: [] });
+    const list = cli(["proposals"], ctx.home.root);
+    expect(list.stdout).toContain(`${p.id} · demo · Cubrir egress (costo estimado $0.50)`);
+    const r = cli(["proposals", "reject", p.id, "--note", "motivo"], ctx.home.root);
+    expect(r.status).toBe(0);
+    expect(ctx.store.getProposal(p.id)).toMatchObject({ status: "rejected", note: "motivo" });
   });
 });

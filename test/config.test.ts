@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConfigError, effectiveLevel, findLine, parseFactory } from "../src/config.js";
+import { ConfigError, effectiveLevel, findLine, lineAutonomy, parseFactory } from "../src/config.js";
 import { factoryHome } from "../src/home.js";
 import { addLine, detectClients, detectCommands, initFactory, slug } from "../src/init.js";
 import { cleanup, gitRepo, tempDir } from "./helpers.js";
@@ -121,5 +121,41 @@ describe("detection", () => {
 
   it("slugifies names with accents", () => {
     expect(slug("Mi Tienda Ñandú!")).toBe("mi-tienda-nandu");
+  });
+});
+
+describe("night shift configuration", () => {
+  it("defaults to on, at any hour, proposing", () => {
+    const cfg = parseFactory("");
+    expect(cfg.nightShift).toEqual({ autonomy: "propose", maxAutoJobsPerDay: 3 });
+    expect(cfg.limits.usdPerNight).toBe(1);
+    expect(cfg.stations.scout).toMatchObject({ maxTurns: 40, timeoutMinutes: 15 });
+  });
+
+  it("accepts the owner's per-line autonomy", () => {
+    const cfg = parseFactory(
+      [
+        "nightShift: { maxAutoJobsPerDay: 3 }",
+        "lines:",
+        "  - { name: zero, repo: /r/zero, nightShift: { autonomy: auto } }",
+        "  - { name: newoman, repo: /r/newoman, nightShift: { autonomy: auto } }",
+        "  - { name: solilok, repo: /r/solilok, nightShift: { autonomy: propose } }",
+        "  - { name: otra, repo: /r/otra }",
+      ].join("\n"),
+    );
+    expect(cfg.lines.map((l) => lineAutonomy(cfg, l))).toEqual(["auto", "auto", "propose", "propose"]);
+    expect(lineAutonomy(parseFactory("nightShift: { autonomy: build }"), { nightShift: undefined })).toBe("build");
+  });
+
+  it("turns off", () => {
+    expect(parseFactory("nightShift: off").nightShift).toBe("off");
+  });
+
+  it("refuses bad hours and autonomy", () => {
+    for (const hours of ["25:00-08:00", "tonight"]) {
+      expect(() => parseFactory(`nightShift: { hours: "${hours}" }`)).toThrow(ConfigError);
+      expect(() => parseFactory(`nightShift: { hours: "${hours}" }`)).toThrow(/nightShift\.hours/);
+    }
+    expect(() => parseFactory("lines:\n  - { name: a, repo: /r/a, nightShift: { autonomy: yolo } }")).toThrow(ConfigError);
   });
 });

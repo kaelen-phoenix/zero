@@ -14,7 +14,7 @@ import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js"
 import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type QuestionKind, type SpanRow } from "./state/store.js";
+import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
@@ -110,7 +110,13 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
     jobId: job.id,
-    attrs: { "zero.line": line.name, "zero.kind": job.kind, "zero.level": level.level, ...(input.source && { "zero.source": input.source.url }) },
+    attrs: {
+      "zero.line": line.name,
+      "zero.kind": job.kind,
+      "zero.level": level.level,
+      ...(input.source?.kind === "github-issue" && { "zero.source": input.source.url }),
+      ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
+    },
   });
   const integration = { merge: "lo integra en la rama base", branch: "deja una rama lista", "pull-request": "abre una solicitud de cambio" }[line.integrate];
   const next =
@@ -264,7 +270,46 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
   const unmerged = factoryStatus(ctx).merges.filter((m) => m.status === "blocked");
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged);
+  const night = {
+    proposals: ctx.store.listProposals({ status: ["pending"], since: from }),
+    jobs: ctx.store
+      .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
+      .filter((j) => j.source?.kind === "night-shift" && j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())
+      .reverse(),
+  };
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night);
+}
+
+/** Proposals of the scout station, oldest first; pending ones by default. */
+export function listProposals(ctx: FactoryContext, filter: { line?: string; status?: ProposalStatus[] } = {}): Proposal[] {
+  return ctx.store.listProposals({ status: ["pending"], ...filter });
+}
+
+function pendingProposal(ctx: FactoryContext, id: string): Proposal {
+  const proposal = ctx.store.getProposal(id);
+  if (!proposal) throw new Error(`No existe la propuesta ${id}.`);
+  if (proposal.status !== "pending") throw new Error(`La propuesta ${id} ya fue ${proposal.status === "approved" ? "aprobada" : "rechazada"}.`);
+  return proposal;
+}
+
+/** Turns a pending proposal into a normal job of its line, marked as born from the night shift. */
+export function approveProposal(ctx: FactoryContext, id: string): RequestResult {
+  return ctx.store.transaction(() => {
+    const proposal = pendingProposal(ctx, id);
+    const text = `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}`;
+    const result = requestWork(ctx, { text, line: proposal.line, source: { kind: "night-shift", proposal: id } });
+    ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id });
+    return result;
+  });
+}
+
+/** Archives a pending proposal, with the owner's reason when given. */
+export function rejectProposal(ctx: FactoryContext, id: string, note?: string): Proposal {
+  return ctx.store.transaction(() => {
+    pendingProposal(ctx, id);
+    ctx.store.updateProposal(id, { status: "rejected", note: note?.trim() || undefined });
+    return ctx.store.getProposal(id)!;
+  });
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

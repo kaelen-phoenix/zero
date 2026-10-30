@@ -8,7 +8,7 @@ import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
 
 /** Stations staffed by an agent. `verify` and `integrate` are run by zero itself. */
-export type AgentStation = "spec" | "build" | "review" | "security" | "reply";
+export type AgentStation = "spec" | "build" | "review" | "security" | "reply" | "scout";
 
 export interface AgentRun<T = unknown> {
   ok: boolean;
@@ -37,19 +37,25 @@ export interface AgentRequest<T = unknown> {
   line?: string;
   /** The engine of the station's chain to run on (see pickEngine); absent: the station's own. */
   engine?: { name: string; model?: string; replaces?: string; reason?: string };
-  /** Where to record the `gen_ai.invoke_agent` span. */
-  trace?: { tracer: Tracer; jobId: string; parentId: string };
+  /** Where to record the `gen_ai.invoke_agent` span; work outside a job (scout) has no job id. */
+  trace?: AgentTrace;
+}
+
+export interface AgentTrace {
+  tracer: Tracer;
+  jobId?: string;
+  parentId?: string;
 }
 
 export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
 
 /** Where an engine actually runs: on this machine by default, or inside the isolation box. */
-export type EngineExecute = (engine: Engine, req: EngineRequest, trace: { tracer: Tracer; jobId: string; parentId: string } | undefined, station: AgentStation) => Promise<EngineResult>;
+export type EngineExecute = (engine: Engine, req: EngineRequest, trace: AgentTrace | undefined, station: AgentStation) => Promise<EngineResult>;
 
 const runHere: EngineExecute = (engine, req) => engine.run(req);
 
 /** Only the build station may change the work copy. */
-export const AGENT_ACCESS: Readonly<Record<AgentStation, Access>> = { spec: "read", build: "write", review: "read", security: "read", reply: "read" };
+export const AGENT_ACCESS: Readonly<Record<AgentStation, Access>> = { spec: "read", build: "write", review: "read", security: "read", reply: "read", scout: "read" };
 const ACCESS = AGENT_ACCESS;
 
 const promptCache = new Map<AgentStation, string>();

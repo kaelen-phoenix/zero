@@ -384,7 +384,7 @@ describe("suspicious connections and the job", () => {
     fakeAgents({
       build: (req) => {
         writeTree(req.cwd, { "src/health.ts": "export const ok = true;\n" });
-        ctx.store.insertEgress(events(req.trace!.jobId));
+        ctx.store.insertEgress(events(req.trace!.jobId!));
       },
     });
 

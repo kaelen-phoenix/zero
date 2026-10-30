@@ -54,13 +54,16 @@ export interface Approvals {
 }
 
 /** Where a request came from, when it was not the owner typing it. */
-export interface JobSource {
-  kind: "github-issue";
-  /** owner/repo */
-  repository: string;
-  number: number;
-  url: string;
-}
+export type JobSource =
+  | {
+      kind: "github-issue";
+      /** owner/repo */
+      repository: string;
+      number: number;
+      url: string;
+    }
+  /** A proposal of the scout station, approved by the owner. */
+  | { kind: "night-shift"; proposal: string };
 
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";
@@ -111,6 +114,27 @@ export interface SpanRow {
   end?: string;
   status?: "ok" | "error";
   attrs: Record<string, unknown>;
+}
+
+export type ProposalStatus = "pending" | "approved" | "rejected";
+
+/** Work the scout station proposed on its own; the owner decides it. */
+export interface Proposal {
+  id: string;
+  line: string;
+  title: string;
+  why: string;
+  change: string;
+  estimatedUsd: number;
+  /** Files or globs the change would touch, as the scout listed them. */
+  paths: string[];
+  status: ProposalStatus;
+  createdAt: string;
+  decidedAt?: string;
+  /** Why the owner decided so, when they said. */
+  note?: string;
+  /** The job an approval opened. */
+  jobId?: string;
 }
 
 /** A connection recorded by the egress gate, numbered in the order the host read it. */
@@ -176,6 +200,21 @@ CREATE TABLE IF NOT EXISTS egress (
 CREATE INDEX IF NOT EXISTS egress_at ON egress(at);
 CREATE INDEX IF NOT EXISTS egress_job ON egress(job_id, seq);
 CREATE INDEX IF NOT EXISTS egress_host ON egress(host, at);
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  line TEXT NOT NULL,
+  title TEXT NOT NULL,
+  why TEXT NOT NULL,
+  change TEXT NOT NULL,
+  estimated_usd REAL NOT NULL DEFAULT 0,
+  paths TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  decided_at TEXT,
+  note TEXT,
+  job_id TEXT
+);
+CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -227,6 +266,23 @@ function toSpan(r: Row): SpanRow {
     end: str(r.end),
     status: str(r.status) as SpanRow["status"],
     attrs: json<Record<string, unknown>>(r.attrs) ?? {},
+  };
+}
+
+function toProposal(r: Row): Proposal {
+  return {
+    id: String(r.id),
+    line: String(r.line),
+    title: String(r.title),
+    why: String(r.why),
+    change: String(r.change),
+    estimatedUsd: Number(r.estimated_usd),
+    paths: json<string[]>(r.paths) ?? [],
+    status: r.status as ProposalStatus,
+    createdAt: String(r.created_at),
+    decidedAt: str(r.decided_at),
+    note: str(r.note),
+    jobId: str(r.job_id),
   };
 }
 
@@ -421,6 +477,47 @@ export class Store {
 
   pruneEgress(before: Date) {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
+  }
+
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[] }): Proposal {
+    const id = newId();
+    this.db
+      .prepare("INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)")
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), this.stamp());
+    return this.getProposal(id)!;
+  }
+
+  getProposal(id: string): Proposal | undefined {
+    const row = this.db.prepare("SELECT * FROM proposals WHERE id = ?").get(id) as Row | undefined;
+    return row && toProposal(row);
+  }
+
+  /** Oldest first. */
+  listProposals(filter: { line?: string; status?: ProposalStatus[]; since?: Date } = {}): Proposal[] {
+    const where: string[] = [];
+    const values: string[] = [];
+    if (filter.status?.length) {
+      where.push(`status IN (${filter.status.map(() => "?").join(", ")})`);
+      values.push(...filter.status);
+    }
+    if (filter.line) {
+      where.push("line = ?");
+      values.push(filter.line);
+    }
+    if (filter.since) {
+      where.push("created_at >= ?");
+      values.push(filter.since.toISOString());
+    }
+    const sql = `SELECT * FROM proposals ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC, rowid ASC`;
+    return (this.db.prepare(sql).all(...values) as Row[]).map(toProposal);
+  }
+
+  /** Decides a pending proposal; false when it was no longer pending. */
+  updateProposal(id: string, patch: { status: "approved" | "rejected"; note?: string; jobId?: string }): boolean {
+    const r = this.db
+      .prepare("UPDATE proposals SET status = ?, decided_at = ?, note = ?, job_id = ? WHERE id = ? AND status = 'pending'")
+      .run(patch.status, this.stamp(), patch.note ?? null, patch.jobId ?? null, id);
+    return Number(r.changes) === 1;
   }
 
   getKv(key: string): string | undefined {

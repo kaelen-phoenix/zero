@@ -325,7 +325,7 @@ describe("skills per agent", () => {
 
   it("lists general and per-line skills for every agent", () => {
     const all = agentSkills(testFactory(assigned()).config);
-    expect(all.map((a) => a.station)).toEqual(["spec", "build", "review", "security", "reply"]);
+    expect(all.map((a) => a.station)).toEqual(["spec", "build", "review", "security", "reply", "scout"]);
     const build = all.find((a) => a.station === "build")!;
     expect(build.general).toEqual([{ name: "pdf", fullName: "pdf", description: "Lee y genera PDF" }]);
     expect(build.lines).toEqual([{ line: "solilok", skills: [{ name: "vercel:nextjs", fullName: "vercel:nextjs", description: expect.stringContaining("Next.js") }] }]);

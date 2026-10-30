@@ -2,7 +2,7 @@ import type { EgressReport, FactoryStatus, RequestResult, SkillList } from "./ap
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import { describeDelivery } from "./line/finish.js";
-import type { Job } from "./state/store.js";
+import type { Job, Proposal } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -51,6 +51,15 @@ export function describeJobStatus(job: Job): string {
 
 export function formatRequest(r: RequestResult): string {
   return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}".`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+}
+
+/** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
+export function formatProposals(proposals: Proposal[], detail = false): string {
+  if (!proposals.length) return "No hay propuestas pendientes.";
+  const rows = proposals.map(
+    (p) => `${p.id} · ${p.line} · ${p.title} (costo estimado ${usd(p.estimatedUsd)})${detail ? `\nPor qué: ${p.why}\nQué cambiaría: ${p.change}` : ""}`,
+  );
+  return `${rows.join(detail ? "\n\n" : "\n")}\n\nAprobar: \`zero proposals approve <id>\` · Rechazar: \`zero proposals reject <id> --note "motivo"\`.`;
 }
 
 /** A job's cost: an estimate with no cap on a subscription, spend against the job's budget otherwise. */
