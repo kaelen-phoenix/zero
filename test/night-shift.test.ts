@@ -102,9 +102,15 @@ describe("daily cap", () => {
     expect(nightJobs(ctx)).toHaveLength(1);
     for (const j of nightJobs(ctx)) ctx.store.finishJob(j.id, "delivered");
     set(at(3, 0, 30));
+    // The proposal left pending by yesterday's cap is promoted first, and fills today's.
     await scoutPass(ctx, scouting([idea("Tercera")]).runner, at(3, 0, 30));
     expect(nightJobs(ctx)).toHaveLength(2);
-    expect(ctx.store.listProposals().find((p) => p.title === "Tercera")).toMatchObject({ status: "approved" });
+    expect(ctx.store.listProposals().find((p) => p.title === "Segunda")).toMatchObject({ status: "approved", decidedBy: "night-shift" });
+    for (const j of nightJobs(ctx)) if (j.status === "queued") ctx.store.finishJob(j.id, "delivered");
+    ctx.store.deleteKv("scout:tienda");
+    await scoutPass(ctx, scouting([idea("Tercera")]).runner, at(3, 0, 30));
+    expect(nightJobs(ctx)).toHaveLength(2);
+    expect(ctx.store.listProposals().find((p) => p.title === "Tercera")).toMatchObject({ status: "pending" });
   });
 });
 

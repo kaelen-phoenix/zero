@@ -1,9 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, productionLine, proposalsView, rejectProposal, requestWork, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage, researchPage } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -57,6 +57,7 @@ function returnTo(path: string): string {
   const job = /^\/job\/([0-9a-f]{8})\//.exec(path)?.[1];
   if (job) return `/job/${job}`;
   if (path.startsWith("/proposals")) return "/proposals";
+  if (path.startsWith("/research")) return "/research";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -193,6 +194,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
+      if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
       if (path === "/briefing") {
         const b = await briefing(ctx, Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90));
         return send(res, 200, briefingPage(b.title, b.body, nonce), nonce);
@@ -246,6 +248,18 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       const r = approveProposal(ctx, id);
       return back(res, "/proposals", `Propuesta aprobada: trabajo ${r.job.id}. ${r.next}`);
+    }
+    const researchAction = /^\/research\/([0-9a-f]{8})\/request$/.exec(path);
+    if (researchAction) {
+      const id = researchAction[1]!;
+      // Requesting opens a job, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") {
+        const note = ctx.store.getResearchNote(id);
+        if (!note) throw new Error(`No existe la nota de investigación ${id}.`);
+        return send(res, 200, confirmResearchPage(note, nonce), nonce);
+      }
+      const r = requestFromResearchNote(ctx, id);
+      return back(res, "/research", `Trabajo pedido: ${r.job.id}. ${r.next}`);
     }
     if (path === "/egress/rule") {
       const action = form.get("action");

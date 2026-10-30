@@ -146,13 +146,13 @@ async function recordLabel(ctx: FactoryContext, line: LineConfig, repository: st
 }
 
 async function syncLine(ctx: FactoryContext, line: LineConfig, proposals: Proposal[], repository: string, gh: IssueApi) {
-  if (proposals.some((p) => p.issueNumber === undefined && p.status !== "rejected")) await gh.ensureLabel(PROPOSAL_LABEL, PROPOSAL_LABEL_DESCRIPTION);
+  if (proposals.some((p) => p.issueNumber === undefined && !closedOut(p))) await gh.ensureLabel(PROPOSAL_LABEL, PROPOSAL_LABEL_DESCRIPTION);
   for (let proposal of proposals) {
     try {
       const fresh = proposal.issueNumber === undefined;
       if (fresh) {
-        // Rejected before it was ever published: nothing to record.
-        if (proposal.status === "rejected") continue;
+        // Rejected (or reverted) before it was ever published: nothing to record.
+        if (closedOut(proposal)) continue;
         proposal = await publish(ctx, line, proposal, gh);
       }
       // An issue published in this pass has nobody's decision on it yet.
@@ -171,9 +171,13 @@ async function syncLine(ctx: FactoryContext, line: LineConfig, proposals: Propos
   }
 }
 
+/** Rejected, or reverted after the night shift integrated it: its issue has nothing new to hear. */
+const closedOut = (p: Proposal) => p.status === "rejected" || p.status === "reverted";
+
 /** Whether a proposal still has something to do on GitHub. */
 function needsSync(ctx: FactoryContext, line: LineConfig, repository: string | undefined, p: Proposal): boolean {
-  if (p.issueNumber === undefined) return p.status !== "rejected";
+  if (p.issueNumber === undefined) return !closedOut(p);
+  if (p.status === "reverted") return false;
   if (p.status === "pending") return decidedOnGitHub(ctx, line, p);
   if (p.issueTold !== p.status || deliveredLocally(ctx, p)) return true;
   if (p.status !== "approved" || !repository) return false;

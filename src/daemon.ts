@@ -15,6 +15,7 @@ import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { researchPass } from "./line/research.js";
+import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { log } from "./log.js";
 import type { Job } from "./state/store.js";
@@ -157,6 +158,16 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .catch((err) => log.warn("automatic merge failed", { error: String(err) }))
       .finally(() => (merging = undefined));
   };
+  // Night-shift integrations the owner reverted on the base branch, read the same way.
+  let revertsAt = 0;
+  let checkingReverts: Promise<unknown> | undefined;
+  const findReverts = () => {
+    if (checkingReverts || !ctx.config.lines.length || Date.now() - revertsAt < (opts.once ? 0 : INTAKE_MS)) return;
+    revertsAt = Date.now();
+    checkingReverts = detectReverts(ctx)
+      .catch((err) => log.warn("revert detection failed", { error: String(err) }))
+      .finally(() => (checkingReverts = undefined));
+  };
 
   // The night shift: scout proposes work while the factory is idle, one pass at a time, never holding up the owner's jobs.
   let scouting: Promise<void> | undefined;
@@ -198,6 +209,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       takeIssues();
       syncProposals();
       mergeReady();
+      findReverts();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -252,6 +264,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     await intake;
     await publishing;
     await merging;
+    await checkingReverts;
     await scouting;
     await researching;
     tunnel.stop();
