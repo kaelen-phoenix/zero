@@ -60,7 +60,7 @@ export function formatProposals(proposals: Proposal[], detail = false): string {
     (p) =>
       `${p.id} · ${p.line} · ${p.title} (costo estimado ${usd(p.estimatedUsd)})` +
       (p.status === "approved" ? ` · construido por el turno nocturno, espera tu aprobación para integrar (trabajo ${p.jobId})` : "") +
-      (p.researchNote ? ` · nace de la nota de investigación ${p.researchNote}${p.thirdParty ? ", agrega algo de terceros" : ""}` : "") +
+      (p.researchNote ? ` · nace de la nota de investigación ${p.researchNote}${p.thirdParty ? ", agrega algo de terceros" : ""}${p.business ? ", de negocio" : ""}` : "") +
       (detail ? `\nPor qué: ${p.why}\nQué cambiaría: ${p.change}` : ""),
   );
   return `${rows.join(detail ? "\n\n" : "\n")}\n\nAprobar: \`zero proposals approve <id>\` · Rechazar: \`zero proposals reject <id> --note "motivo"\`.`;

@@ -315,13 +315,19 @@ export const RESEARCH_VIEW_DAYS = 30;
 export interface ResearchLine {
   line: string;
   notes: ResearchNote[];
+  /** The same notes, split: those of the line's business skills and the technical ones. */
+  business: ResearchNote[];
+  technical: ResearchNote[];
 }
 
 /** Every configured line (and any line that still has notes) with its research notes of the last 30 days, newest first. */
 export function researchView(ctx: FactoryContext, now = new Date()): ResearchLine[] {
   const notes = ctx.store.listResearchNotes({ since: new Date(now.getTime() - RESEARCH_VIEW_DAYS * 86_400_000) });
   const names = [...new Set([...ctx.config.lines.map((l) => l.name), ...notes.map((n) => n.line)])];
-  return names.map((line) => ({ line, notes: notes.filter((n) => n.line === line) }));
+  return names.map((line) => {
+    const own = notes.filter((n) => n.line === line);
+    return { line, notes: own, business: own.filter((n) => n.business), technical: own.filter((n) => !n.business) };
+  });
 }
 
 /** The request text of the job a proposal becomes. */

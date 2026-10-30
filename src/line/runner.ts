@@ -15,7 +15,7 @@ import { memoryBlock, type Learning, type NewPost, type Townhall } from "../town
 import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
-import { decide, decideNightShift, researchAutonomy, stricter, touchesManifest } from "./policy.js";
+import { decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, ReviewSchema } from "./review.js";
 import {
   capabilityExists,
@@ -251,17 +251,25 @@ function quotaStop(run: AgentRun<unknown>): void {
  * For a job the night shift took on its own, the question to ask before
  * integrating, or undefined when its autonomy lets it go on. A research-born
  * job whose changes touch a dependency or MCP manifest is also held to
- * `research.autonomy`, whatever scout said about it.
+ * `research.autonomy`, whatever scout said about it. A job whose changes touch
+ * the license or legal texts always waits for the owner.
  */
 function nightShiftHold(deps: RunnerDeps, job: Job, copy: WorkCopy): string | undefined {
   const source = job.source;
   if (source?.kind !== "night-shift" || !source.autonomy) return undefined;
   let autonomy: Autonomy = source.autonomy;
   const proposal = deps.store.getProposal(source.proposal);
-  const manifest = Boolean(proposal?.researchNote) && touchesManifest(copy.changedFiles().map((f) => f.path));
+  const changed = copy.changedFiles().map((f) => f.path);
+  const legal = touchesLegal(changed);
+  const manifest = Boolean(proposal?.researchNote) && touchesManifest(changed);
   if (manifest) autonomy = stricter(autonomy, researchAutonomy(deps.config));
+  if (legal) autonomy = "propose";
   if (decideNightShift(autonomy) !== "ask") return undefined;
-  const why = manifest ? "Nace de una nota de investigación y agrega dependencias o servidores de terceros" : "La línea tiene autonomía `build`";
+  const why = legal
+    ? "Toca la licencia o textos legales"
+    : manifest
+      ? "Nace de una nota de investigación y agrega dependencias o servidores de terceros"
+      : "La línea tiene autonomía `build`";
   const title = proposal?.title ?? job.title ?? job.id;
   return `El turno nocturno construyó por su cuenta la propuesta "${title}" y pasó la verificación y la revisión. ${why}: no se integra sin vos. ¿Lo integro? (\`zero proposals approve ${source.proposal}\` o \`zero proposals reject ${source.proposal}\`)`;
 }
