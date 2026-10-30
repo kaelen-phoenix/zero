@@ -98,7 +98,8 @@ Con la fábrica en marcha, el panel muestra:
 - los trabajos;
 - las preguntas, con botones para aprobar o rechazar;
 - la traza de cada trabajo;
-- las salidas a internet y el informe.
+- las salidas a internet y el informe;
+- las propuestas del turno nocturno de cada línea (pestaña "Propuestas").
 
 Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
 
@@ -216,7 +217,7 @@ zero proposals approve <id>             # abre el trabajo, o integra el que el t
 zero proposals reject <id> --note "…"   # la archiva (y detiene su trabajo si el turno ya lo abrió)
 ```
 
-Desde el chat: `zero_proposals` y `zero_proposal_decide`. El motivo de un rechazo queda en el townhall de la línea y `scout` recibe los últimos 20 rechazos para no insistir. En las líneas de GitHub cada propuesta se publica también como issue con la etiqueta `zero:propuesta`, y el issue cuenta quién la aprobó (vos o el turno nocturno solo) o por qué la rechazaste. El informe tiene la sección "Turno nocturno": qué se propuso, qué se construyó solo y espera tu ok, y qué se integró o desplegó solo.
+Desde el chat: `zero_proposals` y `zero_proposal_decide`. En el panel, la pestaña "Propuestas" muestra las de cada línea (pendientes, construyéndose, entregadas y rechazadas) con su issue, la nota de investigación de origen, el motivo de rechazo y la autonomía de la línea; tiene botones de aprobar (pide confirmación antes) y de rechazar con motivo. El motivo de un rechazo queda en el townhall de la línea y `scout` recibe los últimos 20 rechazos para no insistir. En las líneas de GitHub cada propuesta se publica también como issue con la etiqueta `zero:propuesta`, y el issue cuenta quién la aprobó (vos o el turno nocturno solo) o por qué la rechazaste. El informe tiene la sección "Turno nocturno": qué se propuso, qué se construyó solo y espera tu ok, y qué se integró o desplegó solo.
 
 ## Investigación
 
@@ -338,7 +339,7 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 - **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. El dueño lee y edita intenciones, en su idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
 - **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
-- **Turno nocturno.** Ya funciona (ver [Turno nocturno](#turno-nocturno)): con la fábrica libre, `scout` propone trabajo y, según la autonomía de cada línea, espera al dueño, lo construye o lo integra solo. Lo que sigue es una pestaña "Propuestas" en el panel.
+- **Turno nocturno.** Ya funciona (ver [Turno nocturno](#turno-nocturno)): con la fábrica libre, `scout` propone trabajo y, según la autonomía de cada línea, espera al dueño, lo construye o lo integra solo. En el panel, la pestaña "Propuestas" las muestra y deja aprobarlas o rechazarlas.
 - **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
 
 ## Próximas etapas

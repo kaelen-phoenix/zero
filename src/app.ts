@@ -7,7 +7,7 @@ import { AGENT_ACCESS, agentInstructions } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
-import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
+import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, lineAutonomy, loadFactory, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
@@ -334,6 +334,42 @@ export function listProposals(ctx: FactoryContext, filter: { line?: string; stat
   return ctx.store
     .listProposals({ line: filter.line, status: ["pending", "approved"] })
     .filter((p) => p.status === "pending" || awaitsIntegration(autonomousJob(ctx, p)));
+}
+
+/** Where a proposal stands, as the panel's "Propuestas" tab groups it. */
+export type ProposalStage = "pending" | "building" | "delivered" | "ended" | "rejected";
+
+export interface ProposalView extends Proposal {
+  stage: ProposalStage;
+  /** The job it became, when it was approved. */
+  job?: Pick<Job, "id" | "status" | "delivery" | "question">;
+  /** The night shift built it on its own and it waits for the owner to integrate it. */
+  awaitsIntegration: boolean;
+}
+
+export interface ProposalLine {
+  line: string;
+  autonomy: Autonomy;
+  proposals: ProposalView[];
+}
+
+/** Every proposal of every line, newest first, with the job it became and each line's night-shift autonomy. */
+export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"; lines: ProposalLine[] } {
+  const all = ctx.store.listProposals().reverse();
+  const view = (p: Proposal): ProposalView => {
+    const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
+    const stage: ProposalStage =
+      p.status === "pending" ? "pending" : p.status === "rejected" ? "rejected" : !job || !FINAL_STATUSES.includes(job.status) ? "building" : job.status === "delivered" ? "delivered" : "ended";
+    return { ...p, stage, job: job && { id: job.id, status: job.status, delivery: job.delivery, question: job.question }, awaitsIntegration: p.decidedBy === "night-shift" && awaitsIntegration(job) };
+  };
+  const names = [...new Set([...ctx.config.lines.map((l) => l.name), ...all.map((p) => p.line)])];
+  return {
+    research: ctx.config.research === "off" ? "off" : ctx.config.research.autonomy,
+    lines: names.map((name) => {
+      const line = ctx.config.lines.find((l) => l.name === name);
+      return { line: name, autonomy: line ? lineAutonomy(ctx.config, line) : "propose", proposals: all.filter((p) => p.line === name).map(view) };
+    }),
+  };
 }
 
 function pendingProposal(ctx: FactoryContext, id: string): Proposal {
