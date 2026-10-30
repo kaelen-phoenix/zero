@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { isAbsolute, win32 } from "node:path";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
@@ -88,6 +89,34 @@ export const CustomEngineSchema = z.object({
   hosts: z.array(SiteSchema).default([]),
 });
 
+/** The stations zero itself defines; a custom agent never takes one of their names. */
+export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
+
+/**
+ * A project's own agent: for now a read-only reviewer that runs after review
+ * and security, on the same change. It adds to the line; it never replaces or
+ * skips a fixed station.
+ */
+export const CustomAgentSchema = z
+  .object({
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "usá minúsculas, dígitos y guiones"),
+    /** Its instructions, relative to the line's repository (line agents) or to the factory folder (global agents). */
+    instructions: z.string().min(1).optional(),
+    /** Where it runs in the line; only after review (and security) for now. */
+    after: z.enum(["review"], { error: "por ahora un agente a medida solo puede correr después de review" }).default("review"),
+    /** Only read-only agents for now; whatever they write is discarded. */
+    access: z.literal("read", { error: "por ahora un agente a medida solo puede ser de lectura (access: read)" }).default("read"),
+    /** True: its verified high or critical findings send the change back to build, like review. False: it only reports. */
+    blocking: z.boolean().default(true),
+    engine: z.string().optional(),
+    model: z.string().optional(),
+    maxTurns: z.number().int().positive().default(40),
+    timeoutMinutes: z.number().positive().default(15),
+    skills: z.array(z.string().min(1)).default([]),
+  })
+  .strict()
+  .transform((a) => ({ ...a, instructions: a.instructions ?? `.zero/agents/${a.name}.md` }));
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -112,6 +141,8 @@ export const LineSchema = z.object({
     .optional(),
   /** How far the night shift goes on its own on this line; absent: the global `nightShift.autonomy`. */
   nightShift: z.object({ autonomy: AutonomySchema }).strict().optional(),
+  /** This line's own agents, after the global ones. */
+  agents: z.array(CustomAgentSchema).default([]),
 });
 
 export const FactorySchema = z
@@ -155,7 +186,7 @@ export const FactorySchema = z
         reservePercent: z.number().min(0).max(99).default(0),
         /** What the scout and research stations may spend together per night shift period; per-use billing only. */
         usdPerNight: z.number().nonnegative().default(1),
-        protectedPaths: z.array(z.string()).default([".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
+        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),
     approvals: z
@@ -186,6 +217,8 @@ export const FactorySchema = z
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
+    /** Custom agents for every line, before each line's own. */
+    agents: z.array(CustomAgentSchema).default([]),
     lines: z.array(LineSchema).default([]),
   })
   .superRefine((cfg, ctx) => {
@@ -202,8 +235,22 @@ export const FactorySchema = z
         }
       }
     }
+    const checkAgents = (agents: CustomAgent[], path: (string | number)[], taken: Set<string>) => {
+      for (const [i, agent] of agents.entries()) {
+        const at = [...path, i];
+        const issue = (field: string, message: string) => ctx.addIssue({ code: "custom", path: [...at, field], message });
+        if ((FIXED_STATIONS as readonly string[]).includes(agent.name)) issue("name", `el agente "${agent.name}" usa el nombre de una estación fija de zero; elegí otro`);
+        else if (taken.has(agent.name)) issue("name", `el agente "${agent.name}" está repetido para la misma línea`);
+        taken.add(agent.name);
+        const problem = instructionsProblem(agent.instructions);
+        if (problem) issue("instructions", `el agente "${agent.name}": ${problem}`);
+        if (agent.engine && !known.includes(agent.engine)) issue("engine", `el agente "${agent.name}" usa el motor "${agent.engine}", que no existe; motores conocidos: ${known.join(", ")}`);
+      }
+    };
+    checkAgents(cfg.agents, ["agents"], new Set());
     const seen = new Set<string>();
     for (const [i, line] of cfg.lines.entries()) {
+      checkAgents(line.agents, ["lines", i, "agents"], new Set(cfg.agents.map((a) => a.name)));
       if (seen.has(line.name)) ctx.addIssue({ code: "custom", path: ["lines", i, "name"], message: `duplicate line "${line.name}"` });
       seen.add(line.name);
       if (line.autoMerge && line.integrate !== "pull-request") {
@@ -216,6 +263,33 @@ export type FactoryConfig = z.infer<typeof FactorySchema>;
 export type LineConfig = z.infer<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
+export type CustomAgent = z.output<typeof CustomAgentSchema>;
+
+/** Why an agent's instructions path is refused: it must be a relative .md path that stays inside its folder. */
+export function instructionsProblem(path: string): string | undefined {
+  if (isAbsolute(path) || win32.isAbsolute(path) || /^[a-z]:/i.test(path)) return `las instrucciones tienen que ser una ruta relativa, no "${path}"`;
+  if (path.split(/[\\/]/).includes("..")) return `las instrucciones no pueden salir de su carpeta con ".." ("${path}")`;
+  if (!/\.md$/i.test(path)) return `las instrucciones tienen que ser un archivo .md ("${path}")`;
+  return undefined;
+}
+
+/** A custom agent that applies to a line, and where its instructions live: the line's repository or the factory folder. */
+export type LineAgent = CustomAgent & { origin: "factory" | "line" };
+
+/** The custom agents of a line, in the order they run: the global ones, then the line's own, each in file order. */
+export function lineAgents(config: Pick<FactoryConfig, "agents">, line: Pick<LineConfig, "agents">): LineAgent[] {
+  return [...config.agents.map((a) => ({ ...a, origin: "factory" as const })), ...line.agents.map((a) => ({ ...a, origin: "line" as const }))];
+}
+
+/** The engines a custom agent may run on: its own (or the factory's), then the global replacements. */
+export function customAgentChain(config: Pick<FactoryConfig, "engine" | "fallback">, agent: Pick<CustomAgent, "engine" | "model">): ChainLink[] {
+  const chain: ChainLink[] = [{ engine: agent.engine ?? config.engine, ...(agent.model && { model: agent.model }) }];
+  for (const item of config.fallback ?? []) {
+    const link = typeof item === "string" ? { engine: item } : { engine: item.engine, ...(item.model && { model: item.model }) };
+    if (!chain.some((l) => l.engine === link.engine)) chain.push(link);
+  }
+  return chain;
+}
 
 /** Every station that runs an agent, in line order. */
 export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research"];

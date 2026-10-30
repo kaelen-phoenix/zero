@@ -186,6 +186,54 @@ stations:
 
 Each call records in its trace which engine it used, which one it replaced and why.
 
+## Custom agents
+
+Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). For now they are read-only reviewers that run after `review` and `security`, on the same change: the global ones first, then the line's, each in file order.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: a11y                        # lowercase letters, digits and dashes
+        instructions: .zero/agents/a11y.md   # in the line's repository (the default)
+        blocking: true                    # verified high or critical findings send the change back to build
+        engine: codex                     # optional, like any station: engine, model, maxTurns, timeoutMinutes, skills
+        timeoutMinutes: 10
+      - name: seo
+        blocking: false                   # only reports: its findings never stop the job
+```
+
+`.zero/agents/a11y.md`, in the line's repository:
+
+```markdown
+# Agent: a11y
+
+You review the accessibility of every change to the web pages.
+
+## What to check
+- Every image has a meaningful `alt`; decorative images have `alt=""`.
+- Every form field has a label, and every button has a name a screen reader can say.
+- Colors keep a contrast of at least 4.5:1 for text.
+
+## How to report
+- One finding per problem, with the file and line, the problem and the fix.
+- Use `high` or `critical` only when a person using a screen reader or a keyboard cannot use the page.
+```
+
+```sh
+zero agent list --line web
+zero agent add a11y --line web                 # creates .zero/agents/a11y.md from a template and adds the agent
+zero agent add seo --line web --informativo    # an agent that only reports
+zero agent remove seo --line web               # out of the configuration; its file stays
+```
+
+Global agents read their instructions relative to the factory folder (where `zero.factory.yaml` is). Each agent gets the request, the specification and the change (`git diff` against the base), and answers like `review`: findings with file and line, which zero checks, and learnings for the townhall. A blocking agent with verified `high` or `critical` findings rejects the attempt, and build gets them as feedback, naming the agent; an informative one only leaves them on its trace. If a blocking agent's instructions file is missing, the job fails naming the path; an informative one is skipped with a warning. Their calls show up in the trace, the status and the budget like any station's (`zero.station.<name>`).
+
+**Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
+
+Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
+
 ## Night shift
 
 When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap.

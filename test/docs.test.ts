@@ -103,6 +103,17 @@ describe("documentation up to date", () => {
     expect(es).not.toContain("Turno nocturno (en camino)");
   });
 
+  it("shows a complete custom agent in both READMEs", () => {
+    for (const [text, heading] of [[es, "## Agentes a medida"], [en, "## Custom agents"]] as const) {
+      // The section ends at the example's own `## ` headings, so the instructions file is looked up in the whole README.
+      const found = blocks(section(text, heading));
+      expect(found.some((b) => b.info === "yaml" && b.body.includes("lines:") && b.body.includes("agents:"))).toBe(true);
+      expect(blocks(text).some((b) => b.info === "markdown" && b.body.startsWith("# Agent: a11y"))).toBe(true);
+      expect(blocks(text).some((b) => b.info === "sh" && b.body.includes("zero agent add"))).toBe(true);
+    }
+    expect(blocks(en).find((b) => b.body.startsWith("# Agent: a11y"))!.body).toBe(blocks(es).find((b) => b.body.startsWith("# Agent: a11y"))!.body);
+  });
+
   it("starts Getting started with the clone", () => {
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
       const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;
