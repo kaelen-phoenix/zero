@@ -5,7 +5,7 @@ import { budgetState } from "../src/budget.js";
 import { parseFactory } from "../src/config.js";
 import { claudeQuota } from "../src/engines/claude.js";
 import type { QuotaReport } from "../src/engines/index.js";
-import { formatStatus } from "../src/format.js";
+import { formatJob, formatStatus } from "../src/format.js";
 import { runJob } from "../src/line/runner.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { Tracer } from "../src/telemetry/tracer.js";
@@ -115,6 +115,13 @@ describe("budget", () => {
     expect(text).toMatch(/Suscripción: 5 horas al 45% \(se renueva .+\) · semana al 32% \(se renueva .+\)/);
     expect(text).toContain("costo estimado hoy $11.16 (no se cobra)");
     expect(text).not.toContain("ALCANZADO");
+  });
+
+  it("shows a job's cost as an estimate without a cap on a subscription", () => {
+    const ctx = testFactory({ lines: [{ name: "demo", repo: gitRepo() }] });
+    const job = ctx.store.updateJob(requestWork(ctx, { text: "x" }).job.id, { costUsd: 0.72 });
+    expect(formatJob(job, { subscription: true })).toContain("costo estimado $0.72 (con la suscripción no se cobra)");
+    expect(formatJob(job)).toMatch(/costo \$0\.72 de \$\d/);
   });
 });
 
