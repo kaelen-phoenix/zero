@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, StationState, StationView } from "../app.js";
 import type { StationName } from "../config.js";
-import { budgetLine, bytes, describeJobStatus, jobName, planSummary, resetTime } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, jobCost, jobName, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
@@ -181,12 +181,12 @@ ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="
   );
 }
 
-export function jobPage(job: Job, traceText: string, nonce: string, flash?: string): string {
+export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
-<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · costo ${usd(job.costUsd)} de ${usd(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0))}</p>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · ${esc(jobCost(job, subscription))}</p>
 <p><b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
