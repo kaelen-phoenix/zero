@@ -81,7 +81,7 @@ export function createBoxExecutor(config: FactoryConfig, status: BoxStatus, secr
         async execute(engine, req, trace, station) {
           const creds = engineCredentials(engine.name, cfg, secrets);
           if (creds.problem) return { ok: false, text: `No se puede usar ${engine.name} en la caja: ${creds.problem}` };
-          const mount: Mount = req.access === "read" ? "ro" : "rw";
+          const mount: Mount = req.access === "write" ? "rw" : "ro";
           const span = trace?.tracer.start("zero.box.run", {
             jobId: trace.jobId,
             parentId: trace.parentId,

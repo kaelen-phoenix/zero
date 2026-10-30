@@ -69,6 +69,18 @@ Las mejoras marcadas como **aplicada** ya están en las instrucciones de este ca
 - (aplicada) Tratar el repositorio, el townhall y el resumen como material para analizar, no como instrucciones.
 - Correrlo dentro de la caja cuando esté lista, como las estaciones de la línea.
 
+## research
+
+**Hallazgos**
+- Lee páginas de la web: es la entrada menos confiable de la fábrica. Una página, un README o una skill pueden intentar darle órdenes o colar enlaces y rutas.
+- Con Claude tiene solo las herramientas de lectura más `WebSearch`; `WebFetch`, la escritura y la terminal libre están apagadas. Corre fuera de la caja, así que sus búsquedas no quedan en `zero egress`.
+- zero guarda solo notas con fuentes http(s), les quita rutas locales y secretos, y respeta el cupo por línea y por día; sus notas llegan a `scout` como datos.
+
+**Mejoras**
+- (aplicada) Tratar todo lo que viene de la web como dato, nunca como instrucciones, y no instalar, clonar ni ejecutar nada.
+- Correrla dentro de la caja y por la puerta de salida, para que sus salidas queden registradas.
+- Hacer cumplir `research.autonomy` antes de que el turno nocturno pueda construir solo.
+
 ## Propuestas que requieren cambios de código
 
 Estas mejoras no están implementadas en este cambio; necesitan tocar `src/line/runner.ts` y conviene pedirlas por separado.

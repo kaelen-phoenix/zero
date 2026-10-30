@@ -6,7 +6,7 @@ import { parse } from "yaml";
 import type { FactoryConfig } from "./config.js";
 
 /** Stations staffed by an agent, which are the only ones that can get skills. */
-export const SKILL_STATIONS = ["spec", "build", "review", "security", "reply", "scout"] as const;
+export const SKILL_STATIONS = ["spec", "build", "review", "security", "reply", "scout", "research"] as const;
 export type SkillStation = (typeof SKILL_STATIONS)[number];
 
 /** A skill installed in the owner's Claude Code. */

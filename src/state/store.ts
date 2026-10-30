@@ -63,7 +63,9 @@ export type JobSource =
       url: string;
     }
   /** A proposal of the scout station, approved by the owner. */
-  | { kind: "night-shift"; proposal: string };
+  | { kind: "night-shift"; proposal: string }
+  /** A research note the owner turned into work. */
+  | { kind: "research"; note: string };
 
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";
@@ -140,6 +142,21 @@ export interface Proposal {
   issueUrl?: string;
   /** The decision the issue was already told about. */
   issueTold?: "approved" | "rejected";
+}
+
+/** What the research station found on the web for a line; web-sourced data, never instructions. */
+export interface ResearchNote {
+  id: string;
+  line: string;
+  topic: string;
+  findings: string;
+  /** Absolute http(s) URLs. */
+  sources: string[];
+  /** Which part of the line it would help. */
+  serves: string;
+  /** How mature and reliable it is. */
+  maturity: string;
+  createdAt: string;
 }
 
 /** A connection recorded by the egress gate, numbered in the order the host read it. */
@@ -223,6 +240,17 @@ CREATE TABLE IF NOT EXISTS proposals (
   issue_told TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
+CREATE TABLE IF NOT EXISTS research_notes (
+  id TEXT PRIMARY KEY,
+  line TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  findings TEXT NOT NULL,
+  sources TEXT NOT NULL DEFAULT '[]',
+  serves TEXT NOT NULL DEFAULT '',
+  maturity TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS research_notes_line ON research_notes(line, created_at);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -294,6 +322,19 @@ function toProposal(r: Row): Proposal {
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
     issueTold: str(r.issue_told) as Proposal["issueTold"],
+  };
+}
+
+function toResearchNote(r: Row): ResearchNote {
+  return {
+    id: String(r.id),
+    line: String(r.line),
+    topic: String(r.topic),
+    findings: String(r.findings),
+    sources: json<string[]>(r.sources) ?? [],
+    serves: String(r.serves),
+    maturity: String(r.maturity),
+    createdAt: String(r.created_at),
   };
 }
 
@@ -549,6 +590,36 @@ export class Store {
 
   markProposalIssueTold(id: string, status: "approved" | "rejected") {
     this.db.prepare("UPDATE proposals SET issue_told = ? WHERE id = ?").run(status, id);
+  }
+
+  /** `createdAt` is for imports and tests; absent: now. */
+  createResearchNote(input: Omit<ResearchNote, "id" | "createdAt"> & { createdAt?: string }): ResearchNote {
+    const id = newId();
+    this.db
+      .prepare("INSERT INTO research_notes (id, line, topic, findings, sources, serves, maturity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.line, input.topic, input.findings, JSON.stringify(input.sources), input.serves, input.maturity, input.createdAt ?? this.stamp());
+    return this.getResearchNote(id)!;
+  }
+
+  getResearchNote(id: string): ResearchNote | undefined {
+    const row = this.db.prepare("SELECT * FROM research_notes WHERE id = ?").get(id) as Row | undefined;
+    return row && toResearchNote(row);
+  }
+
+  /** Newest first. */
+  listResearchNotes(filter: { line?: string; since?: Date; limit?: number } = {}): ResearchNote[] {
+    const where: string[] = [];
+    const values: (string | number)[] = [];
+    if (filter.line) {
+      where.push("line = ?");
+      values.push(filter.line);
+    }
+    if (filter.since) {
+      where.push("created_at >= ?");
+      values.push(filter.since.toISOString());
+    }
+    const sql = `SELECT * FROM research_notes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
+    return (this.db.prepare(sql).all(...values, filter.limit ?? -1) as Row[]).map(toResearchNote);
   }
 
   getKv(key: string): string | undefined {

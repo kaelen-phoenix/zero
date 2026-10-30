@@ -1,13 +1,14 @@
 import type { StagedSkills } from "../skills.js";
 
-export type Access = "read" | "write";
+/** `web` is `read` plus searching the web; it never allows writing. */
+export type Access = "read" | "write" | "web";
 
 export interface EngineRequest {
   /** Role instructions (agents/<role>.md). Engines with a system prompt use it there; others prepend it. */
   instructions: string;
   prompt: string;
   cwd: string;
-  /** read = the agent must not modify the workspace; write = it may edit files and run commands. */
+  /** read = the agent must not modify the workspace; write = it may edit files and run commands; web = read plus web search. */
   access: Access;
   /** JSON Schema the final answer must match, when the role needs structured output. */
   schema?: Record<string, unknown>;

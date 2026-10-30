@@ -13,6 +13,7 @@ import { loadFactory, type FactoryConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
+import { researchPass } from "./line/research.js";
 import { scoutPass } from "./line/scout.js";
 import { log } from "./log.js";
 import { panelKey } from "./panel/key.js";
@@ -38,6 +39,8 @@ export interface DaemonOptions {
   panel?: boolean;
   /** Run the night shift (scout) while the factory is idle. Defaults to on, except in `once` runs. */
   scout?: boolean;
+  /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
+  research?: boolean;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -159,6 +162,16 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .finally(() => (scouting = undefined));
   };
 
+  // Research reads the web once a day per line while the factory is idle, the same way; shutdown cuts it short.
+  let researching: Promise<void> | undefined;
+  const researchStop = new AbortController();
+  const research = () => {
+    if (researching || !(opts.research ?? !opts.once) || ctx.config.research === "off" || running.size) return;
+    researching = researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal)
+      .catch((err) => log.warn("research failed", { error: String(err) }))
+      .finally(() => (researching = undefined));
+  };
+
   try {
     while (!stopping) {
       beat();
@@ -217,17 +230,23 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
         }
       }
 
-      if (!andon && !startable) scout();
+      if (!andon && !startable) {
+        scout();
+        research();
+      }
 
       if (opts.once && !running.size && !startable) break;
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
   } finally {
+    // A shutdown cuts research short; a `once` run lets it finish.
+    if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
     await publishing;
     await merging;
     await scouting;
+    await researching;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();

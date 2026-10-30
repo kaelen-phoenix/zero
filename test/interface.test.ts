@@ -29,7 +29,7 @@ describe("chat interface (MCP)", () => {
   it("offers the factory's tools", async () => {
     const { client } = await connect(testFactory({ lines: [{ name: "demo", repo: gitRepo() }] }));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(["zero_answer", "zero_briefing", "zero_egress", "zero_egress_block", "zero_lines", "zero_proposal_decide", "zero_proposals", "zero_request", "zero_resume", "zero_status", "zero_stop", "zero_trace"]);
+    expect(names).toEqual(["zero_answer", "zero_briefing", "zero_egress", "zero_egress_block", "zero_lines", "zero_proposal_decide", "zero_proposals", "zero_request", "zero_research", "zero_research_request", "zero_resume", "zero_status", "zero_stop", "zero_trace"]);
   });
 
   it("lists and decides scout proposals", async () => {

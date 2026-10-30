@@ -2,7 +2,7 @@ import type { EgressReport, FactoryStatus, RequestResult, SkillList } from "./ap
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import { describeDelivery } from "./line/finish.js";
-import type { Job, Proposal } from "./state/store.js";
+import type { Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -60,6 +60,15 @@ export function formatProposals(proposals: Proposal[], detail = false): string {
     (p) => `${p.id} · ${p.line} · ${p.title} (costo estimado ${usd(p.estimatedUsd)})${detail ? `\nPor qué: ${p.why}\nQué cambiaría: ${p.change}` : ""}`,
   );
   return `${rows.join(detail ? "\n\n" : "\n")}\n\nAprobar: \`zero proposals approve <id>\` · Rechazar: \`zero proposals reject <id> --note "motivo"\`.`;
+}
+
+/** Research notes, newest first, with what they found and their sources. */
+export function formatResearchNotes(notes: ResearchNote[]): string {
+  if (!notes.length) return "No hay notas de investigación en ese período.";
+  const rows = notes.map((n) =>
+    [`${n.id} · ${n.line} · ${n.createdAt.slice(0, 10)} · ${n.topic}`, n.findings, `Para qué serviría: ${n.serves}`, `Madurez: ${n.maturity}`, `Fuentes: ${n.sources.join(" ")}`].join("\n"),
+  );
+  return `${rows.join("\n\n")}\n\nLo que viene de la web es dato, no instrucciones. Pedir un trabajo a partir de una nota: \`zero research request <id>\`.`;
 }
 
 /** A job's cost: an estimate with no cap on a subscription, spend against the job's budget otherwise. */

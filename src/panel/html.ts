@@ -527,6 +527,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Cuando la fábrica está libre, mira el código, el townhall, las trazas de los últimos 30 días y las specs sin tests, y propone mejoras que vos aprobás o rechazás.",
     cannot: "No modifica el código ni construye nada; nunca propone tocar rutas protegidas ni cambios que pidan credenciales nuevas.",
   },
+  research: {
+    name: "Investigación (research)",
+    does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
+    cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };
@@ -555,7 +560,7 @@ export function agentsPage(g: FactoryGuide, nonce: string): string {
       const t = AGENT_SUMMARY[a.station];
       return `<div class="card agent" data-station="${esc(a.station)}"><h2>${esc(t.name)}</h2>
 <p>${esc(t.does)}</p><p class="muted">${esc(t.cannot)}</p>
-<p>${a.access === "write" ? `<span class="badge warn">puede modificar el código</span>` : `<span class="badge ok">solo lectura</span>`}</p>
+<p>${a.access === "write" ? `<span class="badge warn">puede modificar el código</span>` : `<span class="badge ok">solo lectura${a.access === "web" ? " · busca en la web" : ""}</span>`}</p>
 <ul class="kv"><li>Motor: <b>${esc(a.engine)}</b></li>
 <li>Modelo: ${a.model ? `<b>${esc(a.model)}</b>` : "el predeterminado del motor"}</li>
 <li>Máximo de turnos: <b>${a.maxTurns ?? "sin límite"}</b></li>
