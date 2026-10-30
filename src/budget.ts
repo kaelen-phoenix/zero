@@ -120,7 +120,16 @@ export function jobBilledUsd(store: Store, jobId: string, now = new Date()): num
     .reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
 }
 
-type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback">;
+type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback"> & {
+  agents?: Pick<CustomAgent, "engine" | "model">[];
+  lines?: { agents?: Pick<CustomAgent, "engine" | "model">[] }[];
+};
+
+/** The chains of every custom agent, global and per line. */
+function customAgentChains(config: BudgetConfig): ChainLink[][] {
+  const agents = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((l) => l.agents ?? [])];
+  return agents.map((a) => customAgentChain(config, a));
+}
 
 /**
  * Where one engine stands. A subscription waits while one of its windows is
@@ -164,12 +173,13 @@ function engineBudget(store: Store, config: BudgetConfig, engine: string, all: M
   return { engine, billing: "subscription", paused: true, until: stopAt.toISOString(), reason };
 }
 
-/** Every engine of the stations' chains, by name. */
+/** Every engine of the stations' and custom agents' chains, by name. */
 function engineBudgets(store: Store, config: BudgetConfig, now: Date, windows: PlanWindow[] = []): Map<string, EngineBudget> {
   const all = readings(store, now);
   const out = new Map<string, EngineBudget>();
-  for (const station of AGENT_STATIONS) {
-    for (const { engine } of stationChain(config, station)) {
+  const chains = [...AGENT_STATIONS.map((station) => stationChain(config, station)), ...customAgentChains(config)];
+  for (const chain of chains) {
+    for (const { engine } of chain) {
       if (!out.has(engine)) out.set(engine, engineBudget(store, config, engine, all, now, windows));
     }
   }
@@ -233,8 +243,8 @@ const when = (e: EngineBudget) => (e.until ? Date.parse(e.until) : Number.POSITI
 /**
  * The single answer to "can the factory start more work now?". Each engine is
  * paused on its own (see engineBudget); work waits only while some station a
- * job needs has every engine of its chain paused, and resumes once every such
- * station has one again.
+ * job needs (or some custom agent) has every engine of its chain paused, and
+ * resumes once every such station has one again.
  */
 export function budgetState(store: Store, config: BudgetConfig, now = new Date()): BudgetState {
   const all = readings(store, now);
@@ -242,8 +252,9 @@ export function budgetState(store: Store, config: BudgetConfig, now = new Date()
   const budgets = engineBudgets(store, config, now, windows);
   const replacements: Replacement[] = [];
   let stop: EngineBudget | undefined;
-  for (const station of LINE_AGENTS) {
-    const chain = stationChain(config, station).map((l) => budgets.get(l.engine)!);
+  const chains = [...LINE_AGENTS.map((station) => stationChain(config, station)), ...customAgentChains(config)];
+  for (const links of chains) {
+    const chain = links.map((l) => budgets.get(l.engine)!);
     const own = chain[0]!;
     const working = chain.find((e) => !e.paused);
     if (working) {
