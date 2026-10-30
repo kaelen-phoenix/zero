@@ -83,7 +83,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     "zero_proposals",
     {
       title: "Propuestas del turno nocturno",
-      description: "Work the factory's scout station proposed on its own while idle, still waiting for the owner: id, line, title, why, what would change and estimated cost.",
+      description: "Work the factory's scout station proposed on its own while idle, still waiting for the owner (including ones the night shift built on its own that wait to be integrated): id, line, title, why, what would change, estimated cost and the research note it came from.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -94,7 +94,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     "zero_proposal_decide",
     {
       title: "Aprobar o rechazar una propuesta",
-      description: "Pass the owner's decision on a scout proposal. 'approve' turns it into a normal job of its line; 'reject' archives it. Only use the owner's actual answer.",
+      description: "Pass the owner's decision on a scout proposal. 'approve' turns it into a normal job of its line, or lets a job the night shift already built integrate; 'reject' archives it and stops such a job. Only use the owner's actual answer.",
       inputSchema: {
         id: z.string(),
         decision: z.enum(["approve", "reject"]),

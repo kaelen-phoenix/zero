@@ -166,6 +166,58 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
 
+### Motores de reemplazo (`fallback`)
+
+Cuando el motor de una estación no puede trabajar (se agotó el cupo de su plan, o su tope en dólares si se paga por uso), zero pasa a los motores de reemplazo, en orden, en lugar de frenar la fábrica. La fábrica se pausa solo cuando una estación de la línea tiene todos sus motores pausados.
+
+```yaml
+engine: claude
+fallback: [codex, { engine: gemini, model: gemini-2.5-pro }]   # global: nombres de motor o { engine, model }
+stations:
+  review: { engine: codex, fallback: [claude] }                # por estación: reemplaza la lista global
+```
+
+Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué.
+
+## Turno nocturno
+
+Cuando la fábrica está libre (sin pedidos tuyos en cola ni en curso, con el andon apagado y con presupuesto), la estación de solo lectura `scout` mira cada línea una vez por período: el townhall, las trazas de los últimos 30 días, las specs sin tests y las notas de investigación de la línea. Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título. Si se paga por uso, `scout` y `research` comparten el tope de `limits.usdPerNight`.
+
+```yaml
+nightShift:               # o `nightShift: off` para apagarlo
+  hours: "22:00-06:00"    # opcional: solo en ese horario (cruza la medianoche); sin hours, cuando la fábrica está libre
+  autonomy: propose       # propose · build · auto, para las líneas sin autonomía propia
+  maxAutoJobsPerDay: 3    # trabajos que el turno abre solo por día, sumando todas las líneas
+limits:
+  usdPerNight: 1          # solo si se paga por uso
+research:
+  autonomy: propose       # tope para lo que agrega algo de terceros (ver abajo)
+lines:
+  - name: tienda
+    repo: /ruta/a/tienda
+    nightShift: { autonomy: auto }   # opcional: la autonomía de esta línea
+```
+
+La autonomía de una línea es la suya (`lines[].nightShift.autonomy`) o, si no tiene, la global (`nightShift.autonomy`):
+- **`propose`** (por defecto): la propuesta espera tu decisión.
+- **`build`**: la propuesta se convierte sola en un trabajo normal de la línea, marcado como del turno nocturno. Pasa por todas las estaciones y se detiene antes de integrar: queda su rama y espera tu aprobación. Si no contestás, vence como rechazada aunque `approvals.onTimeout` sea `approve`: nunca se integra sola. Al aprobar la propuesta se integra según el `integrate` y el `autoMerge` de la línea; al rechazarla, el trabajo se detiene y su rama queda.
+- **`auto`**: se construye y se integra o despliega sola, según el `integrate` y el `autoMerge` de la línea, sin preguntar.
+
+En `build` y en `auto` el trabajo sigue las reglas de siempre: si toca algo protegido, se pasa del presupuesto, la verificación lo frena o la puerta de salida ve algo sospechoso, espera al dueño (o falla, según el nivel) como cualquier otro trabajo. Además:
+- **Tope diario.** Como mucho `maxAutoJobsPerDay` trabajos automáticos por día local, sumando todas las líneas (0 = ninguno). Al llegar, las propuestas que siguen esperan tu decisión.
+- **Tus pedidos van primero.** Un trabajo automático del turno nocturno nunca pasa delante de los tuyos y no arranca mientras haya otro trabajo en la cola o en curso.
+- **Propuestas nacidas de una nota de investigación.** Quedan marcadas con la nota de origen. Si agregan una dependencia, una skill de terceros, un servidor MCP o código de terceros, las regula `research.autonomy` (por defecto `propose`): se toma la más restrictiva entre esa y la de la línea, así que esperan tu decisión aunque la línea esté en `auto`. zero no se fía solo de lo que dice `scout`: también mira los manifiestos de dependencias y de MCP (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) en la propuesta y, antes de integrar, en los archivos que cambió el trabajo. Escribir una skill propia o asignar una ya instalada sigue la autonomía de la línea.
+
+Las propuestas se guardan en `state.db` y se deciden con:
+
+```sh
+zero proposals                          # las que esperan tu decisión (también las construidas que esperan para integrar)
+zero proposals approve <id>             # abre el trabajo, o integra el que el turno ya construyó
+zero proposals reject <id> --note "…"   # la archiva (y detiene su trabajo si el turno ya lo abrió)
+```
+
+Desde el chat: `zero_proposals` y `zero_proposal_decide`. El motivo de un rechazo queda en el townhall de la línea y `scout` recibe los últimos 20 rechazos para no insistir. En las líneas de GitHub cada propuesta se publica también como issue con la etiqueta `zero:propuesta`, y el issue cuenta quién la aprobó (vos o el turno nocturno solo) o por qué la rechazaste. El informe tiene la sección "Turno nocturno": qué se propuso, qué se construyó solo y espera tu ok, y qué se integró o desplegó solo.
+
 ## Investigación
 
 La estación `research` investiga en la web una vez por día, con la fábrica libre: skills nuevas para los agentes (de Claude Code y de otros motores), servidores MCP y tecnologías que sirvan a la línea o a la fábrica misma (motores, librerías, herramientas, prácticas). Sigue las reglas del turno nocturno: solo corre sin pedidos tuyos en cola o en curso, con el andon apagado y con presupuesto (respeta `limits.reservePercent`); si se paga por uso, comparte con `scout` el tope de `limits.usdPerNight`.
@@ -176,7 +228,7 @@ Investiga por línea, y solo las líneas que tienen una **skill de investigació
 research:                 # o `research: off` para apagarla
   topics: ["motores de agentes locales"]   # opcional: temas de interés para todas las líneas
   perLinePerDay: 1        # notas por línea por día (0 = apagada); si no alcanza, las líneas se turnan
-  autonomy: propose       # las propuestas nacidas de una nota esperan tu ok
+  autonomy: propose       # propose · build · auto: hasta dónde llega sola una propuesta nacida de una nota que agrega algo de terceros
 stations:
   research: { timeoutMinutes: 15 }
 lines:
@@ -286,7 +338,7 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 - **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. El dueño lee y edita intenciones, en su idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
 - **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
-- **Turno nocturno (en camino).** Cuando no hay trabajo y sobra presupuesto, la estación de solo lectura `scout` revisa el townhall, las trazas y las specs sin cubrir, y escribe propuestas de trabajo. El dueño se despierta con ellas en el informe y las aprueba o las rechaza; la fábrica aprende de los rechazos. Pasa de esperar pedidos a tener iniciativa, con la regla de siempre: nada sale hacia afuera sin el ok del dueño.
+- **Turno nocturno.** Ya funciona (ver [Turno nocturno](#turno-nocturno)): con la fábrica libre, `scout` propone trabajo y, según la autonomía de cada línea, espera al dueño, lo construye o lo integra solo. Lo que sigue es una pestaña "Propuestas" en el panel.
 - **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
 
 ## Próximas etapas

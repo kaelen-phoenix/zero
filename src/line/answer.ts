@@ -37,9 +37,15 @@ function granted(job: Job): Approvals {
 export async function answerJob(deps: LedgerDeps, job: Job, decision: Decision, note?: string): Promise<Job> {
   if (job.status !== "waiting" || !job.question) throw new Error(`El trabajo ${job.id} no está esperando una respuesta (estado: ${job.status}).`);
   if (decision === "reject") {
-    const kept = job.question.kind === "integration-blocked" && job.branch ? ` La rama ${job.branch} queda disponible.` : "";
+    const kept = (job.question.kind === "integration-blocked" || job.source?.kind === "night-shift") && job.branch ? ` La rama ${job.branch} queda disponible.` : "";
     return finalizeJob(deps, job, "stopped", { reason: `Rechazado por el dueño${note ? `: ${note}` : "."}${kept}` });
   }
+  return approveJob(deps, job);
+}
+
+/** The approving half of `answerJob`, synchronous so it can run inside a store transaction. */
+export function approveJob(deps: LedgerDeps, job: Job): Job {
+  if (job.status !== "waiting" || !job.question) throw new Error(`El trabajo ${job.id} no está esperando una respuesta (estado: ${job.status}).`);
   closeQuestion(deps, job, "approve");
   return deps.store.updateJob(job.id, { status: "queued", question: null, approvals: granted(job) });
 }

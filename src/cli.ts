@@ -32,7 +32,7 @@ Uso diario (también desde el chat):
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
-  zero proposals approve|reject <id>   Aprueba (crea el trabajo) o rechaza una propuesta   [--note "<motivo>"]
+  zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
   zero research                  Notas de investigación de la web   [--line <nombre>] [--days N]
   zero research request <id>     Pide un trabajo en la línea de la nota, a partir de lo que encontró
 

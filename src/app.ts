@@ -10,7 +10,7 @@ import { budgetState, type BudgetState } from "./budget.js";
 import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, loadFactory, SiteSchema, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
-import { answerJob, type Decision } from "./line/answer.js";
+import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
 import { intakeProblemKey } from "./intake/keys.js";
@@ -272,12 +272,16 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
   const unmerged = factoryStatus(ctx).merges.filter((m) => m.status === "blocked");
+  const autonomous = (j: Job) => j.source?.kind === "night-shift" && Boolean(j.source.autonomy);
+  const finished = ctx.store
+    .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
+    .filter((j) => j.source?.kind === "night-shift" && j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())
+    .reverse();
   const night = {
     proposals: ctx.store.listProposals({ status: ["pending"], since: from }),
-    jobs: ctx.store
-      .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
-      .filter((j) => j.source?.kind === "night-shift" && j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())
-      .reverse(),
+    built: ctx.store.listJobs({ status: ["waiting"], limit: 10_000 }).filter((j) => autonomous(j) && awaitsIntegration(j)),
+    integrated: finished.filter((j) => autonomous(j) && j.status === "delivered"),
+    jobs: finished.filter((j) => !(autonomous(j) && j.status === "delivered")),
   };
   const research = ctx.store.listResearchNotes({ since: from }).filter((n) => n.createdAt <= to.toISOString());
   return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research);
@@ -305,9 +309,31 @@ export function requestFromResearchNote(ctx: FactoryContext, id: string): Reques
   return requestWork(ctx, { text, line: note.line, source: { kind: "research", note: note.id } });
 }
 
-/** Proposals of the scout station, oldest first; pending ones by default. */
+/** The request text of the job a proposal becomes. */
+export function proposalRequest(proposal: Pick<Proposal, "title" | "why" | "change">): string {
+  return `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}`;
+}
+
+/** The job the night shift opened on its own for a proposal, while it is not finished. */
+function autonomousJob(ctx: FactoryContext, proposal: Proposal): Job | undefined {
+  if (proposal.status !== "approved" || proposal.decidedBy !== "night-shift" || !proposal.jobId) return undefined;
+  const job = ctx.store.getJob(proposal.jobId);
+  return job && !FINAL_STATUSES.includes(job.status) ? job : undefined;
+}
+
+/** Built by the night shift on its own and parked until the owner lets it integrate. */
+const awaitsIntegration = (job: Job | undefined): boolean => job?.status === "waiting" && job.question?.kind === "before-integrate";
+
+/**
+ * Proposals of the scout station, oldest first. By default, the ones that wait
+ * for the owner: pending, and those the night shift built on its own that
+ * wait to be integrated.
+ */
 export function listProposals(ctx: FactoryContext, filter: { line?: string; status?: ProposalStatus[] } = {}): Proposal[] {
-  return ctx.store.listProposals({ status: ["pending"], ...filter });
+  if (filter.status) return ctx.store.listProposals(filter);
+  return ctx.store
+    .listProposals({ line: filter.line, status: ["pending", "approved"] })
+    .filter((p) => p.status === "pending" || awaitsIntegration(autonomousJob(ctx, p)));
 }
 
 function pendingProposal(ctx: FactoryContext, id: string): Proposal {
@@ -317,22 +343,46 @@ function pendingProposal(ctx: FactoryContext, id: string): Proposal {
   return proposal;
 }
 
-/** Turns a pending proposal into a normal job of its line, marked as born from the night shift. */
+/**
+ * Turns a pending proposal into a normal job of its line, marked as born from
+ * the night shift. On a proposal the night shift already built on its own and
+ * parked before integrating, approving lets that job integrate.
+ */
 export function approveProposal(ctx: FactoryContext, id: string): RequestResult {
   return ctx.store.transaction(() => {
-    const proposal = pendingProposal(ctx, id);
-    const text = `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}`;
-    const result = requestWork(ctx, { text, line: proposal.line, source: { kind: "night-shift", proposal: id } });
-    ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id });
+    const proposal = ctx.store.getProposal(id);
+    const built = proposal && autonomousJob(ctx, proposal);
+    if (built) {
+      if (!awaitsIntegration(built)) throw new Error(`La propuesta ${id} ya fue aprobada por el turno nocturno: el trabajo ${built.id} se está construyendo.`);
+      const job = approveJob(ctx, built);
+      return { job, level: currentLevel(ctx), next: "Vuelve a la cola y se integra según la configuración de la línea." };
+    }
+    pendingProposal(ctx, id);
+    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id } });
+    ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id, decidedBy: "owner" });
     return result;
   });
 }
 
-/** Archives a pending proposal, with the owner's reason when given, and leaves the lesson in the townhall so scout does not propose it again. */
+/**
+ * Archives a pending proposal, with the owner's reason when given, and leaves
+ * the lesson in the townhall so scout does not propose it again. On a proposal
+ * the night shift took on its own, it also stops that job (its branch is kept).
+ */
 export async function rejectProposal(ctx: FactoryContext, id: string, note?: string): Promise<Proposal> {
+  const reason = note?.trim() || undefined;
+  const existing = ctx.store.getProposal(id);
+  const built = existing && autonomousJob(ctx, existing);
+  if (built) {
+    if (built.status === "waiting") await answerJob(ctx, built, "reject", reason);
+    else if (built.status === "running") ctx.store.updateJob(built.id, { stopRequested: true });
+    else await finalizeJob(ctx, built, "stopped", { reason: `Rechazado por el dueño${reason ? `: ${reason}` : "."}` });
+  }
   const proposal = ctx.store.transaction(() => {
-    pendingProposal(ctx, id);
-    ctx.store.updateProposal(id, { status: "rejected", note: note?.trim() || undefined });
+    if (!built) pendingProposal(ctx, id);
+    if (!ctx.store.updateProposal(id, { status: "rejected", note: reason, ...(built ? { from: "approved" as const } : { decidedBy: "owner" as const }) })) {
+      throw new Error(`La propuesta ${id} ya fue decidida.`);
+    }
     return ctx.store.getProposal(id)!;
   });
   try {

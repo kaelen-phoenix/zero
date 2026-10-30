@@ -57,7 +57,11 @@ export function formatRequest(r: RequestResult): string {
 export function formatProposals(proposals: Proposal[], detail = false): string {
   if (!proposals.length) return "No hay propuestas pendientes.";
   const rows = proposals.map(
-    (p) => `${p.id} · ${p.line} · ${p.title} (costo estimado ${usd(p.estimatedUsd)})${detail ? `\nPor qué: ${p.why}\nQué cambiaría: ${p.change}` : ""}`,
+    (p) =>
+      `${p.id} · ${p.line} · ${p.title} (costo estimado ${usd(p.estimatedUsd)})` +
+      (p.status === "approved" ? ` · construido por el turno nocturno, espera tu aprobación para integrar (trabajo ${p.jobId})` : "") +
+      (p.researchNote ? ` · nace de la nota de investigación ${p.researchNote}${p.thirdParty ? ", agrega algo de terceros" : ""}` : "") +
+      (detail ? `\nPor qué: ${p.why}\nQué cambiaría: ${p.change}` : ""),
   );
   return `${rows.join(detail ? "\n\n" : "\n")}\n\nAprobar: \`zero proposals approve <id>\` · Rechazar: \`zero proposals reject <id> --note "motivo"\`.`;
 }

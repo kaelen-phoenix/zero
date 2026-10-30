@@ -53,12 +53,22 @@ async function publish(ctx: FactoryContext, line: LineConfig, proposal: Proposal
   return { ...proposal, issueNumber: issue.number, issueUrl: issue.url };
 }
 
+/** Who approved: the owner, or the night shift on its own under the line's autonomy, never presented as the owner. */
+function approvalText(ctx: FactoryContext, proposal: Proposal): string {
+  const job = `\`${proposal.jobId ?? "?"}\``;
+  if (proposal.decidedBy !== "night-shift") return `El dueño aprobó esta propuesta: la fábrica la tomó como trabajo ${job}.`;
+  const source = proposal.jobId ? ctx.store.getJob(proposal.jobId)?.source : undefined;
+  const autonomy = source?.kind === "night-shift" ? source.autonomy : undefined;
+  const after = autonomy === "auto" ? "se integra sola si pasa todas las estaciones" : "no se integra hasta que el dueño la apruebe";
+  return `El turno nocturno tomó esta propuesta por su cuenta como trabajo ${job} (autonomía de la línea: \`${autonomy ?? "?"}\`): ${after}.`;
+}
+
 /** Labels the issue with the line's work label, recording the job first so the intake never opens a second one for it. */
 async function tellApproved(ctx: FactoryContext, line: LineConfig, repository: string, proposal: Proposal & { issueNumber: number }, gh: IssueApi) {
   const key = issueKey(repository, proposal.issueNumber);
   const label = line.issues?.label ?? "zero";
   ctx.store.setKv(key, JSON.stringify({ job: proposal.jobId, reported: "queued", labeledAt: "" } satisfies IssueState));
-  await gh.comment(proposal.issueNumber, scrub(`El dueño aprobó esta propuesta: la fábrica la tomó como trabajo \`${proposal.jobId ?? "?"}\`.`, line));
+  await gh.comment(proposal.issueNumber, scrub(approvalText(ctx, proposal), line));
   await gh.addLabels(proposal.issueNumber, [label]);
   ctx.store.markProposalIssueTold(proposal.id, "approved");
 }

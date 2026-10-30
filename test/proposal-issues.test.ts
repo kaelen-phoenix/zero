@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { approveProposal, rejectProposal } from "../src/app.js";
+import { approveProposal, rejectProposal, requestWork } from "../src/app.js";
 import { pollIssues, type Issue, type IssueApi, type IssueState } from "../src/intake/github.js";
 import { issueKey } from "../src/intake/keys.js";
 import { PROPOSAL_LABEL, syncProposalIssues } from "../src/intake/proposals.js";
@@ -145,6 +145,21 @@ describe("proposals as GitHub issues", () => {
     approveProposal(ctx, p.id);
     await syncProposalIssues(ctx, () => gh.api);
     expect(gh.ops("addLabels")).toEqual([{ op: "addLabels", number: 5, labels: ["zero"] }]);
+  });
+
+  it("never says the owner approved what the night shift took on its own", async () => {
+    const ctx = factory();
+    const p = ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    const { job } = requestWork(ctx, { text: idea.title, line: "demo", source: { kind: "night-shift", proposal: p.id, autonomy: "build" } });
+    ctx.store.updateProposal(p.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
+    await syncProposalIssues(ctx, () => gh.api);
+    const [comment] = gh.ops("comment", 5);
+    expect(comment!.body).not.toContain("El dueño aprobó");
+    expect(comment!.body).toContain("turno nocturno");
+    expect(comment!.body).toContain("build");
+    expect(comment!.body).toContain(job.id);
   });
 
   it("comments the owner's reason on a rejection and closes the issue, once", async () => {
