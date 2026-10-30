@@ -279,8 +279,8 @@ describe("learning from rejections", () => {
     set(at(4));
     await scoutPass(ctx, agents.runner, at(4));
     const prompt = agents.calls[0]!.prompt;
-    const section = prompt.slice(prompt.indexOf("## Rejected proposals"), prompt.indexOf("## Constraints"));
-    for (let i = 6; i <= 25; i++) expect(section).toContain(`- Idea número ${i} — owner's reason: motivo ${i}\n`);
+    const section = prompt.slice(prompt.indexOf("## Rejected or reverted proposals"), prompt.indexOf("## Constraints"));
+    for (let i = 6; i <= 25; i++) expect(section).toContain(`- Idea número ${i} — rejected, owner's reason: motivo ${i}\n`);
     for (let i = 1; i <= 5; i++) expect(section).not.toContain(`Idea número ${i} —`);
     expect(section.indexOf("Idea número 25")).toBeLessThan(section.indexOf("Idea número 24"));
   });

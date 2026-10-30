@@ -121,7 +121,8 @@ export interface SpanRow {
   attrs: Record<string, unknown>;
 }
 
-export type ProposalStatus = "pending" | "approved" | "rejected";
+/** `reverted`: the night shift integrated it on its own and the owner reverted it on the base branch. */
+export type ProposalStatus = "pending" | "approved" | "rejected" | "reverted";
 
 /** Work the scout station proposed on its own; the owner decides it. */
 export interface Proposal {
@@ -611,10 +612,10 @@ export class Store {
 
   /**
    * Decides a proposal that is still `from` (pending by default; approved when
-   * the owner rejects work the night shift took on its own); false when it no
-   * longer was. The job and who decided are kept when not given.
+   * the owner rejects work the night shift took on its own, or when it was
+   * reverted); false when it no longer was. The job and who decided are kept when not given.
    */
-  updateProposal(id: string, patch: { status: "approved" | "rejected"; note?: string; jobId?: string; decidedBy?: "owner" | "night-shift"; from?: ProposalStatus }): boolean {
+  updateProposal(id: string, patch: { status: "approved" | "rejected" | "reverted"; note?: string; jobId?: string; decidedBy?: "owner" | "night-shift"; from?: ProposalStatus }): boolean {
     const r = this.db
       .prepare("UPDATE proposals SET status = ?, decided_at = ?, note = ?, job_id = COALESCE(?, job_id), decided_by = COALESCE(?, decided_by) WHERE id = ? AND status = ?")
       .run(patch.status, this.stamp(), patch.note ?? null, patch.jobId ?? null, patch.decidedBy ?? null, id, patch.from ?? "pending");
@@ -629,10 +630,10 @@ export class Store {
     return Number(row.n);
   }
 
-  /** The owner's latest rejections on a line, most recently decided first. */
+  /** The owner's latest rejections and reverts on a line, most recently decided first. */
   recentRejected(line: string, limit: number): Proposal[] {
     const rows = this.db
-      .prepare("SELECT * FROM proposals WHERE line = ? AND status = 'rejected' ORDER BY decided_at DESC, rowid DESC LIMIT ?")
+      .prepare("SELECT * FROM proposals WHERE line = ? AND status IN ('rejected', 'reverted') ORDER BY decided_at DESC, rowid DESC LIMIT ?")
       .all(line, limit) as Row[];
     return rows.map(toProposal);
   }

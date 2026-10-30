@@ -309,6 +309,21 @@ export function requestFromResearchNote(ctx: FactoryContext, id: string): Reques
   return requestWork(ctx, { text, line: note.line, source: { kind: "research", note: note.id } });
 }
 
+/** Notes of the panel's "Investigación" tab, per line. */
+export const RESEARCH_VIEW_DAYS = 30;
+
+export interface ResearchLine {
+  line: string;
+  notes: ResearchNote[];
+}
+
+/** Every configured line (and any line that still has notes) with its research notes of the last 30 days, newest first. */
+export function researchView(ctx: FactoryContext, now = new Date()): ResearchLine[] {
+  const notes = ctx.store.listResearchNotes({ since: new Date(now.getTime() - RESEARCH_VIEW_DAYS * 86_400_000) });
+  const names = [...new Set([...ctx.config.lines.map((l) => l.name), ...notes.map((n) => n.line)])];
+  return names.map((line) => ({ line, notes: notes.filter((n) => n.line === line) }));
+}
+
 /** The request text of the job a proposal becomes. */
 export function proposalRequest(proposal: Pick<Proposal, "title" | "why" | "change">): string {
   return `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}`;
@@ -337,7 +352,7 @@ export function listProposals(ctx: FactoryContext, filter: { line?: string; stat
 }
 
 /** Where a proposal stands, as the panel's "Propuestas" tab groups it. */
-export type ProposalStage = "pending" | "building" | "delivered" | "ended" | "rejected";
+export type ProposalStage = "pending" | "building" | "delivered" | "ended" | "rejected" | "reverted";
 
 export interface ProposalView extends Proposal {
   stage: ProposalStage;
@@ -359,7 +374,7 @@ export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"
   const view = (p: Proposal): ProposalView => {
     const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
     const stage: ProposalStage =
-      p.status === "pending" ? "pending" : p.status === "rejected" ? "rejected" : !job || !FINAL_STATUSES.includes(job.status) ? "building" : job.status === "delivered" ? "delivered" : "ended";
+      p.status === "pending" ? "pending" : p.status === "rejected" ? "rejected" : p.status === "reverted" ? "reverted" : !job || !FINAL_STATUSES.includes(job.status) ? "building" : job.status === "delivered" ? "delivered" : "ended";
     return { ...p, stage, job: job && { id: job.id, status: job.status, delivery: job.delivery, question: job.question }, awaitsIntegration: p.decidedBy === "night-shift" && awaitsIntegration(job) };
   };
   const names = [...new Set([...ctx.config.lines.map((l) => l.name), ...all.map((p) => p.line)])];
@@ -375,7 +390,7 @@ export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"
 function pendingProposal(ctx: FactoryContext, id: string): Proposal {
   const proposal = ctx.store.getProposal(id);
   if (!proposal) throw new Error(`No existe la propuesta ${id}.`);
-  if (proposal.status !== "pending") throw new Error(`La propuesta ${id} ya fue ${proposal.status === "approved" ? "aprobada" : "rechazada"}.`);
+  if (proposal.status !== "pending") throw new Error(`La propuesta ${id} ya fue ${{ approved: "aprobada", rejected: "rechazada", reverted: "revertida" }[proposal.status]}.`);
   return proposal;
 }
 
