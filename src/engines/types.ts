@@ -34,6 +34,8 @@ export interface EngineResult {
   sessionId?: string;
   /** How the engine's account is billed and how much of its plan is used, when it reports it. */
   quota?: QuotaReport;
+  /** True when the engine stopped the call because it reached the request's `maxBudgetUsd`. */
+  budgetLimited?: boolean;
 }
 
 /**

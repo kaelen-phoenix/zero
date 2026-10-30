@@ -23,6 +23,8 @@ export interface AgentRun<T = unknown> {
   model?: string;
   /** Billing and plan usage, when the engine reports it. */
   quota?: QuotaReport;
+  /** True when the engine stopped the call at its `maxBudgetUsd`. */
+  budgetLimited?: boolean;
 }
 
 export interface AgentRequest<T = unknown> {
@@ -191,6 +193,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       engine: engine.name,
       model,
       ...(result.quota && { quota: result.quota }),
+      ...(result.budgetLimited && { budgetLimited: true }),
     };
     if (run.ok && schema) {
       const parsed = schema.safeParse(result.output ?? extractJson(result.text));
@@ -206,6 +209,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       "zero.cost.source": run.costSource,
       "gen_ai.conversation.id": result.sessionId,
       ...quotaAttrs(result.quota),
+      ...(run.budgetLimited && { "zero.budget.limited": true }),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
     });
     log.info(`agent:${station} done`, { engine: engine.name, ok: run.ok, costUsd: run.costUsd.toFixed(3) });

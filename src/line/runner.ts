@@ -362,6 +362,22 @@ async function specStation(
   });
 }
 
+/** Below this share of the job's dollar cap left, an attempt billed per use is not started. */
+const MIN_ATTEMPT_SHARE = 0.1;
+
+/** The job's dollar cap is used up: L3 fails it, lower levels ask for more. The job keeps its checkpoint. */
+function budgetStop(deps: RunnerDeps, job: Job, level: Level, spec: Spec, billed: number): Job | Promise<Job> {
+  if (decide(level, "budget-exceeded") === "fail") {
+    return finalizeJob(deps, job, "failed", { reason: `Se agotó el presupuesto del trabajo ($${billed.toFixed(2)}).` });
+  }
+  const extra = deps.config.limits.usdPerJob;
+  return askOwner(deps, job, {
+    kind: "budget-exceeded",
+    text: `El trabajo "${spec.title}" ya gastó $${billed.toFixed(2)} y no terminó. ¿Le doy $${extra.toFixed(2)} más?`,
+    data: { extraUsd: extra },
+  });
+}
+
 /** The build → verify → review → security loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
 async function buildLoop(
   deps: RunnerDeps,
@@ -392,18 +408,11 @@ async function buildLoop(
       return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
     }
     // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
+    // An attempt that starts with less than a small share of the cap would only be cut short by it.
     const billed = jobBilledUsd(store, jobId, nowOf(deps));
+    const cap = job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0);
     const next = choose(deps, resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
-    if (billed >= job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) && next.billing !== "subscription") {
-      if (decide(level, "budget-exceeded") === "fail") {
-        return finalizeJob(deps, job, "failed", { reason: `Se agotó el presupuesto del trabajo ($${billed.toFixed(2)}).` });
-      }
-      return askOwner(deps, job, {
-        kind: "budget-exceeded",
-        text: `El trabajo "${spec.title}" ya gastó $${billed.toFixed(2)} y no terminó. ¿Le doy $${config.limits.usdPerJob.toFixed(2)} más?`,
-        data: { extraUsd: config.limits.usdPerJob },
-      });
-    }
+    if ((billed >= cap || cap - billed < cap * MIN_ATTEMPT_SHARE) && next.billing !== "subscription") return budgetStop(deps, job, level, spec, billed);
 
     const attemptSpan = tracer.start("zero.attempt", { jobId, parentId: tracer.jobSpanId(jobId), attrs: { "zero.attempt": attempt } });
     const failAttempt = (feedback: string) => {
@@ -450,6 +459,13 @@ async function buildLoop(
         store.updateJob(jobId, { attempt: attempt - 1 });
         attemptSpan.end("error", { "error.message": "subscription plan used up" });
         quotaStop(run);
+      }
+      if (run.budgetLimited) {
+        // The job's dollar cap cut the call short: not the build's fault, so the attempt does not count and the owner decides.
+        copy.discardChanges();
+        store.updateJob(jobId, { attempt: attempt - 1, station: "build" });
+        attemptSpan.end("error", { "error.message": "job budget used up" });
+        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
       }
       if (!run.ok) {
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
