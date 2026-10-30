@@ -28,7 +28,8 @@ A software factory that runs on its owner's machine. Agents of any vendor work o
 - `openspec/`: specs (`specs/`) and changes (`changes/`). `docs/adr/`: decisions.
 
 ## Conventions
-- ESM, Node 22, imports with the `.js` suffix. User-facing text is in Spanish; code, comments and agent instructions are in English.
+- ESM, Node 22, imports with the `.js` suffix. What zero shows the owner (CLI, panel, chat) is in Spanish; code, comments and agent instructions are in English.
+- The README is kept in both languages: English in `README.md` and Spanish in `README.es.md`, with the same structure and the same code blocks (`test/docs.test.ts` checks it). Every documentation change is made in both; what zero shows the owner (CLI, panel, chat) stays in Spanish.
 - Engine-specific behaviour stays in `src/engines/`; nothing else may assume a vendor.
 - Guarantees are enforced by zero, never trusted to an engine: read-only stations, timeouts, schema validation, verify gate, protected paths, citation checks, isolation box, egress gate.
 - The chat may only tighten egress rules (block); allowing a site or changing the mode is for the owner on the terminal or in the file.

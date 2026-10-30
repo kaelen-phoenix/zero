@@ -1,5 +1,5 @@
 // zero in the loop: language, theme and copy buttons. Plain JS, no dependencies, no network, no cookies.
-// The Spanish texts are the markup itself; EN holds the English version of every data-i18n and data-i18n-label key.
+// The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
 
@@ -9,6 +9,7 @@
     "nav.label": "Main",
     "lang.label": "Language",
     "hero.label": "Software factory · open source",
+    "href.readme": "https://github.com/kaelen-phoenix/zero#readme",
     "hero.tagline": "The factory takes the human's place in the loop, and the owner decides where to step back in.",
     "hero.install": "Install",
     "hero.docs": "Read the docs",
@@ -157,6 +158,10 @@
       const key = el.getAttribute("data-i18n-label");
       if (!(key in es)) es[key] = el.getAttribute("aria-label");
     }
+    for (const el of doc.querySelectorAll("[data-i18n-href]")) {
+      const key = el.getAttribute("data-i18n-href");
+      if (!(key in es)) es[key] = el.getAttribute("href");
+    }
     originals.set(doc, es);
     return es;
   }
@@ -168,6 +173,7 @@
     const text = (key) => (key in texts ? texts[key] : es[key]);
     for (const el of doc.querySelectorAll("[data-i18n]")) el.innerHTML = text(el.getAttribute("data-i18n"));
     for (const el of doc.querySelectorAll("[data-i18n-label]")) el.setAttribute("aria-label", text(el.getAttribute("data-i18n-label")));
+    for (const el of doc.querySelectorAll("[data-i18n-href]")) el.setAttribute("href", text(el.getAttribute("data-i18n-href")));
     doc.title = text("meta.title");
     doc.documentElement.setAttribute("lang", lang);
     for (const button of doc.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.getAttribute("data-lang") === lang));

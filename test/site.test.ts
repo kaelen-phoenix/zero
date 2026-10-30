@@ -26,6 +26,14 @@ function translatable(source: string): { key: string; inner: string }[] {
   return [...source.matchAll(re)].map((m) => ({ key: m[2]!, inner: m[3]! }));
 }
 
+/** Every element carrying data-i18n-href, with its markup href and opening tag. */
+function hrefs(source: string): { key: string; href: string; tag: string }[] {
+  return [...source.matchAll(/<[^>]*\bdata-i18n-href="([^"]+)"[^>]*>/g)].map((m) => ({ key: m[1]!, href: /\shref="([^"]*)"/.exec(m[0])?.[1] ?? "", tag: m[0] }));
+}
+
+const README_ES = "https://github.com/kaelen-phoenix/zero/blob/main/README.es.md";
+const README_EN = "https://github.com/kaelen-phoenix/zero#readme";
+
 function labels(source: string): { key: string; label: string }[] {
   return [...source.matchAll(/<[^>]*\bdata-i18n-label="([^"]+)"[^>]*>/g)].map((m) => ({ key: m[1]!, label: /aria-label="([^"]*)"/.exec(m[0])?.[1] ?? "" }));
 }
@@ -70,6 +78,7 @@ function fakeDocument() {
   const elements: FakeElement[] = [
     ...translatable(html).map((t) => new FakeElement({ "data-i18n": t.key }, t.inner)),
     ...labels(html).map((l) => new FakeElement({ "data-i18n-label": l.key, "aria-label": l.label })),
+    ...hrefs(html).map((h) => new FakeElement({ "data-i18n-href": h.key, href: h.href })),
     new FakeElement({ "data-lang": "es" }), new FakeElement({ "data-lang": "en" }),
     ...["auto", "light", "dark"].map((t) => new FakeElement({ "data-theme-choice": t })),
   ];
@@ -250,8 +259,16 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
 
   it("el encabezado enlaza Docs y GitHub", () => {
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)![1]!;
-    expect(header).toContain('<a href="https://github.com/kaelen-phoenix/zero#readme">Docs</a>');
+    expect(header).toContain(`<a href="${README_ES}" data-i18n-href="href.readme">Docs</a>`);
     expect(header).toContain('<a href="https://github.com/kaelen-phoenix/zero">GitHub</a>');
+  });
+
+  it("enlaza al README en español desde el encabezado, el inicio y los enlaces", () => {
+    const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)![1]!;
+    for (const part of [header, section("hero"), section("links")]) {
+      expect(hrefs(part).some((h) => h.tag.startsWith("<a ") && h.href === README_ES)).toBe(true);
+    }
+    expect(html).not.toContain("#readme");
   });
 
   it("el pie muestra GitHub, la versión de package.json, la licencia y el selector de tema", () => {
@@ -298,7 +315,7 @@ describe("sitio del proyecto: idiomas", () => {
   });
 
   it("cada clave traducible tiene su versión en inglés, y ninguna sobra", () => {
-    const keys = new Set([...translatable(html).map((t) => t.key), ...labels(html).map((l) => l.key), "meta.title"]);
+    const keys = new Set([...translatable(html).map((t) => t.key), ...labels(html).map((l) => l.key), ...hrefs(html).map((h) => h.key), "meta.title"]);
     expect(Object.keys(site.EN).sort()).toEqual([...keys].sort());
     for (const [key, value] of Object.entries(site.EN)) expect(value.trim(), key).not.toBe("");
   });
@@ -329,6 +346,16 @@ describe("sitio del proyecto: idiomas", () => {
     site.applyLanguage(doc, "es", storage);
     expect(doc.documentElement.getAttribute("lang")).toBe("es");
     expect(doc.elements.filter((e) => e.hasAttribute("data-i18n")).map((e) => e.innerHTML)).toEqual(spanish);
+  });
+
+  it("los enlaces al README siguen el idioma elegido", () => {
+    const doc = fakeDocument();
+    const links = doc.elements.filter((e) => e.hasAttribute("data-i18n-href"));
+    expect(links).toHaveLength(3);
+    site.applyLanguage(doc, "en", fakeStorage());
+    for (const el of links) expect(el.getAttribute("href")).toBe(README_EN);
+    site.applyLanguage(doc, "es", fakeStorage());
+    for (const el of links) expect(el.getAttribute("href")).toBe(README_ES);
   });
 });
 
@@ -408,8 +435,8 @@ describe("sitio del proyecto: privacidad", () => {
 });
 
 describe("README", () => {
-  it("menciona el sitio, que vive en site/ y cómo lo publica Vercel", () => {
-    const paragraph = read("README.md").split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
+  it.each(["README.md", "README.es.md"])("%s menciona el sitio, que vive en site/ y cómo lo publica Vercel", (file) => {
+    const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
     expect(paragraph).toBeDefined();
     expect(paragraph).toContain("site/");
     expect(paragraph).toContain("Vercel");

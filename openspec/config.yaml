@@ -5,8 +5,9 @@ context: |
   All artifacts must be written in es.
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
 
-  Project: zero, the base of Kaelen Global Defence's autonomous agent network.
-  Motto: "Autonomous agent network. Continuous execution. Zero human intervention required."
+  Project: zero, a software factory that runs on its owner's machine.
+  Motto: "zero in the loop: the factory takes the human's place in the loop, and the owner
+  decides where to step back in."
 
   Non-negotiable principles:
   - Open source and free. Every dependency must be OSI-licensed and free. Proprietary agents
@@ -23,7 +24,7 @@ context: |
     verification gates). It never trusts an engine to do so.
 
   Decisions so far: docs/adr/0001-construir-vs-adoptar.md.
-  Stack: TypeScript, Node 22, ESM, zod, vitest. Runs in GitHub Actions.
+  Stack: TypeScript, Node 22, ESM, zod, vitest. CI runs in GitHub Actions.
 
 rules:
   proposal:
