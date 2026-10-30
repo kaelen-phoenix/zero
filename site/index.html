@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>zero in the loop · una fábrica de software que corre en tu máquina</title>
+  <meta name="description" content="zero es una fábrica de software open source que corre en tu máquina: convierte pedidos en cambios entregados, y el dueño decide dónde vuelve a entrar.">
+  <link rel="canonical" href="https://zerointheloop.com/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <meta name="color-scheme" content="light dark">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="zero in the loop">
+  <meta property="og:title" content="zero in the loop">
+  <meta property="og:description" content="Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados. El dueño decide dónde vuelve a entrar.">
+  <meta property="og:url" content="https://zerointheloop.com/">
+  <meta property="og:image" content="https://zerointheloop.com/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="La línea de producción de zero: seis estaciones en fila y el dueño como un punto que vuelve a entrar.">
+  <meta property="og:locale" content="es_AR">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="zero in the loop">
+  <meta name="twitter:description" content="Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados.">
+  <meta name="twitter:image" content="https://zerointheloop.com/og.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main" data-i18n="skip">Saltar al contenido</a>
+
+  <header class="top">
+    <a class="brand" href="#hero">zero</a>
+    <nav data-i18n-label="nav.label" aria-label="Principal">
+      <a href="https://github.com/kaelen-phoenix/zero#readme">Docs</a>
+      <a href="https://github.com/kaelen-phoenix/zero">GitHub</a>
+    </nav>
+    <div class="switch" role="group" data-i18n-label="lang.label" aria-label="Idioma">
+      <button type="button" data-lang="es" aria-pressed="true">ES</button>
+      <button type="button" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section id="hero" class="hero">
+      <p class="label" data-i18n="hero.label">Fábrica de software · open source</p>
+      <h1>zero in the loop</h1>
+      <p class="lede" data-i18n="hero.tagline">La fábrica ocupa el lugar del humano en el circuito, y el dueño decide dónde vuelve a entrar.</p>
+      <p class="actions">
+        <a class="button" href="#install" data-i18n="hero.install">Instalar</a>
+        <a class="button ghost" href="https://github.com/kaelen-phoenix/zero#readme" data-i18n="hero.docs">Leer la documentación</a>
+      </p>
+      <figure class="figure">
+        <svg class="line-fig" viewBox="0 0 720 220" role="img" aria-labelledby="fig-title fig-desc">
+          <title id="fig-title" data-i18n="fig.title">La línea de producción de zero</title>
+          <desc id="fig-desc" data-i18n="fig.desc">Seis estaciones en fila: spec, build, verify, review, security e integrate. Un punto de trabajo avanza por la línea, un arco vuelve de review a build con la retroalimentación, y el dueño es un punto aparte que vuelve a entrar en la especificación o en la integración, donde decide.</desc>
+          <line class="rail" x1="60" y1="140" x2="660" y2="140"/>
+          <path class="retry" d="M420 160 Q300 215 180 160"/>
+          <path class="owner-path" d="M360 40 Q60 40 60 114"/>
+          <path class="owner-path" d="M360 40 Q660 40 660 114"/>
+          <g class="node" data-station="spec"><circle cx="60" cy="140" r="14"/><text x="60" y="186">spec</text></g>
+          <g class="node" data-station="build"><circle cx="180" cy="140" r="14"/><text x="180" y="186">build</text></g>
+          <g class="node" data-station="verify"><circle cx="300" cy="140" r="14"/><text x="300" y="186">verify</text></g>
+          <g class="node" data-station="review"><circle cx="420" cy="140" r="14"/><text x="420" y="186">review</text></g>
+          <g class="node" data-station="security"><circle cx="540" cy="140" r="14"/><text x="540" y="186">security</text></g>
+          <g class="node" data-station="integrate"><circle cx="660" cy="140" r="14"/><text x="660" y="186">integrate</text></g>
+          <circle class="work" cx="60" cy="140" r="5"/>
+          <circle class="owner" cx="360" cy="40" r="7"/>
+          <text class="owner-label" x="360" y="20" data-i18n="fig.owner">dueño</text>
+        </svg>
+        <figcaption class="caption" data-i18n="fig.caption">FIG. 1 / LÍNEA</figcaption>
+      </figure>
+    </section>
+
+    <section id="synopsis" aria-labelledby="synopsis-h">
+      <p class="label"><span class="marker">01</span> <span data-i18n="synopsis.label">Sinopsis</span></p>
+      <h2 id="synopsis-h" data-i18n="synopsis.title">Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados.</h2>
+      <p data-i18n="synopsis.p1">Le pedís trabajo desde el chat de tu cliente de IA o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.</p>
+      <p data-i18n="synopsis.p2">Nunca pisa tu trabajo: cada pedido trabaja en su propia copia (<code>git worktree</code>) y su propia rama. Es open source (Apache-2.0) y gratuita. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.</p>
+    </section>
+
+    <section id="line" aria-labelledby="line-h">
+      <p class="label"><span class="marker">02</span> <span data-i18n="line.label">La línea de producción</span></p>
+      <h2 id="line-h" data-i18n="line.title">Seis estaciones, cada una con contrato.</h2>
+      <p data-i18n="line.intro">Cada estación recibe y entrega algo verificable. Si algo falla, el trabajo vuelve a <code>build</code> con la retroalimentación concreta.</p>
+      <ol class="stations">
+        <li><code>spec</code><p data-i18n="line.spec">Escribe los requisitos y escenarios WHEN/THEN como un change de OpenSpec. Solo lectura.</p></li>
+        <li><code>build</code><p data-i18n="line.build">Escribe el código y los tests en su propia copia y su propia rama.</p></li>
+        <li><code>verify</code><p data-i18n="line.verify">Corre la verificación de la línea y detecta tests borrados o desactivados y rutas protegidas tocadas.</p></li>
+        <li><code>review</code><p data-i18n="line.review">Revisa el cambio; los hallazgos que citan archivos o líneas inexistentes se descartan. Solo lectura.</p></li>
+        <li><code>security</code><p data-i18n="line.security">Una segunda revisión, solo de seguridad, que puede usar otro motor. Solo lectura.</p></li>
+        <li><code>integrate</code><p data-i18n="line.integrate">Hace merge, deja una rama o abre un pull request, y lo funde solo si la línea lo pide.</p></li>
+      </ol>
+      <p class="note" data-i18n="line.note">Estado en SQLite, una traza por trabajo con su costo, y el townhall: la memoria colectiva de la fábrica.</p>
+    </section>
+
+    <section id="autonomy" aria-labelledby="autonomy-h">
+      <p class="label"><span class="marker">03</span> <span data-i18n="autonomy.label">Autonomía</span></p>
+      <h2 id="autonomy-h" data-i18n="autonomy.title">Cuatro niveles. Vos elegís dónde entrás.</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th scope="col" data-i18n="autonomy.level">Nivel</th><th scope="col" data-i18n="autonomy.approve">Qué aprobás</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row"><code>L0</code> <span data-i18n="autonomy.l0.name">asistida</span></th><td data-i18n="autonomy.l0">La especificación y la integración.</td></tr>
+            <tr><th scope="row"><code>L1</code> <span data-i18n="autonomy.l1.name">supervisada</span></th><td data-i18n="autonomy.l1">Solo la especificación ("vas a obtener esto").</td></tr>
+            <tr><th scope="row"><code>L2</code> <span data-i18n="autonomy.l2.name">vigilada</span></th><td data-i18n="autonomy.l2">Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto pagado por uso.</td></tr>
+            <tr><th scope="row"><code>L3</code> <span data-i18n="autonomy.l3.name">a oscuras</span></th><td data-i18n="autonomy.l3">Nada; las políticas son límites duros, y está el botón de parada.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p data-i18n="autonomy.default">Por defecto la fábrica se configura en L3. L3 exige la caja de aislamiento lista; mientras falte algo, trabaja en L2 y dice exactamente qué falta. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.</p>
+      <h3 data-i18n="autonomy.line.title">Autonomía por línea</h3>
+      <p data-i18n="autonomy.line.intro">Cada línea decide hasta dónde llega sola una propuesta del turno nocturno:</p>
+      <dl class="defs">
+        <dt><code>propose</code></dt><dd data-i18n="autonomy.propose">Por defecto. La propuesta espera tu decisión.</dd>
+        <dt><code>build</code></dt><dd data-i18n="autonomy.build">Se convierte sola en un trabajo, pasa por todas las estaciones y se detiene antes de integrar: nunca se integra sin tu aprobación.</dd>
+        <dt><code>auto</code></dt><dd data-i18n="autonomy.auto">Se construye y se integra o despliega sola, según la línea, sin preguntar.</dd>
+      </dl>
+    </section>
+
+    <section id="night-shift" aria-labelledby="night-h">
+      <p class="label"><span class="marker">04</span> <span data-i18n="night.label">Turno nocturno</span></p>
+      <h2 id="night-h" data-i18n="night.title">Cuando la fábrica está libre, busca trabajo.</h2>
+      <dl class="defs">
+        <dt><code>scout</code></dt><dd data-i18n="night.scout">Estación de solo lectura que mira cada línea una vez por período: el townhall, las trazas, las specs sin tests, las notas de investigación y los issues abiertos sin etiqueta. Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título.</dd>
+        <dt><code>research</code></dt><dd data-i18n="night.research">Investiga en la web una vez por día, solo en las líneas con una skill de investigación: skills, servidores MCP y tecnologías útiles. Cada nota trae sus fuentes. Lo que viene de la web es dato, nunca instrucciones.</dd>
+      </dl>
+      <ul class="points">
+        <li data-i18n="night.first">Tus pedidos van primero: un trabajo del turno nocturno nunca pasa delante de los tuyos.</li>
+        <li data-i18n="night.cap">Tope diario de trabajos automáticos, sumando todas las líneas.</li>
+        <li data-i18n="night.revert">Si revertís algo que el turno integró solo, la fábrica lo detecta y no lo vuelve a proponer.</li>
+        <li data-i18n="night.third">Lo que agrega dependencias, servidores MCP o código de terceros espera tu decisión aunque la línea esté en <code>auto</code>.</li>
+      </ul>
+    </section>
+
+    <section id="guarantees" aria-labelledby="guarantees-h">
+      <p class="label"><span class="marker">05</span> <span data-i18n="guarantees.label">Garantías</span></p>
+      <h2 id="guarantees-h" data-i18n="guarantees.title">zero aplica las garantías, no el motor.</h2>
+      <ul class="grid cards">
+        <li><h3 data-i18n="guarantees.paths.title">Rutas protegidas</h3><p data-i18n="guarantees.paths">Las rutas protegidas no se tocan: si un trabajo las toca, se detecta y espera al dueño.</p></li>
+        <li><h3 data-i18n="guarantees.verify.title">Verificación</h3><p data-i18n="guarantees.verify">Todo debe pasar la verificación de la línea antes de la revisión, y se detectan tests borrados o desactivados.</p></li>
+        <li><h3 data-i18n="guarantees.secrets.title">Secretos fuera de los archivos</h3><p data-i18n="guarantees.secrets">Si la configuración de la fábrica trae algo con forma de credencial, zero se niega a cargarla. Las claves viven en el llavero del sistema y nunca van en la línea de comandos.</p></li>
+        <li><h3 data-i18n="guarantees.box.title">Caja de aislamiento</h3><p data-i18n="guarantees.box">El setup, los agentes y la verificación corren en un contenedor (Podman o Docker) sin privilegios, con un clon propio, y salen a internet solo por la puerta de zero, que registra cada conexión.</p></li>
+        <li><h3 data-i18n="guarantees.readonly.title">Solo lectura de verdad</h3><p data-i18n="guarantees.readonly"><code>spec</code>, <code>review</code> y <code>security</code> son de solo lectura: si un motor escribe, se descarta.</p></li>
+        <li><h3 data-i18n="guarantees.contracts.title">Contratos validados</h3><p data-i18n="guarantees.contracts">Tiempo límite por estación, salidas estructuradas validadas y hallazgos con citas verificadas.</p></li>
+      </ul>
+    </section>
+
+    <section id="install" aria-labelledby="install-h">
+      <p class="label"><span class="marker">06</span> <span data-i18n="install.label">Instalación</span></p>
+      <h2 id="install-h" data-i18n="install.title">Instalación y primeros pasos.</h2>
+      <p data-i18n="install.intro">zero se instala desde el repositorio y necesita Node 22.</p>
+      <div class="code">
+        <div class="code-bar">
+          <span class="caption">SH</span>
+          <button type="button" class="copy" data-copy="install-code" data-i18n="install.copy">Copiar</button>
+        </div>
+        <pre><code id="install-code">git clone https://github.com/kaelen-phoenix/zero
+cd zero
+npm install &amp;&amp; npm run build
+node dist/cli.js init
+node dist/cli.js install
+node dist/cli.js box setup</code></pre>
+      </div>
+      <ol class="steps">
+        <li><code>init</code><p data-i18n="install.init">Crea la definición de la fábrica y agrega el repo actual como línea.</p></li>
+        <li><code>install</code><p data-i18n="install.install">Registra zero en Claude Code y muestra cómo hacerlo en Codex y OpenCode.</p></li>
+        <li><code>box setup</code><p data-i18n="install.box">Prepara la caja de aislamiento; pide permiso antes de instalar nada.</p></li>
+      </ol>
+      <p data-i18n="install.then">Después, en tu chat: <em>"zero, quiero que mi tienda calcule descuentos"</em>. O desde la terminal, con los comandos de abajo.</p>
+      <p class="note"><span data-i18n="install.installer">Instalador en un solo paso</span> <span class="soon" data-i18n="soon">en camino</span></p>
+    </section>
+
+    <section id="workflow" aria-labelledby="workflow-h">
+      <p class="label"><span class="marker">07</span> <span data-i18n="workflow.label">Flujo de trabajo</span></p>
+      <h2 id="workflow-h" data-i18n="workflow.title">Desde la terminal o desde el chat.</h2>
+      <ol class="flow">
+        <li><code>zero request "…"</code><p data-i18n="workflow.request">Pide un trabajo; la fábrica se enciende sola si estaba apagada.</p></li>
+        <li><code data-i18n="cmd.status">zero status [trabajo]</code><p data-i18n="workflow.status">Cómo va todo, o el detalle de un trabajo y la pregunta si te está esperando.</p></li>
+        <li><code data-i18n="cmd.approve">zero approve &lt;trabajo&gt;</code><p data-i18n="workflow.approve">Aprueba lo que te espera, o lo rechaza con <code>--reject --note</code>.</p></li>
+        <li><code>zero proposals</code><p data-i18n="workflow.proposals">Las propuestas del turno nocturno, que se aprueban o rechazan con <code>approve</code> y <code>reject</code>.</p></li>
+        <li><code data-i18n="cmd.trace">zero trace &lt;trabajo&gt;</code><p data-i18n="workflow.trace">Paso a paso: estaciones, intentos, agentes, comandos y costo.</p></li>
+        <li><code>zero briefing</code><p data-i18n="workflow.briefing">El informe: producción, costo, aprendizajes y lo que te necesita.</p></li>
+        <li><code data-i18n="cmd.stop">zero stop [trabajo]</code><p data-i18n="workflow.stop">El andon: para un trabajo o toda la fábrica; <code>zero resume</code> la retoma.</p></li>
+      </ol>
+      <p class="note" data-i18n="workflow.chat">En el chat son las mismas herramientas: <code>zero_request</code>, <code>zero_status</code>, <code>zero_answer</code>, <code>zero_stop</code>, <code>zero_briefing</code>, <code>zero_trace</code>…</p>
+    </section>
+
+    <section id="compatibility" aria-labelledby="compat-h">
+      <p class="label"><span class="marker">08</span> <span data-i18n="compat.label">Compatibilidad</span></p>
+      <h2 id="compat-h" data-i18n="compat.title">Lo que soporta hoy.</h2>
+      <div class="compat">
+        <div>
+          <h3 class="label" data-i18n="compat.engines">Motores</h3>
+          <ul class="grid dense">
+            <li data-item="claude"><strong>Claude</strong><span>Agent SDK</span></li>
+            <li data-item="codex"><strong>Codex</strong><span>CLI</span></li>
+            <li data-item="antigravity"><strong>Antigravity</strong><span>CLI</span></li>
+            <li data-item="custom-cli"><strong data-i18n="compat.custom">CLI propio</strong><span data-i18n="compat.custom.note">declarado en la configuración</span></li>
+          </ul>
+        </div>
+        <div>
+          <h3 class="label" data-i18n="compat.clients">Clientes de chat</h3>
+          <ul class="grid dense">
+            <li data-item="claude-code"><strong>Claude Code</strong><span data-i18n="compat.auto">registro automático</span></li>
+            <li data-item="codex"><strong>Codex</strong><span data-i18n="compat.manual">configuración manual</span></li>
+            <li data-item="opencode"><strong>OpenCode</strong><span data-i18n="compat.manual">configuración manual</span></li>
+            <li data-item="terminal"><strong>Terminal</strong><span><code>zero</code></span></li>
+          </ul>
+        </div>
+      </div>
+      <p class="note" data-i18n="compat.note">Un motor distinto por estación si querés, y motores de reemplazo cuando uno se queda sin cupo.</p>
+    </section>
+
+    <section id="links" aria-labelledby="links-h">
+      <p class="label"><span class="marker">09</span> <span data-i18n="links.label">Enlaces</span></p>
+      <h2 id="links-h" data-i18n="links.title">Seguir leyendo.</h2>
+      <ul class="grid dense links">
+        <li><a href="https://github.com/kaelen-phoenix/zero">GitHub</a></li>
+        <li><a href="https://github.com/kaelen-phoenix/zero#readme" data-i18n="links.readme">Documentación (README)</a></li>
+        <li><a href="https://github.com/kaelen-phoenix/zero/tree/main/openspec/specs" data-i18n="links.specs">Especificaciones (OpenSpec)</a></li>
+        <li><a href="https://github.com/kaelen-phoenix/zero/tree/main/docs/adr" data-i18n="links.adr">Decisiones (ADR)</a></li>
+        <li><a href="https://github.com/kaelen-phoenix/zero/blob/main/LICENSE" data-i18n="links.license">Licencia Apache-2.0</a></li>
+      </ul>
+      <h3 data-i18n="links.next">Próximas etapas</h3>
+      <ul class="points">
+        <li><span data-i18n="next.installer">Instalador</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.otlp">Exportación de trazas por OTLP</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.engines">Motores ACP/OpenCode</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.intake">Pedidos desde Linear y Jira</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.regen">Simulacro de regeneración desde las especificaciones</span> <span class="soon" data-i18n="soon">en camino</span></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <a href="https://github.com/kaelen-phoenix/zero">GitHub</a>
+    <span>v<span id="version">0.1.0</span></span>
+    <a href="https://github.com/kaelen-phoenix/zero/blob/main/LICENSE">Apache-2.0</a>
+    <div class="switch" role="group" data-i18n-label="theme.label" aria-label="Tema">
+      <button type="button" data-theme-choice="auto" aria-pressed="true" data-i18n="theme.auto">auto</button>
+      <button type="button" data-theme-choice="light" aria-pressed="false" data-i18n="theme.light">claro</button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false" data-i18n="theme.dark">oscuro</button>
+    </div>
+  </footer>
+
+  <div id="announce" class="visually-hidden" aria-live="polite"></div>
+</body>
+</html>
