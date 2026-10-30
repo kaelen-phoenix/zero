@@ -1,5 +1,5 @@
 import { query, type Options, type SDKRateLimitInfo, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Access, Engine, EngineRequest, QuotaReport, QuotaWindow } from "./types.js";
+import type { Access, Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
 /**
  * Tools per access level. Anything not listed is denied (`dontAsk`), so a run
@@ -109,8 +109,20 @@ export const claudeEngine: Engine = {
 
     const quota = claudeQuota(apiKeySource, rateLimit);
     if (!result) return { ok: false, text: "ended without a result message", ...(quota && { quota }) };
-    const sessionId = result.session_id;
-    if (result.subtype !== "success") return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }) };
-    return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }) };
+    return claudeResult(result, quota);
   },
 };
+
+const BUDGET_TEXT = "Reached maximum budget";
+
+/** What an SDK result message means for zero; a call stopped at `maxBudgetUsd` is marked `budgetLimited`. */
+export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): EngineResult {
+  const sessionId = result.session_id;
+  if (result.subtype !== "success") {
+    const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
+    const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  }
+  const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+}
