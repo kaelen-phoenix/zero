@@ -235,11 +235,11 @@ export function promotePending(ctx: FactoryContext, now: Date): number {
  * not yet linked by any of its proposals, newest first. GitHub problems are
  * logged and scout runs without issues.
  */
-export async function scoutIssues(ctx: FactoryContext, line: LineConfig, api?: (repository: string) => IssueApi | undefined): Promise<Issue[]> {
+export async function scoutIssues(ctx: FactoryContext, line: LineConfig, api?: (repository: string, line: LineConfig) => IssueApi | undefined): Promise<Issue[]> {
   if (!api) return [];
   try {
     const repository = lineRepository(line);
-    const gh = repository && api(repository);
+    const gh = repository && api(repository, line);
     if (!gh) return [];
     const linked = new Set(ctx.store.listProposals({ line: line.name }).map((p) => p.sourceIssue).filter((n) => n !== undefined));
     const trust = new Map<string, Promise<boolean>>();
@@ -267,7 +267,7 @@ const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running
  * The night shift: while the factory is idle, inside its hours and with quota
  * left, every line not yet scouted this period gets one scout run.
  */
-export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, issues?: (repository: string) => IssueApi | undefined): Promise<void> {
+export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, issues?: (repository: string, line: LineConfig) => IssueApi | undefined): Promise<void> {
   const shift = ctx.config.nightShift;
   if (shift === "off" || !insideHours(shift, now)) return;
   if (ctx.store.getKv(ANDON_KEY) === "on") return;

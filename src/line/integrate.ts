@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import type { LineConfig } from "../config.js";
+import type { LineConfig, Signature } from "../config.js";
 import { git, tryGit } from "../shell.js";
+import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker } from "../tracker.js";
 import { checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
@@ -11,7 +12,9 @@ export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; re
 export interface IntegrateOptions {
   jobId: string;
   title: string;
+  /** Already signed by the caller; `signature` is for the merge commit's trailer. */
   body: string;
+  signature?: Signature;
   /** Directory for a temporary copy when the base branch is not checked out anywhere. */
   scratchDir: string;
 }
@@ -29,7 +32,7 @@ function mergeIn(dir: string, branch: string, message: string): boolean {
  * merge conflicts, nothing changes and the caller parks the job.
  */
 export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): IntegrateResult {
-  const message = `zero: ${opts.title} (${opts.jobId})`;
+  const message = withTrailer(`zero: ${opts.title} (${opts.jobId})`, opts.signature);
   const owner = checkedOutAt(line.repo, line.baseBranch);
   if (owner) {
     if (git(["status", "--porcelain", "--untracked-files=no"], owner)) {

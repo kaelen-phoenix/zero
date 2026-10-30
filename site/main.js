@@ -120,6 +120,7 @@
     "theme.auto": "auto",
     "theme.light": "light",
     "theme.dark": "dark",
+    "foot.built": 'This site was built by <a href="https://zerointheloop.com">zero in the loop</a>',
   };
 
   const MESSAGES = {

@@ -280,6 +280,15 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
     const choices = [...footer.matchAll(/<button type="button" data-theme-choice="([^"]+)"/g)].map((m) => m[1]);
     expect(choices).toEqual(["auto", "light", "dark"]);
   });
+
+  it("el pie dice que el sitio lo construyó zero in the loop, en los dos idiomas", () => {
+    const footer = /<footer class="foot">([\s\S]*?)<\/footer>/.exec(html)![1]!;
+    const built = /<span data-i18n="foot.built">([\s\S]*?)<\/span>/.exec(footer)![1]!;
+    expect(built).toContain("Este sitio lo construyó");
+    expect(built).toContain('<a href="https://zerointheloop.com">zero in the loop</a>');
+    expect(loadSite().EN["foot.built"]).toContain("This site was built by");
+    expect(loadSite().EN["foot.built"]).toContain('<a href="https://zerointheloop.com">zero in the loop</a>');
+  });
 });
 
 describe("sitio del proyecto: tema", () => {

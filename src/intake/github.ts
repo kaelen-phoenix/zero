@@ -214,12 +214,12 @@ async function reportIssues(ctx: FactoryContext, repository: string, gh: IssueAp
  * One pass over every line that takes issues. A line's problem (no GitHub
  * remote, no access) is kept for `zero status` and never stops the others.
  */
-export async function pollIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined, opts: { runAgent?: AgentRunner } = {}): Promise<void> {
+export async function pollIssues(ctx: FactoryContext, api: (repository: string, line: LineConfig) => IssueApi | undefined, opts: { runAgent?: AgentRunner } = {}): Promise<void> {
   for (const line of ctx.config.lines) {
     if (!line.issues) continue;
     const problem = intakeProblemKey(line.name);
     const repository = lineRepository(line);
-    const gh = repository && api(repository);
+    const gh = repository && api(repository, line);
     if (!repository || !gh) {
       ctx.store.setKv(problem, repository ? "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" : `el remoto "${line.remote}" no es un repositorio de GitHub`);
       continue;

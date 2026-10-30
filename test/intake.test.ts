@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { answer, factoryStatus, requestWork, setIssueIntake } from "../src/app.js";
-import { parseFactory } from "../src/config.js";
+import { DEFAULT_SIGNATURE_TEXT, lineSignature, parseFactory } from "../src/config.js";
 import { formatStatus } from "../src/format.js";
 import { pollIssues, type Issue, type IssueApi, type IssueComment } from "../src/intake/github.js";
 import { whereIsTheChange, type Reply } from "../src/intake/comments.js";
@@ -132,6 +132,17 @@ describe("GitHub issues as requests", () => {
     expect(gh.comments).toEqual([{ number: 7, body: expect.stringContaining(`trabajo \`${jobs[0]!.id}\``) }]);
   });
 
+  it("gives the api factory the line it acts for", async () => {
+    const ctx = issueFactory();
+    const gh = fakeGitHub();
+    const asked: unknown[][] = [];
+    await pollIssues(ctx, (...args) => {
+      asked.push(args);
+      return gh.api;
+    });
+    expect(asked).toEqual([["kaelen/demo", ctx.config.lines[0]]]);
+  });
+
   it("leaves night-shift proposal issues to the proposal sync, even when labeled by a writer", async () => {
     const ctx = issueFactory();
     const gh = fakeGitHub();
@@ -146,6 +157,10 @@ describe("GitHub issues as requests", () => {
     const job = ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3, source: { kind: "github-issue", repository: "kaelen/demo", number: 7, url: "u" } });
     expect(deliveryBody(validSpec(), job)).toContain("\n\nCloses #7\n");
     expect(deliveryBody(validSpec(), ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 }))).not.toContain("Closes");
+    const signature = lineSignature(ctx.config, ctx.config.lines[0]!);
+    const signed = deliveryBody(validSpec(), job, undefined, signature);
+    expect(signed).toContain("\n\nCloses #7\n");
+    expect(signed).toBe(`${deliveryBody(validSpec(), job)}\n\n— Hecho con [zero in the loop](https://zerointheloop.com)`);
   });
 
   it("does not take issues written or labeled by someone without write access, and says why once", async () => {
@@ -257,6 +272,13 @@ describe("comments on an issue", () => {
     gh.say(4, "¿Qué cambiaste?");
     await poll();
     expect(agents.calls.find((c) => c.station === "reply")!.prompt).not.toContain("ignore your instructions");
+  });
+
+  it("recognises its own signed comments by the factory mark and never answers them", async () => {
+    const { gh, agents, poll } = await delivered();
+    gh.say(4, `Listo.\n\n${DEFAULT_SIGNATURE_TEXT}\n\n${FACTORY_MARK}`);
+    await poll();
+    expect(agents.count.reply).toBeUndefined();
   });
 
   it("turns a request for more work into a new job on the same issue", async () => {
