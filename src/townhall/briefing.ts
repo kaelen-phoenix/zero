@@ -1,5 +1,5 @@
 import { bytes } from "../format.js";
-import type { Job, Proposal } from "../state/store.js";
+import type { Job, Proposal, ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
 
@@ -23,7 +23,7 @@ const ref = (p: Post) => ` (${p.line}${p.job ? ` · ${p.job}` : ""})`;
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -40,6 +40,15 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
             ]
           : []),
         ...(night.jobs.length ? ["Trabajos del turno nocturno:", ...night.jobs.map((j) => `- \`${j.id}\` (${j.line}) ${j.title ?? j.request.split("\n")[0]}: ${outcome(j)}`)] : []),
+      ].join("\n"),
+    );
+  }
+  if (research.length) {
+    sections.push(
+      [
+        "## Investigación de hoy",
+        ...research.map((n) => `- \`${n.id}\` (${n.line}) **${n.topic}** · ${n.serves}`),
+        "Ver una nota: `zero research` · Pedir un trabajo a partir de una: `zero research request <id>` (también desde el chat).",
       ].join("\n"),
     );
   }

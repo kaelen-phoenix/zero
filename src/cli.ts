@@ -3,13 +3,13 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addSkill, answer, approveProposal, briefing, listProposals, rejectProposal, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addSkill, answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatSkills, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatSkills, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -33,6 +33,8 @@ Uso diario (también desde el chat):
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo) o rechaza una propuesta   [--note "<motivo>"]
+  zero research                  Notas de investigación de la web   [--line <nombre>] [--days N]
+  zero research request <id>     Pide un trabajo en la línea de la nota, a partir de lo que encontró
 
 Caja de aislamiento y credenciales:
   zero box status                Revisa la caja (contenedores) donde trabajan los agentes
@@ -56,7 +58,7 @@ Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
-                                 Asigna o quita una skill (agentes: spec, build, review, security, reply, scout)
+                                 Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
@@ -207,6 +209,17 @@ async function main(argv: string[]): Promise<number> {
         const r = approveProposal(ctx, rest[1]);
         const started = await ensureDaemon(ctx);
         console.log(`Propuesta ${rest[1]} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        return 0;
+      }
+      case "research": {
+        if (!rest[0]) {
+          console.log(formatResearchNotes(listResearchNotes(ctx, { line: values.line, days: values.days ? Number(values.days) : undefined })));
+          return 0;
+        }
+        if (rest[0] !== "request" || !rest[1]) break;
+        const r = requestFromResearchNote(ctx, rest[1]);
+        const started = await ensureDaemon(ctx);
+        console.log(`${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
         return 0;
       }
       case "issues": {

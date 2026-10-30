@@ -166,6 +166,51 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
 
+## Investigación
+
+La estación `research` investiga en la web una vez por día, con la fábrica libre: skills nuevas para los agentes (de Claude Code y de otros motores), servidores MCP y tecnologías que sirvan a la línea o a la fábrica misma (motores, librerías, herramientas, prácticas). Sigue las reglas del turno nocturno: solo corre sin pedidos tuyos en cola o en curso, con el andon apagado y con presupuesto (respeta `limits.reservePercent`); si se paga por uso, comparte con `scout` el tope de `limits.usdPerNight`.
+
+Investiga por línea, y solo las líneas que tienen una **skill de investigación** asignada a `research`; esa skill dice qué buscar. Una línea sin skill de investigación no investiga.
+
+```yaml
+research:                 # o `research: off` para apagarla
+  topics: ["motores de agentes locales"]   # opcional: temas de interés para todas las líneas
+  perLinePerDay: 1        # notas por línea por día (0 = apagada); si no alcanza, las líneas se turnan
+  autonomy: propose       # las propuestas nacidas de una nota esperan tu ok
+stations:
+  research: { timeoutMinutes: 15 }
+lines:
+  - name: tienda
+    repo: /ruta/a/tienda
+    stations:
+      research: { skills: [tienda-research] }
+```
+
+```sh
+zero skill add tienda-research --station research --line tienda
+```
+
+La skill es una skill normal de tu Claude Code, por ejemplo `~/.claude/skills/tienda-research/SKILL.md`:
+
+```markdown
+---
+name: tienda-research
+description: Qué investiga la línea tienda
+---
+# Investigación de la línea tienda
+
+Buscá, en este orden:
+- Skills y servidores MCP que ayuden a las estaciones build y review con Next.js y Stripe.
+- Novedades de Next.js, Prisma y Playwright que cambien cómo se construye o se prueba la tienda.
+- Prácticas de seguridad para pagos con tarjeta que la estación security debería revisar.
+
+No investigues frameworks de frontend que no sean React.
+```
+
+Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat). `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
+
+Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
+
 ## Caja de aislamiento
 
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.

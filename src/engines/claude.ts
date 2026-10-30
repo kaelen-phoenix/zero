@@ -5,8 +5,11 @@ import type { Access, Engine, EngineRequest, QuotaReport, QuotaWindow } from "./
  * Tools per access level. Anything not listed is denied (`dontAsk`), so a run
  * never blocks waiting for a human.
  */
+const READ_TOOLS = ["Read", "Glob", "Grep", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"];
 const TOOLS: Record<Access, string[]> = {
-  read: ["Read", "Glob", "Grep", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"],
+  read: READ_TOOLS,
+  // WebSearch runs on the provider's side; WebFetch stays off so nothing leaves this machine unrecorded.
+  web: [...READ_TOOLS, "WebSearch"],
   write: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
 };
 
