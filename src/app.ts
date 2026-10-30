@@ -325,8 +325,9 @@ export function researchView(ctx: FactoryContext, now = new Date()): ResearchLin
 }
 
 /** The request text of the job a proposal becomes. */
-export function proposalRequest(proposal: Pick<Proposal, "title" | "why" | "change">): string {
-  return `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}`;
+export function proposalRequest(proposal: Pick<Proposal, "title" | "why" | "change" | "sourceIssue" | "sourceIssueUrl">): string {
+  const issue = proposal.sourceIssue !== undefined && proposal.sourceIssueUrl ? `\n\nNació del issue #${proposal.sourceIssue}: ${proposal.sourceIssueUrl}` : "";
+  return `${proposal.title}\n\nPor qué: ${proposal.why}\n\nQué cambiaría: ${proposal.change}${issue}`;
 }
 
 /** The job the night shift opened on its own for a proposal, while it is not finished. */

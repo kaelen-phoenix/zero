@@ -16,6 +16,7 @@ function fakeGitHub(opts: { failCreate?: number } = {}) {
   let next = 10;
   const api: IssueApi = {
     labeled: async () => [],
+    unlabeled: async () => [],
     issue: async () => ({ state: "open", labels: [] }),
     lastLabeled: async () => undefined,
     permission: async () => "admin",

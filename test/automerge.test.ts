@@ -43,6 +43,7 @@ function fakeGitHub(checks: Check[]) {
     merge: async (n, sha) => {
       did.push(`merge #${n} @${sha}`);
       state.pr = { ...state.pr, open: false, merged: true };
+      return "merged-sha";
     },
     deleteBranch: async (b) => void did.push(`delete ${b}`),
     comment: async (n, body) => void did.push(`comment #${n}: ${body}`),
