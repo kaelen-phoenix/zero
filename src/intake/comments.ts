@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
 import { answer, requestWork, type FactoryContext } from "../app.js";
-import { budgetState } from "../budget.js";
+import { pickEngine } from "../budget.js";
 import type { LineConfig } from "../config.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
@@ -90,11 +90,13 @@ async function handle(ctx: FactoryContext, line: LineConfig, repository: string,
   const where = whereIsTheChange(line, job, merge ? (JSON.parse(merge) as MergeState) : undefined);
   const cwd = join(ctx.home.jobs, "reply");
   await mkdir(cwd, { recursive: true });
+  const choice = pickEngine(ctx.store, ctx.config, "reply", (ctx.now ?? (() => new Date()))());
   const run = await runAgent({
     station: "reply",
     line: line.name,
     cwd,
     schema: ReplySchema,
+    engine: { name: choice.engine, model: choice.model, replaces: choice.replaces, reason: choice.reason },
     maxBudgetUsd: 0.5,
     trace: { tracer: ctx.tracer, jobId: job.id, parentId: ctx.tracer.jobSpanId(job.id) },
     prompt: prompt(line, job, { number, title: job.title ?? job.request.split("\n")[0]! }, thread, fresh, where),
@@ -126,7 +128,8 @@ async function handle(ctx: FactoryContext, line: LineConfig, repository: string,
 /** Answers new comments on every issue of the line that has a job; one issue's problem never stops the others. */
 export async function answerComments(ctx: FactoryContext, line: LineConfig, repository: string, gh: IssueApi, runAgent: AgentRunner): Promise<void> {
   const now = (ctx.now ?? (() => new Date()))();
-  if (budgetState(ctx.store, ctx.config, now).reached) return;
+  // Only while every engine of the reply chain is paused by its plan.
+  if (!pickEngine(ctx.store, ctx.config, "reply", now).available) return;
   const trust = new Map<string, Promise<boolean>>();
   const trusted = (login: string) => {
     if (!trust.has(login)) trust.set(login, gh.permission(login).then((p) => TRUSTED.has(p)));

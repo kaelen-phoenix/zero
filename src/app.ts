@@ -20,7 +20,7 @@ import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
 import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
-import { renderTrace, spanEngine, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
+import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
@@ -353,7 +353,7 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
     const sp = last(name);
     const below = sp ? descendants(sp) : [];
     const costs = [sp!, ...below].filter((x) => x && typeof x.attrs["zero.cost.usd"] === "number");
-    const engines = [...new Set(below.filter((x) => x.attrs["zero.engine"]).map((x) => spanEngine(x.attrs)))];
+    const engines = [...new Set(below.filter((x) => x.attrs["zero.engine"]).map((x) => spanEngineWhy(x.attrs)))];
     const spanError = sp?.status === "error" ? brief(sp.attrs["error.message"] || job.reason) : name === failedIn && final ? brief(current!.attrs["error.message"] || job.reason) : undefined;
     const detail = sp && {
       time: spanTime(sp),

@@ -49,7 +49,7 @@ export const EgressEventSchema = z.object({
 /** One connection, as the gate records it: a JSON line in `gate/events-<day>.jsonl`. */
 export type EgressEvent = z.infer<typeof EgressEventSchema>;
 
-export function egressPolicy(config: Pick<FactoryConfig, "egress" | "engines" | "engine" | "stations">): EgressPolicy {
+export function egressPolicy(config: Pick<FactoryConfig, "egress" | "engines" | "engine" | "stations" | "fallback">): EgressPolicy {
   const engineHosts = stationEngines(config).flatMap((name) => {
     try {
       return resolveEngine(name, config).hosts ?? [];

@@ -62,7 +62,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       inputSchema: { job: z.string().optional().describe("Job id for details; omit for the factory overview.") },
       annotations: { readOnlyHint: true },
     },
-    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config) }) : formatStatus(factoryStatus(ctx)))),
+    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)))),
   );
 
   server.registerTool(
@@ -76,7 +76,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         note: z.string().optional().describe("The owner's reason or instructions, if they gave any."),
       },
     },
-    ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config) })),
+    ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) })),
   );
 
   server.registerTool(
@@ -91,7 +91,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       withFactory(home, async (ctx) => {
         const r = await stop(ctx, job);
         if (r.factory) return "Fábrica detenida. Los trabajos en curso se pausan y vuelven a la cola; nada nuevo empieza hasta que la reanudes.";
-        return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config) });
+        return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) });
       }),
   );
 

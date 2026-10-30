@@ -2,10 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentRun, AgentRunner } from "../agent.js";
+import type { AgentRequest, AgentRun, AgentRunner, AgentStation } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
-import { onSubscription } from "../budget.js";
-import { effectiveLevel, findLine, type BoxAvailability, type Level, type LineConfig } from "../config.js";
+import { jobBilledUsd, pickEngine, type EngineChoice } from "../budget.js";
+import { effectiveLevel, findLine, stationChain, type BoxAvailability, type Level, type LineConfig } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { git, sh, type ShellResult } from "../shell.js";
@@ -210,10 +210,28 @@ async function egressStop(deps: RunnerDeps, jobId: string, level: Level): Promis
   });
 }
 
-const remaining = (job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - job.costUsd, 0.01);
+const nowOf = (deps: RunnerDeps) => (deps.now ?? (() => new Date()))();
+
+/** The engine of a station's next call: the first of its chain that its plan does not pause. */
+const choose = (deps: RunnerDeps, station: AgentStation) => pickEngine(deps.store, deps.config, station, nowOf(deps));
+const engineOf = (c: EngineChoice): AgentRequest["engine"] => ({ name: c.engine, model: c.model, replaces: c.replaces, reason: c.reason });
+
+/** What the job may still be charged; subscription calls cost nothing extra. */
+const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, job.id, nowOf(deps)), 0.01);
 
 /** The dollar cap of the next call: none on a subscription, whose real limit is the plan itself. */
-const callCap = (deps: RunnerDeps, job: Job) => (onSubscription(deps.store, deps.config) ? undefined : remaining(job));
+const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.billing === "subscription" ? undefined : remaining(deps, job));
+
+/**
+ * Whether a call the plan cut short goes on with another engine of the
+ * station's chain, in the same attempt. Each replacement is tried at most once.
+ */
+function goesOn(deps: RunnerDeps, run: AgentRun<unknown>, station: AgentStation, switched: number): boolean {
+  if (!run.quota?.limited || switched >= stationChain(deps.config, station).length - 1) return false;
+  const next = choose(deps, station);
+  if (next.available) log.info("subscription plan used up; going on with a replacement", { station, engine: next.engine });
+  return next.available;
+}
 
 /** Stops the job when the plan refused the call; it resumes from the same station once the plan renews. */
 function quotaStop(run: AgentRun<unknown>): void {
@@ -255,14 +273,17 @@ async function specStation(
     const memory = memoryBlock(await deps.townhall.recall({ line: line.name, kinds: ["lesson", "finding", "blocker"], limit: deps.config.townhall.recallLimit }));
     let spec: Spec | undefined;
     let error = "";
+    let switched = 0;
     for (let tryNo = 1; tryNo <= 2 && !spec; tryNo++) {
+      const choice = choose(deps, "spec");
       const run = await deps.runAgent({
         station: "spec",
         line: line.name,
         cwd: copy.cwd,
         schema: SpecSchema,
         signal,
-        maxBudgetUsd: callCap(deps, store.getJob(job.id)!),
+        engine: engineOf(choice),
+        maxBudgetUsd: callCap(deps, store.getJob(job.id)!, choice),
         trace: { tracer, jobId: job.id, parentId: span.id },
         prompt: [
           requestBlock(job),
@@ -278,6 +299,12 @@ async function specStation(
       if (copy.hasChanges()) {
         log.warn("spec modified the work copy; discarding", { job: job.id });
         copy.discardChanges();
+      }
+      if (!signal.aborted && goesOn(deps, run, "spec", switched)) {
+        // Cut short by the plan: the same try goes on with a replacement.
+        switched++;
+        tryNo--;
+        continue;
       }
       quotaStop(run);
       if (signal.aborted) return undefined;
@@ -335,13 +362,16 @@ async function buildLoop(
     if (attempt > line.maxAttempts) {
       return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
     }
-    if (job.costUsd >= job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) && !onSubscription(store, config)) {
+    // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
+    const billed = jobBilledUsd(store, jobId, nowOf(deps));
+    const next = choose(deps, resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
+    if (billed >= job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) && next.billing !== "subscription") {
       if (decide(level, "budget-exceeded") === "fail") {
-        return finalizeJob(deps, job, "failed", { reason: `Se agotó el presupuesto del trabajo ($${job.costUsd.toFixed(2)}).` });
+        return finalizeJob(deps, job, "failed", { reason: `Se agotó el presupuesto del trabajo ($${billed.toFixed(2)}).` });
       }
       return askOwner(deps, job, {
         kind: "budget-exceeded",
-        text: `El trabajo "${spec.title}" ya gastó $${job.costUsd.toFixed(2)} y no terminó. ¿Le doy $${config.limits.usdPerJob.toFixed(2)} más?`,
+        text: `El trabajo "${spec.title}" ya gastó $${billed.toFixed(2)} y no terminó. ¿Le doy $${config.limits.usdPerJob.toFixed(2)} más?`,
         data: { extraUsd: config.limits.usdPerJob },
       });
     }
@@ -354,26 +384,33 @@ async function buildLoop(
 
     if (!resuming) {
       job = store.updateJob(jobId, { attempt, station: "build" });
-      const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) =>
-        deps.runAgent({
-          station: "build",
-          line: line.name,
-          cwd: copy.cwd,
-          signal,
-          maxBudgetUsd: callCap(deps, job),
-          trace: { tracer, jobId, parentId: span.id },
-          prompt: [
-            requestBlock(job),
-            `## Specification (the contract)\n${contract}`,
-            memory,
-            job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
-            `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-        }),
-      );
-      addCost(run.costUsd);
+      const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) => {
+        for (let switched = 0; ; switched++) {
+          const choice = choose(deps, "build");
+          const r = await deps.runAgent({
+            station: "build",
+            line: line.name,
+            cwd: copy.cwd,
+            signal,
+            engine: engineOf(choice),
+            maxBudgetUsd: callCap(deps, store.getJob(jobId)!, choice),
+            trace: { tracer, jobId, parentId: span.id },
+            prompt: [
+              requestBlock(job),
+              `## Specification (the contract)\n${contract}`,
+              memory,
+              job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
+              `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          });
+          addCost(r.costUsd);
+          if (signal.aborted || !goesOn(deps, r, "build", switched)) return r;
+          // Cut short by the plan: its half-done changes are dropped and the same attempt goes on with a replacement.
+          copy.discardChanges();
+        }
+      });
       if (signal.aborted) {
         attemptSpan.end("error", { "error.message": "interrupted" });
         throw new Interrupted(reasonOf(signal));
@@ -435,14 +472,17 @@ async function buildLoop(
     for (const station of ["review", "security"] as const) {
       store.updateJob(jobId, { station });
       const reviewed = await tracer.within(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }, async (span) => {
+        let switched = 0;
         for (let tryNo = 1; tryNo <= 2; tryNo++) {
+          const choice = choose(deps, station);
           const run = await deps.runAgent({
             station,
             line: line.name,
             cwd: copy.cwd,
             schema: ReviewSchema,
             signal,
-            maxBudgetUsd: callCap(deps, store.getJob(jobId)!),
+            engine: engineOf(choice),
+            maxBudgetUsd: callCap(deps, store.getJob(jobId)!, choice),
             trace: { tracer, jobId, parentId: span.id },
             prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\n${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`,
           });
@@ -451,6 +491,12 @@ async function buildLoop(
           if (copy.hasChanges()) {
             log.warn(`${station} modified the work copy; discarding`, { job: jobId });
             copy.discardChanges();
+          }
+          if (!signal.aborted && goesOn(deps, run, station, switched)) {
+            // Cut short by the plan: the same check goes on with a replacement.
+            switched++;
+            tryNo--;
+            continue;
           }
           if (run.quota?.limited) attemptSpan.end("error", { "error.message": "subscription plan used up" });
           quotaStop(run);
