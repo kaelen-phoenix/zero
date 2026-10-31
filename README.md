@@ -8,7 +8,7 @@ zero is a **software factory that runs on your machine**. You ask it for work fr
 
 It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.
 
-The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder.
+The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section lists the formats on offer, and each button opens an email to the owner.
 
 ## How it works
 

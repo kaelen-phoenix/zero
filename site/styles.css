@@ -218,6 +218,10 @@ tbody th { font-weight: 600; white-space: nowrap; }
 .dense > li { padding: 0.85rem 1rem; font-size: 0.9rem; }
 .dense strong { display: block; font-weight: 600; }
 .dense span { color: var(--muted); font-size: 0.85rem; }
+.training > li { display: flex; flex-direction: column; gap: 0.75rem; }
+.training .on-request { margin-top: auto; font: 500 0.75rem/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.training .button { align-self: flex-start; cursor: pointer; }
+.training .button:hover { background: transparent; color: var(--fg); }
 .compat { display: grid; gap: 0 2rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
 .compat h3 { margin: 1rem 0 0; }
 
@@ -262,6 +266,8 @@ button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-co
   .defs { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
   .defs dd { margin-bottom: 0.75rem; }
   tbody th { white-space: normal; }
+  .cards { grid-template-columns: minmax(0, 1fr); }
+  .training .button { align-self: stretch; padding: 0.75rem 1rem; }
   .foot .switch { margin-left: 0; }
 }
 
