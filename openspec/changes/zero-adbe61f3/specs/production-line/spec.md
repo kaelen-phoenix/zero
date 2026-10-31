@@ -55,3 +55,20 @@ agents/security.md MUST list explicit exclusions that the station must not repor
 #### Scenario: Lista de exclusiones
 - **WHEN** a test reads agents/security.md
 - **THEN** it mentions denial of service (DoS), rate limiting, memory/CPU exhaustion, open redirect and validation without demonstrated impact, plus the exception for removed existing protections
+
+## MODIFIED Requirements
+
+### Requirement: Revisión con citas verificadas
+La estación `review` SHALL devolver hallazgos con gravedad, archivo, línea y confianza del 1 al 10. zero SHALL descartar los hallazgos cuya cita no exista en la copia de trabajo y SHALL rechazar el cambio solo si queda algún hallazgo verificado de gravedad `high` o `critical` con confianza 8 o más.
+
+#### Scenario: Cita inventada
+- **WHEN** un hallazgo `high` cita un archivo que no existe
+- **THEN** el hallazgo se descarta, se registra como cita inválida y no bloquea la entrega
+
+#### Scenario: Hallazgo grave verificado
+- **WHEN** un hallazgo `critical` con confianza 9 cita un archivo y línea existentes
+- **THEN** el intento se rechaza y el hallazgo vuelve como retroalimentación
+
+#### Scenario: Hallazgo grave de baja confianza
+- **WHEN** un hallazgo `critical` con confianza 5 cita un archivo y línea existentes
+- **THEN** el hallazgo no bloquea la entrega y el span de la estación lo cuenta en `zero.findings.low_confidence`
