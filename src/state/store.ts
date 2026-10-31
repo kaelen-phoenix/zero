@@ -148,6 +148,10 @@ export interface Proposal {
   researchNote?: string;
   /** Scout said it adds a dependency, a third-party skill, an MCP server or third-party code. */
   thirdParty: boolean;
+  /** Born from a business research note: it always waits for the owner. */
+  business: boolean;
+  /** Scout said it changes the license or adds pricing, charges, payments or legal text: it always waits for the owner. */
+  commercial: boolean;
   /** The GitHub issue that records it, once published. */
   issueNumber?: number;
   issueUrl?: string;
@@ -172,6 +176,10 @@ export interface ResearchNote {
   serves: string;
   /** How mature and reliable it is. */
   maturity: string;
+  /** The research skill whose run produced it; absent on notes stored before skills were recorded. */
+  skill?: string;
+  /** That skill was one of the line's business skills when the note was written. */
+  business: boolean;
   createdAt: string;
   /** The GitHub issue that publishes it, once published. */
   issueNumber?: number;
@@ -262,7 +270,9 @@ CREATE TABLE IF NOT EXISTS proposals (
   decided_by TEXT,
   issue_closed INTEGER NOT NULL DEFAULT 0,
   source_issue_number INTEGER,
-  source_issue_url TEXT
+  source_issue_url TEXT,
+  business INTEGER NOT NULL DEFAULT 0,
+  commercial INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -275,7 +285,9 @@ CREATE TABLE IF NOT EXISTS research_notes (
   maturity TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   issue_number INTEGER,
-  issue_url TEXT
+  issue_url TEXT,
+  skill TEXT,
+  business INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS research_notes_line ON research_notes(line, created_at);
 CREATE TABLE IF NOT EXISTS kv (
@@ -349,6 +361,8 @@ function toProposal(r: Row): Proposal {
     decidedBy: str(r.decided_by) as Proposal["decidedBy"],
     researchNote: str(r.research_note),
     thirdParty: Number(r.third_party ?? 0) === 1,
+    business: Number(r.business ?? 0) === 1,
+    commercial: Number(r.commercial ?? 0) === 1,
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
     issueTold: str(r.issue_told) as Proposal["issueTold"],
@@ -367,6 +381,8 @@ function toResearchNote(r: Row): ResearchNote {
     sources: json<string[]>(r.sources) ?? [],
     serves: String(r.serves),
     maturity: String(r.maturity),
+    skill: str(r.skill),
+    business: Number(r.business ?? 0) === 1,
     createdAt: String(r.created_at),
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
@@ -434,6 +450,8 @@ export class Store {
       ["issue_closed", "INTEGER NOT NULL DEFAULT 0"],
       ["source_issue_number", "INTEGER"],
       ["source_issue_url", "TEXT"],
+      ["business", "INTEGER NOT NULL DEFAULT 0"],
+      ["commercial", "INTEGER NOT NULL DEFAULT 0"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
@@ -441,6 +459,8 @@ export class Store {
     for (const [column, type] of [
       ["issue_number", "INTEGER"],
       ["issue_url", "TEXT"],
+      ["skill", "TEXT"],
+      ["business", "INTEGER NOT NULL DEFAULT 0"],
     ] as const) {
       if (!noteColumns.has(column)) this.db.exec(`ALTER TABLE research_notes ADD COLUMN ${column} ${type}`);
     }
@@ -587,13 +607,13 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; sourceIssue?: { number: number; url: string } }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string } }): Proposal {
     const id = newId();
     this.db
       .prepare(
-        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, source_issue_number, source_issue_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       )
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, this.stamp());
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, this.stamp());
     return this.getProposal(id)!;
   }
 
@@ -663,11 +683,11 @@ export class Store {
   }
 
   /** `createdAt` is for imports and tests; absent: now. */
-  createResearchNote(input: Omit<ResearchNote, "id" | "createdAt"> & { createdAt?: string }): ResearchNote {
+  createResearchNote(input: Omit<ResearchNote, "id" | "createdAt" | "business"> & { business?: boolean; createdAt?: string }): ResearchNote {
     const id = newId();
     this.db
-      .prepare("INSERT INTO research_notes (id, line, topic, findings, sources, serves, maturity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, input.line, input.topic, input.findings, JSON.stringify(input.sources), input.serves, input.maturity, input.createdAt ?? this.stamp());
+      .prepare("INSERT INTO research_notes (id, line, topic, findings, sources, serves, maturity, skill, business, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.line, input.topic, input.findings, JSON.stringify(input.sources), input.serves, input.maturity, input.skill ?? null, input.business ? 1 : 0, input.createdAt ?? this.stamp());
     return this.getResearchNote(id)!;
   }
 
@@ -681,12 +701,16 @@ export class Store {
   }
 
   /** Newest first. */
-  listResearchNotes(filter: { line?: string; since?: Date; limit?: number } = {}): ResearchNote[] {
+  listResearchNotes(filter: { line?: string; skill?: string; since?: Date; limit?: number } = {}): ResearchNote[] {
     const where: string[] = [];
     const values: (string | number)[] = [];
     if (filter.line) {
       where.push("line = ?");
       values.push(filter.line);
+    }
+    if (filter.skill) {
+      where.push("skill = ?");
+      values.push(filter.skill);
     }
     if (filter.since) {
       where.push("created_at >= ?");

@@ -30,6 +30,9 @@ const stationSchema = (defaults: { maxTurns: number; timeoutMinutes: number }) =
 /** Skills a line adds to an agent, on top of the global ones. */
 const LineSkillsSchema = z.object({ skills: z.array(z.string().min(1)).default([]) }).strict();
 
+/** Research also names which of its skills are business ones; names not in `skills` are ignored, so a removed skill never breaks the file. */
+const ResearchLineSchema = z.object({ skills: z.array(z.string().min(1)).default([]), business: z.array(z.string().min(1)).default([]) }).strict();
+
 /** `propose`: proposals wait for the owner; `build`: built but left unintegrated; `auto`: built and integrated. */
 const AutonomySchema = z.enum(["propose", "build", "auto"]);
 export type Autonomy = z.infer<typeof AutonomySchema>;
@@ -135,7 +138,7 @@ export const LineSchema = z.object({
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: LineSkillsSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })
     .partial()
     .strict()
     .optional(),
@@ -297,6 +300,12 @@ export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review"
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {
   return line.nightShift?.autonomy ?? (config.nightShift === "off" ? "propose" : config.nightShift.autonomy);
+}
+
+/** The line's business research skills: names in `business` that are also among its research `skills`. */
+export function businessSkills(line: Pick<LineConfig, "stations">): string[] {
+  const research = line.stations?.research;
+  return research ? research.business.filter((s) => research.skills.includes(s)) : [];
 }
 
 /** One engine a station may run on, with its model (absent: the engine's own default). */
