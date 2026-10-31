@@ -8,7 +8,7 @@ zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo
 
 Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
-El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz.
+El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones lista los formatos que se ofrecen, y cada botón abre un correo al dueño.
 
 ## Cómo funciona
 
@@ -126,7 +126,7 @@ Con la fábrica en marcha, el panel muestra:
 - la traza de cada trabajo;
 - las salidas a internet y el informe;
 - las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
-- las notas de investigación de cada línea (pestaña "Investigación"), con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes).
+- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes).
 
 Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
 
@@ -289,10 +289,12 @@ La autonomía de una línea es la suya (`lines[].nightShift.autonomy`) o, si no 
 
 En `build` y en `auto` el trabajo sigue las reglas de siempre: si toca algo protegido, se pasa del presupuesto, la verificación lo frena o la puerta de salida ve algo sospechoso, espera al dueño (o falla, según el nivel) como cualquier otro trabajo. Además:
 - **Tope diario.** Como mucho `maxAutoJobsPerDay` trabajos automáticos por día local, sumando todas las líneas (0 = ninguno). Al llegar, las propuestas que siguen esperan tu decisión.
-- **Propuestas pendientes de antes.** Si pasás una línea a `build` o `auto`, en la siguiente pasada del turno nocturno (dentro de su horario y con el andon apagado) se promueven solas sus propuestas pendientes, de la más vieja a la más nueva, respetando `maxAutoJobsPerDay`: se toman como si fueran nuevas. Las que nacieron de algo de terceros (marcadas por `scout` o que tocan un manifiesto de dependencias o de MCP) nunca se promueven: siguen esperando tu decisión.
+- **Propuestas pendientes de antes.** Si pasás una línea a `build` o `auto`, en la siguiente pasada del turno nocturno (dentro de su horario y con el andon apagado) se promueven solas sus propuestas pendientes, de la más vieja a la más nueva, respetando `maxAutoJobsPerDay`: se toman como si fueran nuevas. Las que nacieron de algo de terceros (marcadas por `scout` o que tocan un manifiesto de dependencias o de MCP), las nacidas de una nota de negocio y las que tocan la licencia, precios, cobros, pagos o textos legales nunca se promueven: siguen esperando tu decisión.
 - **Lo revertido.** Si revertís en la rama principal un cambio que el turno nocturno integró solo, sin tu aprobación, la fábrica lo detecta: la propuesta queda en estado `revertida` (en el panel, el grupo "Revertidas"), se anota en el townhall de la línea y `scout` no la vuelve a proponer. En las líneas con `integrate: merge` mira `git revert -m 1 <commit>` del merge. En las líneas con `integrate: pull-request` guarda el commit con el que GitHub fundió el pull request (merge o squash) y reconoce tanto `git revert` de ese commit como el botón Revert de GitHub (el pull request `Revert "…"`, cuyo commit dice `Reverts dueño/repo#N`); busca en la rama principal local y en la del remoto, tras un `git fetch`. No detecta deshacer a mano.
 - **Tus pedidos van primero.** Un trabajo automático del turno nocturno nunca pasa delante de los tuyos y no arranca mientras haya otro trabajo en la cola o en curso.
 - **Propuestas nacidas de una nota de investigación.** Quedan marcadas con la nota de origen. Si agregan una dependencia, una skill de terceros, un servidor MCP o código de terceros, las regula `research.autonomy` (por defecto `propose`): se toma la más restrictiva entre esa y la de la línea, así que esperan tu decisión aunque la línea esté en `auto`. zero no se fía solo de lo que dice `scout`: también mira los manifiestos de dependencias y de MCP (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) en la propuesta y, antes de integrar, en los archivos que cambió el trabajo. Escribir una skill propia o asignar una ya instalada sigue la autonomía de la línea.
+- **Propuestas nacidas de una nota de negocio.** Las que `scout` saca de una nota de una skill de negocio (ver [Investigación](#investigación)) esperan siempre tu decisión, aunque la línea esté en `auto` o `build` y aunque `research.autonomy` sea `auto`.
+- **Licencia, precios, pagos y textos legales.** Ninguna propuesta autónoma cambia la licencia ni agrega precios, cobros, pagos o textos legales. `scout` marca esas propuestas con `commercial`, y zero además reconoce solo los archivos de licencia y legales (LICENSE, LICENCE, COPYING, NOTICE, cualquier archivo con `license` o `licence` en el nombre, TERMS, PRIVACY, EULA, `terms-of-service`, `privacy-policy` y todo lo que esté en una carpeta `legal/`). Esas propuestas esperan tu decisión, y si un trabajo automático igual termina tocando uno de esos archivos, no se integra sin vos (si no contestás, se rechaza).
 
 Las propuestas se guardan en `state.db` y se deciden con:
 
@@ -310,12 +312,14 @@ Desde el chat: `zero_proposals` y `zero_proposal_decide`. En el panel, la pesta�
 
 La estación `research` investiga en la web una vez por día, con la fábrica libre: skills nuevas para los agentes (de Claude Code y de otros motores), servidores MCP y tecnologías que sirvan a la línea o a la fábrica misma (motores, librerías, herramientas, prácticas). Sigue las reglas del turno nocturno: solo corre sin pedidos tuyos en cola o en curso, con el andon apagado y con presupuesto (respeta `limits.reservePercent`); si se paga por uso, comparte con `scout` el tope de `limits.usdPerNight`.
 
-Investiga por línea, y solo las líneas que tienen una **skill de investigación** asignada a `research`; esa skill dice qué buscar. Una línea sin skill de investigación no investiga.
+Investiga por línea, y solo las líneas que tienen una **skill de investigación** asignada a `research`; esa skill dice qué buscar. Una línea sin skill de investigación no investiga. Con varias skills de investigación en una línea, cada corrida sigue una sola skill y `research` escribe hasta `research.perLinePerDay` notas por cada skill (no por línea), cada skill una vez por día. Si el presupuesto o tus pedidos cortan la pasada, las skills se turnan: al día siguiente va primero la que hace más tiempo que no investiga, así una skill no le quita el día a otra.
+
+Una skill de investigación puede ser **de negocio** (precios, licencias, productos comparables, reglas de los proveedores de IA): se declara en la lista `business` de la configuración de `research` de la línea, con el mismo nombre que en `skills`. Sus notas quedan marcadas como de negocio y toda propuesta que `scout` haga a partir de ellas espera tu decisión (ver [Turno nocturno](#turno-nocturno)). Un nombre en `business` que no está en `skills` se ignora, así que quitar la skill con `zero skill remove` no rompe el archivo.
 
 ```yaml
 research:                 # o `research: off` para apagarla
   topics: ["motores de agentes locales"]   # opcional: temas de interés para todas las líneas
-  perLinePerDay: 1        # notas por línea por día (0 = apagada); si no alcanza, las líneas se turnan
+  perLinePerDay: 1        # notas por cada skill de investigación por día (0 = apagada); si no alcanza, se turnan
   autonomy: propose       # propose · build · auto: hasta dónde llega sola una propuesta nacida de una nota que agrega algo de terceros
 stations:
   research: { timeoutMinutes: 15 }
@@ -323,7 +327,9 @@ lines:
   - name: tienda
     repo: ~/code/tienda
     stations:
-      research: { skills: [tienda-research] }
+      research:
+        skills: [tienda-research, tienda-negocio]
+        business: [tienda-negocio]   # skills de negocio: sus propuestas siempre te esperan
 ```
 
 ```sh
@@ -347,7 +353,7 @@ Buscá, en este orden:
 No investigues frameworks de frontend que no sean React.
 ```
 
-Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat), o el botón "Pedir trabajo" de la pestaña "Investigación" del panel, que muestra las notas de los últimos 30 días de cada línea. `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
+Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La nota recuerda qué skill la escribió. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy", con las notas de negocio y las técnicas por separado, bajo "Negocio" y "Técnica") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat), o el botón "Pedir trabajo" de la pestaña "Investigación" del panel, que muestra las notas de los últimos 30 días de cada línea, separadas en "Negocio" y "Técnica", cada una con la skill que la escribió. `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
 
 En las líneas de GitHub cada nota se publica también como issue en el repo de la línea, con la etiqueta `zero:investigacion` (la fábrica la crea si falta) y nunca con `zero`, así que no se convierte en trabajo sola. El issue trae lo encontrado, para qué serviría, su madurez, las fuentes, el id de la nota y cómo pedir un trabajo (`zero research request <id>`). Antes de publicar, zero tapa secretos y rutas de tu PC y desactiva las menciones (@usuario) para no avisarle a nadie. Si GitHub falla, lo reintenta en la pasada siguiente.
 

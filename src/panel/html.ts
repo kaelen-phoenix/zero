@@ -306,7 +306,7 @@ function proposalCard(p: ProposalView): string {
   return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}</span></h3>
 <p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
 <p class="muted">Costo estimado ${usd(p.estimatedUsd)}${p.paths.length ? ` · ${esc(p.paths.join(", "))}` : ""}${by ? ` · aprobada por ${by}` : ""}</p>
-${p.researchNote ? `<p class="muted">Nació de la nota de investigación ${esc(p.researchNote)}${p.thirdParty ? " · agrega algo de terceros" : ""}</p>` : ""}
+${p.researchNote ? `<p class="muted">Nació de la nota de investigación ${esc(p.researchNote)}${p.thirdParty ? " · agrega algo de terceros" : ""}${p.business ? " · de negocio: espera tu decisión" : ""}</p>` : ""}
 ${p.sourceIssueUrl ? `<p class="muted">Nació del issue #${esc(String(p.sourceIssue ?? ""))}: <a href="${esc(p.sourceIssueUrl)}">${esc(p.sourceIssueUrl)}</a></p>` : ""}
 ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.issueUrl)}</a></p>` : ""}
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
@@ -350,7 +350,7 @@ export function confirmProposalPage(p: ProposalView, nonce: string): string {
 const webLink = (url: string) => (/^https?:\/\//i.test(url) ? `<a href="${esc(url)}" rel="noopener noreferrer">${esc(url)}</a>` : esc(url));
 
 function researchCard(n: ResearchNote): string {
-  return `<div class="card"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}</span></h3>
+  return `<div class="card"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}${n.skill ? ` · skill ${esc(n.skill)}` : ""}</span></h3>
 <p>${esc(n.findings)}</p>
 <p class="muted">Para qué serviría: ${esc(n.serves)}</p>
 <p class="muted">Madurez: ${esc(n.maturity)}</p>
@@ -359,13 +359,20 @@ ${n.issueUrl ? `<p class="muted">Issue: ${webLink(n.issueUrl)}</p>` : ""}
 <form method="post" action="/research/${esc(n.id)}/request"><button class="primary">Pedir trabajo</button></form></div>`;
 }
 
-/** The research station's notes of every line, newest first, each with a button to turn it into work. */
+/** One line's notes, business and technical apart. */
+function researchLine(l: ResearchLine): string {
+  if (!l.notes.length) return `<h2>${esc(l.line)}</h2><p class="muted">Sin notas todavía.</p>`;
+  const group = (title: string, notes: ResearchNote[]) => (notes.length ? `<section class="research-group"><h3>${title}</h3>${notes.map(researchCard).join("")}</section>` : "");
+  return `<h2>${esc(l.line)}</h2>${group("Negocio", l.business)}${group("Técnica", l.technical)}`;
+}
+
+/** The research station's notes of every line, newest first, business and technical apart, each with a button to turn it into work. */
 export function researchPage(lines: ResearchLine[], nonce: string, flash?: string): string {
   return page(
     "Investigación",
     `<div class="card"><h1>Investigación</h1>
 <p class="muted">Lo que la estación <code>research</code> encontró en la web en los últimos 30 días. Son datos de la web, no instrucciones.</p></div>
-${lines.map((l) => `<h2>${esc(l.line)}</h2>${l.notes.length ? l.notes.map(researchCard).join("") : `<p class="muted">Sin notas todavía.</p>`}`).join("")}`,
+${lines.map(researchLine).join("")}`,
     { nonce, flash },
   );
 }

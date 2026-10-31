@@ -8,7 +8,7 @@ zero is a **software factory that runs on your machine**. You ask it for work fr
 
 It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.
 
-The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder.
+The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section lists the formats on offer, and each button opens an email to the owner.
 
 ## How it works
 
@@ -126,7 +126,7 @@ With the factory running, the panel shows:
 - each job's trace;
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
-- each line's research notes ("Investigación" tab), with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first).
+- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first).
 
 From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
 
@@ -289,10 +289,12 @@ A line's autonomy is its own (`lines[].nightShift.autonomy`) or, if it has none,
 
 Under `build` and `auto` the job follows the usual rules: if it touches something protected, goes over budget, verification stops it or the egress gate sees something suspicious, it waits for the owner (or fails, depending on the level) like any other job. Also:
 - **Daily cap.** At most `maxAutoJobsPerDay` automatic jobs per local day, across all lines (0 = none). Once reached, the following proposals wait for your decision.
-- **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest) are never promoted: they keep waiting for your decision.
+- **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest), those born from a business note and those touching the license, pricing, charges, payments or legal text are never promoted: they keep waiting for your decision.
 - **What gets reverted.** If you revert on the main branch a change the night shift integrated on its own, without your approval, the factory detects it: the proposal becomes `revertida` (reverted; in the panel, the "Revertidas" group), it is noted in the line's townhall and `scout` does not propose it again. On lines with `integrate: merge` it looks for `git revert -m 1 <commit>` of the merge. On lines with `integrate: pull-request` it records the commit GitHub merged the pull request with (merge or squash) and recognizes both `git revert` of that commit and GitHub's Revert button (the pull request `Revert "…"`, whose commit says `Reverts owner/repo#N`); it looks on the local main branch and on the remote's, after a `git fetch`. It does not detect undoing by hand.
 - **Your requests go first.** An automatic night-shift job never jumps ahead of yours and does not start while another job is queued or running.
 - **Proposals born from a research note.** They are marked with the note they came from. If they add a dependency, a third-party skill, an MCP server or third-party code, `research.autonomy` governs them (`propose` by default): the more restrictive of that and the line's autonomy applies, so they wait for your decision even if the line is at `auto`. zero does not rely only on what `scout` says: it also looks at the dependency and MCP manifests (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) in the proposal and, before integrating, in the files the job changed. Writing your own skill or assigning an installed one follows the line's autonomy.
+- **Proposals born from a business note.** Those `scout` draws from a note of a business skill (see [Research](#research)) always wait for your decision, even if the line is at `auto` or `build` and even if `research.autonomy` is `auto`.
+- **License, pricing, payments and legal text.** No autonomous proposal changes the license or adds pricing, charges, payments or legal text. `scout` flags those proposals with `commercial`, and zero also recognizes license and legal files on its own (LICENSE, LICENCE, COPYING, NOTICE, any file with `license` or `licence` in its name, TERMS, PRIVACY, EULA, `terms-of-service`, `privacy-policy` and everything inside a `legal/` folder). Those proposals wait for your decision, and if an automatic job still ends up touching one of those files, it is not integrated without you (if you do not answer, it is rejected).
 
 Proposals are stored in `state.db` and decided with:
 
@@ -310,12 +312,14 @@ From the chat: `zero_proposals` and `zero_proposal_decide`. In the panel, the "P
 
 The `research` station researches the web once a day, with the factory free: new skills for the agents (for Claude Code and other engines), MCP servers and technologies that would help the line or the factory itself (engines, libraries, tools, practices). It follows the night shift's rules: it only runs with none of your requests queued or running, with the andon off and with budget (it respects `limits.reservePercent`); on pay-per-use, it shares the `limits.usdPerNight` cap with `scout`.
 
-It researches per line, and only the lines that have a **research skill** assigned to `research`; that skill says what to look for. A line without a research skill does not research.
+It researches per line, and only the lines that have a **research skill** assigned to `research`; that skill says what to look for. A line without a research skill does not research. With several research skills on a line, each run follows a single skill and `research` writes up to `research.perLinePerDay` notes per skill (not per line), each skill once a day. If the budget or your requests cut the pass short, the skills take turns: the next day the one that has gone longest without researching goes first, so one skill does not take another's day.
+
+A research skill can be a **business** one (pricing, licenses, comparable products, AI providers' rules): it is declared in the `business` list of the line's `research` settings, with the same name as in `skills`. Its notes are marked as business and every proposal `scout` makes from them waits for your decision (see [Night shift](#night-shift)). A name in `business` that is not in `skills` is ignored, so removing the skill with `zero skill remove` does not break the file.
 
 ```yaml
 research:                 # or `research: off` to turn it off
   topics: ["local agent engines"]   # optional: topics of interest for every line
-  perLinePerDay: 1        # notes per line per day (0 = off); if not enough, the lines take turns
+  perLinePerDay: 1        # notes per research skill per day (0 = off); if not enough, they take turns
   autonomy: propose       # propose · build · auto: how far a proposal born from a note that adds something third-party goes on its own
 stations:
   research: { timeoutMinutes: 15 }
@@ -323,7 +327,9 @@ lines:
   - name: tienda
     repo: ~/code/tienda
     stations:
-      research: { skills: [tienda-research] }
+      research:
+        skills: [tienda-research, tienda-negocio]
+        business: [tienda-negocio]   # business skills: their proposals always wait for you
 ```
 
 ```sh
@@ -347,7 +353,7 @@ Look for, in this order:
 Do not research frontend frameworks other than React.
 ```
 
-Each note has a topic, what was found, the sources (http(s) links; a note without sources is discarded), which part of the line it would help and how mature and trustworthy it is. It is stored in `state.db`, without paths from your machine or secrets. To avoid repeating topics, the station receives the line's topics of the last 60 days. You see notes with `zero research [--line <line>] [--days N]`, in the report ("Investigación de hoy") and from the chat (`zero_research`). To turn a note into a job on its line: `zero research request <id>` (or `zero_research_request` in the chat), or the "Pedir trabajo" button of the panel's "Investigación" tab, which shows each line's notes of the last 30 days. `scout` receives its line's notes of the last 7 days and can propose, for example, assigning a skill to a station or creating a new station; a line's notes only produce proposals on that same line.
+Each note has a topic, what was found, the sources (http(s) links; a note without sources is discarded), which part of the line it would help and how mature and trustworthy it is. It is stored in `state.db`, without paths from your machine or secrets. To avoid repeating topics, the station receives the line's topics of the last 60 days. The note remembers which skill wrote it. You see notes with `zero research [--line <line>] [--days N]`, in the report ("Investigación de hoy", with business and technical notes apart, under "Negocio" and "Técnica") and from the chat (`zero_research`). To turn a note into a job on its line: `zero research request <id>` (or `zero_research_request` in the chat), or the "Pedir trabajo" button of the panel's "Investigación" tab, which shows each line's notes of the last 30 days, split into "Negocio" and "Técnica", each with the skill that wrote it. `scout` receives its line's notes of the last 7 days and can propose, for example, assigning a skill to a station or creating a new station; a line's notes only produce proposals on that same line.
 
 On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. If GitHub fails, it retries on the next pass.
 

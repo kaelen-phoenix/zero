@@ -1,4 +1,4 @@
-// zero in the loop: language, theme and copy buttons. Plain JS, no dependencies, no network, no cookies.
+// zero in the loop: language, theme, copy and training buttons. Plain JS, no dependencies, no network, no cookies.
 // The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
@@ -119,6 +119,21 @@
     "compat.auto": "automatic registration",
     "compat.manual": "manual configuration",
     "compat.note": "A different engine per station if you want, and fallback engines when one runs out of quota.",
+    "nav.training": "Training",
+    "training.label": "Training",
+    "training.title": "Learn to work with a factory that works on its own.",
+    "training.topics": "The topics are not only zero: working seriously with AI agents (Claude Code, specifications with OpenSpec, review and security of the code AI writes, and where the person enters the loop), with zero as the tool.",
+    "training.talk.title": "Open talk",
+    "training.talk": "About 60 minutes: from asking AI for code to having a factory that works on its own.",
+    "training.workshop.title": "Group workshop",
+    "training.workshop": "2 to 4 hands-on sessions: each participant builds their own factory with zero on their projects.",
+    "training.mentoring.title": "One-on-one mentoring",
+    "training.mentoring": "For a person or a team, in their own repos.",
+    "training.companies.title": "Companies",
+    "training.companies": "Team training and getting zero up and running.",
+    "training.onrequest": "on request",
+    "training.cta": "I want this",
+    "training.noscript": "Without JavaScript the button does not open your email: write to kaelen.dev at gmail.com with the subject \"Training:\" and the format you are interested in.",
     "links.label": "Links",
     "links.title": "Keep reading.",
     "links.readme": "Documentation (README)",
@@ -139,9 +154,18 @@
   };
 
   const MESSAGES = {
-    es: { copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto." },
-    en: { copied: "Command copied.", failed: "Could not copy; select the text." },
+    es: {
+      copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto.",
+      subject: "Capacitación: ", body: ["Nombre:", "Empresa (opcional):", "Cuántas personas:", "Qué busca:"],
+    },
+    en: {
+      copied: "Command copied.", failed: "Could not copy; select the text.",
+      subject: "Training: ", body: ["Name:", "Company (optional):", "How many people:", "What you are looking for:"],
+    },
   };
+
+  // The training address in parts, joined only when a button builds its URL, so harvesters never see it whole.
+  const MAIL_PARTS = ["kaelen.dev", "gmail.com"];
 
   const LANGS = ["es", "en"];
   const THEMES = ["auto", "light", "dark"];
@@ -230,6 +254,16 @@
     );
   }
 
+  /** The mailto: URL for a training button: subject with the format's title and fill-in lines, in the page's language. */
+  function trainingMailto(doc, button) {
+    const lang = doc.documentElement.getAttribute("lang") === "en" ? "en" : "es";
+    const messages = MESSAGES[lang];
+    const key = `training.${button.getAttribute("data-training")}.title`;
+    const title = String((lang === "en" ? EN[key] : spanish(doc)[key]) || "").replace(/<[^>]+>/g, "").trim();
+    const body = messages.body.map((field) => `${field} `).join("\n") + "\n";
+    return `mailto:${MAIL_PARTS.join("@")}?subject=${encodeURIComponent(messages.subject + title)}&body=${encodeURIComponent(body)}`;
+  }
+
   function setup(doc, win, storage) {
     setTheme(doc, read(storage, THEME_KEY) || "auto", storage);
     const lang = read(storage, LANG_KEY);
@@ -243,9 +277,12 @@
     for (const button of doc.querySelectorAll("[data-copy]")) {
       button.addEventListener("click", () => { copyCode(doc, button, win.navigator); });
     }
+    for (const button of doc.querySelectorAll("button[data-training]")) {
+      button.addEventListener("click", () => { win.location.href = trainingMailto(doc, button); });
+    }
   }
 
-  root.zeroSite = { EN, applyLanguage, setTheme, copyCode };
+  root.zeroSite = { EN, applyLanguage, setTheme, copyCode, trainingMailto };
 
   if (root.document) {
     const doc = root.document;

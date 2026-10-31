@@ -181,7 +181,7 @@ describe("research quota", () => {
 
   it("the line researched least recently goes first", async () => {
     const { ctx } = factory({ lines: [withSkill("a"), withSkill("b")] });
-    ctx.store.setKv("research:a", at(3, 28).toISOString());
+    ctx.store.setKv("research:a:zero-research", at(3, 28).toISOString());
     const agents = fakeAgents({
       research: () => {
         // Owner work arrives during the first call: the pass stops after it.
