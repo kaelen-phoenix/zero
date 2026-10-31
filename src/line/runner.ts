@@ -16,7 +16,7 @@ import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../w
 import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { decide, decideNightShift, researchAutonomy, stricter, touchesManifest } from "./policy.js";
-import { blockingFindings, checkCitations, findingsFeedback, ReviewSchema } from "./review.js";
+import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
 import {
   capabilityExists,
   changeName,
@@ -592,7 +592,7 @@ async function buildLoop(
           if (signal.aborted || (run.ok && run.output)) {
             if (!run.output) return undefined;
             const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);
-            span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length });
+            span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length, "zero.findings.low_confidence": lowConfidence(valid).length });
             return { review: run.output, blocking: blockingFindings(valid) };
           }
         }

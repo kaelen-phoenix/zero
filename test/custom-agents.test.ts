@@ -29,7 +29,7 @@ function factory(opts: { agents?: unknown[]; global?: unknown[]; files?: Record<
 
 const writeHealth = (req: { cwd: string }) => void writeTree(req.cwd, { "src/health.ts": "export const status = 'ok';\n" });
 const deps = (ctx: FactoryContext, runner: RunnerDeps["runAgent"], extra: Partial<RunnerDeps> = {}): RunnerDeps => ({ ...ctx, runAgent: runner, ...extra });
-const critical = (file: string) => ({ output: cleanReview({ findings: [{ severity: "critical" as const, file, line: 1, problem: "image without alt", fix: "add alt text" }] }) });
+const critical = (file: string) => ({ output: cleanReview({ findings: [{ severity: "critical" as const, file, line: 1, problem: "image without alt", fix: "add alt text", confidence: 9 }] }) });
 const names = (calls: Parameters<typeof agentName>[0][]) => calls.map(agentName);
 
 describe("custom agents in the factory file", () => {
