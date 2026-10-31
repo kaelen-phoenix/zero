@@ -95,6 +95,8 @@ code, pre { font-family: var(--mono); font-size: 0.9em; }
 .top nav a:hover { text-decoration: underline; }
 .brand { font: 600 1rem var(--mono); text-decoration: none; letter-spacing: -0.02em; }
 
+[hidden] { display: none !important; }
+
 section { padding: 4.5rem 0; border-top: 1px solid var(--rule); }
 section.hero { border-top: 0; padding-top: 3rem; }
 
