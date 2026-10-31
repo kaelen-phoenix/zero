@@ -148,7 +148,7 @@ describe("sitio del proyecto: archivos", () => {
 describe("sitio del proyecto: contenido", () => {
   it("presenta las secciones en orden, con marcadores numerados", () => {
     const ids = [...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(["hero", "synopsis", "line", "autonomy", "night-shift", "guarantees", "install", "workflow", "compatibility", "training", "links"]);
+    expect(ids).toEqual(["hero", "synopsis", "line", "autonomy", "night-shift", "guarantees", "ci", "install", "workflow", "compatibility", "training", "links"]);
     ids.slice(1).forEach((id, i) => {
       const marker = /<span class="marker">(\d+)<\/span>/.exec(section(id!));
       expect(marker?.[1], id).toBe(String(i + 1).padStart(2, "0"));
@@ -171,6 +171,30 @@ describe("sitio del proyecto: contenido", () => {
     for (const station of ["scout", "research"]) expect(section("night-shift")).toContain(`<dt><code>${station}</code></dt>`);
     const guarantees = section("guarantees");
     for (const g of ["Rutas protegidas", "Verificación", "Secretos fuera de los archivos", "Caja de aislamiento"]) expect(guarantees).toContain(g);
+  });
+
+  it("explica que zero no reemplaza el CI ni las herramientas de calidad", () => {
+    const ci = section("ci");
+    for (const fact of ["GitHub Actions", "SonarQube", "SonarCloud", "CodeQL", "Dependabot", "Snyk", "<code>autoMerge</code>", "no reemplaza", "análisis estático", "ningún check"]) {
+      expect(ci, fact).toContain(fact);
+    }
+    const en = loadSite().EN;
+    const values = Object.entries(en).filter(([k]) => k.startsWith("ci.")).map(([, v]) => v).join("\n");
+    for (const fact of ["does not replace", "static analysis", "Sonar", "Vercel", "no checks"]) expect(values, fact).toContain(fact);
+  });
+
+  it("muestra el recorrido del pedido hasta el despliegue, traducible", () => {
+    const list = /<ol class="path">([\s\S]*?)<\/ol>/.exec(section("ci"))![1]!;
+    const items = [...list.matchAll(/<li data-i18n="([^"]+)">([\s\S]*?)<\/li>/g)].map((m) => ({ key: m[1]!, inner: m[2]! }));
+    expect(items).toHaveLength(6);
+    expect(items[1]!.inner).toContain("<code>spec</code>");
+    expect(items[1]!.inner).toContain("<code>security</code>");
+    const text = items.map((i) => i.inner).join("\n");
+    const at = ["pull request", "merge", "despliegue"].map((w) => text.indexOf(w));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    const en = loadSite().EN;
+    for (const item of items) expect(en[item.key], item.key).toBeTruthy();
   });
 
   it("no publica métricas, estrellas, clientes ni testimonios", () => {

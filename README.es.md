@@ -96,6 +96,27 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
 
+## zero, tu CI y tus herramientas de calidad
+
+zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
+
+```
+pedido
+  → zero: spec → build → verify → review → security
+  → pull request
+  → CI y checks de calidad de GitHub
+  → merge
+  → despliegue de la plataforma
+```
+
+- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar.
+- **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
+- **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
+- **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
+- **Los despliegues los sigue haciendo la plataforma** (por ejemplo Vercel o los workflows de GitHub), no zero.
+
+Recomendación: tener CI y al menos un análisis estático en cada repositorio. Sin eso, zero solo tiene su verificación local y sus propias revisiones.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
