@@ -81,6 +81,7 @@ function fakeGitHub(opts: { permissions?: Record<string, string> } = {}) {
   const at = () => new Date(Date.UTC(2030, 0, 1, 0, 0, ++clock)).toISOString();
   const api: IssueApi = {
     labeled: async (label) => issues.filter((i) => i.labels.includes(label)),
+    unlabeled: async () => [],
     issue: async (n) => ({ state: "open", labels: issues.find((i) => i.number === n)?.labels ?? [] }),
     lastLabeled: async (n) => labeledAt.get(n),
     permission: async (login) => opts.permissions?.[login] ?? (login === "owner" ? "admin" : "read"),

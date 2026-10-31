@@ -1,4 +1,4 @@
-import { AGENT_STATIONS, stationChain, type FactoryConfig } from "../config.js";
+import { AGENT_STATIONS, customAgentChain, stationChain, type FactoryConfig } from "../config.js";
 import type { SecretStore } from "../keychain.js";
 
 interface Requirement {
@@ -21,9 +21,10 @@ const BUILT_IN: Record<string, Requirement | null> = {
   antigravity: null,
 };
 
-/** The engines the factory's stations use, their replacements included. */
-export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine" | "fallback">): string[] {
-  return [...new Set(AGENT_STATIONS.flatMap((s) => stationChain(config, s).map((l) => l.engine)))];
+/** The engines the factory's stations and every line's custom agents use, their replacements included. */
+export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine" | "fallback"> & Partial<Pick<FactoryConfig, "agents" | "lines">>): string[] {
+  const custom = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((line) => line.agents)];
+  return [...new Set([...AGENT_STATIONS.flatMap((s) => stationChain(config, s)), ...custom.flatMap((a) => customAgentChain(config, a))].map((l) => l.engine))];
 }
 
 export interface EngineCredentials {

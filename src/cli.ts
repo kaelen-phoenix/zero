@@ -3,13 +3,13 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addSkill, answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatSkills, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatSkills, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -56,6 +56,10 @@ Panel en el navegador:
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
+  zero agent list [--line <nombre>]   Agentes a medida de cada línea, en el orden en que corren
+  zero agent add <nombre> --line <línea> [--informativo]
+                                 Suma un agente revisor a la línea (crea .zero/agents/<nombre>.md con una plantilla)
+  zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
@@ -75,6 +79,7 @@ async function main(argv: string[]): Promise<number> {
       name: { type: "string" },
       spec: { type: "boolean" },
       reject: { type: "boolean" },
+      informativo: { type: "boolean" },
       note: { type: "string" },
       days: { type: "string" },
       label: { type: "string" },
@@ -260,6 +265,17 @@ async function main(argv: string[]): Promise<number> {
         const started = await ensureDaemon(ctx);
         printPanel(panelLinks(ctx, { rotate: action === "rotate" }), action === "rotate");
         if (started) console.log("\nLa fábrica estaba apagada: la encendí (el panel tarda unos segundos en responder).");
+        return 0;
+      }
+      case "agent": {
+        const [action, name] = rest;
+        if (action === "list" || !action) {
+          console.log(formatAgents(agentList(ctx, values.line)));
+          return 0;
+        }
+        if (action !== "add" && action !== "remove") break;
+        if (!name || !values.line) throw new Error(`Indicá el agente y la línea: zero agent ${action} <nombre> --line <línea>`);
+        console.log(action === "add" ? await addAgent(ctx, { name, line: values.line, blocking: !values.informativo }) : await removeAgent(ctx, { name, line: values.line }));
         return 0;
       }
       case "skill": {

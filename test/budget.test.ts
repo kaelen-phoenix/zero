@@ -108,6 +108,29 @@ describe("budget", () => {
     expect(budgetState(paid, config({ usdPerDay: 10 }), now)).toMatchObject({ billing: "api", reached: true });
   });
 
+  it("pauses when a custom agent's only engine is paused, even if no station uses it", () => {
+    const store = testStore();
+    const tracer = new Tracer(store, at("2026-10-29T15:00:00Z"));
+    call(tracer, 1, plan({ limited: true, windows: [{ name: "five_hour", label: "5 horas", utilization: 1, status: "exhausted", resetsAt: "2026-10-29T18:00:00Z" }] }), "codex");
+    const now = new Date("2026-10-29T16:00:00Z");
+    const factory = (top: string, agents = "") => parseFactory(`engine: claude\n${top}lines:\n  - name: web\n    repo: /tmp/web\n${agents}`);
+    const seo = "    agents:\n      - name: seo\n        engine: codex\n";
+    expect(budgetState(store, factory(""), now).reached).toBe(false);
+    expect(budgetState(store, factory("", seo), now)).toMatchObject({ reached: true, until: "2026-10-29T18:00:00.000Z" });
+    expect(budgetState(store, factory("agents:\n  - name: docs\n    engine: codex\n"), now).reached).toBe(true);
+    // With a working replacement it reports the replacement instead.
+    expect(budgetState(store, factory("fallback: [claude]\n", seo), now)).toMatchObject({ reached: false, replacements: [{ engine: "codex", with: "claude" }] });
+  });
+
+  it("caps a custom agent's per-use engine by its own daily dollars", () => {
+    const store = testStore();
+    call(new Tracer(store, at("2026-10-29T15:00:00Z")), 11, { billing: "api", windows: [] }, "codex");
+    const factory = parseFactory("engine: claude\nlimits: {usdPerDay: 10}\nlines:\n  - name: web\n    repo: /tmp/web\n    agents:\n      - name: seo\n        engine: codex\n");
+    const b = budgetState(store, factory, new Date("2026-10-29T15:05:00Z"));
+    expect(b.reached).toBe(true);
+    expect(b.engines.map((e) => e.engine)).toContain("codex");
+  });
+
   it("shows the plan instead of dollars in the status", () => {
     const ctx = testFactory({ lines: [] }, at("2026-10-29T15:00:00Z"));
     call(ctx.tracer, 11.16, plan());

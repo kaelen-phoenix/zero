@@ -34,6 +34,8 @@ export interface IssueComment {
 /** The slice of GitHub the intake needs; tests use a fake. */
 export interface IssueApi {
   labeled(label: string): Promise<Issue[]>;
+  /** Open issues without any label, pull requests left out, newest first. */
+  unlabeled(): Promise<Issue[]>;
   /** The issue's state and labels now, and who closed it when it is closed. */
   issue(number: number): Promise<{ state: "open" | "closed"; labels: string[]; closedBy?: string }>;
   /** Who applied the label last, and when. */
@@ -54,6 +56,9 @@ export interface IssueApi {
 /** GitHub lists labels as names or as objects. */
 const labelNames = (labels: (string | { name?: string })[]) => labels.map((l) => (typeof l === "string" ? l : (l.name ?? ""))).filter(Boolean);
 
+type RestIssue = { number: number; title: string; body?: string | null; user: { login: string } | null; html_url: string; pull_request?: unknown; labels: (string | { name?: string })[] };
+const toIssue = (i: RestIssue): Issue => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request), labels: labelNames(i.labels) });
+
 export function githubIssues(token: string, repository: string): IssueApi {
   const [owner, repo] = repository.split("/") as [string, string];
   // Missing labels and permissions are expected answers, not errors to print.
@@ -61,7 +66,11 @@ export function githubIssues(token: string, repository: string): IssueApi {
   return {
     async labeled(label) {
       const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
-      return issues.map((i) => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request), labels: labelNames(i.labels) }));
+      return issues.map(toIssue);
+    },
+    async unlabeled() {
+      const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", sort: "created", direction: "desc", per_page: 100 });
+      return issues.map(toIssue).filter((i) => !i.isPullRequest && !i.labels.length);
     },
     async issue(number) {
       const { data } = await gh.issues.get({ owner, repo, issue_number: number });

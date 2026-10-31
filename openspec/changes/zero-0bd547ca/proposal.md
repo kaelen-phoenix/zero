@@ -1,0 +1,29 @@
+# Proposal
+
+## Why
+
+Vas a tener el sitio del proyecto para zerointheloop.com en la carpeta site/ del repo. Son HTML, CSS y un poco de JavaScript, sin dependencias ni paso de build, así que Vercel lo publica tal cual si ponés site/ como carpeta raíz. El estilo es técnico y editorial (inspirado en openspec.dev, sin copiarlo): - mucho espacio en blanco, sans-serif para el texto y monoespaciada para la terminal; - etiquetas chicas en mayúsculas, marcadores 01, 02… y rótulos tipo "FIG. 1 / LÍNEA"; - en el encabezado, una figura SVG de la línea de producción: estaciones, el trabajo pasando y el dueño como el punto que vuelve a entrar. Las secciones van en este orden: 1. título y bajada; 2. sinopsis; 3. la línea y sus estaciones; 4. niveles L0–L3 y la autonomía por línea (propose, build, auto); 5. el turno nocturno (scout y research); 6. las garantías; 7. instalación, con botón de copiar; 8. el flujo de trabajo con sus comandos; 9. la grilla de motores y clientes de chat; 10. los enlaces. El pie muestra GitHub, la versión, la licencia y el selector de tema auto, claro u oscuro. Está en español (primero) e inglés, con selector. Es accesible, se lee bien en el celular y es liviano. Trae metadatos para compartir con su imagen, favicon, robots.txt y sitemap.xml. No tiene formularios, cookies ni analítica, y no publica nada privado. Todo sale del README: lo que todavía no existe dice "en camino". Unos tests automáticos cuidan esas reglas, y el README suma una línea con el sitio y cómo se publica.
+
+Pedido original: "Sitio web del proyecto para el dominio zerointheloop.com (ya comprado en Vercel), con un estilo inspirado en https://openspec.dev/ (reemplaza al trabajo f977b6eb, que se detuvo). Vive en la carpeta site/ de este repo, como sitio estático (HTML, CSS y un poco de JS sin dependencias ni paso de build), así no agrega nada a npm ci ni a las verificaciones del repo; Vercel lo publica con site/ como carpeta raíz. Estilo (inspirado en openspec.dev, sin copiar su marca, sus textos ni sus gráficos): técnico y editorial, minimalista, mucho espacio en blanco. Texto en una sans-serif limpia y todo lo de terminal en monoespaciada. Etiquetas chicas en mayúsculas y marcadores numerados (01, 02…) y rótulos de diagrama del tipo "FIG. 1 / LÍNEA". Una figura abstracta y sobria en el encabezado, hecha en SVG, que muestre la línea de producción (estaciones como nodos, el trabajo pasando, el humano como un punto que entra donde el dueño decide). Encabezado mínimo: enlaces a Docs (el README en GitHub) y GitHub. Bloque de instalación con el comando en un recuadro de código y botón de copiar. Flujo de trabajo como lista vertical numerada: cada paso con su comando en monoespaciada (zero request, zero status, zero approve, zero proposals…) y una línea de descripción. Grilla densa con los motores y clientes de chat compatibles que soporta hoy. Pie compacto con GitHub, versión de package.json, licencia y un selector de tema auto / claro / oscuro. Contenido, en este orden: título y bajada (zero in the loop: la fábrica ocupa el lugar del humano en el circuito, y el dueño decide dónde vuelve a entrar); sinopsis corta (una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados); la línea de producción y sus estaciones; niveles de autonomía L0 a L3 y la autonomía por línea (propose, build, auto); el turno nocturno (scout y research); las garantías que impone zero (rutas protegidas, verificación, secretos fuera de los archivos, caja de aislamiento); instalación y primeros pasos; flujo de trabajo; compatibilidad; enlaces. Todo sale del README y de lo que zero hace de verdad hoy: nada inventado, ni métricas, ni estrellas, ni clientes, ni testimonios. Lo que está "en camino" se marca así. Idiomas: español e inglés con selector, el español primero. Accesible (contraste AA en los dos temas, navegación con teclado, textos alternativos, respeta prefers-reduced-motion), se lee bien en el teléfono, liviano y rápido. Metadatos para compartir (título, descripción, imagen Open Graph dentro de site/), favicon, robots.txt y sitemap.xml para https://zerointheloop.com. Sin formularios, sin cookies, sin analítica de terceros y sin recolectar datos; nunca publica claves, links del panel, rutas de la PC ni nada de zero.factory.yaml. Sumar al README una línea con el sitio y cómo se publica."
+
+## What Changes
+
+- Sitio web estático de zero en site/ (zerointheloop.com)
+- Supuesto: Assumption: install instructions use git clone + npm install && npm run build, because the package is private and not on npm. The installer is listed in the README as a future step, so it is marked 'en camino'.
+- Supuesto: Assumption: 'no agrega nada a las verificaciones' means no new dependencies or build steps. A Vitest test that reads site/ with node fs is still added, so that verification can enforce the requirements.
+- Supuesto: The footer version is hard-coded, since Vercel only serves site/ and a static site cannot read package.json. A test keeps it in sync, so bumping the version means editing site/index.html too.
+- Supuesto: Producing a PNG Open Graph image without tools may be hard for the build agent. An SVG og image is not supported by every social network. A small hand-written PNG or a committed binary is acceptable.
+- Supuesto: Contrast is checked automatically only for the declared CSS custom property pairs, not for every rendered combination.
+- Supuesto: Vercel project configuration (root directory site/, domain) is done by the owner in Vercel. The factory has no Vercel access.
+- Supuesto: The f977b6eb job it replaces left no code on main (there is no site/ directory), so this starts from scratch.
+
+## Capabilities
+
+### New Capabilities
+- `project-site`: Sitio web estático de zero en site/ (zerointheloop.com)
+
+### Modified Capabilities
+
+## Impact
+
+Generado por zero para el trabajo 0bd547ca.

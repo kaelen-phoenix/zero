@@ -5,6 +5,8 @@ import { LearningSchema } from "../townhall/types.js";
 
 export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
 const BLOCKING = new Set(["high", "critical"]);
+/** Below this confidence a finding is recorded but never rejects a change. */
+export const MIN_CONFIDENCE = 8;
 
 const FindingSchema = z.object({
   severity: z.enum(SEVERITIES),
@@ -12,6 +14,7 @@ const FindingSchema = z.object({
   line: z.number().int().describe("1-based line number in that file."),
   problem: z.string(),
   fix: z.string(),
+  confidence: z.number().int().min(1).max(10).describe(`How sure you are that this is a real defect, from 1 (a guess) to 10 (certain). Only findings with confidence ${MIN_CONFIDENCE} or more can block.`),
 });
 
 export const ReviewSchema = z.object({
@@ -40,11 +43,18 @@ export function checkCitations(cwd: string, findings: Finding[]): { valid: Findi
   return { valid, invalid };
 }
 
-/** The factory decides, not the reviewer: only verified high or critical findings reject a change. */
+/** The factory decides, not the reviewer: only verified high or critical findings the reviewer is sure of reject a change. */
 export function blockingFindings(valid: Finding[]): Finding[] {
-  return valid.filter((f) => BLOCKING.has(f.severity));
+  return valid.filter((f) => BLOCKING.has(f.severity) && f.confidence >= MIN_CONFIDENCE);
 }
 
-export function findingsFeedback(findings: Finding[], station: "review" | "security" = "review"): string {
-  return `${station === "security" ? "La revisión de seguridad encontró problemas" : "La revisión encontró defectos"} que hay que corregir:\n${findings.map((f) => `- [${f.severity}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
+/** Verified high or critical findings that do not block because their confidence is below the threshold. */
+export function lowConfidence(valid: Finding[]): Finding[] {
+  return valid.filter((f) => BLOCKING.has(f.severity) && f.confidence < MIN_CONFIDENCE);
+}
+
+/** What build hears about the findings of a reviewer: review, security or a custom agent, by name. */
+export function findingsFeedback(findings: Finding[], station: string = "review"): string {
+  const who = station === "security" ? "La revisión de seguridad encontró problemas" : station === "review" ? "La revisión encontró defectos" : `El agente ${station} encontró problemas`;
+  return `${who} que hay que corregir:\n${findings.map((f) => `- [${f.severity}, confianza ${f.confidence}] ${f.file}:${f.line}: ${f.problem} → ${f.fix}`).join("\n")}`;
 }

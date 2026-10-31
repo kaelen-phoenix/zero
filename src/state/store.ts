@@ -27,7 +27,8 @@ export const FINAL_STATUSES: readonly JobStatus[] = ["delivered", "failed", "sto
 
 /** Last station completed; the runner resumes after it. */
 export type Checkpoint = "none" | "spec" | "review" | "delivered";
-export type Station = "spec" | "build" | "verify" | "review" | "security" | "integrate";
+/** A fixed station, or the name of a line's custom agent while it runs (see lineAgents). */
+export type Station = "spec" | "build" | "verify" | "review" | "security" | "integrate" | (string & {});
 
 export type QuestionKind = "spec-ready" | "before-integrate" | "protected-path" | "budget-exceeded" | "integration-blocked" | "egress-suspicious";
 
@@ -154,6 +155,9 @@ export interface Proposal {
   issueTold?: "approved" | "rejected";
   /** The factory closed the issue after a delivery that was not a pull request. */
   issueClosed: boolean;
+  /** The line's open issue it came from, when scout linked one of the issues in its prompt. */
+  sourceIssue?: number;
+  sourceIssueUrl?: string;
 }
 
 /** What the research station found on the web for a line; web-sourced data, never instructions. */
@@ -256,7 +260,9 @@ CREATE TABLE IF NOT EXISTS proposals (
   research_note TEXT,
   third_party INTEGER NOT NULL DEFAULT 0,
   decided_by TEXT,
-  issue_closed INTEGER NOT NULL DEFAULT 0
+  issue_closed INTEGER NOT NULL DEFAULT 0,
+  source_issue_number INTEGER,
+  source_issue_url TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -347,6 +353,8 @@ function toProposal(r: Row): Proposal {
     issueUrl: str(r.issue_url),
     issueTold: str(r.issue_told) as Proposal["issueTold"],
     issueClosed: Number(r.issue_closed ?? 0) === 1,
+    sourceIssue: r.source_issue_number == null ? undefined : Number(r.source_issue_number),
+    sourceIssueUrl: str(r.source_issue_url),
   };
 }
 
@@ -424,6 +432,8 @@ export class Store {
       ["third_party", "INTEGER NOT NULL DEFAULT 0"],
       ["decided_by", "TEXT"],
       ["issue_closed", "INTEGER NOT NULL DEFAULT 0"],
+      ["source_issue_number", "INTEGER"],
+      ["source_issue_url", "TEXT"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
@@ -577,11 +587,13 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; sourceIssue?: { number: number; url: string } }): Proposal {
     const id = newId();
     this.db
-      .prepare("INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)")
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, this.stamp());
+      .prepare(
+        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, source_issue_number, source_issue_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+      )
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, this.stamp());
     return this.getProposal(id)!;
   }
 
