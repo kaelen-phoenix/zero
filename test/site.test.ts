@@ -62,6 +62,7 @@ class FakeElement {
   textContent = "";
   private attrs = new Map<string, string>();
   listeners: Record<string, () => void> = {};
+  parent: FakeElement | null = null;
   constructor(attrs: Record<string, string> = {}, inner = "") {
     for (const [k, v] of Object.entries(attrs)) this.attrs.set(k, v);
     this.innerHTML = inner;
@@ -72,6 +73,35 @@ class FakeElement {
   removeAttribute(name: string) { this.attrs.delete(name); }
   hasAttribute(name: string) { return this.attrs.has(name); }
   addEventListener(type: string, fn: () => void) { this.listeners[type] = fn; }
+  /** Only single '[attr]' selectors, like querySelectorAll. */
+  closest(selector: string): FakeElement | null {
+    const attr = /^\[([\w-]+)\]$/.exec(selector)![1]!;
+    for (let el: FakeElement | null = this; el; el = el.parent) if (el.hasAttribute(attr)) return el;
+    return null;
+  }
+}
+
+/** Elements marked data-lang-only and section markers, in document order; a marker's parent is the data-lang-only section around it. */
+function scoped(source: string): FakeElement[] {
+  const re = /<(a|section)\b[^>]*\bdata-lang-only="([^"]+)"[^>]*>|<span class="marker" data-marker>(\d+)<\/span>/g;
+  const out: FakeElement[] = [];
+  let open: { el: FakeElement; end: number } | null = null;
+  for (const m of source.matchAll(re)) {
+    if (open && m.index! >= open.end) open = null;
+    if (m[3] !== undefined) {
+      const marker = new FakeElement({ "data-marker": "" }, m[3]);
+      marker.parent = open?.el ?? null;
+      out.push(marker);
+      continue;
+    }
+    const el = new FakeElement({ "data-lang-only": m[2]! });
+    out.push(el);
+    if (m[1] === "section") {
+      const rest = source.slice(m.index! + 1);
+      open = { el, end: m.index! + 1 + rest.search(/<section |<\/main>/) };
+    }
+  }
+  return out;
 }
 
 function fakeDocument() {
@@ -81,6 +111,7 @@ function fakeDocument() {
     ...hrefs(html).map((h) => new FakeElement({ "data-i18n-href": h.key, href: h.href })),
     new FakeElement({ "data-lang": "es" }), new FakeElement({ "data-lang": "en" }),
     ...["auto", "light", "dark"].map((t) => new FakeElement({ "data-theme-choice": t })),
+    ...scoped(html),
   ];
   const byId: Record<string, FakeElement> = {
     "install-code": new FakeElement({}, "npm install && npm run build"),
@@ -150,7 +181,7 @@ describe("sitio del proyecto: contenido", () => {
     const ids = [...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]);
     expect(ids).toEqual(["hero", "synopsis", "line", "autonomy", "night-shift", "guarantees", "ci", "install", "workflow", "compatibility", "training", "links"]);
     ids.slice(1).forEach((id, i) => {
-      const marker = /<span class="marker">(\d+)<\/span>/.exec(section(id!));
+      const marker = /<span class="marker" data-marker[^>]*>(\d+)<\/span>/.exec(section(id!));
       expect(marker?.[1], id).toBe(String(i + 1).padStart(2, "0"));
     });
   });
@@ -284,9 +315,9 @@ describe("sitio del proyecto: capacitaciones", () => {
     return { to: m![1]!, subject: decodeURIComponent(m![2]!), body: decodeURIComponent(m![3]!) };
   }
 
-  it("el menú enlaza la sección en los dos idiomas", () => {
+  it("el menú enlaza la sección, marcada solo para español", () => {
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)![1]!;
-    const link = /<a href="#training" data-i18n="([^"]+)">Capacitaciones<\/a>/.exec(header);
+    const link = /<a href="#training" data-lang-only="es" data-i18n="([^"]+)">Capacitaciones<\/a>/.exec(header);
     expect(link).not.toBeNull();
     expect(loadSite().EN[link![1]!]).toBe("Training");
     expect(header).toContain(`<a href="${README_ES}" data-i18n-href="href.readme">Docs</a>`);
@@ -351,6 +382,50 @@ describe("sitio del proyecto: capacitaciones", () => {
       expect(text, file).not.toContain(ADDRESS);
       expect(text, file).not.toMatch(/mailto:[^"'\s?]*@/);
     }
+  });
+
+  it("solo el enlace del menú y la sección llevan data-lang-only, sin hidden en el marcado", () => {
+    const marked = [...html.matchAll(/<[^>]*\bdata-lang-only="[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(marked).toHaveLength(2);
+    expect(marked[0]).toMatch(/^<a href="#training" data-lang-only="es"/);
+    expect(marked[1]).toMatch(/^<section id="training" data-lang-only="es"/);
+    for (const tag of marked) expect(tag).not.toMatch(/\shidden\b/);
+  });
+
+  it("se oculta en inglés y reaparece en español", () => {
+    const site = loadSite();
+    const doc = fakeDocument();
+    const storage = fakeStorage();
+    const only = doc.elements.filter((e) => e.hasAttribute("data-lang-only"));
+    expect(only).toHaveLength(2);
+    site.applyLanguage(doc, "en", storage);
+    for (const el of only) expect(el.hasAttribute("hidden")).toBe(true);
+    site.applyLanguage(doc, "es", storage);
+    for (const el of only) expect(el.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("la numeración de las secciones es correlativa en los dos idiomas", () => {
+    const site = loadSite();
+    const doc = fakeDocument();
+    const storage = fakeStorage();
+    const markers = doc.elements.filter((e) => e.hasAttribute("data-marker"));
+    const visible = () => markers.filter((m) => !m.closest("[hidden]")).map((m) => m.textContent);
+    const numbers = (n: number) => Array.from({ length: n }, (_, i) => String(i + 1).padStart(2, "0"));
+    const [training, links] = [markers[9]!, markers[10]!];
+    expect(training.parent?.getAttribute("data-lang-only")).toBe("es");
+    expect(visible()).toEqual(numbers(11));
+    site.applyLanguage(doc, "es", storage);
+    expect(visible()).toEqual(numbers(11));
+    site.applyLanguage(doc, "en", storage);
+    expect(visible()).toEqual(numbers(10));
+    expect(links.textContent).toBe("10");
+    site.applyLanguage(doc, "es", storage);
+    expect(visible()).toEqual(numbers(11));
+    expect([training.textContent, links.textContent]).toEqual(["10", "11"]);
+  });
+
+  it("styles.css oculta [hidden] aunque una clase fije display", () => {
+    expect(css).toMatch(/\[hidden\]\s*\{\s*display:\s*none/);
   });
 
   it("sin JavaScript explica cómo escribir a mano", () => {
@@ -562,5 +637,10 @@ describe("README", () => {
   it.each([["README.md", "Training"], ["README.es.md", "Capacitaciones"]])("%s menciona la sección %s del sitio", (file, name) => {
     const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
     expect(paragraph).toContain(name);
+  });
+
+  it.each([["README.md", "Spanish"], ["README.es.md", "español"]])("%s aclara que la sección está solo en la versión en español", (file, word) => {
+    const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
+    expect(paragraph).toContain(word);
   });
 });

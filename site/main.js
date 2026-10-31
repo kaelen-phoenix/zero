@@ -1,4 +1,5 @@
 // zero in the loop: language, theme, copy and training buttons. Plain JS, no dependencies, no network, no cookies.
+// Elements marked data-lang-only show only in that language, and the section markers are renumbered to skip them.
 // The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
@@ -216,6 +217,17 @@
     doc.title = text("meta.title");
     doc.documentElement.setAttribute("lang", lang);
     for (const button of doc.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.getAttribute("data-lang") === lang));
+    for (const el of doc.querySelectorAll("[data-lang-only]")) {
+      if (el.getAttribute("data-lang-only") === lang) el.removeAttribute("hidden");
+      else el.setAttribute("hidden", "");
+    }
+    // Visible sections stay numbered 01, 02, … in both languages.
+    let n = 0;
+    for (const marker of doc.querySelectorAll("[data-marker]")) {
+      const only = marker.closest("[data-lang-only]");
+      if (only && only.getAttribute("data-lang-only") !== lang) continue;
+      marker.textContent = String(++n).padStart(2, "0");
+    }
     write(storage, LANG_KEY, lang);
     return lang;
   }
