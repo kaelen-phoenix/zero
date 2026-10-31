@@ -115,6 +115,8 @@ pedido
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
 - **Los despliegues los sigue haciendo la plataforma** (por ejemplo Vercel o los workflows de GitHub), no zero.
 
+El repositorio de zero hace lo mismo: CodeQL analiza el código JavaScript/TypeScript en cada pull request y en main, y es un check más que `autoMerge` espera; Dependabot revisa las dependencias de npm y de GitHub Actions de forma semanal. SonarCloud todavía no está configurado, porque necesita que el dueño cree una cuenta.
+
 Recomendación: tener CI y al menos un análisis estático en cada repositorio. Sin eso, zero solo tiene su verificación local y sus propias revisiones.
 
 ## Panel en el navegador
