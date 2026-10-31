@@ -10,13 +10,14 @@ import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
-import { loadFactory, type FactoryConfig } from "./config.js";
+import { lineSignature, loadFactory, type FactoryConfig, type LineConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
+import { signedIssues, signedMerges } from "./signature.js";
 import { log } from "./log.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
@@ -35,9 +36,9 @@ export interface DaemonOptions {
   /** Builds the executor for a ready box; tests inject a simulated one. */
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
   /** GitHub for the issue intake; tests inject a fake. */
-  issues?: (repository: string) => IssueApi | undefined;
+  issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
   /** GitHub for automatic merging; tests inject a fake. */
-  merges?: (repository: string) => MergeApi | undefined;
+  merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
   panel?: boolean;
   /** Run the night shift (scout) while the factory is idle. Defaults to on, except in `once` runs. */
@@ -49,14 +50,15 @@ export interface DaemonOptions {
 const BOX_RECHECK_MS = 10 * 60_000;
 const INTAKE_MS = 60_000;
 
-const realIssues = (repository: string) => {
+/** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line). */
+const realIssues = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? githubIssues(token, repository) : undefined;
+  return token ? signedIssues(githubIssues(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-const realMerges = (repository: string) => {
+const realMerges = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? githubMerges(token, repository) : undefined;
+  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
 interface Running {
@@ -131,7 +133,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const takeIssues = () => {
     if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
     intakeAt = Date.now();
-    intake = pollIssues(ctx, opts.issues ?? realIssues, { runAgent: agentRunner(ctx.config) })
+    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx), { runAgent: agentRunner(ctx.config) })
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
       .finally(() => (intake = undefined));
   };
@@ -141,7 +143,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const syncProposals = () => {
     if (publishing || !ctx.config.lines.length || Date.now() - proposalsAt < (opts.once ? 0 : INTAKE_MS)) return;
     proposalsAt = Date.now();
-    const api = opts.issues ?? realIssues;
+    const api = opts.issues ?? realIssues(ctx);
     publishing = syncProposalIssues(ctx, api)
       .catch((err) => log.warn("proposal issues failed", { error: String(err) }))
       .then(() => syncResearchIssues(ctx, api))
@@ -154,7 +156,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const mergeReady = () => {
     if (merging || !ctx.config.lines.some((l) => l.autoMerge) || Date.now() - mergesAt < (opts.once ? 0 : INTAKE_MS)) return;
     mergesAt = Date.now();
-    merging = pollMerges(ctx, opts.merges ?? realMerges)
+    merging = pollMerges(ctx, opts.merges ?? realMerges(ctx))
       .catch((err) => log.warn("automatic merge failed", { error: String(err) }))
       .finally(() => (merging = undefined));
   };
@@ -164,7 +166,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   const findReverts = () => {
     if (checkingReverts || !ctx.config.lines.length || Date.now() - revertsAt < (opts.once ? 0 : INTAKE_MS)) return;
     revertsAt = Date.now();
-    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges)
+    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges(ctx))
       .catch((err) => log.warn("revert detection failed", { error: String(err) }))
       .finally(() => (checkingReverts = undefined));
   };
@@ -173,7 +175,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
   let scouting: Promise<void> | undefined;
   const scout = () => {
     if (scouting || !(opts.scout ?? !opts.once) || ctx.config.nightShift === "off" || running.size) return;
-    scouting = scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues)
+    scouting = scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx))
       .catch((err) => log.warn("night shift failed", { error: String(err) }))
       .finally(() => (scouting = undefined));
   };

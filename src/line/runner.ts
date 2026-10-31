@@ -5,9 +5,10 @@ import { dirname, join } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation, CustomAgentRun } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "../budget.js";
-import { customAgentChain, effectiveLevel, findLine, lineAgents, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig } from "../config.js";
+import { customAgentChain, effectiveLevel, findLine, lineAgents, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
+import { signText, withTrailer } from "../signature.js";
 import { git, sh, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
@@ -139,7 +140,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       return integrate(line, copy, {
         jobId,
         title: spec.title,
-        body: deliveryBody(spec, job!, store),
+        body: deliveryBody(spec, job!, store, lineSignature(config, line)),
+        signature: lineSignature(config, line),
         scratchDir: join(deps.home.worktrees, line.name),
       });
     });
@@ -281,10 +283,10 @@ function nightShiftHold(deps: RunnerDeps, job: Job, copy: WorkCopy): string | un
 }
 
 /** What the pull request says:the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
-export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">): string {
+export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">, signature?: Signature): string {
   const issue = job.source?.kind === "github-issue" ? job.source.number : job.source?.kind === "night-shift" ? store?.getProposal(job.source.proposal)?.issueNumber : undefined;
   const closes = issue !== undefined ? `\n\nCloses #${issue}` : "";
-  return `${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`;
+  return signText(`${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`, signature);
 }
 
 /**
@@ -368,7 +370,7 @@ async function specStation(
     await writeFiles(join(deps.home.jobs, job.id, "openspec"), files);
     if (existsSync(join(copy.cwd, "openspec"))) {
       await writeFiles(join(copy.cwd, "openspec", "changes", changeName(job.id)), files);
-      copy.commitAll(`zero(${job.id}): especificación`);
+      copy.commitAll(withTrailer(`zero(${job.id}): especificación`, lineSignature(deps.config, line)));
     }
     span.set({ "zero.requirements": spec.requirements.length });
     store.updateJob(job.id, { spec, title: spec.title, checkpoint: "spec" });
@@ -498,7 +500,7 @@ async function buildLoop(
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
         continue;
       }
-      copy.commitAll(`zero(${jobId}): intento ${attempt}`);
+      copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}`, lineSignature(config, line)));
       if (!copy.changedFiles().some((f) => !f.path.startsWith(specFiles))) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
         continue;

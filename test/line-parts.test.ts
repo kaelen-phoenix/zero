@@ -225,6 +225,27 @@ describe("integration", () => {
     expect(await integrate(line(repo, "branch"), copy, opts())).toEqual({ ok: true, delivery: { mode: "branch", branch: "zero/j1" } });
   });
 
+  it("signs the merge commit with the trailer as its last line, and not when the signature is off", async () => {
+    const trailer = "Built-by: zero in the loop <https://zerointheloop.com>";
+    const repo = gitRepo();
+    const copy = await copyOf(repo);
+    writeTree(copy.cwd, { "a.txt": "x\n" });
+    copy.commitAll("a");
+    const signature = { text: "t", trailer };
+    expect(mergeIntoBase(line(repo), copy, { ...opts(), signature }).ok).toBe(true);
+    const message = gitIn(repo, "log", "-1", "--format=%B", "main");
+    expect(message.split("\n")[0]).toBe("zero: Add a (j1)");
+    expect(message.trim().split("\n").at(-1)).toBe(trailer);
+    expect(gitIn(repo, "log", "-1", "--format=%(trailers:key=Built-by,valueonly)", "main")).toBe("zero in the loop <https://zerointheloop.com>");
+
+    const unsigned = gitRepo();
+    const other = await copyOf(unsigned);
+    writeTree(other.cwd, { "a.txt": "x\n" });
+    other.commitAll("a");
+    expect(mergeIntoBase(line(unsigned), other, opts()).ok).toBe(true);
+    expect(gitIn(unsigned, "log", "--format=%B", "main")).not.toContain("Built-by:");
+  });
+
   it("parses GitHub remotes", () => {
     expect(githubRepository("https://github.com/kaelen-phoenix/zero.git")).toBe("kaelen-phoenix/zero");
     expect(githubRepository("git@github.com:kaelen-phoenix/zero.git")).toBe("kaelen-phoenix/zero");

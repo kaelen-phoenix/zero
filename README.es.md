@@ -162,6 +162,9 @@ limits:                   # con una suscripción (claude.ai) el límite es el cu
   usdPerJob: 3            # solo si se paga por uso
   protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
+signature:                # lo que construye la fábrica lleva esta firma · `signature: off` la apaga
+  text: "— Hecho con [zero in the loop](https://zerointheloop.com)"   # pull requests, issues y comentarios
+  trailer: "Built-by: zero in the loop <https://zerointheloop.com>"   # trailer de cada commit
 stations:                 # motor, modelo y tiempo límite por estación (opcional)
   review: { engine: codex, timeoutMinutes: 15 }
   security: { engine: claude }   # la revisión de seguridad; con otro motor, la mirada es más independiente
@@ -179,6 +182,7 @@ lines:
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
     stations:                 # opcional: skills que un agente suma solo en esta línea
       build: { skills: [nextjs, shadcn] }
+    signature: off            # opcional: la firma propia de esta línea, reemplaza la global
 ```
 
 Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
@@ -206,6 +210,10 @@ stations:
 ```
 
 Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué.
+
+### Firma (`signature`)
+
+Todo lo que construye la fábrica lleva la firma de zero in the loop. Cada commit que hace (la especificación, cada intento y el merge de integración) termina con el trailer `Built-by: zero in the loop <https://zerointheloop.com>`, y los pull requests que abre, los issues que crea y los comentarios que publica terminan con `— Hecho con [zero in the loop](https://zerointheloop.com)`, antes de la marca oculta con la que la fábrica reconoce sus propios comentarios. Viene encendida con esos textos; `text` y `trailer` los cambian (el trailer es una sola línea `Token: valor`) y `signature: off` la apaga. La `signature` propia de una línea (`off` o `{ text, trailer }`) reemplaza la global para esa línea.
 
 ## Agentes a medida
 

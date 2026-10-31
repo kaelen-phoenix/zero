@@ -162,6 +162,9 @@ limits:                   # with a subscription (claude.ai) the limit is the pla
   usdPerJob: 3            # only for pay-per-use
   protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
+signature:                # what the factory builds carries this signature · `signature: off` turns it off
+  text: "— Hecho con [zero in the loop](https://zerointheloop.com)"   # pull requests, issues and comments
+  trailer: "Built-by: zero in the loop <https://zerointheloop.com>"   # trailer of every commit
 stations:                 # engine, model and time limit per station (optional)
   review: { engine: codex, timeoutMinutes: 15 }
   security: { engine: claude }   # the security review; with another engine, the look is more independent
@@ -179,6 +182,7 @@ lines:
     autoMerge: false          # with pull-request: the factory merges when all checks pass
     stations:                 # optional: skills an agent adds only on this line
       build: { skills: [nextjs, shadcn] }
+    signature: off            # optional: this line's own signature, replaces the global one
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.
@@ -206,6 +210,10 @@ stations:
 ```
 
 Each call records in its trace which engine it used, which one it replaced and why.
+
+### Signature (`signature`)
+
+Everything the factory builds is signed by zero in the loop. Every commit it makes (the specification, each attempt and the integration merge) ends with the trailer `Built-by: zero in the loop <https://zerointheloop.com>`, and the pull requests it opens, the issues it creates and the comments it posts end with `— Hecho con [zero in the loop](https://zerointheloop.com)`, before the hidden mark the factory uses to recognise its own comments. It is on by default with those texts; `text` and `trailer` change them (the trailer is one `Token: value` line) and `signature: off` turns it off. A line's own `signature` (`off` or `{ text, trailer }`) replaces the global one for that line.
 
 ## Custom agents
 
