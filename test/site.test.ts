@@ -305,7 +305,7 @@ describe("sitio del proyecto: instalación y flujo", () => {
 });
 
 describe("sitio del proyecto: capacitaciones", () => {
-  const FORMATS = ["talk", "workshop", "mentoring", "companies"];
+  const FORMATS = ["talk", "workshop", "mentoring"];
   const ADDRESS = ["kaelen.dev", "gmail.com"].join("@");
 
   /** The subject and body of a mailto: URL, decoded. */
@@ -324,10 +324,11 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(header).toContain('<a href="https://github.com/kaelen-phoenix/zero">GitHub</a>');
   });
 
-  it("lista los cuatro formatos, a consultar y sin precios", () => {
+  it("lista los tres formatos, a consultar y sin precios", () => {
     const training = section("training");
     expect([...training.matchAll(/data-training="([^"]+)"/g)].map((m) => m[1])).toEqual(FORMATS);
-    for (const title of ["Charla abierta", "Taller grupal", "Mentoría individual", "Empresas"]) expect(training).toContain(title);
+    for (const title of ["Charla abierta", "Taller grupal", "Mentoría individual"]) expect(training).toContain(title);
+    expect(training).not.toContain("Empresas");
     const site = loadSite();
     for (const format of FORMATS) {
       const titleKey = `training.${format}.title`;
@@ -335,7 +336,7 @@ describe("sitio del proyecto: capacitaciones", () => {
       expect(translatable(training).some((t) => t.key === `training.${format}`), format).toBe(true);
     }
     const onRequest = translatable(training).filter((t) => t.inner === "a consultar");
-    expect(onRequest).toHaveLength(4);
+    expect(onRequest).toHaveLength(3);
     for (const t of onRequest) expect(site.EN[t.key]).toBe("on request");
     const text = squash(training.replace(/<[^>]+>/g, " "));
     expect(text).not.toMatch(/\$|USD|ARS|€|precio|price/i);
@@ -363,7 +364,8 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(url.startsWith(`mailto:${ADDRESS}?subject=`)).toBe(true);
     const { subject, body } = mail(url);
     expect(subject).toBe("Capacitación: Charla abierta");
-    for (const field of ["Nombre:", "Empresa (opcional):", "Cuántas personas:", "Qué busca"]) expect(body).toContain(field);
+    for (const field of ["Nombre:", "Cuántas personas:", "Qué busca"]) expect(body).toContain(field);
+    expect(body).not.toContain("Empresa");
     expect(url).not.toMatch(/ /);
   });
 
@@ -371,10 +373,20 @@ describe("sitio del proyecto: capacitaciones", () => {
     const site = loadSite();
     const doc = fakeDocument();
     site.applyLanguage(doc, "en", fakeStorage());
-    const { to, subject, body } = mail(site.trainingMailto(doc, new FakeElement({ "data-training": "companies" })));
+    const { to, subject, body } = mail(site.trainingMailto(doc, new FakeElement({ "data-training": "mentoring" })));
     expect(to).toBe(ADDRESS);
-    expect(subject).toBe(`Training: ${site.EN["training.companies.title"]}`);
-    for (const field of ["Name", "Company (optional)", "How many people", "What you are looking for"]) expect(body).toContain(field);
+    expect(subject).toBe(`Training: ${site.EN["training.mentoring.title"]}`);
+    expect(subject).toBe("Training: One-on-one mentoring");
+    for (const field of ["Name", "How many people", "What you are looking for"]) expect(body).toContain(field);
+    expect(body).not.toContain("Company");
+  });
+
+  it("no hay capacitaciones para empresas en ninguna parte del sitio", () => {
+    const EN = loadSite().EN;
+    expect(EN).not.toHaveProperty(["training.companies.title"]);
+    expect(EN).not.toHaveProperty(["training.companies"]);
+    expect(html).not.toMatch(/data-i18n="training\.companies/);
+    for (const { file, text } of textFiles) expect(text, file).not.toMatch(/empresa|compan(y|ies)/i);
   });
 
   it("la dirección no aparece entera en ningún archivo del sitio", () => {

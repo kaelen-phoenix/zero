@@ -130,8 +130,6 @@
     "training.workshop": "2 to 4 hands-on sessions: each participant builds their own factory with zero on their projects.",
     "training.mentoring.title": "One-on-one mentoring",
     "training.mentoring": "For a person or a team, in their own repos.",
-    "training.companies.title": "Companies",
-    "training.companies": "Team training and getting zero up and running.",
     "training.onrequest": "on request",
     "training.cta": "I want this",
     "training.noscript": "Without JavaScript the button does not open your email: write to kaelen.dev at gmail.com with the subject \"Training:\" and the format you are interested in.",
@@ -156,11 +154,11 @@
   const MESSAGES = {
     es: {
       copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto.",
-      subject: "Capacitación: ", body: ["Nombre:", "Empresa (opcional):", "Cuántas personas:", "Qué busca:"],
+      subject: "Capacitación: ", body: ["Nombre:", "Cuántas personas:", "Qué busca:"],
     },
     en: {
       copied: "Command copied.", failed: "Could not copy; select the text.",
-      subject: "Training: ", body: ["Name:", "Company (optional):", "How many people:", "What you are looking for:"],
+      subject: "Training: ", body: ["Name:", "How many people:", "What you are looking for:"],
     },
   };
 
