@@ -266,10 +266,12 @@ describe("panel research tab", () => {
 
 describe("README", () => {
   it("documents business research", () => {
-    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-    const example = readme.slice(readme.indexOf("research:                 #"));
-    expect(example.slice(0, example.indexOf("```"))).toContain("business:");
-    expect(readme).toContain("por cada skill");
-    expect(readme).toContain("de negocio");
+    for (const [file, perSkill, business] of [["README.md", "per research skill", "business"], ["README.es.md", "por cada skill", "de negocio"]]) {
+      const readme = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+      const example = readme.slice(readme.indexOf("research:                 #"));
+      expect(example.slice(0, example.indexOf("```")), file).toContain("business:");
+      expect(readme, file).toContain(perSkill);
+      expect(readme, file).toContain(business);
+    }
   });
 });

@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { existsSync, openSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
-import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, lineAutonomy, loadFactory, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
+import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, loadFactory, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
@@ -529,7 +530,9 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
 
   const final = FINAL_STATUSES.includes(job.status);
   const setupOpen = spans.some((sp) => sp.name === "zero.setup" && !sp.end);
-  const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? job.station : (job.station ?? (setupOpen ? "setup" : undefined));
+  // A line's custom agents run after security; until the line view shows them, their pieces sit there.
+  const station = job.station && ((LINE_STATIONS as readonly string[]).includes(job.station) ? (job.station as LineStation) : "security");
+  const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? station : (station ?? (setupOpen ? "setup" : undefined));
   // The last station an attempt reached carries the attempt's failure, since verify and the reviews end well and report.
   const failedIn = current?.status === "error" ? ATTEMPT_STATIONS.filter((st) => last(st)).at(-1) : undefined;
 
@@ -783,4 +786,93 @@ export function skillList(ctx: FactoryContext): SkillList {
     }
   }
   return { assignments, available, problems: skillProblems(ctx.config, available) };
+}
+
+export interface AgentListEntry {
+  name: string;
+  /** `factory`: a global agent, for every line; `line`: the line's own. */
+  origin: "factory" | "line";
+  blocking: boolean;
+  /** Where zero reads its instructions. */
+  path: string;
+  /** True when that file does not exist. */
+  missing: boolean;
+}
+
+export interface LineAgentList {
+  line: string;
+  agents: AgentListEntry[];
+}
+
+/** The custom agents that apply to each line (or one), in the order they run. */
+export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList[] {
+  const targets = lineName ? [findLine(ctx.config, lineName)] : ctx.config.lines;
+  return targets.map((line) => ({
+    line: line.name,
+    agents: lineAgents(ctx.config, line).map((a) => {
+      const path = join(a.origin === "line" ? line.repo : dirname(ctx.home.config), a.instructions);
+      return { name: a.name, origin: a.origin, blocking: a.blocking, path, missing: !existsSync(path) };
+    }),
+  }));
+}
+
+const agentTemplate = (name: string, blocking: boolean) => `# Agent: ${name}
+
+You are the "${name}" agent of this project, a read-only reviewer that runs after zero's review and security stations, on the same change. ${blocking ? "Your verified high and critical findings send the change back to build." : "You only report: your findings never stop the change."}
+
+## What to check
+- Describe here what this agent looks for in every change (for example accessibility, translations, SEO or documentation).
+- Only look at what the change touched, with \`git diff\` against the base branch.
+
+## How to report
+- Report each concrete problem once, as a finding with its \`severity\` (\`low\`, \`medium\`, \`high\`, \`critical\`), the exact \`file\` and \`line\`, the \`problem\`, the expected \`fix\` and your \`confidence\` from 1 to 10 that it is real. Findings that cite files or lines that do not exist are discarded, and only findings with confidence 8 or more can block.
+- Use \`high\` or \`critical\` only for problems that must be fixed before delivering.
+- You are read-only: do not modify anything.
+`;
+
+/**
+ * Adds a custom agent to a line: creates its instructions from a template in
+ * the line's repository (never overwriting them) and adds it to the factory
+ * file, keeping the file's comments.
+ */
+export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean }): Promise<string> {
+  const name = input.name.trim();
+  const blocking = input.blocking ?? true;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`El nombre "${name}" no sirve para un agente: usá minúsculas, dígitos y guiones.`);
+  if ((FIXED_STATIONS as readonly string[]).includes(name)) throw new Error(`"${name}" es una estación fija de zero; elegí otro nombre para el agente.`);
+  const line = findLine(ctx.config, input.line);
+  if (lineAgents(ctx.config, line).some((a) => a.name === name)) throw new Error(`La línea ${line.name} ya tiene un agente "${name}".`);
+  const index = ctx.config.lines.findIndex((l) => l.name === line.name);
+  const instructions = `.zero/agents/${name}.md`;
+  const path = join(line.repo, instructions);
+  await mkdir(dirname(path), { recursive: true });
+  let created = true;
+  try {
+    await writeFile(path, agentTemplate(name, blocking), { flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    created = false;
+  }
+  ctx.config = await editFactory(ctx.home.config, (doc) => {
+    const node = doc.createNode({ name, blocking });
+    if (doc.hasIn(["lines", index, "agents"])) doc.addIn(["lines", index, "agents"], node);
+    else doc.setIn(["lines", index, "agents"], doc.createNode([{ name, blocking }]));
+  });
+  return `Agente ${name} agregado a la línea ${line.name} (${blocking ? "bloqueante" : "informativo"}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
+}
+
+/** Takes a custom agent out of a line's configuration; its instructions file stays. */
+export async function removeAgent(ctx: FactoryContext, input: { name: string; line: string }): Promise<string> {
+  const line = findLine(ctx.config, input.line);
+  const index = ctx.config.lines.findIndex((l) => l.name === line.name);
+  const at = line.agents.findIndex((a) => a.name === input.name);
+  if (at < 0) {
+    const global = ctx.config.agents.some((a) => a.name === input.name);
+    return global
+      ? `El agente ${input.name} es global (vale para todas las líneas): quitalo de \`agents\` en ${ctx.home.config}.`
+      : `La línea ${line.name} no tiene un agente ${input.name}.`;
+  }
+  const path = join(line.repo, line.agents[at]!.instructions);
+  ctx.config = await editFactory(ctx.home.config, (doc) => doc.deleteIn(["lines", index, "agents", at]));
+  return `Agente ${input.name} quitado de la línea ${line.name}. Sus instrucciones siguen en ${path}.`;
 }

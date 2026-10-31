@@ -1,4 +1,4 @@
-import type { EgressReport, FactoryStatus, RequestResult, SkillList } from "./app.js";
+import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList } from "./app.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import { describeDelivery } from "./line/finish.js";
@@ -99,6 +99,19 @@ export function formatJob(job: Job, opts: { subscription?: boolean } = {}): stri
 
 function skillWarning(p: SkillProblem): string {
   return `Skill ${p.skill} (agente ${p.station}${p.line ? `, línea ${p.line}` : ""}): ${p.reason}; el agente trabaja sin ella`;
+}
+
+export function formatAgents(lists: LineAgentList[]): string {
+  if (!lists.length) return "La fábrica no tiene líneas.";
+  const out: string[] = [];
+  for (const l of lists) {
+    out.push(`Línea ${l.line}: spec → build → verify → review → security${l.agents.map((a) => ` → ${a.name}`).join("")} → integrate`);
+    if (!l.agents.length) out.push(`- sin agentes a medida (agregá uno con \`zero agent add <nombre> --line ${l.line}\`)`);
+    for (const a of l.agents) {
+      out.push(`- ${a.name} (${a.blocking ? "bloqueante" : "informativo"}, ${a.origin === "factory" ? "global" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
+    }
+  }
+  return out.join("\n");
 }
 
 export function formatSkills(l: SkillList): string {

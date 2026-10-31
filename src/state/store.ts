@@ -27,7 +27,8 @@ export const FINAL_STATUSES: readonly JobStatus[] = ["delivered", "failed", "sto
 
 /** Last station completed; the runner resumes after it. */
 export type Checkpoint = "none" | "spec" | "review" | "delivered";
-export type Station = "spec" | "build" | "verify" | "review" | "security" | "integrate";
+/** A fixed station, or the name of a line's custom agent while it runs (see lineAgents). */
+export type Station = "spec" | "build" | "verify" | "review" | "security" | "integrate" | (string & {});
 
 export type QuestionKind = "spec-ready" | "before-integrate" | "protected-path" | "budget-exceeded" | "integration-blocked" | "egress-suspicious";
 

@@ -1,362 +1,434 @@
 # zero
 
-**Kaelen Global Defence**: *Autonomous agent network. Continuous execution. Zero human intervention required.*
+English · [Español](README.es.md)
 
-zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo desde el chat de tu cliente de IA (Claude Code, Codex, agy…) o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.
+**zero in the loop**: the factory takes the human's place in the loop, and the owner decides where to step back in.
 
-Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
+zero is a **software factory that runs on your machine**. You ask it for work from your AI client's chat (Claude Code, Codex, agy…) or from the terminal. The factory specifies it, builds it, verifies it, reviews it and integrates it on its own, in the background, even if you close the chat.
 
-El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz.
+It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.
 
-## Cómo funciona
+The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder.
+
+## How it works
 
 ```
- vos, en el chat o la terminal: "quiero aplicar descuentos a los precios"
+ you, in the chat or the terminal: "I want to apply discounts to prices"
                     │
                     ▼  (zero_request / zero request)
- ┌──────────────── zero daemon (tu máquina) ───────────────────────────────────┐
+ ┌──────────────── zero daemon (your machine) ─────────────────────────────────┐
  │  spec ──▶ build ──▶ verify ──▶ review ──▶ security ──▶ integrate             │
- │  requisitos   código +   tests, tests     hallazgos con citas  merge / rama  │
- │  WHEN/THEN    tests      borrados,        verificadas          / PR (y       │
- │  (OpenSpec)              rutas protegidas                      fusión sola)  │
- │        ▲───────── reintentos con la retroalimentación concreta ─────────┘    │
- │  estado en SQLite · trazas y costos · townhall (memoria de la red)           │
+ │  WHEN/THEN    code +     tests, deleted   findings with        merge / branch│
+ │  requirements tests      tests,           verified citations   / PR (and     │
+ │  (OpenSpec)              protected paths                       auto-merge)   │
+ │        ▲───────── retries with concrete feedback ──────────────────────┘     │
+ │  state in SQLite · traces and costs · townhall (the network's memory)        │
  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Estaciones con contrato.** Cada estación recibe y entrega algo verificable. La especificación es un change de OpenSpec con requisitos y escenarios.
-- **zero aplica las garantías, no el motor:**
-  - las estaciones `spec`, `review` y `security` son de solo lectura (si un motor escribe, se descarta);
-  - `security` es una segunda revisión, solo de seguridad, que puede usar otro motor;
-  - hay un tiempo límite por estación;
-  - las salidas estructuradas se validan;
-  - se detectan tests borrados o desactivados;
-  - las rutas protegidas no se tocan;
-  - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan.
-- **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
-- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
+- **Stations with a contract.** Each station receives and delivers something verifiable. The specification is an OpenSpec change with requirements and scenarios.
+- **zero enforces the guarantees, not the engine:**
+  - the `spec`, `review` and `security` stations are read-only (if an engine writes, it is discarded);
+  - `security` is a second review, security only, which can use another engine;
+  - every station has a time limit;
+  - structured outputs are validated;
+  - deleted or disabled tests are detected;
+  - protected paths are not touched;
+  - review findings that cite files or lines that do not exist are discarded.
+- **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
 
-## Niveles de autonomía
+## Autonomy levels
 
-| Nivel | Qué aprobás |
+| Level | What you approve |
 |---|---|
-| L0 asistida | La especificación y la integración |
-| L1 supervisada | Solo la especificación ("vas a obtener esto") |
-| L2 vigilada | Nada en el día a día; consulta solo si se toca algo protegido o se agota el presupuesto pagado por uso |
-| L3 a oscuras | Nada; las políticas son límites duros, y está el botón de parada |
+| L0 assisted | The specification and the integration |
+| L1 supervised | Only the specification ("this is what you will get") |
+| L2 watched | Nothing day to day; it asks only when something protected is touched or the pay-per-use budget runs out |
+| L3 lights-out | Nothing; policies are hard limits, and there is the stop button |
 
-Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamiento** lista (ver abajo); mientras falte algo, **trabaja en L2 y dice exactamente qué falta**. Las consultas nunca bloquean la fábrica: el trabajo queda esperando, los demás siguen, y si nadie responde a tiempo se aplica la acción por defecto.
+By default the factory is configured at **L3**. L3 requires the **isolation box** to be ready (see below); while something is missing, **it works at L2 and says exactly what is missing**. Questions never block the factory: the job waits, the others keep going, and if nobody answers in time the default action applies.
 
-## Empezar
+## Getting started
 
 ```sh
+git clone https://github.com/kaelen-phoenix/zero && cd zero
 npm install && npm run build
-node dist/cli.js init       # crea ~/.zero/zero.factory.yaml y agrega el repo actual como línea
-node dist/cli.js install    # registra zero en Claude Code (y te muestra cómo hacerlo en Codex / OpenCode)
-node dist/cli.js box setup  # prepara la caja de aislamiento (pide permiso antes de instalar nada)
+node dist/cli.js init       # creates ~/.zero/zero.factory.yaml and adds the current repo as a line
+node dist/cli.js install    # registers zero in Claude Code (and shows you how to do it in Codex / OpenCode)
+node dist/cli.js box setup  # prepares the isolation box (asks permission before installing anything)
 ```
 
-Después, en tu chat: *"zero, quiero que mi tienda calcule descuentos"*. O desde la terminal:
+Then, in your chat: *"zero, I want my store to calculate discounts"*. Or from the terminal:
 
 ```sh
-zero request "quiero que mi tienda calcule descuentos"   # la fábrica se enciende sola si estaba apagada
-zero status                    # cómo va todo
-zero status <trabajo>          # detalle, y la pregunta si te está esperando
-zero approve <trabajo>         # aprobar (o --reject --note "por qué")
-zero trace <trabajo>           # paso a paso: estaciones, intentos, agentes, comandos, costo
-zero briefing                  # informe: producción, costo, aprendizajes, lo que te necesita
-zero stop [trabajo]            # andon: para un trabajo o toda la fábrica · zero resume
-zero line add <ruta>           # agregar otro proyecto
+zero request "I want my store to calculate discounts"   # the factory starts on its own if it was off
+zero status                    # how everything is going
+zero status <id>               # a job's detail, and the question if it is waiting for you
+zero approve <id>              # approve (or --reject --note "why")
+zero trace <id>                # step by step: stations, attempts, agents, commands, cost
+zero briefing                  # report: production, cost, lessons, what needs you
+zero stop [id]                 # andon: stops a job or the whole factory · zero resume
+zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
 ```
 
-Las herramientas del chat son las mismas: `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace`, `zero_lines`, `zero_egress` y `zero_egress_block`.
+The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), and `zero_egress` and `zero_egress_block` (internet egress).
 
-## Issues de GitHub
+## GitHub issues
 
-Una línea puede tomar como pedidos los issues de su repositorio de GitHub que tengan una etiqueta:
+A line can take as requests the issues of its GitHub repository that carry a label:
 
 ```sh
-zero issues on                 # en la línea (o --line <nombre>); crea la etiqueta "zero" si no existe   [--label otra]
+zero issues on                 # on the line (or --line <name>); creates the "zero" label if missing   [--label other]
 zero issues off
 ```
 
-Cargás un issue, le ponés la etiqueta `zero`, y la fábrica lo revisa cada minuto y lo convierte en un trabajo.
-- **Comenta en el issue** cuando lo toma, cuando te necesita y cuando termina. El pull request incluye `Closes #N`, así que al aceptarlo se cierra el issue.
-- **Solo toma issues escritos y etiquetados por personas con permiso de escritura.** En un repositorio público cualquiera puede abrir un issue, y su texto se convierte en instrucciones para los agentes.
-- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
-- **Podés seguir la conversación en el issue.** Cuando el trabajo terminó o te está esperando, la fábrica lee tus comentarios nuevos y te responde: contesta preguntas ("no lo veo publicado"), toma un pedido de ajuste como trabajo nuevo sobre el mismo issue, o aprueba o rechaza la consulta pendiente. Lo decide la estación `reply`, de solo lectura y sin acceso al repositorio, con los hechos que calcula zero (por ejemplo, si el cambio ya está en GitHub). Solo lee comentarios de personas con permiso de escritura.
+You file an issue, give it the `zero` label, and the factory checks every minute and turns it into a job.
+- **It comments on the issue** when it takes it, when it needs you and when it finishes. The pull request includes `Closes #N`, so accepting it closes the issue.
+- **It only takes issues written and labeled by people with write access.** On a public repository anyone can open an issue, and its text becomes instructions for the agents.
+- **To request it again** after the job finished, remove the label and put it back.
+- **You can keep the conversation going on the issue.** When the job has finished or is waiting for you, the factory reads your new comments and answers: it answers questions ("I don't see it published"), takes a request for an adjustment as a new job on the same issue, or approves or rejects the pending question. The read-only `reply` station decides, with no access to the repository, using the facts zero computes (for example, whether the change is already on GitHub). It only reads comments from people with write access.
 
-En las líneas que entregan por `pull-request`, cada trabajo arranca desde la rama base de GitHub. Así incluye lo que aceptaste allá, sin mover tu rama local.
+On lines that deliver through `pull-request`, each job starts from GitHub's base branch. That way it includes what you accepted there, without moving your local branch.
 
-### Fusión automática
+### Auto-merge
 
-Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
+With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
 
-## Panel en el navegador
+## zero, your CI and your quality tools
 
-Con la fábrica en marcha, el panel muestra:
-- el estado de la fábrica;
-- los trabajos;
-- las preguntas, con botones para aprobar o rechazar;
-- la traza de cada trabajo;
-- las salidas a internet y el informe;
-- las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
-- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes).
+zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
 
-Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
-
-```sh
-zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
-zero panel remote on           # acceso desde afuera (celular) con un túnel temporal de Cloudflare
-zero panel remote off          # lo cierra
-zero panel rotate              # clave nueva: los links anteriores dejan de servir
+```
+request
+  → zero: spec → build → verify → review → security
+  → pull request
+  → GitHub CI and quality checks
+  → merge
+  → the platform's deploy
 ```
 
-- El panel escucha solo en tu PC (`127.0.0.1:4848`).
-- La clave viaja en el link después de `#`, así que el navegador no la envía en la dirección. Se canjea por una cookie de sesión.
-- La clave vive en el llavero del sistema.
-- El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
-- Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
+- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
+- **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
+- **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
+- **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
 
-## La fábrica (`~/.zero/zero.factory.yaml`)
+Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.
+
+## Browser panel
+
+With the factory running, the panel shows:
+- the factory's status;
+- the jobs;
+- the questions, with buttons to approve or reject;
+- each job's trace;
+- internet egress and the report;
+- each line's night-shift proposals ("Propuestas" tab);
+- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first).
+
+From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
+
+```sh
+zero panel                     # the panel link, with your key (starts the factory if needed)
+zero panel remote on           # access from outside (phone) through a temporary Cloudflare tunnel
+zero panel remote off          # closes it
+zero panel rotate              # new key: previous links stop working
+```
+
+- The panel only listens on your PC (`127.0.0.1:4848`).
+- The key travels in the link after `#`, so the browser does not send it in the address. It is exchanged for a session cookie.
+- The key lives in the system keychain.
+- Remote access uses `cloudflared` (Apache-2.0). zero downloads it with your permission from its official releases and, on Windows, verifies Cloudflare's signature.
+- While the tunnel is open, Cloudflare carries the panel's traffic. Close it when you are not using it.
+
+## The factory (`~/.zero/zero.factory.yaml`)
 
 ```yaml
 level: L3                 # L0 · L1 · L2 · L3
-isolation: container      # caja de aislamiento (worktree = copias locales, sin caja)
-box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, luego Docker
-panel: { port: 4848 }     # 0 = sin panel
-egress:                   # salidas a internet de la caja (todas pasan por la puerta de zero)
-  mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
-  allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
+isolation: container      # isolation box (worktree = local copies, no box)
+box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, then Docker
+panel: { port: 4848 }     # 0 = no panel
+egress:                   # the box's internet egress (all of it goes through zero's gate)
+  mode: blocklist         # blocklist: everything goes out except what is suspicious or blocked · allowlist: only what is allowed
+  allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
   block: []
-engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
-concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
-limits:                   # con una suscripción (claude.ai) el límite es el cupo real del plan: 5 horas y semana
-  reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
-  usdPerDay: 10           # solo si se paga por uso (clave de API) · 0 = solo motores gratuitos
-  usdPerJob: 3            # solo si se paga por uso
+engine: claude            # default engine: claude · codex · antigravity · or your own
+concurrency: 2            # jobs at a time (each line does one at a time)
+limits:                   # with a subscription (claude.ai) the limit is the plan's real quota: 5 hours and weekly
+  reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
+  usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
+  usdPerJob: 3            # only for pay-per-use
   protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
-stations:                 # motor, modelo y tiempo límite por estación (opcional)
+stations:                 # engine, model and time limit per station (optional)
   review: { engine: codex, timeoutMinutes: 15 }
-  security: { engine: claude }   # la revisión de seguridad; con otro motor, la mirada es más independiente
-  build: { skills: [pdf] }       # skills de tu Claude Code (personales o de plugins; `plugin:skill` si el nombre se repite)
-engines:                  # cualquier otro CLI de agentes, sin código
+  security: { engine: claude }   # the security review; with another engine, the look is more independent
+  build: { skills: [pdf] }       # skills from your Claude Code (personal or from plugins; `plugin:skill` if the name repeats)
+engines:                  # any other agent CLI, no code needed
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
 lines:
   - name: tienda
-    repo: /ruta/a/tienda
+    repo: ~/code/tienda
     baseBranch: main
-    setup: ["npm ci"]     # se ejecuta en cada copia nueva
-    verify: ["npm test"]  # todo debe pasar antes de la revisión
-    integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
-    issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
-    autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
-    stations:                 # opcional: skills que un agente suma solo en esta línea
+    setup: ["npm ci"]     # runs in every new copy
+    verify: ["npm test"]  # everything must pass before the review
+    integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
+    issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
+    autoMerge: false          # with pull-request: the factory merges when all checks pass
+    stations:                 # optional: skills an agent adds only on this line
       build: { skills: [nextjs, shadcn] }
 ```
 
-Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
+Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.
 
-Los secretos **no** van en este archivo: si zero detecta algo con forma de credencial, se niega a cargarlo. Cada motor usa tu propia sesión o las variables de entorno.
+Secrets do **not** go in this file: if zero detects something shaped like a credential, it refuses to load it. Each engine uses your own session or the environment variables.
 
-El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
-- la definición de la fábrica;
-- `state.db`, con los trabajos y las trazas;
-- `townhall/`, la memoria colectiva;
-- `worktrees/` y `jobs/`, con las especificaciones renderizadas;
-- `bin/`, con las herramientas que zero descarga con tu permiso (cloudflared);
-- `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
+The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
+- the factory definition;
+- `state.db`, with the jobs and the traces;
+- `townhall/`, the collective memory;
+- `worktrees/` and `jobs/`, with the rendered specifications;
+- `bin/`, with the tools zero downloads with your permission (cloudflared);
+- `gate/`, shared with the egress gate: its rules, the passes of the running boxes and their records;
 - `daemon.log`.
 
-### Motores de reemplazo (`fallback`)
+### Fallback engines (`fallback`)
 
-Cuando el motor de una estación no puede trabajar (se agotó el cupo de su plan, o su tope en dólares si se paga por uso), zero pasa a los motores de reemplazo, en orden, en lugar de frenar la fábrica. La fábrica se pausa solo cuando una estación de la línea tiene todos sus motores pausados.
+When a station's engine cannot work (its plan's quota ran out, or its dollar cap for pay-per-use), zero moves to the fallback engines, in order, instead of stopping the factory. The factory pauses only when a station of the line has all its engines paused.
 
 ```yaml
 engine: claude
-fallback: [codex, { engine: gemini, model: gemini-2.5-pro }]   # global: nombres de motor o { engine, model }
+fallback: [codex, { engine: gemini, model: gemini-2.5-pro }]   # global: engine names or { engine, model }
 stations:
-  review: { engine: codex, fallback: [claude] }                # por estación: reemplaza la lista global
+  review: { engine: codex, fallback: [claude] }                # per station: replaces the global list
 ```
 
-Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué.
+Each call records in its trace which engine it used, which one it replaced and why.
 
-## Turno nocturno
+## Custom agents
 
-Cuando la fábrica está libre (sin pedidos tuyos en cola ni en curso, con el andon apagado y con presupuesto), la estación de solo lectura `scout` mira cada línea una vez por período: el townhall, las trazas de los últimos 30 días, las specs sin tests, las notas de investigación de la línea y, en las líneas de GitHub, los issues abiertos sin etiqueta escritos por personas con permiso de escritura (hasta 20, los más nuevos, sin los que ya tienen una propuesta). Lo escrito en un issue es dato, nunca instrucciones. Si `scout` propone tomar uno, la propuesta enlaza el issue (en el pedido del trabajo, en el panel y en el issue de la propuesta). Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título. Si se paga por uso, `scout` y `research` comparten el tope de `limits.usdPerNight`.
+Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). For now they are read-only reviewers that run after `review` and `security`, on the same change: the global ones first, then the line's, each in file order.
 
 ```yaml
-nightShift:               # o `nightShift: off` para apagarlo
-  hours: "22:00-06:00"    # opcional: solo en ese horario (cruza la medianoche); sin hours, cuando la fábrica está libre
-  autonomy: propose       # propose · build · auto, para las líneas sin autonomía propia
-  maxAutoJobsPerDay: 3    # trabajos que el turno abre solo por día, sumando todas las líneas
-limits:
-  usdPerNight: 1          # solo si se paga por uso
-research:
-  autonomy: propose       # tope para lo que agrega algo de terceros (ver abajo)
 lines:
-  - name: tienda
-    repo: /ruta/a/tienda
-    nightShift: { autonomy: auto }   # opcional: la autonomía de esta línea
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: a11y                        # lowercase letters, digits and dashes
+        instructions: .zero/agents/a11y.md   # in the line's repository (the default)
+        blocking: true                    # verified high or critical findings send the change back to build
+        engine: codex                     # optional, like any station: engine, model, maxTurns, timeoutMinutes, skills
+        timeoutMinutes: 10
+      - name: seo
+        blocking: false                   # only reports: its findings never stop the job
 ```
 
-La autonomía de una línea es la suya (`lines[].nightShift.autonomy`) o, si no tiene, la global (`nightShift.autonomy`):
-- **`propose`** (por defecto): la propuesta espera tu decisión.
-- **`build`**: la propuesta se convierte sola en un trabajo normal de la línea, marcado como del turno nocturno. Pasa por todas las estaciones y se detiene antes de integrar: queda su rama y espera tu aprobación. Si no contestás, vence como rechazada aunque `approvals.onTimeout` sea `approve`: nunca se integra sola. Al aprobar la propuesta se integra según el `integrate` y el `autoMerge` de la línea; al rechazarla, el trabajo se detiene y su rama queda.
-- **`auto`**: se construye y se integra o despliega sola, según el `integrate` y el `autoMerge` de la línea, sin preguntar.
+`.zero/agents/a11y.md`, in the line's repository:
 
-En `build` y en `auto` el trabajo sigue las reglas de siempre: si toca algo protegido, se pasa del presupuesto, la verificación lo frena o la puerta de salida ve algo sospechoso, espera al dueño (o falla, según el nivel) como cualquier otro trabajo. Además:
-- **Tope diario.** Como mucho `maxAutoJobsPerDay` trabajos automáticos por día local, sumando todas las líneas (0 = ninguno). Al llegar, las propuestas que siguen esperan tu decisión.
-- **Propuestas pendientes de antes.** Si pasás una línea a `build` o `auto`, en la siguiente pasada del turno nocturno (dentro de su horario y con el andon apagado) se promueven solas sus propuestas pendientes, de la más vieja a la más nueva, respetando `maxAutoJobsPerDay`: se toman como si fueran nuevas. Las que nacieron de algo de terceros (marcadas por `scout` o que tocan un manifiesto de dependencias o de MCP), las nacidas de una nota de negocio y las que tocan la licencia, precios, cobros, pagos o textos legales nunca se promueven: siguen esperando tu decisión.
-- **Lo revertido.** Si revertís en la rama principal un cambio que el turno nocturno integró solo, sin tu aprobación, la fábrica lo detecta: la propuesta queda en estado `revertida` (en el panel, el grupo "Revertidas"), se anota en el townhall de la línea y `scout` no la vuelve a proponer. En las líneas con `integrate: merge` mira `git revert -m 1 <commit>` del merge. En las líneas con `integrate: pull-request` guarda el commit con el que GitHub fundió el pull request (merge o squash) y reconoce tanto `git revert` de ese commit como el botón Revert de GitHub (el pull request `Revert "…"`, cuyo commit dice `Reverts dueño/repo#N`); busca en la rama principal local y en la del remoto, tras un `git fetch`. No detecta deshacer a mano.
-- **Tus pedidos van primero.** Un trabajo automático del turno nocturno nunca pasa delante de los tuyos y no arranca mientras haya otro trabajo en la cola o en curso.
-- **Propuestas nacidas de una nota de investigación.** Quedan marcadas con la nota de origen. Si agregan una dependencia, una skill de terceros, un servidor MCP o código de terceros, las regula `research.autonomy` (por defecto `propose`): se toma la más restrictiva entre esa y la de la línea, así que esperan tu decisión aunque la línea esté en `auto`. zero no se fía solo de lo que dice `scout`: también mira los manifiestos de dependencias y de MCP (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) en la propuesta y, antes de integrar, en los archivos que cambió el trabajo. Escribir una skill propia o asignar una ya instalada sigue la autonomía de la línea.
-- **Propuestas nacidas de una nota de negocio.** Las que `scout` saca de una nota de una skill de negocio (ver [Investigación](#investigación)) esperan siempre tu decisión, aunque la línea esté en `auto` o `build` y aunque `research.autonomy` sea `auto`.
-- **Licencia, precios, pagos y textos legales.** Ninguna propuesta autónoma cambia la licencia ni agrega precios, cobros, pagos o textos legales. `scout` marca esas propuestas con `commercial`, y zero además reconoce solo los archivos de licencia y legales (LICENSE, LICENCE, COPYING, NOTICE, cualquier archivo con `license` o `licence` en el nombre, TERMS, PRIVACY, EULA, `terms-of-service`, `privacy-policy` y todo lo que esté en una carpeta `legal/`). Esas propuestas esperan tu decisión, y si un trabajo automático igual termina tocando uno de esos archivos, no se integra sin vos (si no contestás, se rechaza).
+```markdown
+# Agent: a11y
 
-Las propuestas se guardan en `state.db` y se deciden con:
+You review the accessibility of every change to the web pages.
+
+## What to check
+- Every image has a meaningful `alt`; decorative images have `alt=""`.
+- Every form field has a label, and every button has a name a screen reader can say.
+- Colors keep a contrast of at least 4.5:1 for text.
+
+## How to report
+- One finding per problem, with the file and line, the problem and the fix.
+- Use `high` or `critical` only when a person using a screen reader or a keyboard cannot use the page.
+```
 
 ```sh
-zero proposals                          # las que esperan tu decisión (también las construidas que esperan para integrar)
-zero proposals approve <id>             # abre el trabajo, o integra el que el turno ya construyó
-zero proposals reject <id> --note "…"   # la archiva (y detiene su trabajo si el turno ya lo abrió)
+zero agent list --line web
+zero agent add a11y --line web                 # creates .zero/agents/a11y.md from a template and adds the agent
+zero agent add seo --line web --informativo    # an agent that only reports
+zero agent remove seo --line web               # out of the configuration; its file stays
 ```
 
-Desde el chat: `zero_proposals` y `zero_proposal_decide`. En el panel, la pestaña "Propuestas" muestra las de cada línea (pendientes, construyéndose, entregadas, rechazadas y revertidas) con su issue, la nota de investigación de origen, el motivo de rechazo y la autonomía de la línea; tiene botones de aprobar (pide confirmación antes) y de rechazar con motivo. El motivo de un rechazo queda en el townhall de la línea y `scout` recibe las últimas 20 propuestas rechazadas o revertidas de la línea para no insistir. En las líneas de GitHub cada propuesta se publica también como issue con la etiqueta `zero:propuesta`, y el issue cuenta quién la aprobó (vos o el turno nocturno solo) o por qué la rechazaste. El informe tiene la sección "Turno nocturno": qué se propuso, qué se construyó solo y espera tu ok, y qué se integró o desplegó solo.
+Global agents read their instructions relative to the factory folder (where `zero.factory.yaml` is). Each agent gets the request, the specification and the change (`git diff` against the base), and answers like `review`: findings with file and line, which zero checks, and learnings for the townhall. A blocking agent with verified `high` or `critical` findings rejects the attempt, and build gets them as feedback, naming the agent; an informative one only leaves them on its trace. If a blocking agent's instructions file is missing, the job fails naming the path; an informative one is skipped with a warning. Their calls show up in the trace, the status and the budget like any station's (`zero.station.<name>`).
 
-**Decidir desde GitHub.** En las líneas en `propose`, el issue `zero:propuesta` también decide: si una persona con permiso de escritura en el repositorio le pone la etiqueta de trabajo de la línea (`zero`, o la de `issues.label`), la propuesta queda aprobada y se convierte en trabajo; si una persona con permiso de escritura cierra el issue sin esa etiqueta, queda rechazada y el rechazo se anota en el townhall como cualquier otro. La etiqueta o el cierre de alguien sin permiso de escritura no deciden nada. La entrada de issues nunca toma un issue `zero:propuesta` como pedido suelto. En las líneas en `build` o `auto` el issue es solo un registro: ni la etiqueta ni el cierre deciden, y se cierra con la entrega (el "Closes #n" del pull request, o la fábrica misma como completado si la entrega fue un merge o una rama local).
+**Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
 
-## Investigación
+Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
 
-La estación `research` investiga en la web una vez por día, con la fábrica libre: skills nuevas para los agentes (de Claude Code y de otros motores), servidores MCP y tecnologías que sirvan a la línea o a la fábrica misma (motores, librerías, herramientas, prácticas). Sigue las reglas del turno nocturno: solo corre sin pedidos tuyos en cola o en curso, con el andon apagado y con presupuesto (respeta `limits.reservePercent`); si se paga por uso, comparte con `scout` el tope de `limits.usdPerNight`.
+## Night shift
 
-Investiga por línea, y solo las líneas que tienen una **skill de investigación** asignada a `research`; esa skill dice qué buscar. Una línea sin skill de investigación no investiga. Con varias skills de investigación en una línea, cada corrida sigue una sola skill y `research` escribe hasta `research.perLinePerDay` notas por cada skill (no por línea), cada skill una vez por día. Si el presupuesto o tus pedidos cortan la pasada, las skills se turnan: al día siguiente va primero la que hace más tiempo que no investiga, así una skill no le quita el día a otra.
-
-Una skill de investigación puede ser **de negocio** (precios, licencias, productos comparables, reglas de los proveedores de IA): se declara en la lista `business` de la configuración de `research` de la línea, con el mismo nombre que en `skills`. Sus notas quedan marcadas como de negocio y toda propuesta que `scout` haga a partir de ellas espera tu decisión (ver [Turno nocturno](#turno-nocturno)). Un nombre en `business` que no está en `skills` se ignora, así que quitar la skill con `zero skill remove` no rompe el archivo.
+When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap.
 
 ```yaml
-research:                 # o `research: off` para apagarla
-  topics: ["motores de agentes locales"]   # opcional: temas de interés para todas las líneas
-  perLinePerDay: 1        # notas por cada skill de investigación por día (0 = apagada); si no alcanza, se turnan
-  autonomy: propose       # propose · build · auto: hasta dónde llega sola una propuesta nacida de una nota que agrega algo de terceros
+nightShift:               # or `nightShift: off` to turn it off
+  hours: "22:00-06:00"    # optional: only in those hours (crosses midnight); without hours, whenever the factory is free
+  autonomy: propose       # propose · build · auto, for lines without their own autonomy
+  maxAutoJobsPerDay: 3    # jobs the shift opens on its own per day, across all lines
+limits:
+  usdPerNight: 1          # only for pay-per-use
+research:
+  autonomy: propose       # cap for what adds something third-party (see below)
+lines:
+  - name: tienda
+    repo: ~/code/tienda
+    nightShift: { autonomy: auto }   # optional: this line's autonomy
+```
+
+A line's autonomy is its own (`lines[].nightShift.autonomy`) or, if it has none, the global one (`nightShift.autonomy`):
+- **`propose`** (default): the proposal waits for your decision.
+- **`build`**: the proposal turns on its own into a normal job of the line, marked as night shift. It goes through every station and stops before integrating: its branch stays and waits for your approval. If you do not answer, it expires as rejected even if `approvals.onTimeout` is `approve`: it never integrates on its own. Approving the proposal integrates it according to the line's `integrate` and `autoMerge`; rejecting it stops the job and its branch stays.
+- **`auto`**: it is built and integrated or deployed on its own, according to the line's `integrate` and `autoMerge`, without asking.
+
+Under `build` and `auto` the job follows the usual rules: if it touches something protected, goes over budget, verification stops it or the egress gate sees something suspicious, it waits for the owner (or fails, depending on the level) like any other job. Also:
+- **Daily cap.** At most `maxAutoJobsPerDay` automatic jobs per local day, across all lines (0 = none). Once reached, the following proposals wait for your decision.
+- **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest), those born from a business note and those touching the license, pricing, charges, payments or legal text are never promoted: they keep waiting for your decision.
+- **What gets reverted.** If you revert on the main branch a change the night shift integrated on its own, without your approval, the factory detects it: the proposal becomes `revertida` (reverted; in the panel, the "Revertidas" group), it is noted in the line's townhall and `scout` does not propose it again. On lines with `integrate: merge` it looks for `git revert -m 1 <commit>` of the merge. On lines with `integrate: pull-request` it records the commit GitHub merged the pull request with (merge or squash) and recognizes both `git revert` of that commit and GitHub's Revert button (the pull request `Revert "…"`, whose commit says `Reverts owner/repo#N`); it looks on the local main branch and on the remote's, after a `git fetch`. It does not detect undoing by hand.
+- **Your requests go first.** An automatic night-shift job never jumps ahead of yours and does not start while another job is queued or running.
+- **Proposals born from a research note.** They are marked with the note they came from. If they add a dependency, a third-party skill, an MCP server or third-party code, `research.autonomy` governs them (`propose` by default): the more restrictive of that and the line's autonomy applies, so they wait for your decision even if the line is at `auto`. zero does not rely only on what `scout` says: it also looks at the dependency and MCP manifests (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) in the proposal and, before integrating, in the files the job changed. Writing your own skill or assigning an installed one follows the line's autonomy.
+- **Proposals born from a business note.** Those `scout` draws from a note of a business skill (see [Research](#research)) always wait for your decision, even if the line is at `auto` or `build` and even if `research.autonomy` is `auto`.
+- **License, pricing, payments and legal text.** No autonomous proposal changes the license or adds pricing, charges, payments or legal text. `scout` flags those proposals with `commercial`, and zero also recognizes license and legal files on its own (LICENSE, LICENCE, COPYING, NOTICE, any file with `license` or `licence` in its name, TERMS, PRIVACY, EULA, `terms-of-service`, `privacy-policy` and everything inside a `legal/` folder). Those proposals wait for your decision, and if an automatic job still ends up touching one of those files, it is not integrated without you (if you do not answer, it is rejected).
+
+Proposals are stored in `state.db` and decided with:
+
+```sh
+zero proposals                          # those waiting for your decision (also the built ones waiting to integrate)
+zero proposals approve <id>             # opens the job, or integrates the one the shift already built
+zero proposals reject <id> --note "…"   # archives it (and stops its job if the shift already opened it)
+```
+
+From the chat: `zero_proposals` and `zero_proposal_decide`. In the panel, the "Propuestas" tab shows each line's proposals (pending, building, delivered, rejected and reverted) with their issue, the research note they came from, the rejection reason and the line's autonomy; it has buttons to approve (it asks for confirmation first) and to reject with a reason. A rejection's reason stays in the line's townhall, and `scout` receives the line's last 20 rejected or reverted proposals so it does not insist. On GitHub lines each proposal is also published as an issue with the `zero:propuesta` label, and the issue tells who approved it (you or the night shift on its own) or why you rejected it. The report has a "Turno nocturno" section: what was proposed, what was built on its own and waits for your ok, and what was integrated or deployed on its own.
+
+**Deciding from GitHub.** On lines at `propose`, the `zero:propuesta` issue also decides: if a person with write access to the repository gives it the line's work label (`zero`, or the one in `issues.label`), the proposal is approved and becomes a job; if a person with write access closes the issue without that label, it is rejected and the rejection is noted in the townhall like any other. A label or a close by someone without write access decides nothing. Issue intake never takes a `zero:propuesta` issue as a standalone request. On lines at `build` or `auto` the issue is only a record: neither the label nor closing decides, and it closes with the delivery (the pull request's "Closes #n", or the factory itself as completed if the delivery was a merge or a local branch).
+
+## Research
+
+The `research` station researches the web once a day, with the factory free: new skills for the agents (for Claude Code and other engines), MCP servers and technologies that would help the line or the factory itself (engines, libraries, tools, practices). It follows the night shift's rules: it only runs with none of your requests queued or running, with the andon off and with budget (it respects `limits.reservePercent`); on pay-per-use, it shares the `limits.usdPerNight` cap with `scout`.
+
+It researches per line, and only the lines that have a **research skill** assigned to `research`; that skill says what to look for. A line without a research skill does not research. With several research skills on a line, each run follows a single skill and `research` writes up to `research.perLinePerDay` notes per skill (not per line), each skill once a day. If the budget or your requests cut the pass short, the skills take turns: the next day the one that has gone longest without researching goes first, so one skill does not take another's day.
+
+A research skill can be a **business** one (pricing, licenses, comparable products, AI providers' rules): it is declared in the `business` list of the line's `research` settings, with the same name as in `skills`. Its notes are marked as business and every proposal `scout` makes from them waits for your decision (see [Night shift](#night-shift)). A name in `business` that is not in `skills` is ignored, so removing the skill with `zero skill remove` does not break the file.
+
+```yaml
+research:                 # or `research: off` to turn it off
+  topics: ["local agent engines"]   # optional: topics of interest for every line
+  perLinePerDay: 1        # notes per research skill per day (0 = off); if not enough, they take turns
+  autonomy: propose       # propose · build · auto: how far a proposal born from a note that adds something third-party goes on its own
 stations:
   research: { timeoutMinutes: 15 }
 lines:
   - name: tienda
-    repo: /ruta/a/tienda
+    repo: ~/code/tienda
     stations:
       research:
         skills: [tienda-research, tienda-negocio]
-        business: [tienda-negocio]   # skills de negocio: sus propuestas siempre te esperan
+        business: [tienda-negocio]   # business skills: their proposals always wait for you
 ```
 
 ```sh
 zero skill add tienda-research --station research --line tienda
 ```
 
-La skill es una skill normal de tu Claude Code, por ejemplo `~/.claude/skills/tienda-research/SKILL.md`:
+The skill is a normal skill of your Claude Code, for example `~/.claude/skills/tienda-research/SKILL.md`:
 
 ```markdown
 ---
 name: tienda-research
-description: Qué investiga la línea tienda
+description: What the tienda line researches
 ---
-# Investigación de la línea tienda
+# Research for the tienda line
 
-Buscá, en este orden:
-- Skills y servidores MCP que ayuden a las estaciones build y review con Next.js y Stripe.
-- Novedades de Next.js, Prisma y Playwright que cambien cómo se construye o se prueba la tienda.
-- Prácticas de seguridad para pagos con tarjeta que la estación security debería revisar.
+Look for, in this order:
+- Skills and MCP servers that help the build and review stations with Next.js and Stripe.
+- News in Next.js, Prisma and Playwright that change how the store is built or tested.
+- Security practices for card payments that the security station should review.
 
-No investigues frameworks de frontend que no sean React.
+Do not research frontend frameworks other than React.
 ```
 
-Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La nota recuerda qué skill la escribió. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy", con las notas de negocio y las técnicas por separado, bajo "Negocio" y "Técnica") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat), o el botón "Pedir trabajo" de la pestaña "Investigación" del panel, que muestra las notas de los últimos 30 días de cada línea, separadas en "Negocio" y "Técnica", cada una con la skill que la escribió. `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
+Each note has a topic, what was found, the sources (http(s) links; a note without sources is discarded), which part of the line it would help and how mature and trustworthy it is. It is stored in `state.db`, without paths from your machine or secrets. To avoid repeating topics, the station receives the line's topics of the last 60 days. The note remembers which skill wrote it. You see notes with `zero research [--line <line>] [--days N]`, in the report ("Investigación de hoy", with business and technical notes apart, under "Negocio" and "Técnica") and from the chat (`zero_research`). To turn a note into a job on its line: `zero research request <id>` (or `zero_research_request` in the chat), or the "Pedir trabajo" button of the panel's "Investigación" tab, which shows each line's notes of the last 30 days, split into "Negocio" and "Técnica", each with the skill that wrote it. `scout` receives its line's notes of the last 7 days and can propose, for example, assigning a skill to a station or creating a new station; a line's notes only produce proposals on that same line.
 
-En las líneas de GitHub cada nota se publica también como issue en el repo de la línea, con la etiqueta `zero:investigacion` (la fábrica la crea si falta) y nunca con `zero`, así que no se convierte en trabajo sola. El issue trae lo encontrado, para qué serviría, su madurez, las fuentes, el id de la nota y cómo pedir un trabajo (`zero research request <id>`). Antes de publicar, zero tapa secretos y rutas de tu PC y desactiva las menciones (@usuario) para no avisarle a nadie. Si GitHub falla, lo reintenta en la pasada siguiente.
+On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. If GitHub fails, it retries on the next pass.
 
-Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
+Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
 
-## Caja de aislamiento
+## Isolation box
 
-En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
+Everything that runs code from the project or from an agent runs in the box: the `setup`, the agents and verification. The box is a container (Podman or Docker). zero does the integration outside.
 
-- **Copia propia.** La caja recibe un clon independiente del repositorio, sin enlaces al tuyo. No ve tu carpeta personal, tus otros proyectos ni tus claves.
-- **Solo lectura de verdad.** `spec`, `review` y `security` reciben la copia montada en modo solo lectura.
-- **Sin privilegios.** Corre como usuario sin privilegios, sin capacidades extra, con el sistema de archivos en solo lectura y con límites de CPU, memoria y procesos.
-- **Credenciales mínimas.** Cada estación recibe solo la credencial de su motor, por nombre, nunca en la línea de comandos. Nunca recibe tokens de GitHub ni claves SSH.
-- **Parada inmediata.** El andon y los tiempos límite detienen el contenedor.
+- **Its own copy.** The box gets an independent clone of the repository, with no links to yours. It does not see your home folder, your other projects or your keys.
+- **Truly read-only.** `spec`, `review` and `security` get the copy mounted read-only.
+- **No privileges.** It runs as an unprivileged user, with no extra capabilities, a read-only file system and CPU, memory and process limits.
+- **Minimal credentials.** Each station gets only its engine's credential, by name, never on the command line. It never gets GitHub tokens or SSH keys.
+- **Immediate stop.** The andon and the time limits stop the container.
 
 ```sh
-zero box status                # qué falta
-zero box setup                 # Windows: WSL2 + Podman · macOS: Podman · Linux: instrucciones; y la imagen
-claude setup-token             # token de tu suscripción para trabajar en la caja
-zero secret set CLAUDE_CODE_OAUTH_TOKEN    # lo guarda en el llavero del sistema (no se muestra)
+zero box status                # what is missing
+zero box setup                 # Windows: WSL2 + Podman · macOS: Podman · Linux: instructions; and the image
+claude setup-token             # your subscription's token to work in the box
+zero secret set CLAUDE_CODE_OAUTH_TOKEN    # stores it in the system keychain (not shown)
 zero secret list
 ```
 
-Con la caja lista y las credenciales de los motores guardadas, la fábrica pasa a **L3 real**.
+With the box ready and the engines' credentials stored, the factory reaches **real L3**.
 
-### Salidas a internet
+### Internet egress
 
-La caja no tiene salida propia a internet ni DNS: sale solo por la **puerta** de zero, un proxy que corre en su propio contenedor. Así se ve **todo** lo que sale, también lo de un agente que intente ignorar al vigilante.
+The box has no internet access or DNS of its own: it goes out only through zero's **gate**, a proxy that runs in its own container. That way **everything** that goes out is visible, including what an agent sends while trying to get around the watcher.
 
-- **Por defecto no se limita nada salvo lo sospechoso** (`mode: blocklist`). La puerta bloquea sola, y explica por qué:
-  - direcciones IP sin nombre;
-  - tu red local y las direcciones internas, también cuando un nombre apunta a ellas;
-  - puertos que no son 80 ni 443;
-  - nombres tan largos que parecen llevar datos;
-  - servicios típicos para sacar datos: pegar textos, compartir archivos, capturar peticiones, túneles, mensajería y DNS dinámico.
-- **Cada conexión queda registrada**: sitio, trabajo, estación, bytes enviados y recibidos, y la decisión.
-- **Un trabajo con salidas sospechosas no se integra solo.** En L3 falla y explica cómo permitir el sitio; en L0–L2 te pregunta.
-- **Tus reglas**: bloquear o permitir sitios, o pasar a `allowlist` para que salga solo lo permitido. Los sitios de tus motores se permiten solos, así la fábrica no se queda sin modelo.
+- **By default nothing is limited except what is suspicious** (`mode: blocklist`). The gate blocks on its own, and explains why:
+  - IP addresses without a name;
+  - your local network and internal addresses, also when a name points to them;
+  - ports other than 80 and 443;
+  - names so long they seem to carry data;
+  - services typical for exfiltrating data: text pasting, file sharing, request capture, tunnels, messaging and dynamic DNS.
+- **Every connection is recorded**: site, job, station, bytes sent and received, and the decision.
+- **A job with suspicious egress does not integrate on its own.** At L3 it fails and explains how to allow the site; at L0–L2 it asks you.
+- **Your rules**: block or allow sites, or move to `allowlist` so only what is allowed goes out. Your engines' sites are allowed automatically, so the factory never runs out of a model.
 
 ```sh
-zero egress                    # qué salió hoy, cuánto y qué se bloqueó   [--days N]
-zero egress <trabajo>          # las salidas de un trabajo (también en `zero trace`)
-zero egress block <sitio>      # también desde el chat
-zero egress allow <sitio>      # solo desde la terminal: un chat manipulado no puede abrir la puerta
-zero egress remove <sitio>
-zero egress mode allowlist     # o blocklist
+zero egress                    # what went out today, how much and what was blocked   [--days N]
+zero egress <id>               # a job's egress (also in `zero trace`)
+zero egress block <host>       # also from the chat
+zero egress allow <host>       # only from the terminal: a manipulated chat cannot open the gate
+zero egress remove <host>
+zero egress mode allowlist     # or blocklist
 ```
 
-Lo que la puerta no puede ver: el contenido cifrado, y los datos que se envíen a un sitio permitido (por ejemplo, la API del modelo). Los bytes enviados quedan registrados para detectarlo después.
+What the gate cannot see: encrypted content, and data sent to an allowed site (for example, the model's API). Bytes sent are recorded so it can be detected later.
 
-## Observabilidad
+## Observability
 
-Cada trabajo deja una traza: trabajo → estación → intento → agente o comando. Cada elemento registra duración, estado, motor, modelo y costo, y el costo indica su origen (`reported` o `unknown`).
+Each job leaves a trace: job → station → attempt → agent or command. Each element records duration, status, engine, model and cost, and the cost says where it came from (`reported` or `unknown`).
 
-Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor, conexiones y bloqueos de la caja) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry, para poder exportarlos por OTLP más adelante.
+The metrics (delivered, failed, success rate, cost per delivery, human wait, breakdown by engine, the box's connections and blocks) are computed with a single definition, used alike by the terminal, the chat and the report. Span names follow the OpenTelemetry GenAI conventions, so they can be exported over OTLP later.
 
 ## Townhall
 
-Es la memoria colectiva de la fábrica. Cada trabajo publica:
-- su resultado;
-- los hallazgos (`spec`) y las lecciones (`review`), siempre con su fuente;
-- las propuestas de trabajo nuevo;
-- los bloqueos.
+It is the factory's collective memory. Each job publishes:
+- its result;
+- the findings (`spec`) and lessons (`review`), always with their source;
+- proposals for new work;
+- blockers.
 
-Las estaciones `spec` y `build` reciben las notas recientes de **su misma línea**. Las notas se guardan con los secretos borrados y sin duplicados. Si el townhall falla, la producción sigue igual.
+The `spec` and `build` stations receive the recent notes of **their own line**. Notes are stored with secrets removed and without duplicates. If the townhall fails, production carries on.
 
-## Desarrollo
+## Development
 
 ```sh
 npm run typecheck && npm test && npm run build
+npx openspec validate --all
 ```
 
-zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y las convenciones para agentes en `AGENTS.md`.
+zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with a specification, design and tasks. Decisions are in `docs/adr/` and the conventions for agents in `AGENTS.md`. The README is kept in English (`README.md`) and Spanish (`README.es.md`); every change goes into both.
 
-## Hacia dónde va: la intención es el producto
+## Where it is going: intent is the product
 
-Todo orquestador de IA parte del mismo supuesto: el código es el producto y los agentes son obreros que lo tocan. zero apunta a dar vuelta eso. **El producto es la intención del dueño; el código es su consecuencia**, algo que la fábrica puede volver a producir cuando haga falta.
+Every AI orchestrator starts from the same assumption: code is the product and agents are workers who touch it. zero aims to turn that around. **The product is the owner's intent; code is its consequence**, something the factory can produce again whenever needed.
 
-- **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. El dueño lee y edita intenciones, en su idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
-- **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
-- **Turno nocturno.** Ya funciona (ver [Turno nocturno](#turno-nocturno)): con la fábrica libre, `scout` propone trabajo y, según la autonomía de cada línea, espera al dueño, lo construye o lo integra solo. En el panel, la pestaña "Propuestas" las muestra y deja aprobarlas o rechazarlas, y la pestaña "Investigación" muestra las notas de `research`.
-- **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
+- **The truth lives in the specifications.** `openspec/specs/` stops being documentation and becomes the source: what the system has to do, written as requirements and scenarios. The owner reads and edits intents, in their language, from the chat, the panel or the phone; the factory maintains the code.
+- **Regeneration drill.** To show that the specifications are enough, the factory takes a module, builds it again from scratch from its spec alone, in a separate copy, and runs the same tests. If the result behaves differently, the spec was incomplete: the factory proposes the missing scenario. The old code is never overwritten; the drill only measures and proposes. It is expensive in tokens, so it runs on request or rarely, never on every job.
+- **Closed loop with the live product.** Later, production errors, analytics and user feedback come in as requests nobody had to write: intent → change → deployment → observation → new intent.
 
-## Próximas etapas
+## Next steps
 
-Skills asignables por agente y por línea · simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · MCP gobernado para los agentes de las estaciones.
+Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · OTLP export · governed MCP for the station agents.

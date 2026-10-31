@@ -22,10 +22,19 @@ export function isTestFile(path: string): boolean {
   return TEST_FILE.test(path);
 }
 
+/**
+ * Paths zero always protects, whatever `limits.protectedPaths` says: the
+ * line's agent instructions are read from the owner's checkout, so a
+ * delivered change to them would steer every later job.
+ */
+export const ALWAYS_PROTECTED = [".zero/**"];
+
 export function protectedTouched(files: ChangedFile[], patterns: string[], allowed: string[] = []): string[] {
+  // Lower-cased for the fixed list: on case-insensitive disks `.Zero/agents` is the same folder.
+  const always = (p: string) => ALWAYS_PROTECTED.some((g) => posix.matchesGlob(p.toLowerCase(), g));
   return files
     .map((f) => f.path)
-    .filter((p) => !allowed.includes(p) && patterns.some((g) => posix.matchesGlob(p, g)));
+    .filter((p) => !allowed.includes(p) && (always(p) || patterns.some((g) => posix.matchesGlob(p, g))));
 }
 
 /** Ways the change could make tests pass by switching them off. */

@@ -1,5 +1,5 @@
 // zero in the loop: language, theme and copy buttons. Plain JS, no dependencies, no network, no cookies.
-// The Spanish texts are the markup itself; EN holds the English version of every data-i18n and data-i18n-label key.
+// The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
 
@@ -9,6 +9,7 @@
     "nav.label": "Main",
     "lang.label": "Language",
     "hero.label": "Software factory · open source",
+    "href.readme": "https://github.com/kaelen-phoenix/zero#readme",
     "hero.tagline": "The factory takes the human's place in the loop, and the owner decides where to step back in.",
     "hero.install": "Install",
     "hero.docs": "Read the docs",
@@ -70,6 +71,21 @@
     "guarantees.readonly": "<code>spec</code>, <code>review</code> and <code>security</code> are read-only: if an engine writes, it is discarded.",
     "guarantees.contracts.title": "Validated contracts",
     "guarantees.contracts": "A time limit per station, validated structured outputs and findings with verified citations.",
+    "ci.label": "Your CI and your quality tools",
+    "ci.title": "zero does not replace your CI: it works with it.",
+    "ci.intro": "zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority.",
+    "ci.path.1": "Your request",
+    "ci.path.2": "zero: <code>spec</code>, <code>build</code>, <code>verify</code>, <code>review</code>, <code>security</code>",
+    "ci.path.3": "The pull request",
+    "ci.path.4": "GitHub's CI and quality checks",
+    "ci.path.5": "The merge",
+    "ci.path.6": "The platform's deploy",
+    "ci.verify": "zero runs the line's verification locally before delivering.",
+    "ci.merge": "With integrate <code>pull-request</code> and <code>autoMerge</code>, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check.",
+    "ci.nochecks": "If the repository has no checks, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.",
+    "ci.second": "The findings of those tools are a second look, independent of the review by zero's agents.",
+    "ci.deploy": "Deployments are still done by the platform (for example Vercel or GitHub workflows), not by zero.",
+    "ci.recommend": "Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.",
     "install.label": "Install",
     "install.title": "Install and first steps.",
     "install.intro": "zero installs from the repository and needs Node 22.",
@@ -157,6 +173,10 @@
       const key = el.getAttribute("data-i18n-label");
       if (!(key in es)) es[key] = el.getAttribute("aria-label");
     }
+    for (const el of doc.querySelectorAll("[data-i18n-href]")) {
+      const key = el.getAttribute("data-i18n-href");
+      if (!(key in es)) es[key] = el.getAttribute("href");
+    }
     originals.set(doc, es);
     return es;
   }
@@ -168,6 +188,7 @@
     const text = (key) => (key in texts ? texts[key] : es[key]);
     for (const el of doc.querySelectorAll("[data-i18n]")) el.innerHTML = text(el.getAttribute("data-i18n"));
     for (const el of doc.querySelectorAll("[data-i18n-label]")) el.setAttribute("aria-label", text(el.getAttribute("data-i18n-label")));
+    for (const el of doc.querySelectorAll("[data-i18n-href]")) el.setAttribute("href", text(el.getAttribute("data-i18n-href")));
     doc.title = text("meta.title");
     doc.documentElement.setAttribute("lang", lang);
     for (const button of doc.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.getAttribute("data-lang") === lang));

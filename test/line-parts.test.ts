@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseFactory } from "../src/config.js";
 import { mergeIntoBase, githubRepository, integrate } from "../src/line/integrate.js";
 import { decide } from "../src/line/policy.js";
-import { blockingFindings, checkCitations, citationValid } from "../src/line/review.js";
+import { blockingFindings, checkCitations, citationValid, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "../src/line/review.js";
 import { changeName, plainSpec, renderOpenSpecChange, specProblems, writeFiles } from "../src/line/spec.js";
 import { protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
 import { Store } from "../src/state/store.js";
@@ -77,6 +77,11 @@ describe("verification", () => {
     expect(protectedTouched(files, [".github/**"], [".github/workflows/ci.yml"])).toEqual([]);
   });
 
+  it("always protects the line's agent instructions", () => {
+    const files = [{ status: "M", path: ".zero/agents/security.md" }, { status: "A", path: ".Zero/agents/a11y.md" }, { status: "A", path: "src/zero.ts" }];
+    expect(protectedTouched(files, [])).toEqual([".zero/agents/security.md", ".Zero/agents/a11y.md"]);
+  });
+
   it("detects deleted and disabled tests", () => {
     const problems = testTampering(
       [{ status: "D", path: "test/api.test.ts" }, { status: "D", path: "src/old.ts" }],
@@ -123,12 +128,44 @@ describe("review citations", () => {
     const root = tempDir();
     writeTree(root, { "a.ts": "x\n" });
     const { valid, invalid } = checkCitations(root, [
-      { severity: "critical", file: "invented.ts", line: 4, problem: "p", fix: "f" },
-      { severity: "low", file: "a.ts", line: 1, problem: "p", fix: "f" },
-      { severity: "high", file: "a.ts", line: 1, problem: "real", fix: "f" },
+      { severity: "critical", file: "invented.ts", line: 4, problem: "p", fix: "f", confidence: 10 },
+      { severity: "low", file: "a.ts", line: 1, problem: "p", fix: "f", confidence: 10 },
+      { severity: "high", file: "a.ts", line: 1, problem: "real", fix: "f", confidence: 9 },
     ]);
     expect(invalid).toHaveLength(1);
     expect(blockingFindings(valid).map((f) => f.problem)).toEqual(["real"]);
+  });
+
+  const finding = (severity: Finding["severity"], confidence: number, problem = "p"): Finding => ({ severity, file: "a.ts", line: 1, problem, fix: "f", confidence });
+
+  it("blocks only on findings with confidence 8 or more", () => {
+    const valid = [finding("critical", 7, "c7"), finding("high", 8, "h8"), finding("high", 10, "h10"), finding("low", 10, "l10")];
+    expect(blockingFindings(valid).map((f) => f.problem)).toEqual(["h8", "h10"]);
+    expect(lowConfidence(valid).map((f) => f.problem)).toEqual(["c7"]);
+  });
+
+  it("requires an integer confidence from 1 to 10 in every finding", () => {
+    const review = (f: Record<string, unknown>) => ReviewSchema.safeParse({ summary: "s", findings: [f], learnings: [] });
+    const base = { severity: "high", file: "a.ts", line: 1, problem: "p", fix: "f" };
+    const ok = review({ ...base, confidence: 9 });
+    expect(ok.success && ok.data.findings[0]!.confidence).toBe(9);
+    for (const bad of [base, { ...base, confidence: 0 }, { ...base, confidence: 11 }, { ...base, confidence: 7.5 }]) expect(review(bad).success).toBe(false);
+  });
+
+  it("tells build each blocking finding's confidence", () => {
+    const text = findingsFeedback([{ severity: "high", file: "src/a.ts", line: 3, problem: "p", fix: "f", confidence: 9 }]);
+    expect(text).toContain("src/a.ts:3");
+    expect(text).toContain("[high, confianza 9]");
+  });
+
+  it("asks review and security for a confidence, and security to skip noisy classes", () => {
+    const read = (s: string) => readFileSync(new URL(`../agents/${s}.md`, import.meta.url), "utf8");
+    for (const s of ["review", "security"]) {
+      expect(read(s)).toContain("`confidence`");
+      expect(read(s)).toMatch(/confidence` 8 or more/);
+    }
+    const security = read("security");
+    for (const text of ["denial of service (DoS)", "rate limiting", "CPU or memory exhaustion", "open redirect", "validation without a demonstrated impact", "removes or weakens an existing protection"]) expect(security).toContain(text);
   });
 });
 

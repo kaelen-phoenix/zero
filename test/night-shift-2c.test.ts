@@ -286,9 +286,16 @@ describe("panel research tab", () => {
 
 describe("README", () => {
   it("documents part 2c", () => {
-    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+    const readme = readFileSync(new URL("../README.es.md", import.meta.url), "utf8");
     expect(readme).toContain("revertida");
     expect(readme).toMatch(/pestaña[^\n]*Investigación/);
     expect(readme).toMatch(/promue[^\n]*maxAutoJobsPerDay|maxAutoJobsPerDay[^\n]*promue/);
+  });
+
+  it("documents part 2c in English", () => {
+    const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+    expect(readme).toContain("revertida");
+    expect(readme).toMatch(/"Investigación" tab/);
+    expect(readme).toMatch(/promoted[^\n]*maxAutoJobsPerDay/);
   });
 });
