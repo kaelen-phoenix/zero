@@ -62,7 +62,8 @@ describe("production line", () => {
 
     const { repo, job } = await deliver();
     const branch = `zero/${job.id}`;
-    expect(gitIn(repo, "log", "--format=%s", "main").split("\n").slice(0, 3)).toEqual([`zero: Health endpoint (${job.id})`, `zero(${job.id}): intento 1`, `zero(${job.id}): especificación`]);
+    // By position, not log order: commits made within the same second come out in any order.
+    expect(["main", "main^2", "main^2~1"].map((rev) => gitIn(repo, "log", "-1", "--format=%s", rev).trim())).toEqual([`zero: Health endpoint (${job.id})`, `zero(${job.id}): intento 1`, `zero(${job.id}): especificación`]);
     for (const rev of ["main", branch, `${branch}~1`]) {
       const message = gitIn(repo, "log", "-1", "--format=%B", rev).trim();
       expect(message.endsWith(`\n\n${trailer}`)).toBe(true);
