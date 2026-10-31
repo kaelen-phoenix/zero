@@ -56,6 +56,26 @@ export function touchesManifest(paths: string[]): boolean {
 }
 
 /**
+ * License and legal texts zero recognizes on its own: changing them is for
+ * the owner, never for the night shift.
+ */
+const LEGAL_FILES = [
+  /(^|\/)(license|licence|copying|notice)(\.[^/]*)?$/i,
+  /(^|\/)[^/]*licen[cs]e[^/]*$/i,
+  /(^|\/)(terms|privacy|eula)(\.[^/]*)?$/i,
+  /(^|\/)[^/]*(terms-of-service|privacy-policy)[^/]*$/i,
+  /(^|\/)legal\//i,
+];
+
+/** Whether any of the paths (files or globs, as written) is a license or legal text. */
+export function touchesLegal(paths: string[]): boolean {
+  return paths.some((p) => {
+    const path = p.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+    return LEGAL_FILES.some((re) => re.test(path));
+  });
+}
+
+/**
  * Whether a night-shift job may integrate without the owner: `build` always
  * asks; `auto` continues to the normal level policy.
  */

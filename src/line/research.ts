@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
 import { ANDON_KEY, type FactoryContext } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
-import { AGENT_STATIONS, type LineConfig } from "../config.js";
+import { AGENT_STATIONS, businessSkills, type LineConfig } from "../config.js";
 import { scrub } from "../intake/proposals.js";
 import { log } from "../log.js";
 import type { Store } from "../state/store.js";
@@ -27,7 +27,7 @@ export const ResearchOutput = z.object({
 export type ResearchOutput = z.infer<typeof ResearchOutput>;
 type Draft = ResearchOutput["notes"][number];
 
-const researchedKey = (line: string) => `research:${line}`;
+const researchedKey = (line: string, skill: string) => `research:${line}:${skill}`;
 
 /** The lines that research: those with a research skill of their own. */
 export function researchLines(lines: LineConfig[]): LineConfig[] {
@@ -72,14 +72,14 @@ export function sanitizeNotes(drafts: Draft[], line: Pick<LineConfig, "repo">): 
   return out;
 }
 
-/** What research is asked for one line. */
-export function researchPrompt(ctx: FactoryContext, line: LineConfig, now: Date, count: number): string {
+/** What research is asked for one line, following one of its research skills. */
+export function researchPrompt(ctx: FactoryContext, line: LineConfig, skill: string, now: Date, count: number): string {
   const research = ctx.config.research;
   const topics = research === "off" ? [] : research.topics;
   const previous = ctx.store.listResearchNotes({ line: line.name, since: new Date(now.getTime() - TOPICS_DAYS * DAY) });
   return [
     `Line: ${line.name} (repository at the working directory, read-only, for context).`,
-    `Its research skills, which say what to look for: ${line.stations?.research?.skills.join(", ")}.`,
+    `Follow only the research skill \`${skill}\`, which says what to look for in this run; ignore the line's other research skills.`,
     `## The factory's stations\n${AGENT_STATIONS.join(", ")}.`,
     ...(topics.length ? [`## Topics of interest set by the owner\n${topics.map((t) => `- ${t}`).join("\n")}`] : []),
     `## Already researched in the last ${TOPICS_DAYS} days (never repeat these topics)\n${previous.length ? previous.map((n) => `- ${n.topic}`).join("\n") : "(none)"}`,
@@ -87,15 +87,15 @@ export function researchPrompt(ctx: FactoryContext, line: LineConfig, now: Date,
   ].join("\n\n");
 }
 
-/** Notes the line stored since `since`. */
-const notesSince = (store: Store, line: string, since: Date) => store.listResearchNotes({ line, since }).length;
+/** Notes the line stored with one skill since `since`. */
+const notesSince = (store: Store, line: string, skill: string, since: Date) => store.listResearchNotes({ line, skill, since }).length;
 
-/** One research run on one line: asks the agent, then stores what zero accepts, up to `count` notes. */
-export async function researchLine(ctx: FactoryContext, line: LineConfig, runAgent: AgentRunner, now: Date, count: number, opts: { maxBudgetUsd?: number; signal?: AbortSignal } = {}): Promise<number> {
+/** One research run on one line and one of its skills: asks the agent, then stores what zero accepts, up to `count` notes. */
+export async function researchLine(ctx: FactoryContext, line: LineConfig, skill: string, runAgent: AgentRunner, now: Date, count: number, opts: { maxBudgetUsd?: number; signal?: AbortSignal } = {}): Promise<number> {
   const choice = pickEngine(ctx.store, ctx.config, "research", now);
   const run = await runAgent({
     station: "research",
-    prompt: researchPrompt(ctx, line, now, count),
+    prompt: researchPrompt(ctx, line, skill, now, count),
     cwd: line.repo,
     line: line.name,
     schema: ResearchOutput,
@@ -105,12 +105,13 @@ export async function researchLine(ctx: FactoryContext, line: LineConfig, runAge
     trace: { tracer: ctx.tracer },
   });
   if (!run.ok || !run.output) {
-    log.warn("research produced no notes", { line: line.name, error: run.text.slice(0, 300) });
+    log.warn("research produced no notes", { line: line.name, skill, error: run.text.slice(0, 300) });
     return 0;
   }
   const notes = sanitizeNotes(run.output.notes, line).slice(0, count);
-  for (const n of notes) ctx.store.createResearchNote({ line: line.name, ...n });
-  log.info("research stored notes", { line: line.name, stored: notes.length, dropped: run.output.notes.length - notes.length });
+  const business = businessSkills(line).includes(skill);
+  for (const n of notes) ctx.store.createResearchNote({ line: line.name, ...n, skill, business });
+  log.info("research stored notes", { line: line.name, skill, business, stored: notes.length, dropped: run.output.notes.length - notes.length });
   return notes.length;
 }
 
@@ -118,20 +119,22 @@ export async function researchLine(ctx: FactoryContext, line: LineConfig, runAge
 const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running"], limit: 1 }).length > 0;
 
 /**
- * Research while the factory is idle: each line with a research skill gets at
- * most one run per local day, the lines researched least recently first, with
- * the night shift's gates and its shared spending cap.
+ * Research while the factory is idle: each research skill of each line gets
+ * at most one run and its own note quota per local day, the pairs researched
+ * least recently first (so the ones a short pass skipped go first the next
+ * day), with the night shift's gates and its shared spending cap.
  */
 export async function researchPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal): Promise<void> {
   const research = ctx.config.research;
   if (research === "off" || research.perLinePerDay === 0) return;
   const day = startOfDay(now);
-  const last = (line: string) => ctx.store.getKv(researchedKey(line)) ?? "";
+  const last = (line: string, skill: string) => ctx.store.getKv(researchedKey(line, skill)) ?? "";
   const due = researchLines(ctx.config.lines)
-    .filter((l) => last(l.name) < day.toISOString() && notesSince(ctx.store, l.name, day) < research.perLinePerDay)
-    .sort((a, b) => last(a.name).localeCompare(last(b.name)));
-  for (const line of due) {
-    // Checked again before every line, so owner work that arrives mid-pass goes first.
+    .flatMap((line) => [...new Set(line.stations!.research!.skills)].map((skill) => ({ line, skill })))
+    .filter(({ line, skill }) => last(line.name, skill) < day.toISOString() && notesSince(ctx.store, line.name, skill, day) < research.perLinePerDay)
+    .sort((a, b) => last(a.line.name, a.skill).localeCompare(last(b.line.name, b.skill)));
+  for (const { line, skill } of due) {
+    // Checked again before every run, so owner work that arrives mid-pass goes first.
     if (signal?.aborted || ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;
     if (budgetState(ctx.store, ctx.config, now).reached) return;
     const choice = pickEngine(ctx.store, ctx.config, "research", now);
@@ -142,11 +145,11 @@ export async function researchPass(ctx: FactoryContext, runAgent: AgentRunner, n
       if (left <= 0) return;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }
-    ctx.store.setKv(researchedKey(line.name), now.toISOString());
+    ctx.store.setKv(researchedKey(line.name, skill), now.toISOString());
     try {
-      await researchLine(ctx, line, runAgent, now, research.perLinePerDay - notesSince(ctx.store, line.name, day), { maxBudgetUsd, signal });
+      await researchLine(ctx, line, skill, runAgent, now, research.perLinePerDay - notesSince(ctx.store, line.name, skill, day), { maxBudgetUsd, signal });
     } catch (err) {
-      log.warn("research failed", { line: line.name, error: String(err) });
+      log.warn("research failed", { line: line.name, skill, error: String(err) });
     }
   }
 }

@@ -24,6 +24,9 @@ const usd = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
 const pct = (n: number | null) => (n === null ? "—" : `${Math.round(n * 100)}%`);
 const ref = (p: Post) => ` (${p.line}${p.job ? ` · ${p.job}` : ""})`;
 
+/** A subheading with its research notes, or nothing when there are none. */
+const researchGroup = (title: string, notes: ResearchNote[]) => (notes.length ? [`### ${title}`, ...notes.map((n) => `- \`${n.id}\` (${n.line}) **${n.topic}** · ${n.serves}`)] : []);
+
 /**
  * The owner's report: what the factory produced, what it cost, what needs a
  * human and what the network learned. Built from the shared metrics and the
@@ -65,7 +68,8 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     sections.push(
       [
         "## Investigación de hoy",
-        ...research.map((n) => `- \`${n.id}\` (${n.line}) **${n.topic}** · ${n.serves}`),
+        ...researchGroup("Negocio", research.filter((n) => n.business)),
+        ...researchGroup("Técnica", research.filter((n) => !n.business)),
         "Ver una nota: `zero research` · Pedir un trabajo a partir de una: `zero research request <id>` (también desde el chat).",
       ].join("\n"),
     );
