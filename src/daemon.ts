@@ -169,23 +169,21 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .finally(() => (checkingReverts = undefined));
   };
 
-  // The night shift: scout proposes work while the factory is idle, one pass at a time, never holding up the owner's jobs.
-  let scouting: Promise<void> | undefined;
-  const scout = () => {
-    if (scouting || !(opts.scout ?? !opts.once) || ctx.config.nightShift === "off" || running.size) return;
-    scouting = scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues)
-      .catch((err) => log.warn("night shift failed", { error: String(err) }))
-      .finally(() => (scouting = undefined));
-  };
-
-  // Research reads the web once a day per line while the factory is idle, the same way; shutdown cuts it short.
-  let researching: Promise<void> | undefined;
+  // The night shift: while the factory is idle, scout proposes work and then research reads the web (once a day per line),
+  // one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
+  // limits.usdPerNight: each computes what is left only after the other's spans are recorded. Shutdown cuts research short.
+  let idle: Promise<void> | undefined;
   const researchStop = new AbortController();
-  const research = () => {
-    if (researching || !(opts.research ?? !opts.once) || ctx.config.research === "off" || running.size) return;
-    researching = researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal)
-      .catch((err) => log.warn("research failed", { error: String(err) }))
-      .finally(() => (researching = undefined));
+  const idlePasses = () => {
+    if (idle || running.size) return;
+    const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
+    const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
+    if (!scouts && !researches) return;
+    idle = (async () => {
+      if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues).catch((err) => log.warn("night shift failed", { error: String(err) }));
+      if (researches && !researchStop.signal.aborted)
+        await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+    })().finally(() => (idle = undefined));
   };
 
   try {
@@ -250,8 +248,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       }
 
       if (!andon && !startable) {
-        scout();
-        research();
+        idlePasses();
       }
 
       if (opts.once && !running.size && !startable) break;
@@ -265,8 +262,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     await publishing;
     await merging;
     await checkingReverts;
-    await scouting;
-    await researching;
+    await idle;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();
