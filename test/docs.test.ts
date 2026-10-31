@@ -103,11 +103,78 @@ describe("documentation up to date", () => {
     expect(es).not.toContain("Turno nocturno (en camino)");
   });
 
+  it("shows a complete custom agent in both READMEs", () => {
+    for (const [text, heading] of [[es, "## Agentes a medida"], [en, "## Custom agents"]] as const) {
+      // The section ends at the example's own `## ` headings, so the instructions file is looked up in the whole README.
+      const found = blocks(section(text, heading));
+      expect(found.some((b) => b.info === "yaml" && b.body.includes("lines:") && b.body.includes("agents:"))).toBe(true);
+      expect(blocks(text).some((b) => b.info === "markdown" && b.body.startsWith("# Agent: a11y"))).toBe(true);
+      expect(blocks(text).some((b) => b.info === "sh" && b.body.includes("zero agent add"))).toBe(true);
+    }
+    expect(blocks(en).find((b) => b.body.startsWith("# Agent: a11y"))!.body).toBe(blocks(es).find((b) => b.body.startsWith("# Agent: a11y"))!.body);
+  });
+
   it("starts Getting started with the clone", () => {
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
       const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;
       expect(first.body).toContain("git clone https://github.com/kaelen-phoenix/zero");
       expect(first.body).toContain("npm install && npm run build");
+    }
+  });
+});
+
+describe("zero, CI and quality tools", () => {
+  const EN_HEADING = "## zero, your CI and your quality tools";
+  const ES_HEADING = "## zero, tu CI y tus herramientas de calidad";
+  const enCi = section(en, EN_HEADING);
+  const esCi = section(es, ES_HEADING);
+
+  it("sits after auto-merge and before the browser panel", () => {
+    for (const [text, heading, after, before] of [
+      [en, EN_HEADING, "### Auto-merge", "## Browser panel"],
+      [es, ES_HEADING, "### Fusión automática", "## Panel en el navegador"],
+    ] as const) {
+      const lines = text.split("\n");
+      const at = (h: string) => lines.findIndex((l) => l === h);
+      expect(at(heading)).toBeGreaterThan(at(after));
+      expect(at(after)).toBeGreaterThan(-1);
+      expect(at(before)).toBeGreaterThan(at(heading));
+    }
+  });
+
+  it("names CI and the quality tools, and says zero does not replace them", () => {
+    for (const text of [enCi, esCi]) {
+      for (const tool of ["GitHub Actions", "CI/CD", "SonarQube", "SonarCloud", "CodeQL", "Dependabot", "Snyk"]) expect(text, tool).toContain(tool);
+    }
+    expect(enCi).toContain("does not replace");
+    expect(esCi).toContain("no reemplaza");
+  });
+
+  it("describes local verification, auto-merge on checks, the no-checks caveat and the platform's deploys", () => {
+    for (const text of [enCi, esCi]) {
+      for (const fact of ["`pull-request`", "`autoMerge`", "Vercel", "checks"]) expect(text, fact).toContain(fact);
+    }
+    expect(enCi).toContain("verification");
+    expect(esCi).toContain("verificación");
+    expect(enCi).toContain("no checks");
+    expect(esCi).toContain("ningún check");
+  });
+
+  it("recommends CI and static analysis", () => {
+    expect(enCi).toContain("Recommendation");
+    expect(enCi).toContain("static analysis");
+    expect(esCi).toContain("Recomendación");
+    expect(esCi).toContain("análisis estático");
+  });
+
+  it("draws the path from the request to the platform's deploy", () => {
+    for (const [text, deploy] of [[enCi, "deploy"], [esCi, "despliegue"]] as const) {
+      const diagram = blocks(text).find((b) => b.info === "")!;
+      expect(diagram).toBeDefined();
+      const at = ["spec", "build", "verify", "review", "security", "pull request", "merge"].map((w) => diagram.body.indexOf(w));
+      expect(at.every((i) => i > -1)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+      expect(diagram.body).toContain(deploy);
     }
   });
 });

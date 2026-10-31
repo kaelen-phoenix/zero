@@ -126,13 +126,55 @@ describe("production line", () => {
       build: writeHealth(),
       review: (_req, n) =>
         n === 1
-          ? { output: cleanReview({ findings: [{ severity: "critical", file: "src/health.ts", line: 1, problem: "no test", fix: "add one" }] }) }
-          : { output: cleanReview({ findings: [{ severity: "critical", file: "src/ghost.ts", line: 9, problem: "invented", fix: "-" }] }) },
+          ? { output: cleanReview({ findings: [{ severity: "critical", file: "src/health.ts", line: 1, problem: "no test", fix: "add one", confidence: 9 }] }) }
+          : { output: cleanReview({ findings: [{ severity: "critical", file: "src/ghost.ts", line: 9, problem: "invented", fix: "-", confidence: 10 }] }) },
     });
     const { job } = requestWork(ctx, { text: "health" });
     const done = await runJob(job.id, deps(ctx, agents.runner));
     expect(done).toMatchObject({ status: "delivered", attempt: 2 });
-    expect(agents.calls.filter((c) => c.station === "build")[1]!.prompt).toContain("src/health.ts:1: no test");
+    const retry = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
+    expect(retry).toContain("src/health.ts:1: no test");
+    expect(retry).toContain("confianza 9");
+  });
+
+  it("does not send back a verified finding below the confidence threshold, and counts it on the span", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: writeHealth(),
+      review: () => ({
+        output: cleanReview({
+          findings: [
+            { severity: "critical", file: "src/health.ts", line: 1, problem: "maybe", fix: "f", confidence: 5 },
+          ],
+        }),
+      }),
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(agents.count.build).toBe(1);
+    const span = ctx.store.spansForJob(job.id).find((s) => s.name === "zero.station.review")!;
+    expect(span.attrs).toMatchObject({ "zero.findings.low_confidence": 1, "zero.findings": 1 });
+  });
+
+  it("records low-confidence findings next to verified findings and invalid citations", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: writeHealth(),
+      review: () => ({
+        output: cleanReview({
+          findings: [
+            { severity: "high", file: "src/health.ts", line: 1, problem: "guess", fix: "f", confidence: 3 },
+            { severity: "high", file: "src/health.ts", line: 1, problem: "hunch", fix: "f", confidence: 6 },
+            { severity: "critical", file: "src/ghost.ts", line: 9, problem: "invented", fix: "-", confidence: 10 },
+          ],
+        }),
+      }),
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "delivered", attempt: 1 });
+    const span = ctx.store.spansForJob(job.id).find((s) => s.name === "zero.station.review")!;
+    expect(span.attrs).toMatchObject({ "zero.findings.low_confidence": 2, "zero.findings": 2, "zero.citations.invalid": 1 });
   });
 
   it("runs a separate security check after the review, and sends its verified findings back to the build", async () => {
@@ -141,7 +183,7 @@ describe("production line", () => {
       build: writeHealth(),
       security: (req, n) =>
         n === 1
-          ? (writeTree(req.cwd, { "sneaky.txt": "x" }), { output: cleanReview({ findings: [{ severity: "critical", file: "src/health.ts", line: 1, problem: "token in code", fix: "read it from the keychain" }] }) })
+          ? (writeTree(req.cwd, { "sneaky.txt": "x" }), { output: cleanReview({ findings: [{ severity: "critical", file: "src/health.ts", line: 1, problem: "token in code", fix: "read it from the keychain", confidence: 9 }] }) })
           : undefined,
     });
     const { job } = requestWork(ctx, { text: "health" });
@@ -275,7 +317,7 @@ describe("production line", () => {
     const agents = fakeAgents({
       build: writeHealth(),
       // The first review writes a file, which forces a discard before the second attempt's verify.
-      review: (req, n) => (n === 1 ? (writeTree(req.cwd, { "junk.txt": "x" }), { output: cleanReview({ findings: [{ severity: "high", file: "src/health.ts", line: 1, problem: "p", fix: "f" }] }) }) : undefined),
+      review: (req, n) => (n === 1 ? (writeTree(req.cwd, { "junk.txt": "x" }), { output: cleanReview({ findings: [{ severity: "high", file: "src/health.ts", line: 1, problem: "p", fix: "f", confidence: 8 }] }) }) : undefined),
     });
     const { job } = requestWork(ctx, { text: "health" });
     const done = await runJob(job.id, deps(ctx, agents.runner));

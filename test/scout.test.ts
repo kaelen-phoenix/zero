@@ -208,6 +208,7 @@ describe("proposals", () => {
     const agents = scouting([
       idea("mejorar  cache"),
       idea("Tocar CI", { paths: [".github/workflows/ci.yml"] }),
+      idea("Callar a security", { paths: [".zero/agents/security.md"] }),
       idea("Nueva API", { needsNewCredentials: true }),
       idea("Uno"),
       idea("Dos"),

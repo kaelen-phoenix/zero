@@ -96,6 +96,27 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
 
+## zero, your CI and your quality tools
+
+zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
+
+```
+request
+  → zero: spec → build → verify → review → security
+  → pull request
+  → GitHub CI and quality checks
+  → merge
+  → the platform's deploy
+```
+
+- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
+- **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
+- **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
+- **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
+
+Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.
+
 ## Browser panel
 
 With the factory running, the panel shows:
@@ -193,6 +214,54 @@ Each call records in its trace which engine it used, which one it replaced and w
 ### Signature (`signature`)
 
 Everything the factory builds is signed by zero in the loop. Every commit it makes (the specification, each attempt and the integration merge) ends with the trailer `Built-by: zero in the loop <https://zerointheloop.com>`, and the pull requests it opens, the issues it creates and the comments it posts end with `— Hecho con [zero in the loop](https://zerointheloop.com)`, before the hidden mark the factory uses to recognise its own comments. It is on by default with those texts; `text` and `trailer` change them (the trailer is one `Token: value` line) and `signature: off` turns it off. A line's own `signature` (`off` or `{ text, trailer }`) replaces the global one for that line.
+
+## Custom agents
+
+Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). For now they are read-only reviewers that run after `review` and `security`, on the same change: the global ones first, then the line's, each in file order.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: a11y                        # lowercase letters, digits and dashes
+        instructions: .zero/agents/a11y.md   # in the line's repository (the default)
+        blocking: true                    # verified high or critical findings send the change back to build
+        engine: codex                     # optional, like any station: engine, model, maxTurns, timeoutMinutes, skills
+        timeoutMinutes: 10
+      - name: seo
+        blocking: false                   # only reports: its findings never stop the job
+```
+
+`.zero/agents/a11y.md`, in the line's repository:
+
+```markdown
+# Agent: a11y
+
+You review the accessibility of every change to the web pages.
+
+## What to check
+- Every image has a meaningful `alt`; decorative images have `alt=""`.
+- Every form field has a label, and every button has a name a screen reader can say.
+- Colors keep a contrast of at least 4.5:1 for text.
+
+## How to report
+- One finding per problem, with the file and line, the problem and the fix.
+- Use `high` or `critical` only when a person using a screen reader or a keyboard cannot use the page.
+```
+
+```sh
+zero agent list --line web
+zero agent add a11y --line web                 # creates .zero/agents/a11y.md from a template and adds the agent
+zero agent add seo --line web --informativo    # an agent that only reports
+zero agent remove seo --line web               # out of the configuration; its file stays
+```
+
+Global agents read their instructions relative to the factory folder (where `zero.factory.yaml` is). Each agent gets the request, the specification and the change (`git diff` against the base), and answers like `review`: findings with file and line, which zero checks, and learnings for the townhall. A blocking agent with verified `high` or `critical` findings rejects the attempt, and build gets them as feedback, naming the agent; an informative one only leaves them on its trace. If a blocking agent's instructions file is missing, the job fails naming the path; an informative one is skipped with a warning. Their calls show up in the trace, the status and the budget like any station's (`zero.station.<name>`).
+
+**Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
+
+Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
 
 ## Night shift
 

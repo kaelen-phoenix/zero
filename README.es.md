@@ -96,6 +96,27 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
 
+## zero, tu CI y tus herramientas de calidad
+
+zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
+
+```
+pedido
+  → zero: spec → build → verify → review → security
+  → pull request
+  → CI y checks de calidad de GitHub
+  → merge
+  → despliegue de la plataforma
+```
+
+- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar.
+- **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
+- **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
+- **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
+- **Los despliegues los sigue haciendo la plataforma** (por ejemplo Vercel o los workflows de GitHub), no zero.
+
+Recomendación: tener CI y al menos un análisis estático en cada repositorio. Sin eso, zero solo tiene su verificación local y sus propias revisiones.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -193,6 +214,54 @@ Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué
 ### Firma (`signature`)
 
 Todo lo que construye la fábrica lleva la firma de zero in the loop. Cada commit que hace (la especificación, cada intento y el merge de integración) termina con el trailer `Built-by: zero in the loop <https://zerointheloop.com>`, y los pull requests que abre, los issues que crea y los comentarios que publica terminan con `— Hecho con [zero in the loop](https://zerointheloop.com)`, antes de la marca oculta con la que la fábrica reconoce sus propios comentarios. Viene encendida con esos textos; `text` y `trailer` los cambian (el trailer es una sola línea `Token: valor`) y `signature: off` la apaga. La `signature` propia de una línea (`off` o `{ text, trailer }`) reemplaza la global para esa línea.
+
+## Agentes a medida
+
+Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Por ahora son revisores de solo lectura que corren después de `review` y `security`, sobre el mismo cambio: primero los globales y después los de la línea, cada grupo en el orden del archivo.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: a11y                        # minúsculas, dígitos y guiones
+        instructions: .zero/agents/a11y.md   # en el repo de la línea (el valor por defecto)
+        blocking: true                    # los hallazgos high o critical verificados devuelven el cambio a build
+        engine: codex                     # opcional, como cualquier estación: engine, model, maxTurns, timeoutMinutes, skills
+        timeoutMinutes: 10
+      - name: seo
+        blocking: false                   # solo informa: sus hallazgos nunca frenan el trabajo
+```
+
+`.zero/agents/a11y.md`, en el repo de la línea:
+
+```markdown
+# Agent: a11y
+
+You review the accessibility of every change to the web pages.
+
+## What to check
+- Every image has a meaningful `alt`; decorative images have `alt=""`.
+- Every form field has a label, and every button has a name a screen reader can say.
+- Colors keep a contrast of at least 4.5:1 for text.
+
+## How to report
+- One finding per problem, with the file and line, the problem and the fix.
+- Use `high` or `critical` only when a person using a screen reader or a keyboard cannot use the page.
+```
+
+```sh
+zero agent list --line web
+zero agent add a11y --line web                 # crea .zero/agents/a11y.md con una plantilla y suma el agente
+zero agent add seo --line web --informativo    # un agente que solo informa
+zero agent remove seo --line web               # sale de la configuración; el archivo queda
+```
+
+Los agentes globales leen sus instrucciones relativas a la carpeta de la fábrica (donde está `zero.factory.yaml`). Cada agente recibe el pedido, la especificación y el cambio (`git diff` contra la base), y responde como `review`: hallazgos con archivo y línea, que zero verifica, y aprendizajes para el townhall. Un agente bloqueante con hallazgos `high` o `critical` verificados rechaza el intento, y build los recibe como feedback, con el nombre del agente; uno informativo solo los deja en su traza. Si falta el archivo de instrucciones de un agente bloqueante, el trabajo falla nombrando la ruta; uno informativo se saltea con una advertencia. Sus llamadas aparecen en la traza, el estado y el presupuesto como las de cualquier estación (`zero.station.<nombre>`).
+
+**Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
+
+Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de la copia del dueño del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web. `.zero/**` es siempre una ruta protegida, diga lo que diga `limits.protectedPaths`: un trabajo que cambia instrucciones de agentes te espera (o falla en L3) antes de poder entregarse.
 
 ## Turno nocturno
 
