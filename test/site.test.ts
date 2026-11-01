@@ -552,6 +552,18 @@ describe("sitio del proyecto: idiomas", () => {
     expect(doc.elements.filter((e) => e.hasAttribute("data-i18n")).map((e) => e.innerHTML)).toEqual(spanish);
   });
 
+  it("el nivel auto no promete despliegues que zero no hace", () => {
+    const doc = fakeDocument();
+    const auto = doc.elements.find((e) => e.getAttribute("data-i18n") === "autonomy.auto")!;
+    for (const part of ["se integra", "autoMerge", "pull request"]) expect(auto.innerHTML).toContain(part);
+    expect(auto.innerHTML).not.toMatch(/despleg|desplieg/i);
+    for (const part of ["integrated", "autoMerge", "pull request"]) expect(site.EN["autonomy.auto"]).toContain(part);
+    expect(site.EN["autonomy.auto"]).not.toMatch(/deploy/i);
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(auto.innerHTML).toBe(site.EN["autonomy.auto"]);
+    expect(auto.innerHTML).not.toMatch(/deploy/i);
+  });
+
   it("los enlaces al README siguen el idioma elegido", () => {
     const doc = fakeDocument();
     const links = doc.elements.filter((e) => e.hasAttribute("data-i18n-href"));

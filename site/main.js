@@ -49,7 +49,7 @@
     "autonomy.line.intro": "Each line decides how far a night-shift proposal goes on its own:",
     "autonomy.propose": "The default. The proposal waits for your decision.",
     "autonomy.build": "It becomes a job on its own, goes through every station and stops before integrating: it never integrates without your approval.",
-    "autonomy.auto": "It is built and integrated or deployed on its own, as the line says, without asking.",
+    "autonomy.auto": "It is built and integrated on its own, as the line says, without asking (on pull request lines with <code>autoMerge</code>, it is also merged).",
     "night.label": "Night shift",
     "night.title": "When the factory is idle, it looks for work.",
     "night.scout": "A read-only station that looks at each line once per period: the townhall, the traces, specs without tests, research notes and open unlabeled issues. It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title.",
