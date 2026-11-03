@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation, CustomAgentRun } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "../budget.js";
-import { customAgentChain, effectiveLevel, findLine, lineAgents, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig } from "../config.js";
+import { commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { git, sh, type ShellResult } from "../shell.js";
@@ -134,13 +134,14 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     }
     check();
     job = store.updateJob(jobId, { station: "integrate" });
-    const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation } }, async () => {
+    const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
       copy.publish();
       return integrate(line, copy, {
         jobId,
         title: spec.title,
         body: deliveryBody(spec, job!, store),
         scratchDir: join(deps.home.worktrees, line.name),
+        author: commitAuthor(config, line),
       });
     });
     if (!result.ok) {
@@ -172,7 +173,7 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
   const base = job.base ?? (existsSync(path) ? line.baseBranch : startingBase(line, job.id));
   const excludeFile = join(deps.home.jobs, job.id, "setup-untracked.json");
   // The box gets an independent clone; a worktree would expose the owner's repository.
-  const open = (exclude: string[]) => (isolation === "container" ? openCloneCopy : openWorkCopy)(line.repo, base, branch, path, exclude);
+  const open = (exclude: string[]) => (isolation === "container" ? openCloneCopy : openWorkCopy)(line.repo, base, branch, path, exclude, commitAuthor(deps.config, line));
   if (existsSync(path)) {
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
     return open(exclude);

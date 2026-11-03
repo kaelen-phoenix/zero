@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import type { LineConfig } from "../config.js";
+import type { CommitAuthor, LineConfig } from "../config.js";
 import { git, tryGit } from "../shell.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker } from "../tracker.js";
-import { checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
+import { authorEnv, checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
 
 export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; reason: string };
 
@@ -14,10 +14,12 @@ export interface IntegrateOptions {
   body: string;
   /** Directory for a temporary copy when the base branch is not checked out anywhere. */
   scratchDir: string;
+  /** Who authors the merge commit (`merge` mode); zero is always the committer. Absent: zero. */
+  author?: CommitAuthor;
 }
 
-function mergeIn(dir: string, branch: string, message: string): boolean {
-  const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], { cwd: dir, encoding: "utf8", windowsHide: true });
+function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
+  const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], { cwd: dir, encoding: "utf8", windowsHide: true, ...(env && { env }) });
   if (r.status === 0) return true;
   tryGit(["merge", "--abort"], dir);
   return false;
@@ -30,12 +32,13 @@ function mergeIn(dir: string, branch: string, message: string): boolean {
  */
 export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): IntegrateResult {
   const message = `zero: ${opts.title} (${opts.jobId})`;
+  const env = authorEnv(opts.author, line.repo);
   const owner = checkedOutAt(line.repo, line.baseBranch);
   if (owner) {
     if (git(["status", "--porcelain", "--untracked-files=no"], owner)) {
       return { ok: false, reason: `La rama ${line.baseBranch} está abierta en ${owner} con cambios sin guardar. Guardalos (commit) o descartalos y la fábrica integra el trabajo.` };
     }
-    if (!mergeIn(owner, copy.branch, message)) {
+    if (!mergeIn(owner, copy.branch, message, env)) {
       return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos (o pisaría archivos sin seguimiento en ${owner}). La rama ${copy.branch} queda lista para resolverlo.` };
     }
   } else {
@@ -43,7 +46,7 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
     removeWorkCopy(line.repo, temp);
     git(["worktree", "add", "-q", temp, line.baseBranch], line.repo);
     try {
-      if (!mergeIn(temp, copy.branch, message)) {
+      if (!mergeIn(temp, copy.branch, message, env)) {
         return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos. La rama ${copy.branch} queda lista para resolverlo.` };
       }
     } finally {

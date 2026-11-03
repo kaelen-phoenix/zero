@@ -151,6 +151,10 @@ export const CustomAgentSchema = z
   .strict()
   .transform((a) => ({ ...a, instructions: a.instructions ?? `.zero/agents/${a.name}.md` }));
 
+/** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
+export const COMMIT_AUTHORS = ["zero", "owner"] as const;
+export type CommitAuthor = (typeof COMMIT_AUTHORS)[number];
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -177,6 +181,8 @@ export const LineSchema = z.object({
   nightShift: z.object({ autonomy: AutonomySchema }).strict().optional(),
   /** This line's own agents, after the global ones. */
   agents: z.array(CustomAgentSchema).default([]),
+  /** Who authors this line's commits; absent: the global `commitAuthor`. */
+  commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
 });
 
 export const FactorySchema = z
@@ -255,6 +261,8 @@ export const FactorySchema = z
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
+    /** Who authors the factory's commits on lines that do not say; zero is always the committer. */
+    commitAuthor: z.enum(COMMIT_AUTHORS).default("zero"),
     lines: z.array(LineSchema).default([]),
   })
   .superRefine((cfg, ctx) => {
@@ -333,6 +341,11 @@ export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review"
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {
   return line.nightShift?.autonomy ?? (config.nightShift === "off" ? "propose" : config.nightShift.autonomy);
+}
+
+/** Who authors a line's commits: the line's own setting, else the global one. */
+export function commitAuthor(config: Pick<FactoryConfig, "commitAuthor">, line: Pick<LineConfig, "commitAuthor">): CommitAuthor {
+  return line.commitAuthor ?? config.commitAuthor ?? "zero";
 }
 
 /** The line's business research skills: names in `business` that are also among its research `skills`. */

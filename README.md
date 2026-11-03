@@ -96,6 +96,10 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
 
+### Commit author
+
+By default the factory's commits are authored by `zero`, the factory's own identity. Some services only accept commits whose author is one of their accounts: Vercel's Hobby plan, for example, blocks the deploy ("GitHub couldn't verify an account for the commit"), so pull request previews fail their check and auto-merge never starts. With `commitAuthor: owner` (globally, or on a line, which wins) the spec, attempt and merge commits are authored by you: the `user.name` and `user.email` that `git config` gives in the line's repository, read when committing and never written to the factory file. zero stays the committer, so it is still visible that the factory made them. If the repository has no name or email configured, the commit is authored by zero and the job goes on. Revert detection works the same, since it looks at commit messages and SHAs, not at authors.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -156,6 +160,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   block: []
 engine: claude            # default engine: claude · codex · antigravity · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
+commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
   usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
@@ -177,6 +182,7 @@ lines:
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     autoMerge: false          # with pull-request: the factory merges when all checks pass
+    commitAuthor: owner       # optional: this line's commit author, over the global one
     stations:                 # optional: skills an agent adds only on this line
       build: { skills: [nextjs, shadcn] }
 ```
