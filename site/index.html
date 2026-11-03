@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>zero in the loop · una fábrica de software que corre en tu máquina</title>
-  <meta name="description" content="zero es una fábrica de software open source que corre en tu máquina: convierte pedidos en cambios entregados, y el dueño decide dónde vuelve a entrar.">
+  <meta name="description" content="zero es una fábrica de software open source que corre en tu máquina: convierte pedidos en cambios entregados. zero se suma al circuito al lado tuyo, y vos decidís cuánto le delegás y dónde entrás.">
   <link rel="canonical" href="https://zerointheloop.com/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <meta name="color-scheme" content="light dark">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="zero in the loop">
   <meta property="og:title" content="zero in the loop">
-  <meta property="og:description" content="Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados. El dueño decide dónde vuelve a entrar.">
+  <meta property="og:description" content="Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados. Vos decidís cuánto le delegás y dónde entrás.">
   <meta property="og:url" content="https://zerointheloop.com/">
   <meta property="og:image" content="https://zerointheloop.com/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="La línea de producción de zero: seis estaciones en fila y el dueño como un punto que vuelve a entrar.">
+  <meta property="og:image:alt" content="La línea de producción de zero: seis estaciones en fila, trabajos que avanzan entre ellas y el dueño al lado de la línea.">
   <meta property="og:locale" content="es_AR">
   <meta property="og:locale:alternate" content="en_US">
   <meta name="twitter:card" content="summary_large_image">
@@ -46,28 +46,31 @@
     <section id="hero" class="hero">
       <p class="label" data-i18n="hero.label">Fábrica de software · open source</p>
       <h1>zero in the loop</h1>
-      <p class="lede" data-i18n="hero.tagline">La fábrica ocupa el lugar del humano en el circuito, y el dueño decide dónde vuelve a entrar.</p>
+      <p class="lede" data-i18n="hero.tagline">zero se suma al circuito al lado de la persona, que no sale de él: ella sigue decidiendo qué se hace y dónde entra, y la fábrica hace lo que le delega.</p>
       <p class="actions">
         <a class="button" href="#install" data-i18n="hero.install">Instalar</a>
         <a class="button ghost" href="https://github.com/kaelen-phoenix/zero/blob/main/README.es.md" data-i18n-href="href.readme" data-i18n="hero.docs">Leer la documentación</a>
       </p>
       <figure class="figure">
-        <svg class="line-fig" viewBox="0 0 720 220" role="img" aria-labelledby="fig-title fig-desc">
+        <svg class="line-fig" viewBox="0 0 720 250" role="img" aria-labelledby="fig-title fig-desc">
           <title id="fig-title" data-i18n="fig.title">La línea de producción de zero</title>
-          <desc id="fig-desc" data-i18n="fig.desc">Seis estaciones en fila: spec, build, verify, review, security e integrate. Un punto de trabajo avanza por la línea, un arco vuelve de review a build con la retroalimentación, y el dueño es un punto aparte que vuelve a entrar en la especificación o en la integración, donde decide.</desc>
+          <desc id="fig-desc" data-i18n="fig.desc">Una cinta con seis estaciones en fila: spec, build, verify, review, security e integrate. Varios trabajos avanzan entre las estaciones, un arco vuelve de review a build con la retroalimentación, y el dueño está al lado de la línea, unido a la especificación y a la integración, donde decide.</desc>
+          <rect class="belt" x="24" y="116" width="672" height="48" rx="24"/>
           <line class="rail" x1="60" y1="140" x2="660" y2="140"/>
-          <path class="retry" d="M420 160 Q300 215 180 160"/>
-          <path class="owner-path" d="M360 40 Q60 40 60 114"/>
-          <path class="owner-path" d="M360 40 Q660 40 660 114"/>
-          <g class="node" data-station="spec"><circle cx="60" cy="140" r="14"/><text x="60" y="186">spec</text></g>
-          <g class="node" data-station="build"><circle cx="180" cy="140" r="14"/><text x="180" y="186">build</text></g>
-          <g class="node" data-station="verify"><circle cx="300" cy="140" r="14"/><text x="300" y="186">verify</text></g>
-          <g class="node" data-station="review"><circle cx="420" cy="140" r="14"/><text x="420" y="186">review</text></g>
-          <g class="node" data-station="security"><circle cx="540" cy="140" r="14"/><text x="540" y="186">security</text></g>
-          <g class="node" data-station="integrate"><circle cx="660" cy="140" r="14"/><text x="660" y="186">integrate</text></g>
-          <circle class="work" cx="60" cy="140" r="5"/>
-          <circle class="owner" cx="360" cy="40" r="7"/>
-          <text class="owner-label" x="360" y="20" data-i18n="fig.owner">dueño</text>
+          <path class="retry" d="M420 200 Q300 245 180 200"/>
+          <path class="owner-path" d="M360 46 Q60 46 60 112"/>
+          <path class="owner-path" d="M360 46 Q660 46 660 112"/>
+          <g class="node" data-station="spec"><rect x="42" y="122" width="36" height="36" rx="7"/><text x="60" y="186">spec</text></g>
+          <g class="node" data-station="build"><rect x="162" y="122" width="36" height="36" rx="7"/><text x="180" y="186">build</text></g>
+          <g class="node" data-station="verify"><rect x="282" y="122" width="36" height="36" rx="7"/><text x="300" y="186">verify</text></g>
+          <g class="node" data-station="review"><rect x="402" y="122" width="36" height="36" rx="7"/><text x="420" y="186">review</text></g>
+          <g class="node" data-station="security"><rect x="522" y="122" width="36" height="36" rx="7"/><text x="540" y="186">security</text></g>
+          <g class="node" data-station="integrate"><rect x="642" y="122" width="36" height="36" rx="7"/><text x="660" y="186">integrate</text></g>
+          <rect class="work" x="104" y="134" width="12" height="12" rx="2"/>
+          <rect class="work" x="344" y="134" width="12" height="12" rx="2"/>
+          <rect class="work" x="584" y="134" width="12" height="12" rx="2"/>
+          <circle class="owner" cx="360" cy="46" r="7"/>
+          <text class="owner-label" x="360" y="24" data-i18n="fig.owner">dueño</text>
         </svg>
         <figcaption class="caption" data-i18n="fig.caption">FIG. 1 / LÍNEA</figcaption>
       </figure>
@@ -76,6 +79,7 @@
     <section id="synopsis" aria-labelledby="synopsis-h">
       <p class="label"><span class="marker" data-marker>01</span> <span data-i18n="synopsis.label">Sinopsis</span></p>
       <h2 id="synopsis-h" data-i18n="synopsis.title">Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados.</h2>
+      <p data-i18n="synopsis.loop">La persona no se queda sin trabajo: tiene muchas tareas y, según lo que sabe y la confianza que le tenga a la fábrica, le delega más o menos. Sigue decidiendo qué se hace y dónde entra ella; zero se ocupa de lo que le delega.</p>
       <p data-i18n="synopsis.p1">Le pedís trabajo desde el chat de tu cliente de IA o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.</p>
       <p data-i18n="synopsis.p2">Nunca pisa tu trabajo: cada pedido trabaja en su propia copia (<code>git worktree</code>) y su propia rama. Es open source (Apache-2.0) y gratuita. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.</p>
     </section>
@@ -98,6 +102,7 @@
     <section id="autonomy" aria-labelledby="autonomy-h">
       <p class="label"><span class="marker" data-marker>03</span> <span data-i18n="autonomy.label">Autonomía</span></p>
       <h2 id="autonomy-h" data-i18n="autonomy.title">Cuatro niveles. Vos elegís dónde entrás.</h2>
+      <p data-i18n="autonomy.intro">Cuanto más delegás, más hace sola la fábrica. En <code>L0</code> aprobás la especificación y la integración de cada trabajo; en <code>L3</code> la fábrica trabaja sola dentro de sus límites y vos mirás los resultados. Podés empezar abajo y subir a medida que le tomás confianza.</p>
       <div class="table-wrap">
         <table>
           <thead>
@@ -152,7 +157,7 @@
     <section id="ci" aria-labelledby="ci-h">
       <p class="label"><span class="marker" data-marker>06</span> <span data-i18n="ci.label">Tu CI y tus herramientas de calidad</span></p>
       <h2 id="ci-h" data-i18n="ci.title">zero no reemplaza tu CI: trabaja con él.</h2>
-      <p data-i18n="ci.intro">zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad.</p>
+      <p data-i18n="ci.intro">Cuando se lo delegás, zero toma ese trabajo del circuito: especificar, programar, probar en local, revisar e integrar. Pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad.</p>
       <ol class="path">
         <li data-i18n="ci.path.1">Tu pedido</li>
         <li data-i18n="ci.path.2">zero: <code>spec</code>, <code>build</code>, <code>verify</code>, <code>review</code>, <code>security</code></li>
