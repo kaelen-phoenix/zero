@@ -186,10 +186,49 @@ describe("sitio del proyecto: contenido", () => {
     });
   });
 
-  it("título y bajada: zero in the loop, y el dueño decide dónde vuelve a entrar", () => {
+  it("título y bajada: zero in the loop, y zero se suma al circuito al lado de la persona", () => {
     const hero = section("hero");
     expect(hero).toContain("<h1>zero in the loop</h1>");
-    expect(hero).toContain("el dueño decide dónde vuelve a entrar");
+    const tagline = translatable(hero).find((t) => t.key === "hero.tagline")!.inner;
+    for (const word of ["ocupa el lugar", "vuelve a entrar"]) expect(tagline).not.toContain(word);
+    for (const word of ["zero", "persona"]) expect(tagline).toContain(word);
+    const en = loadSite().EN["hero.tagline"]!;
+    for (const word of ["place", "step back in"]) expect(en).not.toContain(word);
+    expect(en).toContain("zero");
+    expect(en).toMatch(/person|people/);
+  });
+
+  it("la sinopsis cuenta que la persona delega según lo que sabe y la confianza que tiene", () => {
+    const loop = translatable(section("synopsis")).find((t) => t.key === "synopsis.loop");
+    expect(loop?.inner.trim()).toBeTruthy();
+    expect(loop!.inner).toMatch(/delega|delegás/);
+    expect(loop!.inner).toContain("confianza");
+    const en = loadSite().EN["synopsis.loop"]!;
+    for (const word of ["delegate", "trust"]) expect(en).toContain(word);
+  });
+
+  it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
+    const autonomy = section("autonomy");
+    const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);
+    expect(intro).not.toBeNull();
+    expect(intro!.index).toBeLessThan(autonomy.indexOf("<table>"));
+    for (const level of ["L0", "L3"]) {
+      expect(intro![1]).toContain(level);
+      expect(loadSite().EN["autonomy.intro"]).toContain(level);
+    }
+  });
+
+  it("ningún texto dice que zero hace el trabajo de las personas u ocupa su lugar", () => {
+    const texts = [html, ...Object.values(loadSite().EN)].join("\n").toLowerCase();
+    for (const phrase of ["lugar del humano", "ocupa el lugar", "trabajo de las personas", "human's place", "takes the place", "work of the people"]) {
+      expect(texts, phrase).not.toContain(phrase);
+    }
+    const head = /<head>([\s\S]*?)<\/head>/.exec(html)![1]!;
+    for (const name of ['name="description"', 'property="og:description"']) {
+      const content = new RegExp(`<meta ${name} content="([^"]+)"`).exec(head)?.[1];
+      expect(content, name).toBeTruthy();
+      expect(content, name).not.toContain("vuelve a entrar");
+    }
   });
 
   it("nombra las estaciones, los niveles, las autonomías y el turno nocturno", () => {
@@ -257,6 +296,37 @@ describe("sitio del proyecto: FIG. 1", () => {
     expect(nodes).toEqual(["spec", "build", "verify", "review", "security", "integrate"]);
     expect(svg).toContain('class="work"');
     expect(svg).toContain('class="owner"');
+  });
+
+  it("es una línea de montaje: una cinta y varios trabajos en posiciones distintas", () => {
+    expect(svg).toMatch(/class="[^"]*\b(rail|belt)\b/);
+    const works = [...svg.matchAll(/<[a-z]+\b[^>]*\bclass="[^"]*\bwork\b[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(works.length).toBeGreaterThanOrEqual(2);
+    const positions = works.map((w) => /\b(?:cx|x|transform)="([^"]+)"/.exec(w)?.[1]);
+    expect(positions.every(Boolean)).toBe(true);
+    expect(new Set(positions).size).toBe(works.length);
+  });
+
+  it("describe la figura en los dos idiomas, con la persona al lado de la línea", () => {
+    expect(svg).toMatch(/aria-labelledby="fig-title fig-desc"/);
+    const desc = /<desc id="fig-desc" data-i18n="fig\.desc">([^<]+)<\/desc>/.exec(svg)?.[1];
+    expect(desc).toBeTruthy();
+    const en = loadSite().EN;
+    expect(en["fig.title"]!.trim()).not.toBe("");
+    for (const text of [desc!, en["fig.desc"]!]) {
+      for (const station of ["spec", "build", "verify", "review", "security", "integrate"]) expect(text).toContain(station);
+      expect(text).not.toMatch(/vuelve a entrar|steps? back in/);
+    }
+  });
+
+  it("no tiene colores fijos ni recursos externos: usa las variables del sitio", () => {
+    expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|fill="(?!none)|stroke="/i);
+    expect(svg).not.toMatch(/<script|<image|href=|src=/);
+    const rules = [...css.matchAll(/\.line-fig[^{]*\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) {
+      for (const color of rule.matchAll(/(?:^|;)\s*(?:fill|stroke|color):\s*([^;]+)/g)) expect(color[1]!.trim()).toMatch(/^(var\(--[\w-]+\)|none)$/);
+    }
   });
 
   it("detiene las animaciones con prefers-reduced-motion", () => {
