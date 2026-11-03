@@ -1,5 +1,6 @@
 import { Octokit } from "@octokit/rest";
 import type { FactoryContext } from "../app.js";
+import type { LineConfig } from "../config.js";
 import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
 import type { Job } from "../state/store.js";
@@ -162,10 +163,10 @@ function waiting(ctx: FactoryContext, job: Job, why: string) {
 }
 
 /** One pass over every pull request waiting to be merged; one that fails never stops the others. */
-export async function pollMerges(ctx: FactoryContext, api: (repository: string) => MergeApi | undefined): Promise<void> {
+export async function pollMerges(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined): Promise<void> {
   for (const job of watchedJobs(ctx)) {
     const pr = pullRequestOf(job.delivery!.url!);
-    const gh = pr && api(pr.repository);
+    const gh = pr && api(pr.repository, ctx.config.lines.find((l) => l.name === job.line));
     if (!pr || !gh) {
       waiting(ctx, job, "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN");
       continue;

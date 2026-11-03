@@ -74,6 +74,23 @@ const ResearchSchema = z.union([
     .strict(),
 ]);
 
+export const DEFAULT_SIGNATURE_TEXT = "— Hecho con [zero in the loop](https://zerointheloop.com)";
+export const DEFAULT_SIGNATURE_TRAILER = "Built-by: zero in the loop <https://zerointheloop.com>";
+
+/** zero in the loop's signature on what the factory builds, or `off`. */
+const SignatureSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Last paragraph of pull requests, issues and comments. */
+      text: z.string().min(1).default(DEFAULT_SIGNATURE_TEXT),
+      /** Trailer at the end of every commit: one line, `Token: value`. */
+      trailer: z.string().regex(/^[A-Za-z0-9-]+: [^\r\n]+$/, "use one line like `Built-by: value`").default(DEFAULT_SIGNATURE_TRAILER),
+    })
+    .strict(),
+]);
+export type Signature = { text: string; trailer: string };
+
 /** An OTLP/HTTP collector URL: http or https, never with credentials in it. */
 const OtlpEndpointSchema = z.string().refine((value) => {
   try {
@@ -175,6 +192,8 @@ export const LineSchema = z.object({
     .optional(),
   /** How far the night shift goes on its own on this line; absent: the global `nightShift.autonomy`. */
   nightShift: z.object({ autonomy: AutonomySchema }).strict().optional(),
+  /** This line's signature; replaces the global one entirely. */
+  signature: SignatureSchema.optional(),
   /** This line's own agents, after the global ones. */
   agents: z.array(CustomAgentSchema).default([]),
 });
@@ -248,6 +267,9 @@ export const FactorySchema = z
     nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     /** Absent: on, one note per line with a research skill per day. */
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
+    /** Absent: on, with the default texts. */
+    signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
+
     /** Absent: traces stay only in state.db. */
     telemetry: TelemetrySchema.optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
@@ -333,6 +355,12 @@ export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review"
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {
   return line.nightShift?.autonomy ?? (config.nightShift === "off" ? "propose" : config.nightShift.autonomy);
+}
+
+/** The signature on what the factory builds for a line: the line's own, else the global one; undefined when off. */
+export function lineSignature(config: Pick<FactoryConfig, "signature">, line: Pick<LineConfig, "signature">): Signature | undefined {
+  const sig = line.signature ?? config.signature;
+  return sig === "off" ? undefined : sig;
 }
 
 /** The line's business research skills: names in `business` that are also among its research `skills`. */

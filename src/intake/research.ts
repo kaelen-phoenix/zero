@@ -55,13 +55,13 @@ async function syncLine(ctx: FactoryContext, line: LineConfig, notes: ResearchNo
  * yet. A failure stays in the log and is retried on the next pass; it never
  * stops the other lines.
  */
-export async function syncResearchIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined): Promise<void> {
+export async function syncResearchIssues(ctx: FactoryContext, api: (repository: string, line: LineConfig) => IssueApi | undefined): Promise<void> {
   for (const line of ctx.config.lines) {
     try {
       const notes = ctx.store.listResearchNotes({ line: line.name }).filter((n) => n.issueNumber === undefined);
       if (!notes.length) continue;
       const repository = lineRepository(line);
-      const gh = repository && api(repository);
+      const gh = repository && api(repository, line);
       if (!repository || !gh) continue;
       await syncLine(ctx, line, notes, gh);
     } catch (err) {

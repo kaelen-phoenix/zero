@@ -191,13 +191,13 @@ function needsSync(ctx: FactoryContext, line: LineConfig, repository: string | u
  * issues about decisions taken in the factory. A failure stays in the log and
  * is retried on the next pass; it never stops the other lines.
  */
-export async function syncProposalIssues(ctx: FactoryContext, api: (repository: string) => IssueApi | undefined): Promise<void> {
+export async function syncProposalIssues(ctx: FactoryContext, api: (repository: string, line: LineConfig) => IssueApi | undefined): Promise<void> {
   for (const line of ctx.config.lines) {
     try {
       const proposals = ctx.store.listProposals({ line: line.name });
       if (!proposals.some((p) => needsSync(ctx, line, undefined, p) || (p.status === "approved" && p.issueNumber !== undefined))) continue;
       const repository = lineRepository(line);
-      const gh = repository && api(repository);
+      const gh = repository && api(repository, line);
       if (!repository || !gh) continue;
       const todo = proposals.filter((p) => needsSync(ctx, line, repository, p));
       if (todo.length) await syncLine(ctx, line, todo, repository, gh);

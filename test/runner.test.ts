@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -47,6 +48,30 @@ describe("production line", () => {
     }
     const posts = await ctx.townhall.recall();
     expect(posts.find((p) => p.kind === "run")).toMatchObject({ line: "demo", job: job.id, data: { status: "delivered" } });
+  });
+
+  it("signs the spec, attempt and merge commits with the trailer, and none of them with the signature off", async () => {
+    const trailer = "Built-by: zero in the loop <https://zerointheloop.com>";
+    const deliver = async (signature?: string) => {
+      const repo = gitRepo({ "README.md": "# demo\n", "openspec/config.yaml": "schema: spec-driven\n" });
+      const ctx = testFactory({ level: "L2", isolation: "worktree", ...(signature && { signature }), lines: [{ name: "demo", repo, verify: [passes] }] });
+      const { job } = requestWork(ctx, { text: "agregá un endpoint de salud" });
+      expect((await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner))).status).toBe("delivered");
+      return { repo, job };
+    };
+
+    const { repo, job } = await deliver();
+    const branch = `zero/${job.id}`;
+    // By position, not log order: commits made within the same second come out in any order.
+    expect(["main", "main^2", "main^2~1"].map((rev) => gitIn(repo, "log", "-1", "--format=%s", rev).trim())).toEqual([`zero: Health endpoint (${job.id})`, `zero(${job.id}): intento 1`, `zero(${job.id}): especificación`]);
+    for (const rev of ["main", branch, `${branch}~1`]) {
+      const message = gitIn(repo, "log", "-1", "--format=%B", rev).trim();
+      expect(message.endsWith(`\n\n${trailer}`)).toBe(true);
+      expect(spawnSync("git", ["interpret-trailers", "--parse"], { cwd: repo, input: message, encoding: "utf8" }).stdout.trim()).toBe(trailer);
+    }
+
+    const off = await deliver("off");
+    expect(gitIn(off.repo, "log", "--format=%B", "main")).not.toContain("Built-by:");
   });
 
   it("asks the owner to approve the spec at L1 and continues after approval", async () => {
