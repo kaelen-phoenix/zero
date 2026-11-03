@@ -534,6 +534,15 @@ export class Store {
     return (this.db.prepare("SELECT * FROM jobs WHERE finished_at >= ? ORDER BY finished_at").all(since.toISOString()) as Row[]).map(toJob);
   }
 
+  /** Up to `limit` jobs that finished after the cursor, in (finished_at, id) order. */
+  finishedAfter(cursor: { at: string; id: string }, limit: number): Job[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM jobs WHERE finished_at IS NOT NULL AND (finished_at > ? OR (finished_at = ? AND id > ?)) ORDER BY finished_at, id LIMIT ?")
+        .all(cursor.at, cursor.at, cursor.id, limit) as Row[]
+    ).map(toJob);
+  }
+
   insertSpan(span: SpanRow) {
     this.db
       .prepare("INSERT INTO spans (id, job_id, parent_id, name, start, end, status, attrs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
