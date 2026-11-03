@@ -400,7 +400,19 @@ What the gate cannot see: encrypted content, and data sent to an allowed site (f
 
 Each job leaves a trace: job → station → attempt → agent or command. Each element records duration, status, engine, model and cost, and the cost says where it came from (`reported` or `unknown`).
 
-The metrics (delivered, failed, success rate, cost per delivery, human wait, breakdown by engine, the box's connections and blocks) are computed with a single definition, used alike by the terminal, the chat and the report. Span names follow the OpenTelemetry GenAI conventions, so they can be exported over OTLP later.
+The metrics (delivered, failed, success rate, cost per delivery, human wait, breakdown by engine, the box's connections and blocks) are computed with a single definition, used alike by the terminal, the chat and the report. Span names follow the OpenTelemetry GenAI conventions.
+
+The traces can also go to an OpenTelemetry collector (Jaeger, Grafana Tempo, Honeycomb…) over OTLP/HTTP with JSON. It is off by default; it is turned on in `zero.factory.yaml` with the endpoint, and each header names a secret, never its value:
+
+```yaml
+telemetry:
+  otlp:
+    endpoint: https://api.honeycomb.io/v1/traces
+    headers:
+      x-honeycomb-team: HONEYCOMB_API_KEY
+```
+
+Store the value with `zero secret set HONEYCOMB_API_KEY` (the system keychain) or in an environment variable of the same name. The daemon sends each finished job once, with its hierarchy (job → station → attempt → agent or command). Secrets, the line's repository, the owner's home folder and other local paths are removed from what leaves. If the collector does not answer, the factory logs it and carries on: it retries the same batch up to 5 times with growing waits, then skips it. `state.db` stays the source of truth; jobs finished before the export was turned on are not sent.
 
 ## Townhall
 
@@ -431,4 +443,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · OTLP export · governed MCP for the station agents.
+Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.

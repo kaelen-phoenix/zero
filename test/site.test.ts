@@ -277,10 +277,16 @@ describe("sitio del proyecto: contenido", () => {
     expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
     expect(loadSite().EN["soon"]).toBe("coming");
-    for (const item of ["Instalador", "OTLP"]) {
-      const line = html.split("\n").find((l) => l.includes(item) && l.includes('class="soon"'));
-      expect(line, item).toBeDefined();
-    }
+    const line = html.split("\n").find((l) => l.includes("Instalador") && l.includes('class="soon"'));
+    expect(line, "Instalador").toBeDefined();
+  });
+
+  it("da la exportación OTLP como disponible, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes('class="soon"') && l.includes("OTLP"))).toEqual([]);
+    expect(html).not.toContain("next.otlp");
+    expect(loadSite().EN["next.otlp"]).toBeUndefined();
+    expect(/<p data-i18n="workflow\.trace">([^<]*)<\/p>/.exec(html)![1]).toContain("OTLP");
+    expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
   });
 });
 

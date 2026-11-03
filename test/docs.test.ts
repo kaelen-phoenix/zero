@@ -103,6 +103,15 @@ describe("documentation up to date", () => {
     expect(es).not.toContain("Turno nocturno (en camino)");
   });
 
+  it("documents OTLP export as available in both READMEs", () => {
+    for (const [text, observability, next] of [[es, "## Observabilidad", "## Próximas etapas"], [en, "## Observability", "## Next steps"]] as const) {
+      const body = section(text, observability);
+      expect(body).toContain("telemetry:");
+      expect(body).toContain("otlp:");
+      expect(section(text, next)).not.toContain("OTLP");
+    }
+  });
+
   it("shows a complete custom agent in both READMEs", () => {
     for (const [text, heading] of [[es, "## Agentes a medida"], [en, "## Custom agents"]] as const) {
       // The section ends at the example's own `## ` headings, so the instructions file is looked up in the whole README.
