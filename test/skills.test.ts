@@ -188,6 +188,24 @@ describe("claude options", () => {
     expect(claudeOptions(req(), ac).allowedTools).not.toContain("Bash");
     expect(claudeOptions(req({ access: "write", skills: staged }), ac).allowedTools).toEqual(claudeOptions(req({ access: "write" }), ac).allowedTools);
   });
+
+  it("isolates every run from hooks, host memory and outside MCP servers", () => {
+    process.env.ZERO_TEST_VAR = "x";
+    try {
+      const reqs = [req({ access: "read" }), req({ access: "web" }), req({ access: "write" }), req({ skills: staged }), req({ access: "write", skills: staged })];
+      for (const r of reqs) {
+        const o = claudeOptions(r, new AbortController());
+        expect(o.settings).toEqual({ disableAllHooks: true, autoMemoryEnabled: false });
+        expect(o.strictMcpConfig).toBe(true);
+        expect(o.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+        expect(o.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
+        expect(o.env?.ZERO_TEST_VAR).toBe("x");
+        expect(o.settingSources).toEqual(["project"]);
+      }
+    } finally {
+      delete process.env.ZERO_TEST_VAR;
+    }
+  });
 });
 
 describe("skill text for engines", () => {

@@ -8,7 +8,7 @@ zero is a **software factory that runs on your machine**. You ask it for work fr
 
 It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.
 
-The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section lists the formats on offer, and each button opens an email to the owner.
+The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section, only in the Spanish version of the site, lists the formats on offer, and each button opens an email to the owner.
 
 ## How it works
 
@@ -160,7 +160,7 @@ limits:                   # with a subscription (claude.ai) the limit is the pla
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
   usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
   usdPerJob: 3            # only for pay-per-use
-  protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
+  protectedPaths: [".github/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
 signature:                # what the factory builds carries this signature · `signature: off` turns it off
   text: "— Hecho con [zero in the loop](https://zerointheloop.com)"   # pull requests, issues and comments
@@ -408,7 +408,19 @@ What the gate cannot see: encrypted content, and data sent to an allowed site (f
 
 Each job leaves a trace: job → station → attempt → agent or command. Each element records duration, status, engine, model and cost, and the cost says where it came from (`reported` or `unknown`).
 
-The metrics (delivered, failed, success rate, cost per delivery, human wait, breakdown by engine, the box's connections and blocks) are computed with a single definition, used alike by the terminal, the chat and the report. Span names follow the OpenTelemetry GenAI conventions, so they can be exported over OTLP later.
+The metrics (delivered, failed, success rate, cost per delivery, human wait, breakdown by engine, the box's connections and blocks) are computed with a single definition, used alike by the terminal, the chat and the report. Span names follow the OpenTelemetry GenAI conventions.
+
+The traces can also go to an OpenTelemetry collector (Jaeger, Grafana Tempo, Honeycomb…) over OTLP/HTTP with JSON. It is off by default; it is turned on in `zero.factory.yaml` with the endpoint, and each header names a secret, never its value:
+
+```yaml
+telemetry:
+  otlp:
+    endpoint: https://api.honeycomb.io/v1/traces
+    headers:
+      x-honeycomb-team: HONEYCOMB_API_KEY
+```
+
+Store the value with `zero secret set HONEYCOMB_API_KEY` (the system keychain) or in an environment variable of the same name. The daemon sends each finished job once, with its hierarchy (job → station → attempt → agent or command). Secrets, the line's repository, the owner's home folder and other local paths are removed from what leaves. If the collector does not answer, the factory logs it and carries on: it retries the same batch up to 5 times with growing waits, then skips it. `state.db` stays the source of truth; jobs finished before the export was turned on are not sent.
 
 ## Townhall
 
@@ -439,4 +451,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · OTLP export · governed MCP for the station agents.
+Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.

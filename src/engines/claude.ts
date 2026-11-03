@@ -28,6 +28,10 @@ export function claudeOptions(req: EngineRequest, abort: AbortController): Optio
     systemPrompt: { type: "preset", preset: "claude_code", append: req.instructions },
     // Load the target repo's CLAUDE.md/AGENTS.md and project settings, never the runner's user settings.
     settingSources: ["project"],
+    // Never run hooks (a build may have written them into the repo) nor load the host's memory or claude.ai connectors.
+    settings: { disableAllHooks: true, autoMemoryEnabled: false },
+    strictMcpConfig: true,
+    env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     allowedTools: TOOLS[req.access],
     permissionMode: "dontAsk",
     skills: req.skills?.skills.map((s) => s.id) ?? [],

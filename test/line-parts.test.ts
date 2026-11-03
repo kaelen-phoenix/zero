@@ -82,6 +82,28 @@ describe("verification", () => {
     expect(protectedTouched(files, [])).toEqual([".zero/agents/security.md", ".Zero/agents/a11y.md"]);
   });
 
+  it("protects agent configuration by default", () => {
+    const defaults = parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths;
+    const files = [{ status: "M", path: ".claude/settings.json" }, { status: "A", path: ".mcp.json" }, { status: "A", path: "src/x.ts" }];
+    expect(protectedTouched(files, defaults)).toEqual([".claude/settings.json", ".mcp.json"]);
+    expect(protectedTouched([{ status: "M", path: ".claude/settings.json" }], defaults, [".claude/settings.json"])).toEqual([]);
+  });
+
+  it("stops a diff that adds .claude/settings.json", async () => {
+    const copy = await copyOf(gitRepo());
+    writeTree(copy.cwd, { ".claude/settings.json": "{\"hooks\":{}}\n" });
+    copy.commitAll("settings");
+    const r = await verifyChange(copy, {
+      commands: [],
+      protectedPaths: parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths,
+      tracer: tracer(),
+      jobId: "j1",
+      parentId: "p",
+    });
+    expect(r).toMatchObject({ ok: false, kind: "protected" });
+    expect(r.ok === false && r.kind === "protected" && r.paths).toContain(".claude/settings.json");
+  });
+
   it("detects deleted and disabled tests", () => {
     const problems = testTampering(
       [{ status: "D", path: "test/api.test.ts" }, { status: "D", path: "src/old.ts" }],

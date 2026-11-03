@@ -62,6 +62,7 @@ class FakeElement {
   textContent = "";
   private attrs = new Map<string, string>();
   listeners: Record<string, () => void> = {};
+  parent: FakeElement | null = null;
   constructor(attrs: Record<string, string> = {}, inner = "") {
     for (const [k, v] of Object.entries(attrs)) this.attrs.set(k, v);
     this.innerHTML = inner;
@@ -72,6 +73,35 @@ class FakeElement {
   removeAttribute(name: string) { this.attrs.delete(name); }
   hasAttribute(name: string) { return this.attrs.has(name); }
   addEventListener(type: string, fn: () => void) { this.listeners[type] = fn; }
+  /** Only single '[attr]' selectors, like querySelectorAll. */
+  closest(selector: string): FakeElement | null {
+    const attr = /^\[([\w-]+)\]$/.exec(selector)![1]!;
+    for (let el: FakeElement | null = this; el; el = el.parent) if (el.hasAttribute(attr)) return el;
+    return null;
+  }
+}
+
+/** Elements marked data-lang-only and section markers, in document order; a marker's parent is the data-lang-only section around it. */
+function scoped(source: string): FakeElement[] {
+  const re = /<(a|section)\b[^>]*\bdata-lang-only="([^"]+)"[^>]*>|<span class="marker" data-marker>(\d+)<\/span>/g;
+  const out: FakeElement[] = [];
+  let open: { el: FakeElement; end: number } | null = null;
+  for (const m of source.matchAll(re)) {
+    if (open && m.index! >= open.end) open = null;
+    if (m[3] !== undefined) {
+      const marker = new FakeElement({ "data-marker": "" }, m[3]);
+      marker.parent = open?.el ?? null;
+      out.push(marker);
+      continue;
+    }
+    const el = new FakeElement({ "data-lang-only": m[2]! });
+    out.push(el);
+    if (m[1] === "section") {
+      const rest = source.slice(m.index! + 1);
+      open = { el, end: m.index! + 1 + rest.search(/<section |<\/main>/) };
+    }
+  }
+  return out;
 }
 
 function fakeDocument() {
@@ -81,6 +111,7 @@ function fakeDocument() {
     ...hrefs(html).map((h) => new FakeElement({ "data-i18n-href": h.key, href: h.href })),
     new FakeElement({ "data-lang": "es" }), new FakeElement({ "data-lang": "en" }),
     ...["auto", "light", "dark"].map((t) => new FakeElement({ "data-theme-choice": t })),
+    ...scoped(html),
   ];
   const byId: Record<string, FakeElement> = {
     "install-code": new FakeElement({}, "npm install && npm run build"),
@@ -150,15 +181,54 @@ describe("sitio del proyecto: contenido", () => {
     const ids = [...html.matchAll(/<section id="([^"]+)"/g)].map((m) => m[1]);
     expect(ids).toEqual(["hero", "synopsis", "line", "autonomy", "night-shift", "guarantees", "ci", "install", "workflow", "compatibility", "training", "links"]);
     ids.slice(1).forEach((id, i) => {
-      const marker = /<span class="marker">(\d+)<\/span>/.exec(section(id!));
+      const marker = /<span class="marker" data-marker[^>]*>(\d+)<\/span>/.exec(section(id!));
       expect(marker?.[1], id).toBe(String(i + 1).padStart(2, "0"));
     });
   });
 
-  it("título y bajada: zero in the loop, y el dueño decide dónde vuelve a entrar", () => {
+  it("título y bajada: zero in the loop, y zero se suma al circuito al lado de la persona", () => {
     const hero = section("hero");
     expect(hero).toContain("<h1>zero in the loop</h1>");
-    expect(hero).toContain("el dueño decide dónde vuelve a entrar");
+    const tagline = translatable(hero).find((t) => t.key === "hero.tagline")!.inner;
+    for (const word of ["ocupa el lugar", "vuelve a entrar"]) expect(tagline).not.toContain(word);
+    for (const word of ["zero", "persona"]) expect(tagline).toContain(word);
+    const en = loadSite().EN["hero.tagline"]!;
+    for (const word of ["place", "step back in"]) expect(en).not.toContain(word);
+    expect(en).toContain("zero");
+    expect(en).toMatch(/person|people/);
+  });
+
+  it("la sinopsis cuenta que la persona delega según lo que sabe y la confianza que tiene", () => {
+    const loop = translatable(section("synopsis")).find((t) => t.key === "synopsis.loop");
+    expect(loop?.inner.trim()).toBeTruthy();
+    expect(loop!.inner).toMatch(/delega|delegás/);
+    expect(loop!.inner).toContain("confianza");
+    const en = loadSite().EN["synopsis.loop"]!;
+    for (const word of ["delegate", "trust"]) expect(en).toContain(word);
+  });
+
+  it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
+    const autonomy = section("autonomy");
+    const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);
+    expect(intro).not.toBeNull();
+    expect(intro!.index).toBeLessThan(autonomy.indexOf("<table>"));
+    for (const level of ["L0", "L3"]) {
+      expect(intro![1]).toContain(level);
+      expect(loadSite().EN["autonomy.intro"]).toContain(level);
+    }
+  });
+
+  it("ningún texto dice que zero hace el trabajo de las personas u ocupa su lugar", () => {
+    const texts = [html, ...Object.values(loadSite().EN)].join("\n").toLowerCase();
+    for (const phrase of ["lugar del humano", "ocupa el lugar", "trabajo de las personas", "human's place", "takes the place", "work of the people"]) {
+      expect(texts, phrase).not.toContain(phrase);
+    }
+    const head = /<head>([\s\S]*?)<\/head>/.exec(html)![1]!;
+    for (const name of ['name="description"', 'property="og:description"']) {
+      const content = new RegExp(`<meta ${name} content="([^"]+)"`).exec(head)?.[1];
+      expect(content, name).toBeTruthy();
+      expect(content, name).not.toContain("vuelve a entrar");
+    }
   });
 
   it("nombra las estaciones, los niveles, las autonomías y el turno nocturno", () => {
@@ -207,10 +277,16 @@ describe("sitio del proyecto: contenido", () => {
     expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
     expect(loadSite().EN["soon"]).toBe("coming");
-    for (const item of ["Instalador", "OTLP"]) {
-      const line = html.split("\n").find((l) => l.includes(item) && l.includes('class="soon"'));
-      expect(line, item).toBeDefined();
-    }
+    const line = html.split("\n").find((l) => l.includes("Instalador") && l.includes('class="soon"'));
+    expect(line, "Instalador").toBeDefined();
+  });
+
+  it("da la exportación OTLP como disponible, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes('class="soon"') && l.includes("OTLP"))).toEqual([]);
+    expect(html).not.toContain("next.otlp");
+    expect(loadSite().EN["next.otlp"]).toBeUndefined();
+    expect(/<p data-i18n="workflow\.trace">([^<]*)<\/p>/.exec(html)![1]).toContain("OTLP");
+    expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
   });
 });
 
@@ -226,6 +302,37 @@ describe("sitio del proyecto: FIG. 1", () => {
     expect(nodes).toEqual(["spec", "build", "verify", "review", "security", "integrate"]);
     expect(svg).toContain('class="work"');
     expect(svg).toContain('class="owner"');
+  });
+
+  it("es una línea de montaje: una cinta y varios trabajos en posiciones distintas", () => {
+    expect(svg).toMatch(/class="[^"]*\b(rail|belt)\b/);
+    const works = [...svg.matchAll(/<[a-z]+\b[^>]*\bclass="[^"]*\bwork\b[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(works.length).toBeGreaterThanOrEqual(2);
+    const positions = works.map((w) => /\b(?:cx|x|transform)="([^"]+)"/.exec(w)?.[1]);
+    expect(positions.every(Boolean)).toBe(true);
+    expect(new Set(positions).size).toBe(works.length);
+  });
+
+  it("describe la figura en los dos idiomas, con la persona al lado de la línea", () => {
+    expect(svg).toMatch(/aria-labelledby="fig-title fig-desc"/);
+    const desc = /<desc id="fig-desc" data-i18n="fig\.desc">([^<]+)<\/desc>/.exec(svg)?.[1];
+    expect(desc).toBeTruthy();
+    const en = loadSite().EN;
+    expect(en["fig.title"]!.trim()).not.toBe("");
+    for (const text of [desc!, en["fig.desc"]!]) {
+      for (const station of ["spec", "build", "verify", "review", "security", "integrate"]) expect(text).toContain(station);
+      expect(text).not.toMatch(/vuelve a entrar|steps? back in/);
+    }
+  });
+
+  it("no tiene colores fijos ni recursos externos: usa las variables del sitio", () => {
+    expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|fill="(?!none)|stroke="/i);
+    expect(svg).not.toMatch(/<script|<image|href=|src=/);
+    const rules = [...css.matchAll(/\.line-fig[^{]*\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) {
+      for (const color of rule.matchAll(/(?:^|;)\s*(?:fill|stroke|color):\s*([^;]+)/g)) expect(color[1]!.trim()).toMatch(/^(var\(--[\w-]+\)|none)$/);
+    }
   });
 
   it("detiene las animaciones con prefers-reduced-motion", () => {
@@ -274,7 +381,7 @@ describe("sitio del proyecto: instalación y flujo", () => {
 });
 
 describe("sitio del proyecto: capacitaciones", () => {
-  const FORMATS = ["talk", "workshop", "mentoring", "companies"];
+  const FORMATS = ["talk", "workshop", "mentoring"];
   const ADDRESS = ["kaelen.dev", "gmail.com"].join("@");
 
   /** The subject and body of a mailto: URL, decoded. */
@@ -284,19 +391,20 @@ describe("sitio del proyecto: capacitaciones", () => {
     return { to: m![1]!, subject: decodeURIComponent(m![2]!), body: decodeURIComponent(m![3]!) };
   }
 
-  it("el menú enlaza la sección en los dos idiomas", () => {
+  it("el menú enlaza la sección, marcada solo para español", () => {
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)![1]!;
-    const link = /<a href="#training" data-i18n="([^"]+)">Capacitaciones<\/a>/.exec(header);
+    const link = /<a href="#training" data-lang-only="es" data-i18n="([^"]+)">Capacitaciones<\/a>/.exec(header);
     expect(link).not.toBeNull();
     expect(loadSite().EN[link![1]!]).toBe("Training");
     expect(header).toContain(`<a href="${README_ES}" data-i18n-href="href.readme">Docs</a>`);
     expect(header).toContain('<a href="https://github.com/kaelen-phoenix/zero">GitHub</a>');
   });
 
-  it("lista los cuatro formatos, a consultar y sin precios", () => {
+  it("lista los tres formatos, a consultar y sin precios", () => {
     const training = section("training");
     expect([...training.matchAll(/data-training="([^"]+)"/g)].map((m) => m[1])).toEqual(FORMATS);
-    for (const title of ["Charla abierta", "Taller grupal", "Mentoría individual", "Empresas"]) expect(training).toContain(title);
+    for (const title of ["Charla abierta", "Taller grupal", "Mentoría individual"]) expect(training).toContain(title);
+    expect(training).not.toContain("Empresas");
     const site = loadSite();
     for (const format of FORMATS) {
       const titleKey = `training.${format}.title`;
@@ -304,7 +412,7 @@ describe("sitio del proyecto: capacitaciones", () => {
       expect(translatable(training).some((t) => t.key === `training.${format}`), format).toBe(true);
     }
     const onRequest = translatable(training).filter((t) => t.inner === "a consultar");
-    expect(onRequest).toHaveLength(4);
+    expect(onRequest).toHaveLength(3);
     for (const t of onRequest) expect(site.EN[t.key]).toBe("on request");
     const text = squash(training.replace(/<[^>]+>/g, " "));
     expect(text).not.toMatch(/\$|USD|ARS|€|precio|price/i);
@@ -332,7 +440,8 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(url.startsWith(`mailto:${ADDRESS}?subject=`)).toBe(true);
     const { subject, body } = mail(url);
     expect(subject).toBe("Capacitación: Charla abierta");
-    for (const field of ["Nombre:", "Empresa (opcional):", "Cuántas personas:", "Qué busca"]) expect(body).toContain(field);
+    for (const field of ["Nombre:", "Cuántas personas:", "Qué busca"]) expect(body).toContain(field);
+    expect(body).not.toContain("Empresa");
     expect(url).not.toMatch(/ /);
   });
 
@@ -340,10 +449,20 @@ describe("sitio del proyecto: capacitaciones", () => {
     const site = loadSite();
     const doc = fakeDocument();
     site.applyLanguage(doc, "en", fakeStorage());
-    const { to, subject, body } = mail(site.trainingMailto(doc, new FakeElement({ "data-training": "companies" })));
+    const { to, subject, body } = mail(site.trainingMailto(doc, new FakeElement({ "data-training": "mentoring" })));
     expect(to).toBe(ADDRESS);
-    expect(subject).toBe(`Training: ${site.EN["training.companies.title"]}`);
-    for (const field of ["Name", "Company (optional)", "How many people", "What you are looking for"]) expect(body).toContain(field);
+    expect(subject).toBe(`Training: ${site.EN["training.mentoring.title"]}`);
+    expect(subject).toBe("Training: One-on-one mentoring");
+    for (const field of ["Name", "How many people", "What you are looking for"]) expect(body).toContain(field);
+    expect(body).not.toContain("Company");
+  });
+
+  it("no hay capacitaciones para empresas en ninguna parte del sitio", () => {
+    const EN = loadSite().EN;
+    expect(EN).not.toHaveProperty(["training.companies.title"]);
+    expect(EN).not.toHaveProperty(["training.companies"]);
+    expect(html).not.toMatch(/data-i18n="training\.companies/);
+    for (const { file, text } of textFiles) expect(text, file).not.toMatch(/empresa|compan(y|ies)/i);
   });
 
   it("la dirección no aparece entera en ningún archivo del sitio", () => {
@@ -351,6 +470,50 @@ describe("sitio del proyecto: capacitaciones", () => {
       expect(text, file).not.toContain(ADDRESS);
       expect(text, file).not.toMatch(/mailto:[^"'\s?]*@/);
     }
+  });
+
+  it("solo el enlace del menú y la sección llevan data-lang-only, sin hidden en el marcado", () => {
+    const marked = [...html.matchAll(/<[^>]*\bdata-lang-only="[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(marked).toHaveLength(2);
+    expect(marked[0]).toMatch(/^<a href="#training" data-lang-only="es"/);
+    expect(marked[1]).toMatch(/^<section id="training" data-lang-only="es"/);
+    for (const tag of marked) expect(tag).not.toMatch(/\shidden\b/);
+  });
+
+  it("se oculta en inglés y reaparece en español", () => {
+    const site = loadSite();
+    const doc = fakeDocument();
+    const storage = fakeStorage();
+    const only = doc.elements.filter((e) => e.hasAttribute("data-lang-only"));
+    expect(only).toHaveLength(2);
+    site.applyLanguage(doc, "en", storage);
+    for (const el of only) expect(el.hasAttribute("hidden")).toBe(true);
+    site.applyLanguage(doc, "es", storage);
+    for (const el of only) expect(el.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("la numeración de las secciones es correlativa en los dos idiomas", () => {
+    const site = loadSite();
+    const doc = fakeDocument();
+    const storage = fakeStorage();
+    const markers = doc.elements.filter((e) => e.hasAttribute("data-marker"));
+    const visible = () => markers.filter((m) => !m.closest("[hidden]")).map((m) => m.textContent);
+    const numbers = (n: number) => Array.from({ length: n }, (_, i) => String(i + 1).padStart(2, "0"));
+    const [training, links] = [markers[9]!, markers[10]!];
+    expect(training.parent?.getAttribute("data-lang-only")).toBe("es");
+    expect(visible()).toEqual(numbers(11));
+    site.applyLanguage(doc, "es", storage);
+    expect(visible()).toEqual(numbers(11));
+    site.applyLanguage(doc, "en", storage);
+    expect(visible()).toEqual(numbers(10));
+    expect(links.textContent).toBe("10");
+    site.applyLanguage(doc, "es", storage);
+    expect(visible()).toEqual(numbers(11));
+    expect([training.textContent, links.textContent]).toEqual(["10", "11"]);
+  });
+
+  it("styles.css oculta [hidden] aunque una clase fije display", () => {
+    expect(css).toMatch(/\[hidden\]\s*\{\s*display:\s*none/);
   });
 
   it("sin JavaScript explica cómo escribir a mano", () => {
@@ -474,6 +637,18 @@ describe("sitio del proyecto: idiomas", () => {
     expect(doc.elements.filter((e) => e.hasAttribute("data-i18n")).map((e) => e.innerHTML)).toEqual(spanish);
   });
 
+  it("el nivel auto no promete despliegues que zero no hace", () => {
+    const doc = fakeDocument();
+    const auto = doc.elements.find((e) => e.getAttribute("data-i18n") === "autonomy.auto")!;
+    for (const part of ["se integra", "autoMerge", "pull request"]) expect(auto.innerHTML).toContain(part);
+    expect(auto.innerHTML).not.toMatch(/despleg|desplieg/i);
+    for (const part of ["integrated", "autoMerge", "pull request"]) expect(site.EN["autonomy.auto"]).toContain(part);
+    expect(site.EN["autonomy.auto"]).not.toMatch(/deploy/i);
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(auto.innerHTML).toBe(site.EN["autonomy.auto"]);
+    expect(auto.innerHTML).not.toMatch(/deploy/i);
+  });
+
   it("los enlaces al README siguen el idioma elegido", () => {
     const doc = fakeDocument();
     const links = doc.elements.filter((e) => e.hasAttribute("data-i18n-href"));
@@ -571,5 +746,10 @@ describe("README", () => {
   it.each([["README.md", "Training"], ["README.es.md", "Capacitaciones"]])("%s menciona la sección %s del sitio", (file, name) => {
     const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
     expect(paragraph).toContain(name);
+  });
+
+  it.each([["README.md", "Spanish"], ["README.es.md", "español"]])("%s aclara que la sección está solo en la versión en español", (file, word) => {
+    const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
+    expect(paragraph).toContain(word);
   });
 });

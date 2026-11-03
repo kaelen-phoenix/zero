@@ -4,6 +4,7 @@ import { isAbsolute, win32 } from "node:path";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
+import { SECRET_NAME } from "./keychain.js";
 import { findSecret } from "./secrets.js";
 
 export const LEVELS = ["L0", "L1", "L2", "L3"] as const;
@@ -89,6 +90,36 @@ const SignatureSchema = z.union([
     .strict(),
 ]);
 export type Signature = { text: string; trailer: string };
+
+/** An OTLP/HTTP collector URL: http or https, never with credentials in it. */
+const OtlpEndpointSchema = z.string().refine((value) => {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}, "usá una URL http o https sin usuario ni contraseña (por ejemplo https://api.honeycomb.io/v1/traces)");
+
+/** Optional export of the traces to an OpenTelemetry collector; absent, nothing leaves the machine. */
+const TelemetrySchema = z
+  .object({
+    otlp: z
+      .object({
+        /** OTLP/HTTP traces endpoint, usually ending in /v1/traces. */
+        endpoint: OtlpEndpointSchema,
+        /** Header name → secret name, resolved from the environment or the keychain; never the value itself. */
+        headers: z
+          .record(
+            z.string().regex(/^[A-Za-z0-9-]+$/, "nombre de encabezado inválido"),
+            z.string().regex(SECRET_NAME, "va el nombre de un secreto (por ejemplo HONEYCOMB_API_KEY), no su valor: guardalo con `zero secret set NOMBRE` o en una variable de entorno"),
+          )
+          .default({}),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /** A site for the egress rules: a host name (it covers its subdomains) or an IPv4 address, optionally with `:port`. */
 export const SiteSchema = z
@@ -208,7 +239,7 @@ export const FactorySchema = z
         reservePercent: z.number().min(0).max(99).default(0),
         /** What the scout and research stations may spend together per night shift period; per-use billing only. */
         usdPerNight: z.number().nonnegative().default(1),
-        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".env", ".env.*", "**/*.pem", "**/*.key"]),
+        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),
     approvals: z
@@ -238,6 +269,9 @@ export const FactorySchema = z
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
+
+    /** Absent: traces stay only in state.db. */
+    telemetry: TelemetrySchema.optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),

@@ -1,4 +1,5 @@
 // zero in the loop: language, theme, copy and training buttons. Plain JS, no dependencies, no network, no cookies.
+// Elements marked data-lang-only show only in that language, and the section markers are renumbered to skip them.
 // The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
@@ -10,15 +11,16 @@
     "lang.label": "Language",
     "hero.label": "Software factory · open source",
     "href.readme": "https://github.com/kaelen-phoenix/zero#readme",
-    "hero.tagline": "The factory takes the human's place in the loop, and the owner decides where to step back in.",
+    "hero.tagline": "zero joins the loop beside the person, who never leaves it: they still decide what gets done and where they step in, and the factory does what they delegate.",
     "hero.install": "Install",
     "hero.docs": "Read the docs",
     "fig.title": "zero's production line",
-    "fig.desc": "Six stations in a row: spec, build, verify, review, security and integrate. A work dot moves along the line, an arc goes back from review to build with the feedback, and the owner is a separate dot that steps back in at the specification or at integration, where they decide.",
+    "fig.desc": "A belt with six stations in a row: spec, build, verify, review, security and integrate. Several jobs move between the stations, an arc goes back from review to build with the feedback, and the owner stands beside the line, linked to the specification and the integration, where they decide.",
     "fig.owner": "owner",
     "fig.caption": "FIG. 1 / LINE",
     "synopsis.label": "Synopsis",
     "synopsis.title": "A software factory that runs on your machine and turns requests into delivered changes.",
+    "synopsis.loop": "The person is not left without work: they have many tasks and, depending on what they know and how much they trust the factory, they delegate more or less to it. They still decide what gets done and where they step in; zero takes care of what they delegate.",
     "synopsis.p1": "You ask for work from your AI client's chat or from the terminal. The factory specifies it, builds it, verifies it, reviews it and integrates it on its own, in the background, even if you close the chat.",
     "synopsis.p2": "It never steps on your work: each request works in its own copy (<code>git worktree</code>) and its own branch. It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.",
     "line.label": "The production line",
@@ -33,6 +35,7 @@
     "line.note": "State in SQLite, one trace per job with its cost, and the townhall: the factory's collective memory.",
     "autonomy.label": "Autonomy",
     "autonomy.title": "Four levels. You choose where you step in.",
+    "autonomy.intro": "The more you delegate, the more the factory does on its own. At <code>L0</code> you approve each job's specification and integration; at <code>L3</code> the factory works on its own within its limits and you look at the results. You can start low and move up as you come to trust it.",
     "autonomy.level": "Level",
     "autonomy.approve": "What you approve",
     "autonomy.l0.name": "assisted",
@@ -48,7 +51,7 @@
     "autonomy.line.intro": "Each line decides how far a night-shift proposal goes on its own:",
     "autonomy.propose": "The default. The proposal waits for your decision.",
     "autonomy.build": "It becomes a job on its own, goes through every station and stops before integrating: it never integrates without your approval.",
-    "autonomy.auto": "It is built and integrated or deployed on its own, as the line says, without asking.",
+    "autonomy.auto": "It is built and integrated on its own, as the line says, without asking (on pull request lines with <code>autoMerge</code>, it is also merged).",
     "night.label": "Night shift",
     "night.title": "When the factory is idle, it looks for work.",
     "night.scout": "A read-only station that looks at each line once per period: the townhall, the traces, specs without tests, research notes and open unlabeled issues. It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title.",
@@ -73,7 +76,7 @@
     "guarantees.contracts": "A time limit per station, validated structured outputs and findings with verified citations.",
     "ci.label": "Your CI and your quality tools",
     "ci.title": "zero does not replace your CI: it works with it.",
-    "ci.intro": "zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority.",
+    "ci.intro": "When you delegate it, zero takes on that work in the loop: specify, build, test locally, review and integrate. But it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority.",
     "ci.path.1": "Your request",
     "ci.path.2": "zero: <code>spec</code>, <code>build</code>, <code>verify</code>, <code>review</code>, <code>security</code>",
     "ci.path.3": "The pull request",
@@ -106,7 +109,7 @@
     "workflow.status": "How everything is going, or a job's detail and its question if it is waiting for you.",
     "workflow.approve": "Approves what is waiting for you, or rejects it with <code>--reject --note</code>.",
     "workflow.proposals": "The night shift's proposals, approved or rejected with <code>approve</code> and <code>reject</code>.",
-    "workflow.trace": "Step by step: stations, attempts, agents, commands and cost.",
+    "workflow.trace": "Step by step: stations, attempts, agents, commands and cost. Traces can also be sent to an OpenTelemetry collector over OTLP.",
     "workflow.briefing": "The briefing: production, cost, lessons and what needs you.",
     "workflow.stop": "The andon: stops one job or the whole factory; <code>zero resume</code> picks it up again.",
     "workflow.chat": "In the chat they are the same tools: <code>zero_request</code>, <code>zero_status</code>, <code>zero_answer</code>, <code>zero_stop</code>, <code>zero_briefing</code>, <code>zero_trace</code>…",
@@ -129,8 +132,6 @@
     "training.workshop": "2 to 4 hands-on sessions: each participant builds their own factory with zero on their projects.",
     "training.mentoring.title": "One-on-one mentoring",
     "training.mentoring": "For a person or a team, in their own repos.",
-    "training.companies.title": "Companies",
-    "training.companies": "Team training and getting zero up and running.",
     "training.onrequest": "on request",
     "training.cta": "I want this",
     "training.noscript": "Without JavaScript the button does not open your email: write to kaelen.dev at gmail.com with the subject \"Training:\" and the format you are interested in.",
@@ -142,7 +143,6 @@
     "links.license": "Apache-2.0 license",
     "links.next": "Next steps",
     "next.installer": "Installer",
-    "next.otlp": "Trace export over OTLP",
     "next.engines": "ACP/OpenCode engines",
     "next.intake": "Requests from Linear and Jira",
     "next.regen": "Regeneration drill from the specifications",
@@ -156,11 +156,11 @@
   const MESSAGES = {
     es: {
       copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto.",
-      subject: "Capacitación: ", body: ["Nombre:", "Empresa (opcional):", "Cuántas personas:", "Qué busca:"],
+      subject: "Capacitación: ", body: ["Nombre:", "Cuántas personas:", "Qué busca:"],
     },
     en: {
       copied: "Command copied.", failed: "Could not copy; select the text.",
-      subject: "Training: ", body: ["Name:", "Company (optional):", "How many people:", "What you are looking for:"],
+      subject: "Training: ", body: ["Name:", "How many people:", "What you are looking for:"],
     },
   };
 
@@ -217,6 +217,17 @@
     doc.title = text("meta.title");
     doc.documentElement.setAttribute("lang", lang);
     for (const button of doc.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.getAttribute("data-lang") === lang));
+    for (const el of doc.querySelectorAll("[data-lang-only]")) {
+      if (el.getAttribute("data-lang-only") === lang) el.removeAttribute("hidden");
+      else el.setAttribute("hidden", "");
+    }
+    // Visible sections stay numbered 01, 02, … in both languages.
+    let n = 0;
+    for (const marker of doc.querySelectorAll("[data-marker]")) {
+      const only = marker.closest("[data-lang-only]");
+      if (only && only.getAttribute("data-lang-only") !== lang) continue;
+      marker.textContent = String(++n).padStart(2, "0");
+    }
     write(storage, LANG_KEY, lang);
     return lang;
   }

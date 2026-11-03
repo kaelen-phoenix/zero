@@ -10,8 +10,8 @@ export interface Span {
 
 /**
  * Spans follow the OpenTelemetry GenAI conventions where one exists
- * (`gen_ai.invoke_agent`, `gen_ai.agent.name`...) so they can be exported
- * over OTLP later without renaming anything.
+ * (`gen_ai.invoke_agent`, `gen_ai.agent.name`...) so `otlp.ts` exports them
+ * over OTLP without renaming anything.
  */
 export class Tracer {
   constructor(private store: Store, private now: () => Date = () => new Date()) {}

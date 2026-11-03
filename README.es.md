@@ -8,7 +8,7 @@ zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo
 
 Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
-El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones lista los formatos que se ofrecen, y cada botón abre un correo al dueño.
+El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones, solo en la versión en español del sitio, lista los formatos que se ofrecen, y cada botón abre un correo al dueño.
 
 ## Cómo funciona
 
@@ -160,7 +160,7 @@ limits:                   # con una suscripción (claude.ai) el límite es el cu
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
   usdPerDay: 10           # solo si se paga por uso (clave de API) · 0 = solo motores gratuitos
   usdPerJob: 3            # solo si se paga por uso
-  protectedPaths: [".github/**", ".env", ".env.*", "**/*.pem", "**/*.key"]
+  protectedPaths: [".github/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
 signature:                # lo que construye la fábrica lleva esta firma · `signature: off` la apaga
   text: "— Hecho con [zero in the loop](https://zerointheloop.com)"   # pull requests, issues y comentarios
@@ -408,7 +408,19 @@ Lo que la puerta no puede ver: el contenido cifrado, y los datos que se envíen 
 
 Cada trabajo deja una traza: trabajo → estación → intento → agente o comando. Cada elemento registra duración, estado, motor, modelo y costo, y el costo indica su origen (`reported` o `unknown`).
 
-Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor, conexiones y bloqueos de la caja) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry, para poder exportarlos por OTLP más adelante.
+Las métricas (entregados, fallidos, tasa de éxito, costo por entrega, espera humana, desglose por motor, conexiones y bloqueos de la caja) se calculan con una única definición, que usan por igual la terminal, el chat y el informe. Los nombres de los spans siguen las convenciones GenAI de OpenTelemetry.
+
+Las trazas también pueden ir a un colector OpenTelemetry (Jaeger, Grafana Tempo, Honeycomb…) por OTLP/HTTP con JSON. Viene apagado; se activa en `zero.factory.yaml` con el endpoint, y cada encabezado nombra un secreto, nunca su valor:
+
+```yaml
+telemetry:
+  otlp:
+    endpoint: https://api.honeycomb.io/v1/traces
+    headers:
+      x-honeycomb-team: HONEYCOMB_API_KEY
+```
+
+Guardá el valor con `zero secret set HONEYCOMB_API_KEY` (el llavero del sistema) o en una variable de entorno con el mismo nombre. El daemon envía cada trabajo terminado una sola vez, con su jerarquía (trabajo → estación → intento → agente o comando). De lo que sale se quitan los secretos, el repositorio de la línea, la carpeta personal del dueño y otras rutas locales. Si el colector no responde, la fábrica lo registra y sigue: reintenta el mismo lote hasta 5 veces con esperas crecientes y después lo saltea. `state.db` sigue siendo la fuente de verdad; los trabajos terminados antes de activar la exportación no se envían.
 
 ## Townhall
 
@@ -439,4 +451,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · exportación OTLP · MCP gobernado para los agentes de las estaciones.
+Simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.

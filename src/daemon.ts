@@ -19,6 +19,7 @@ import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { log } from "./log.js";
+import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
@@ -49,6 +50,7 @@ export interface DaemonOptions {
 
 const BOX_RECHECK_MS = 10 * 60_000;
 const INTAKE_MS = 60_000;
+const EXPORT_MS = 30_000;
 
 /** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line). */
 const realIssues = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
@@ -171,23 +173,30 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       .finally(() => (checkingReverts = undefined));
   };
 
-  // The night shift: scout proposes work while the factory is idle, one pass at a time, never holding up the owner's jobs.
-  let scouting: Promise<void> | undefined;
-  const scout = () => {
-    if (scouting || !(opts.scout ?? !opts.once) || ctx.config.nightShift === "off" || running.size) return;
-    scouting = scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx))
-      .catch((err) => log.warn("night shift failed", { error: String(err) }))
-      .finally(() => (scouting = undefined));
+  // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
+  let exportAt = 0;
+  let exporting: Promise<void> | undefined;
+  const exportTraces = () => {
+    if (exporting || !ctx.config.telemetry?.otlp || Date.now() - exportAt < (opts.once ? 0 : EXPORT_MS)) return;
+    exportAt = Date.now();
+    exporting = exportPass(ctx).finally(() => (exporting = undefined));
   };
 
-  // Research reads the web once a day per line while the factory is idle, the same way; shutdown cuts it short.
-  let researching: Promise<void> | undefined;
+  // The night shift: while the factory is idle, scout proposes work and then research reads the web (once a day per line),
+  // one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
+  // limits.usdPerNight: each computes what is left only after the other's spans are recorded. Shutdown cuts research short.
+  let idle: Promise<void> | undefined;
   const researchStop = new AbortController();
-  const research = () => {
-    if (researching || !(opts.research ?? !opts.once) || ctx.config.research === "off" || running.size) return;
-    researching = researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal)
-      .catch((err) => log.warn("research failed", { error: String(err) }))
-      .finally(() => (researching = undefined));
+  const idlePasses = () => {
+    if (idle || running.size) return;
+    const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
+    const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
+    if (!scouts && !researches) return;
+    idle = (async () => {
+      if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
+      if (researches && !researchStop.signal.aborted)
+        await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+    })().finally(() => (idle = undefined));
   };
 
   try {
@@ -212,6 +221,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       syncProposals();
       mergeReady();
       findReverts();
+      exportTraces();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -252,8 +262,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       }
 
       if (!andon && !startable) {
-        scout();
-        research();
+        idlePasses();
       }
 
       if (opts.once && !running.size && !startable) break;
@@ -267,8 +276,8 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     await publishing;
     await merging;
     await checkingReverts;
-    await scouting;
-    await researching;
+    await exporting;
+    await idle;
     tunnel.stop();
     panel?.close();
     panel?.closeAllConnections();

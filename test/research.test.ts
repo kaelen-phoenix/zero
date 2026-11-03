@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_ACCESS, agentInstructions, quotaAttrs } from "../src/agent.js";
-import { addSkill, ANDON_KEY, briefing, listResearchNotes, requestFromResearchNote } from "../src/app.js";
+import { addSkill, ANDON_KEY, briefing, listResearchNotes, requestFromResearchNote, SHUTDOWN_KEY } from "../src/app.js";
 import { AGENT_STATIONS, ConfigError, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { claudeOptions } from "../src/engines/claude.js";
 import type { EngineRequest } from "../src/engines/index.js";
 import { researchPass, sanitizeNotes } from "../src/line/research.js";
-import { scoutLine } from "../src/line/scout.js";
+import { scoutLine, scoutSpent } from "../src/line/scout.js";
 import { SKILL_STATIONS } from "../src/skills.js";
-import { AGENT_SPAN } from "../src/telemetry/metrics.js";
+import { AGENT_SPAN, startOfDay } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
 
 afterEach(cleanup);
@@ -31,6 +31,14 @@ function factory(over: Record<string, unknown> = {}, start = at(3)) {
   const ctx = testFactory({ isolation: "worktree", lines: [withSkill("tienda")], ...over }, () => clock);
   return { ctx, set: (d: Date) => (clock = d) };
 }
+
+const until = async (cond: () => boolean, ms = 10_000) => {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error("timed out");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
 
 const researching = (notes: unknown[] = [note("Servidor MCP X")]) => fakeAgents({ research: () => ({ output: { notes } }) });
 
@@ -272,6 +280,61 @@ describe("the daemon", () => {
     const agents = researching();
     await runDaemon(ctx, { once: true, panel: false, scout: false, research: true, agentRunner: () => agents.runner });
     expect(ctx.store.listResearchNotes({ line: "tienda" })).toHaveLength(1);
+  });
+
+  const both = { once: true, panel: false, scout: true, research: true } as const;
+  const notes = { output: { notes: [note("Servidor MCP X")] } };
+
+  it("keeps scout and research together under usdPerNight", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      scout: (req) => ({ output: { proposals: [] }, costUsd: req.maxBudgetUsd ?? 0 }),
+      research: (req) => ({ ...notes, costUsd: req.maxBudgetUsd ?? 0 }),
+    });
+    await runDaemon(ctx, { ...both, agentRunner: () => agents.runner });
+    expect(agents.count.scout).toBe(1);
+    expect(scoutSpent(ctx.store, startOfDay(at(3)))).toBeLessThanOrEqual(1);
+  });
+
+  it("gives research only what scout left", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({ scout: () => ({ output: { proposals: [] }, costUsd: 0.4 }), research: () => notes });
+    await runDaemon(ctx, { ...both, agentRunner: () => agents.runner });
+    expect(agents.calls.find((c) => c.station === "research")!.maxBudgetUsd).toBeCloseTo(0.6);
+  });
+
+  it("still researches when scout fails, and returns only after research", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      scout: () => {
+        throw new Error("boom");
+      },
+      research: () => notes,
+    });
+    await runDaemon(ctx, { ...both, agentRunner: () => agents.runner });
+    expect(agents.count.scout).toBe(1);
+    expect(ctx.store.listResearchNotes({ line: "tienda" })).toHaveLength(1);
+  });
+
+  it("never researches while scout is running, nor scouts twice at once", async () => {
+    const { ctx } = factory({}, new Date());
+    let release!: () => void;
+    const blocked = new Promise<void>((r) => (release = r));
+    const agents = fakeAgents({ scout: async () => (await blocked, { output: { proposals: [] } }), research: () => notes });
+    const daemon = runDaemon(ctx, { pollMs: 10, panel: false, scout: true, research: true, agentRunner: () => agents.runner });
+    try {
+      await until(() => agents.count.scout === 1);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(agents.count.scout).toBe(1);
+      expect(agents.count.research ?? 0).toBe(0);
+      release();
+      await until(() => agents.count.research === 1);
+      expect(agents.count.scout).toBe(1);
+    } finally {
+      release();
+      ctx.store.setKv(SHUTDOWN_KEY, new Date().toISOString());
+      await daemon;
+    }
   });
 });
 

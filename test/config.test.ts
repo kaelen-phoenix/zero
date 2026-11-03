@@ -13,7 +13,12 @@ describe("factory definition", () => {
     const cfg = parseFactory("lines:\n  - name: api\n    repo: /work/api\n");
     expect(cfg).toMatchObject({ level: "L3", engine: "claude", isolation: "container", limits: { usdPerDay: 10, usdPerJob: 3 }, box: { runtime: "auto", cpus: 2 } });
     expect(cfg.lines[0]).toMatchObject({ integrate: "merge", baseBranch: "main", maxAttempts: 3 });
-    expect(cfg.limits.protectedPaths).toContain(".github/**");
+    expect(cfg.limits.protectedPaths).toEqual([".github/**", ".zero/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]);
+  });
+
+  it("replaces the default protected paths with the owner's list", () => {
+    const cfg = parseFactory('limits:\n  protectedPaths: ["docs/**"]\nlines:\n  - name: api\n    repo: /work/api\n');
+    expect(cfg.limits.protectedPaths).toEqual(["docs/**"]);
   });
 
   it("rejects an unknown level naming the field", () => {
