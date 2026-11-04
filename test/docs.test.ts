@@ -131,6 +131,12 @@ describe("documentation up to date", () => {
     expect(blocks(en).find((b) => b.body.startsWith("# Agent: a11y"))!.body).toBe(blocks(es).find((b) => b.body.startsWith("# Agent: a11y"))!.body);
   });
 
+  it("shows .agents/** in the protected paths example of both READMEs", () => {
+    // normalize drops double-quoted strings, so the block comparison above cannot see this line.
+    const line = '  protectedPaths: [".github/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]';
+    for (const text of [en, es]) expect(text.split("\n")).toContain(line);
+  });
+
   it("starts Getting started with the clone", () => {
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
       const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;

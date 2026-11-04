@@ -185,7 +185,7 @@ limits:                   # with a subscription (claude.ai) the limit is the pla
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
   usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
   usdPerJob: 3            # only for pay-per-use
-  protectedPaths: [".github/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]
+  protectedPaths: [".github/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]
 approvals: { timeoutHours: 24, onTimeout: reject }
 signature:                # what the factory builds carries this signature · `signature: off` turns it off
   text: "— Hecho con [zero in the loop](https://zerointheloop.com)"   # pull requests, issues and comments
