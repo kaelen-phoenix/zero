@@ -1,4 +1,4 @@
-// zero in the loop: language, theme, copy and training buttons. Plain JS, no dependencies, no network, no cookies.
+// zero in the loop: language, theme and copy buttons. Plain JS, no dependencies, no network, no cookies.
 // Elements marked data-lang-only show only in that language, and the section markers are renumbered to skip them.
 // The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
@@ -135,7 +135,6 @@
     "training.onrequest": "on request",
     "training.cta": "I want this",
     "training.whatsapp": 'You can also write on <a href="https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop" target="_blank" rel="noopener">WhatsApp</a> at +54 9 11 5981-3335.',
-    "training.noscript": "Without JavaScript the button does not open your email: write to kaelen.dev at gmail.com with the subject \"Training:\" and the format you are interested in.",
     "links.label": "Links",
     "links.title": "Keep reading.",
     "links.readme": "Documentation (README)",
@@ -158,18 +157,9 @@
   };
 
   const MESSAGES = {
-    es: {
-      copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto.",
-      subject: "Capacitación: ", body: ["Nombre:", "Cuántas personas:", "Qué busca:"],
-    },
-    en: {
-      copied: "Command copied.", failed: "Could not copy; select the text.",
-      subject: "Training: ", body: ["Name:", "How many people:", "What you are looking for:"],
-    },
+    es: { copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto." },
+    en: { copied: "Command copied.", failed: "Could not copy; select the text." },
   };
-
-  // The training address in parts, joined only when a button builds its URL, so harvesters never see it whole.
-  const MAIL_PARTS = ["kaelen.dev", "gmail.com"];
 
   const LANGS = ["es", "en"];
   const THEMES = ["auto", "light", "dark"];
@@ -269,16 +259,6 @@
     );
   }
 
-  /** The mailto: URL for a training button: subject with the format's title and fill-in lines, in the page's language. */
-  function trainingMailto(doc, button) {
-    const lang = doc.documentElement.getAttribute("lang") === "en" ? "en" : "es";
-    const messages = MESSAGES[lang];
-    const key = `training.${button.getAttribute("data-training")}.title`;
-    const title = String((lang === "en" ? EN[key] : spanish(doc)[key]) || "").replace(/<[^>]+>/g, "").trim();
-    const body = messages.body.map((field) => `${field} `).join("\n") + "\n";
-    return `mailto:${MAIL_PARTS.join("@")}?subject=${encodeURIComponent(messages.subject + title)}&body=${encodeURIComponent(body)}`;
-  }
-
   function setup(doc, win, storage) {
     setTheme(doc, read(storage, THEME_KEY) || "auto", storage);
     const lang = read(storage, LANG_KEY);
@@ -292,12 +272,9 @@
     for (const button of doc.querySelectorAll("[data-copy]")) {
       button.addEventListener("click", () => { copyCode(doc, button, win.navigator); });
     }
-    for (const button of doc.querySelectorAll("button[data-training]")) {
-      button.addEventListener("click", () => { win.location.href = trainingMailto(doc, button); });
-    }
   }
 
-  root.zeroSite = { EN, applyLanguage, setTheme, copyCode, trainingMailto };
+  root.zeroSite = { EN, applyLanguage, setTheme, copyCode };
 
   if (root.document) {
     const doc = root.document;
