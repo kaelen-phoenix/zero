@@ -3,13 +3,13 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -74,7 +74,7 @@ Fábrica:
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
-  zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
+  zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
@@ -164,8 +164,17 @@ async function main(argv: string[]): Promise<number> {
     switch (command) {
       case "start": {
         if (values.detach) {
-          console.log((await ensureDaemon(ctx)) ? "Fábrica encendida en segundo plano." : "La fábrica ya estaba en marcha.");
-          return 0;
+          if (await ensureDaemon(ctx)) {
+            console.log("Fábrica encendida en segundo plano.");
+            return 0;
+          }
+          const daemon = daemonInfo(ctx.store);
+          if (daemon.alive) {
+            console.log("La fábrica ya estaba en marcha.");
+            return 0;
+          }
+          console.log(`La fábrica sigue tomada por ${daemon.pid ? `el proceso ${daemon.pid}` : "otro proceso"}, que no responde, así que no encendí otra. Si no vuelve, terminá ese proceso a mano.`);
+          return 1;
         }
         await runDaemon(ctx);
         return 0;
@@ -182,10 +191,11 @@ async function main(argv: string[]): Promise<number> {
         console.log(formatStatus(factoryStatus(ctx)).split("\n").filter((l) => l.startsWith("Caja") || l.startsWith("Fábrica") || l.startsWith("  ")).join("\n"));
         return 0;
       }
-      case "shutdown":
-        ctx.store.setKv(SHUTDOWN_KEY, new Date().toISOString());
-        console.log("La fábrica se apagará en unos segundos; los trabajos en curso vuelven a la cola.");
-        return 0;
+      case "shutdown": {
+        const { text, code } = shutdownOutcome(await shutdownFactory(ctx));
+        console.log(text);
+        return code;
+      }
       case "request": {
         const text = rest.join(" ");
         const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request" });
@@ -194,7 +204,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       case "status":
-        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)));
+        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus({ ...factoryStatus(ctx), daemonProcesses: daemonProcesses() }));
         return 0;
       case "approve": {
         if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");

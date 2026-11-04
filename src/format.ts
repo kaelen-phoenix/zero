@@ -1,4 +1,4 @@
-import type { EgressReport, FactoryStatus, LineAgentList, PackageList, RequestResult, SkillList } from "./app.js";
+import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -145,12 +145,23 @@ export function formatSkills(l: SkillList): string {
   return out.join("\n");
 }
 
+/** What `zero shutdown` says, and how it exits: a retry loop has to find out the daemon is still there. */
+export function shutdownOutcome(r: ShutdownResult): { text: string; code: number } {
+  if (r.status === "stopped") return { text: "Fábrica apagada; los trabajos en curso vuelven a la cola.", code: 0 };
+  if (r.status === "not-running") return { text: "La fábrica no estaba en marcha.", code: 0 };
+  const who = r.pid ? `el proceso ${r.pid}` : "su proceso";
+  return { text: `La fábrica no se apagó: ${who} sigue encendido. Se va a apagar cuando termine lo que está haciendo; si no lo hace, vas a tener que terminar ese proceso a mano.`, code: 1 };
+}
+
+const daemonState = (d: DaemonInfo) => (d.alive ? "en marcha" : d.lockHeld ? `no responde${d.pid ? ` (proceso ${d.pid})` : ""}` : "apagada (arranca sola con el próximo pedido)");
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
-    `Fábrica: ${s.andon ? "DETENIDA (andon)" : s.daemon.alive ? "en marcha" : "apagada (arranca sola con el próximo pedido)"} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
+    `Fábrica: ${s.andon ? "DETENIDA (andon)" : daemonState(s.daemon)} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
   ];
   if (s.level.reason) out.push(`  ${s.level.reason}`);
+  if ((s.daemonProcesses?.length ?? 0) > 1) out.push(`AVISO: hay ${s.daemonProcesses!.length} procesos daemon de zero en esta máquina (${s.daemonProcesses!.join(", ")}). Pueden tomar el mismo trabajo, salvo que uno sea de otra fábrica porque usás otro ZERO_HOME; si no, terminá a mano el que sobra.`);
   if (s.isolation === "container") {
     const st = s.box.status;
     out.push(
