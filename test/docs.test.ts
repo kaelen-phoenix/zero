@@ -74,8 +74,8 @@ describe("motto", () => {
   it("uses the site's motto in both languages", () => {
     expect(en).toContain("zero in the loop");
     expect(es).toContain("zero in the loop");
-    expect(en).toContain("the owner decides where to step back in");
-    expect(es).toContain("el dueño decide dónde vuelve a entrar");
+    expect(en).toContain("you decide where to step back in");
+    expect(es).toContain("vos decidís dónde volver a entrar");
   });
 
   it("leaves no Kaelen mention nor the old motto in the documentation", () => {

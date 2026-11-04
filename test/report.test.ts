@@ -155,9 +155,9 @@ describe("monthly report: each delivered job", () => {
     const origins = one(f).jobs.map((j) => j.origin);
     expect(new Set(origins).size).toBe(5);
     expect(origins.find((o) => o.includes("#12"))).toContain("Issue de GitHub");
-    expect(origins).toContain("Pedido del dueño");
+    expect(origins).toContain("Pedido de la persona responsable");
     expect(origins).toContain("Investigación");
-    expect(origins).toContain("Propuesta del turno nocturno aprobada por el dueño");
+    expect(origins).toContain("Propuesta del turno nocturno aprobada por la persona responsable");
     expect(origins).toContain("Propuesta que el turno nocturno tomó por su cuenta");
   });
 

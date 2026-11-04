@@ -1,7 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import { requestWork, type FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
-import { describeDelivery } from "../line/finish.js";
+import { describeDelivery, reasonForOthers, STOPPED_BY_YOU } from "../line/finish.js";
 import { githubRepository } from "../line/integrate.js";
 import { tryGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
@@ -159,7 +159,10 @@ function report(job: Job): { key: string; body: string } | undefined {
     return { key: "delivered", body: `Listo: ${describeDelivery(job.delivery)}.${local}` };
   }
   if (job.status === "failed") return { key: "failed", body: `El trabajo ${id} no se pudo completar:\n\n${quote(job.reason ?? "(sin detalle)")}\n\nPara volver a pedirlo, sacale y volvele a poner la etiqueta.` };
-  if (job.status === "stopped") return { key: "stopped", body: `El trabajo ${id} se detuvo: ${job.reason ?? "por el dueño"}.` };
+  if (job.status === "stopped") {
+    const why = reasonForOthers(job.reason ?? STOPPED_BY_YOU);
+    return { key: "stopped", body: `El trabajo ${id} se detuvo. ${why}${/[.!?…]$/.test(why) ? "" : "."}` };
+  }
   return undefined;
 }
 

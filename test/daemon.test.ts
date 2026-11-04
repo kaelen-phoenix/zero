@@ -71,7 +71,7 @@ describe("daemon", () => {
 
     clock += 2 * 3_600_000;
     await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => builder().runner });
-    expect(ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: expect.stringContaining("venció sin respuesta") });
+    expect(ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: expect.stringContaining("Se rechazó solo: venció sin respuesta") });
   });
 
   it("hands the box to jobs once it is ready and the engines have their credentials", async () => {

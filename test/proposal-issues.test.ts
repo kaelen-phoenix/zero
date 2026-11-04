@@ -176,6 +176,19 @@ describe("proposals as GitHub issues", () => {
     expect(gh.ops("addLabels")).toEqual([{ op: "addLabels", number: 5, labels: ["zero"] }]);
   });
 
+  it("names the person in charge when the factory decides", async () => {
+    const ctx = factory();
+    const approved = ctx.store.createProposal({ ...idea, line: "demo" });
+    const rejected = ctx.store.createProposal({ ...idea, title: "Otra idea", line: "demo" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    approveProposal(ctx, approved.id);
+    await rejectProposal(ctx, rejected.id, "no");
+    await syncProposalIssues(ctx, () => gh.api);
+    expect(gh.ops("comment", 5)[0]!.body).toContain("La persona responsable aprobó esta propuesta");
+    expect(gh.ops("comment", 6)[0]!.body).toContain("La persona responsable rechazó esta propuesta");
+  });
+
   it("never says the owner approved what the night shift took on its own", async () => {
     const ctx = factory();
     const p = ctx.store.createProposal({ ...idea, line: "demo" });
@@ -185,8 +198,9 @@ describe("proposals as GitHub issues", () => {
     ctx.store.updateProposal(p.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
     await syncProposalIssues(ctx, () => gh.api);
     const [comment] = gh.ops("comment", 5);
-    expect(comment!.body).not.toContain("El dueño aprobó");
+    expect(comment!.body).not.toContain("La persona responsable aprobó");
     expect(comment!.body).toContain("turno nocturno");
+    expect(comment!.body).toContain("hasta que la persona responsable la apruebe");
     expect(comment!.body).toContain("build");
     expect(comment!.body).toContain(job.id);
   });
@@ -358,5 +372,6 @@ describe("the proposal issue says how to decide it", () => {
     const body = proposalIssueBody(proposal(ctx), ctx.config.lines[0]!, ctx.config);
     expect(body).toContain("es un registro");
     expect(body).toContain("Se cierra con la entrega");
+    expect(body).toContain("Quien está a cargo puede rechazarla");
   });
 });

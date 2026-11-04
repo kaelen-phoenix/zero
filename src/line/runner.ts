@@ -14,7 +14,7 @@ import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
-import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
+import { askOwner, describeDelivery, finalizeJob, STOPPED_BY_YOU, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
@@ -154,7 +154,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   } catch (err) {
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
-      if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: "Detenido por el dueño." });
+      if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: STOPPED_BY_YOU });
       if (why === "quota") log.info("subscription plan used up; job back in the queue until it renews", { job: jobId });
       return store.updateJob(jobId, { status: "queued" });
     }

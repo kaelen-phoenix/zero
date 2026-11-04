@@ -100,7 +100,7 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
       .filter((s) => s.suspicious)
       .map((s) => `- **Salida sospechosa bloqueada**: ${s.host}:${s.port}${s.jobs.length ? ` (${s.jobs.join(", ")})` : ""}: ${s.reason}. Si es legítima: \`zero egress allow ${s.host}\`.`),
   ];
-  sections.push(`## Necesita al dueño\n${decisions.length ? decisions.join("\n") : "Nada. La fábrica funcionó sola."}`);
+  sections.push(`## Te necesita\n${decisions.length ? decisions.join("\n") : "Nada. La fábrica funcionó sola."}`);
 
   if (egress?.connections) {
     const fresh = egress.sites.filter((s) => s.isNew && !s.blocked).map((s) => s.host);

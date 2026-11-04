@@ -23,6 +23,17 @@ export function describeDelivery(d: Delivery): string {
   return `rama ${d.branch} lista`;
 }
 
+/** The stored reason of a job the person stopped; it speaks to them, so anything other people read goes through `reasonForOthers`. */
+export const STOPPED_BY_YOU = "Lo detuviste vos.";
+
+/** The stored reason of a job the person rejected, with their note when there is one. */
+export const rejectedByYou = (note?: string) => `Lo rechazaste vos${note ? `: ${note}` : "."}`;
+
+/** A stored reason in the third person, for issues, the reply station and the townhall. Any other reason stays as it is. */
+export function reasonForOthers(reason: string): string {
+  return reason.replace(/^Lo detuviste vos/, "Lo detuvo la persona responsable").replace(/^Lo rechazaste vos/, "Lo rechazó la persona responsable");
+}
+
 /**
  * Parks a job until the owner answers, recording how long the factory waited.
  * `onTimeout` overrides the configured default answer, for gates that must
@@ -85,7 +96,7 @@ export async function finalizeJob(
       job: done.id,
       source: "zero",
       topic,
-      body: status === "delivered" && opts.delivery ? describeDelivery(opts.delivery) : (opts.reason ?? status).slice(0, 500),
+      body: status === "delivered" && opts.delivery ? describeDelivery(opts.delivery) : reasonForOthers(opts.reason ?? status).slice(0, 500),
       data: {
         status,
         attempts: done.attempt,

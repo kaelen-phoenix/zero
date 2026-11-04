@@ -16,7 +16,7 @@
   <meta property="og:image" content="https://zerointheloop.com/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="La línea de producción de zero: seis estaciones en fila, trabajos que avanzan entre ellas y el dueño al lado de la línea.">
+  <meta property="og:image:alt" content="La línea de producción de zero: seis estaciones en fila, trabajos que avanzan entre ellas y la persona responsable al lado de la línea.">
   <meta property="og:locale" content="es_AR">
   <meta property="og:locale:alternate" content="en_US">
   <meta name="twitter:card" content="summary_large_image">
@@ -54,7 +54,7 @@
       <figure class="figure">
         <svg class="line-fig" viewBox="0 0 720 250" role="img" aria-labelledby="fig-title fig-desc">
           <title id="fig-title" data-i18n="fig.title">La línea de producción de zero</title>
-          <desc id="fig-desc" data-i18n="fig.desc">Una cinta con seis estaciones en fila: spec, build, verify, review, security e integrate. Varios trabajos avanzan entre las estaciones, un arco vuelve de review a build con la retroalimentación, y el dueño está al lado de la línea, unido a la especificación y a la integración, donde decide.</desc>
+          <desc id="fig-desc" data-i18n="fig.desc">Una cinta con seis estaciones en fila: spec, build, verify, review, security e integrate. Varios trabajos avanzan entre las estaciones, un arco vuelve de review a build con la retroalimentación, y vos estás al lado de la línea, con enlaces a la especificación y a la integración, donde decidís.</desc>
           <rect class="belt" x="24" y="116" width="672" height="48" rx="24"/>
           <line class="rail" x1="60" y1="140" x2="660" y2="140"/>
           <path class="retry" d="M420 200 Q300 245 180 200"/>
@@ -70,7 +70,7 @@
           <rect class="work" x="344" y="134" width="12" height="12" rx="2"/>
           <rect class="work" x="584" y="134" width="12" height="12" rx="2"/>
           <circle class="owner" cx="360" cy="46" r="7"/>
-          <text class="owner-label" x="360" y="24" data-i18n="fig.owner">dueño</text>
+          <text class="owner-label" x="360" y="24" data-i18n="fig.owner">vos</text>
         </svg>
         <figcaption class="caption" data-i18n="fig.caption">FIG. 1 / LÍNEA</figcaption>
       </figure>
@@ -145,7 +145,7 @@
       <p class="label"><span class="marker" data-marker>05</span> <span data-i18n="guarantees.label">Garantías</span></p>
       <h2 id="guarantees-h" data-i18n="guarantees.title">zero aplica las garantías, no el motor.</h2>
       <ul class="grid cards">
-        <li><h3 data-i18n="guarantees.paths.title">Rutas protegidas</h3><p data-i18n="guarantees.paths">Las rutas protegidas no se tocan: si un trabajo las toca, se detecta y espera al dueño.</p></li>
+        <li><h3 data-i18n="guarantees.paths.title">Rutas protegidas</h3><p data-i18n="guarantees.paths">Las rutas protegidas no se tocan: si un trabajo las toca, se detecta y espera tu decisión.</p></li>
         <li><h3 data-i18n="guarantees.verify.title">Verificación</h3><p data-i18n="guarantees.verify">Todo debe pasar la verificación de la línea antes de la revisión, y se detectan tests borrados o desactivados.</p></li>
         <li><h3 data-i18n="guarantees.secrets.title">Secretos fuera de los archivos</h3><p data-i18n="guarantees.secrets">Si la configuración de la fábrica trae algo con forma de credencial, zero se niega a cargarla. Las claves viven en el llavero del sistema y nunca van en la línea de comandos.</p></li>
         <li><h3 data-i18n="guarantees.box.title">Caja de aislamiento</h3><p data-i18n="guarantees.box">El setup, los agentes y la verificación corren en un contenedor (Podman o Docker) sin privilegios, con un clon propio, y salen a internet solo por la puerta de zero, que registra cada conexión.</p></li>

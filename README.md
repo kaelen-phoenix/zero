@@ -2,13 +2,13 @@
 
 English · [Español](README.es.md)
 
-**zero in the loop**: the factory takes the human's place in the loop, and the owner decides where to step back in.
+**zero in the loop**: the factory takes the human's place in the loop, and you decide where to step back in.
 
 zero is a **software factory that runs on your machine**. You ask it for work from your AI client's chat (Claude Code, Codex, agy…) or from the terminal. The factory specifies it, builds it, verifies it, reviews it and integrates it on its own, in the background, even if you close the chat.
 
 It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.
 
-The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section, only in the Spanish version of the site, lists the formats on offer, and each button opens an email to the owner.
+The project site is [zerointheloop.com](https://zerointheloop.com): it lives in `site/` as a static site (HTML, CSS and JS with no dependencies and no build step), and Vercel publishes it with `site/` as the root folder. Its Training section, only in the Spanish version of the site, lists the formats on offer, and each button opens an email to the person in charge.
 
 ## How it works
 
@@ -159,7 +159,7 @@ zero informe tienda --mes 2026-10           # one line, one month, in Markdown
 zero informe tienda --mes 2026-10 --html    # a standalone HTML document (it needs a line)
 ```
 
-- It lists each delivered job: title, request and delivery dates, origin (owner's request, GitHub issue, night-shift proposal approved by you or taken on its own, research), what changed (the summary of its spec) and the link to the pull request or commit.
+- It lists each delivered job: title, request and delivery dates, origin (your request, GitHub issue, night-shift proposal approved by you or taken on its own, research), what changed (the summary of its spec) and the link to the pull request or commit.
 - Totals: delivered jobs, and apart, as information and not as work done, failed and stopped ones. Attempts, time and cost add up every job finished in the month, failed and stopped included; time runs from request to close, waits included.
 - The part of the cost that came from a subscription is marked as an estimate that was not charged. The cost goes in the exported file too: edit it if you do not want your client to see it.
 - A job counts in the month it finished, in local time.
@@ -305,7 +305,7 @@ The same guarantees as `build`: timeouts, the isolation box mounted read-write w
 
 **Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
 
-Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from the owner's copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
+Guarantees that zero enforces, never the agent: custom agents are read-only (in the box with a read-only mount, and whatever they write is discarded); they add to the line and cannot turn off or skip the fixed stations, the protected paths or verification (there is no field for it); and their instructions come only from your copy of the line's repository or from the factory folder, never from what the job wrote in its work copy nor from the web. `.zero/**` is always a protected path, whatever `limits.protectedPaths` says: a job that changes agent instructions waits for you (or fails at L3) before it can be delivered.
 
 ## Night shift
 
@@ -331,7 +331,7 @@ A line's autonomy is its own (`lines[].nightShift.autonomy`) or, if it has none,
 - **`build`**: the proposal turns on its own into a normal job of the line, marked as night shift. It goes through every station and stops before integrating: its branch stays and waits for your approval. If you do not answer, it expires as rejected even if `approvals.onTimeout` is `approve`: it never integrates on its own. Approving the proposal integrates it according to the line's `integrate` and `autoMerge`; rejecting it stops the job and its branch stays.
 - **`auto`**: it is built and integrated or deployed on its own, according to the line's `integrate` and `autoMerge`, without asking.
 
-Under `build` and `auto` the job follows the usual rules: if it touches something protected, goes over budget, verification stops it or the egress gate sees something suspicious, it waits for the owner (or fails, depending on the level) like any other job. Also:
+Under `build` and `auto` the job follows the usual rules: if it touches something protected, goes over budget, verification stops it or the egress gate sees something suspicious, it waits for you (or fails, depending on the level) like any other job. Also:
 - **Daily cap.** At most `maxAutoJobsPerDay` automatic jobs per local day, across all lines (0 = none). Once reached, the following proposals wait for your decision.
 - **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest), those born from a business note and those touching the license, pricing, charges, payments or legal text are never promoted: they keep waiting for your decision.
 - **What gets reverted.** If you revert on the main branch a change the night shift integrated on its own, without your approval, the factory detects it: the proposal becomes `revertida` (reverted; in the panel, the "Revertidas" group), it is noted in the line's townhall and `scout` does not propose it again. On lines with `integrate: merge` it looks for `git revert -m 1 <commit>` of the merge. On lines with `integrate: pull-request` it records the commit GitHub merged the pull request with (merge or squash) and recognizes both `git revert` of that commit and GitHub's Revert button (the pull request `Revert "…"`, whose commit says `Reverts owner/repo#N`); it looks on the local main branch and on the remote's, after a `git fetch`. It does not detect undoing by hand.
@@ -464,7 +464,7 @@ telemetry:
       x-honeycomb-team: HONEYCOMB_API_KEY
 ```
 
-Store the value with `zero secret set HONEYCOMB_API_KEY` (the system keychain) or in an environment variable of the same name. The daemon sends each finished job once, with its hierarchy (job → station → attempt → agent or command). Secrets, the line's repository, the owner's home folder and other local paths are removed from what leaves. If the collector does not answer, the factory logs it and carries on: it retries the same batch up to 5 times with growing waits, then skips it. `state.db` stays the source of truth; jobs finished before the export was turned on are not sent.
+Store the value with `zero secret set HONEYCOMB_API_KEY` (the system keychain) or in an environment variable of the same name. The daemon sends each finished job once, with its hierarchy (job → station → attempt → agent or command). Secrets, the line's repository, your home folder and other local paths are removed from what leaves. If the collector does not answer, the factory logs it and carries on: it retries the same batch up to 5 times with growing waits, then skips it. `state.db` stays the source of truth; jobs finished before the export was turned on are not sent.
 
 ## Townhall
 
@@ -487,9 +487,9 @@ zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with
 
 ## Where it is going: intent is the product
 
-Every AI orchestrator starts from the same assumption: code is the product and agents are workers who touch it. zero aims to turn that around. **The product is the owner's intent; code is its consequence**, something the factory can produce again whenever needed.
+Every AI orchestrator starts from the same assumption: code is the product and agents are workers who touch it. zero aims to turn that around. **The product is your intent; code is its consequence**, something the factory can produce again whenever needed.
 
-- **The truth lives in the specifications.** `openspec/specs/` stops being documentation and becomes the source: what the system has to do, written as requirements and scenarios. The owner reads and edits intents, in their language, from the chat, the panel or the phone; the factory maintains the code.
+- **The truth lives in the specifications.** `openspec/specs/` stops being documentation and becomes the source: what the system has to do, written as requirements and scenarios. You read and edit intents, in your language, from the chat, the panel or the phone; the factory maintains the code.
 - **Regeneration drill.** To show that the specifications are enough, the factory takes a module, builds it again from scratch from its spec alone, in a separate copy, and runs the same tests. If the result behaves differently, the spec was incomplete: the factory proposes the missing scenario. The old code is never overwritten; the drill only measures and proposes. It is expensive in tokens, so it runs on request or rarely, never on every job.
 - **Closed loop with the live product.** Later, production errors, analytics and user feedback come in as requests nobody had to write: intent → change → deployment → observation → new intent.
 
