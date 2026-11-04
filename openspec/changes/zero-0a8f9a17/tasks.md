@@ -17,3 +17,4 @@
 - [x] 1.13 Revisar que el ADR y los README presenten los paquetes solo como extensión con agentes de terceros o propios.
 - [x] 1.14 Correr `npm run typecheck`, `npm test`, `npm run build` y `npx openspec validate --all`.
 - [x] 1.15 spec.ts: `renderOpenSpecChange` deja de copiar el texto del pedido en `proposal.md`, con su test.
+- [x] 1.16 packages.ts y skills.ts: rechazar al cargar cualquier enlace dentro de la carpeta de una skill de un paquete y dejar afuera de la copia por corrida lo que pase por un enlace aparecido después, con sus tests.

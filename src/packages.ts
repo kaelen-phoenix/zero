@@ -85,20 +85,13 @@ function insidePackage(root: string, path: string): { real: string } | { problem
   return isInside(real, root) ? { real } : { problem: `la ruta "${path}" sale de la carpeta del paquete` };
 }
 
-/** A link inside a skill's folder that leaves the package: staging copies what links point to, so it would bring in files from elsewhere. */
-function linkLeaving(root: string, dir: string): string | undefined {
+/** The first link inside a skill's folder. None is allowed, wherever it points: a link to elsewhere in the package could chain to a link leaving it, and staging must never bring in files from outside. */
+function firstLink(root: string, dir: string): string | undefined {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, e.name);
-    if (e.isSymbolicLink()) {
-      let real: string | undefined;
-      try {
-        real = realpathSync(path);
-      } catch {
-        // A broken link cannot be copied either.
-      }
-      if (!real || !isInside(real, root)) return relative(root, path);
-    } else if (e.isDirectory()) {
-      const found = linkLeaving(root, path);
+    if (e.isSymbolicLink()) return relative(root, path);
+    if (e.isDirectory()) {
+      const found = firstLink(root, path);
       if (found) return found;
     }
   }
@@ -136,8 +129,8 @@ function packageSkills(manifest: PackageManifest, root: string): Skill[] {
   for (const path of manifest.skills) {
     const dir = need(insidePackage(root, path));
     if (!statSync(dir).isDirectory() || !existsSync(join(dir, "SKILL.md"))) throw new Refused(`la carpeta de skill "${path}" no tiene SKILL.md`);
-    const leaving = linkLeaving(root, dir);
-    if (leaving) throw new Refused(`la skill "${path}" tiene un enlace que sale del paquete: ${leaving}`);
+    const link = firstLink(root, dir);
+    if (link) throw new Refused(`la skill "${path}" tiene un enlace, y en una skill no se aceptan: ${link}`);
     const name = basename(dir);
     if (out.some((s) => s.name === name)) throw new Refused(`la skill "${name}" está repetida`);
     const description = skillDescription(readFileSync(join(dir, "SKILL.md"), "utf8"));

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,7 @@ import { runJob } from "../src/line/runner.js";
 import { scoutSpent } from "../src/line/scout.js";
 import { log } from "../src/log.js";
 import { factoryConfig, loadPackages } from "../src/packages.js";
+import { stageSkills } from "../src/skills.js";
 import { memoryKeyring, SecretStore } from "../src/keychain.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
@@ -151,6 +152,63 @@ describe("the manifest", () => {
       return t.skip();
     }
     expect(problems(await factory([{ path: dir }]))[0]!.reason).toContain("leak.txt");
+  });
+
+  it("refuses a link inside a skill that chains out through the package", async (t) => {
+    const outside = tempDir("zero-outside-");
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    const dir = pkg({ skills: ["skills/s"] }, { "skills/s/SKILL.md": "# s\n", "y/keep.txt": "y" });
+    try {
+      symlinkSync(outside, join(dir, "y/out"), "junction");
+      symlinkSync(join(dir, "y"), join(dir, "skills/s/in"), "junction");
+    } catch {
+      return t.skip();
+    }
+    const ctx = await factory([{ path: dir }]);
+    expect(problems(ctx)[0]!.reason).toMatch(/in$/);
+    expect(ctx.config.loadedPackages!.skills).toEqual([]);
+  });
+
+  it("refuses a link inside a skill even when it stays in the package", async (t) => {
+    const dir = pkg({ skills: ["skills/s"] }, { "skills/s/SKILL.md": "# s\n", "y/keep.txt": "y" });
+    try {
+      symlinkSync(join(dir, "y"), join(dir, "skills/s/in"), "junction");
+    } catch {
+      return t.skip();
+    }
+    expect(problems(await factory([{ path: dir }]))[0]!.reason).toMatch(/in$/);
+  });
+
+  it("leaves out of the staged copy a link that appeared after loading", async (t) => {
+    const outside = tempDir("zero-outside-");
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    const dir = pkg({ skills: ["skills/s"] }, { "skills/s/SKILL.md": "# s\n", "skills/s/ok.txt": "ok" });
+    const ctx = await factory([{ path: dir }]);
+    try {
+      symlinkSync(outside, join(dir, "skills/s/late"), "junction");
+    } catch {
+      return t.skip();
+    }
+    const staged = await stageSkills(ctx.config.loadedPackages!.skills, tempDir("zero-stage-"));
+    expect(staged.skills.map((s) => s.name)).toEqual(["hello:s"]);
+    const copy = join(staged.dir, "skills", staged.skills[0]!.id);
+    expect(readdirSync(copy).sort()).toEqual(["SKILL.md", "ok.txt"]);
+  });
+
+  it("stages nothing of a skill whose folder became a link after loading", async (t) => {
+    const outside = tempDir("zero-outside-");
+    writeTree(outside, { "SKILL.md": "# stolen\n", "secret.txt": "secret" });
+    const dir = pkg({ skills: ["skills/s"] }, { "skills/s/SKILL.md": "# s\n" });
+    const ctx = await factory([{ path: dir }]);
+    rmSync(join(dir, "skills/s"), { recursive: true });
+    try {
+      symlinkSync(outside, join(dir, "skills/s"), "junction");
+    } catch {
+      return t.skip();
+    }
+    const staged = await stageSkills(ctx.config.loadedPackages!.skills, tempDir("zero-stage-"));
+    expect(staged.skills).toEqual([]);
+    expect(existsSync(join(staged.dir, "skills", "hello-s", "secret.txt"))).toBe(false);
   });
 
   it.each(["engine", "model"])("refuses %s on an agent or a station, as an unknown key", async (key) => {

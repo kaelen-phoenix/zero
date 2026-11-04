@@ -324,7 +324,7 @@ packages:
       greeting: Hello
 ```
 
-**The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included.
+**The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included, and a skill's folder cannot hold links at all.
 
 ```yaml
 interface: 1                       # the version of this format; zero only accepts 1

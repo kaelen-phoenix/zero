@@ -97,6 +97,14 @@ Cada carpeta de `skills` del manifiesto MUST contener `SKILL.md` y SHALL quedar 
 - **WHEN** una carpeta de `skills` no tiene `SKILL.md`
 - **THEN** el paquete queda rechazado con un problema que nombra esa carpeta
 
+#### Scenario: Enlace dentro de una skill
+- **WHEN** la carpeta de una skill tiene un enlace, apunte adonde apunte
+- **THEN** el paquete queda rechazado con un problema que nombra ese enlace
+
+#### Scenario: Enlace aparecido después de cargar
+- **WHEN** después de cargar el paquete aparece un enlace en la carpeta de una skill, o esa carpeta pasa a ser un enlace
+- **THEN** la copia por corrida no incluye nada que pase por ese enlace
+
 ### Requirement: El código corre solo con permiso explícito
 zero MUST NOT importar ningún módulo de un paquete salvo que su entrada diga `allowCode: true` y su carpeta real esté fuera de los repositorios de las líneas y de `worktrees` y `jobs` de ZERO_HOME; en los demás casos los agentes y skills del paquete SHALL seguir cargando, sus estaciones SHALL quedar afuera y el motivo SHALL verse como problema.
 

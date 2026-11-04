@@ -324,7 +324,7 @@ packages:
       greeting: Hello
 ```
 
-**El manifiesto**, `zero-package.yaml`. `interface` dice para qué versión de este formato se escribió el paquete: este zero soporta `interface: 1` y deja afuera cualquier otra, diciendo cuál pidió. Las claves desconocidas se rechazan, así que un manifiesto no puede elegir motor ni modelo. Toda ruta tiene que ser relativa y quedarse dentro de la carpeta del paquete, enlaces incluidos.
+**El manifiesto**, `zero-package.yaml`. `interface` dice para qué versión de este formato se escribió el paquete: este zero soporta `interface: 1` y deja afuera cualquier otra, diciendo cuál pidió. Las claves desconocidas se rechazan, así que un manifiesto no puede elegir motor ni modelo. Toda ruta tiene que ser relativa y quedarse dentro de la carpeta del paquete, enlaces incluidos, y la carpeta de una skill no puede tener ningún enlace.
 
 ```yaml
 interface: 1                       # la versión de este formato; zero solo acepta 1

@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { FactoryConfig } from "./config.js";
+import { log } from "./log.js";
 
 /** Stations staffed by an agent, which are the only ones that can get skills. */
 export const SKILL_STATIONS = ["spec", "build", "review", "security", "reply", "scout", "research", "community"] as const;
@@ -195,6 +196,22 @@ export function stripAllowedTools(text: string): string {
   return m[1] + kept.join("\n") + m[3] + text.slice(m[0].length);
 }
 
+/**
+ * A package's skill is checked for links when it loads, and again here for what
+ * changed since: its `dir` is a real path, so anything whose real path differs
+ * went through a link. It stays out of the copy; without its SKILL.md the whole
+ * skill does.
+ */
+function noLinkOnTheWay(src: string, skill: Skill): boolean {
+  try {
+    if (realpathSync(src) === src) return true;
+  } catch {
+    // A broken link cannot be copied either.
+  }
+  log.warn(`skill ${skill.fullName}: no se copia un enlace`, { path: src });
+  return false;
+}
+
 /** Copies the skills into a fresh plugin directory; the caller removes it with `unstageSkills`. */
 export async function stageSkills(skills: Skill[], parent = tmpdir()): Promise<StagedSkills> {
   const dir = await mkdtemp(join(parent, "zero-skills-"));
@@ -204,7 +221,12 @@ export async function stageSkills(skills: Skill[], parent = tmpdir()): Promise<S
   for (const skill of skills) {
     const id = skill.fullName.replace(/[^A-Za-z0-9_-]/g, "-");
     const target = join(dir, "skills", id);
-    await cp(skill.dir, target, { recursive: true, dereference: true });
+    if (skill.source === "package") {
+      await cp(skill.dir, target, { recursive: true, filter: (src) => noLinkOnTheWay(src, skill) });
+      if (!existsSync(join(target, "SKILL.md"))) continue;
+    } else {
+      await cp(skill.dir, target, { recursive: true, dereference: true });
+    }
     const text = stripAllowedTools(await readFile(join(target, "SKILL.md"), "utf8"));
     await writeFile(join(target, "SKILL.md"), text);
     staged.push({ name: skill.fullName, id, text });
