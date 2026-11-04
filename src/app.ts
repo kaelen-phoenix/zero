@@ -852,6 +852,22 @@ export async function removeSkill(ctx: FactoryContext, input: { skill: string; s
   return `Skill ${input.skill} quitada de ${where}.`;
 }
 
+/** The skills the community station works with; `zero social skills` assigns them. */
+export const COMMUNITY_SKILLS = ["ig-caption-writer", "ig-carousel-planner", "ig-content-planner", "ig-hashtag-strategist", "ig-hook-extractor", "ig-humanizer", "ig-profile-optimizer", "ig-repurposer", "instagram-carousel-skill"];
+
+export interface SocialSkills {
+  added: string[];
+  missing: string[];
+}
+
+/** Assigns them for every line, keeping what is already assigned: the station runs with no line, so only the global list reaches it. */
+export async function socialSkills(ctx: FactoryContext): Promise<SocialSkills> {
+  const before = currentSkills(ctx, "community");
+  for (const skill of COMMUNITY_SKILLS) await addSkill(ctx, { skill, station: "community" });
+  const available = discoverSkills();
+  return { added: COMMUNITY_SKILLS.filter((s) => !before.includes(s)), missing: COMMUNITY_SKILLS.filter((s) => resolveSkill(s, available).problem) };
+}
+
 export function skillList(ctx: FactoryContext): SkillList {
   const available = discoverSkills();
   const assignments: SkillAssignment[] = [];

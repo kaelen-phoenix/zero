@@ -1,17 +1,23 @@
 import { readdirSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_ACCESS, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, setSocialPaused, socialPostNow, socialStatus, type FactoryContext } from "../src/app.js";
+import { readFileSync } from "node:fs";
+import { ANDON_KEY, COMMUNITY_SKILLS, setSocialPaused, socialPostNow, socialSkills, socialStatus, type FactoryContext } from "../src/app.js";
 import { AGENT_STATIONS, ConfigError, DEFAULT_SOCIAL_SIGNATURE, FIXED_STATIONS, parseFactory, socialEnabled } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { formatSocialRun, formatSocialStatus } from "../src/format.js";
-import { communityPass, MAX_TEXT, signedText } from "../src/line/community.js";
+import { formatSocialSkills } from "../src/format.js";
+import { communityPass, communityPrompt, MAX_TEXT, signedText } from "../src/line/community.js";
+import { log } from "../src/log.js";
+import { findSecret } from "../src/secrets.js";
+import { publicText } from "../src/social/filter.js";
+import { renderCard } from "../src/social/render.js";
 import { scoutSpent } from "../src/line/scout.js";
 import { SKILL_STATIONS } from "../src/skills.js";
 import type { SocialAdapters, SocialFactory, SocialItem } from "../src/social/channel.js";
 import { INSTAGRAM_TOKEN } from "../src/social/instagram.js";
 import { AGENT_SPAN, startOfDay } from "../src/telemetry/metrics.js";
-import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -42,7 +48,13 @@ function fakeSocial(fail: (item: SocialItem) => string | undefined = () => undef
   return { social, items, uploads };
 }
 
-const draft = (topic: string, over: Record<string, unknown> = {}) => ({ line: "zero", topic, kind: "post", text: `Texto de ${topic}`, image: { title: topic, body: "" }, ...over });
+const TAGS = "#zero #fabrica #software";
+/** A caption that passes the audit. */
+const caption = (body: string) => `${body}\n\n${TAGS}`;
+const draft = (topic: string, over: Record<string, unknown> = {}) => ({ line: "zero", topic, kind: "post", text: caption(`Texto de ${topic}.`), image: { title: topic, body: "" }, ...over });
+const slide = (type: string, title = `Título de ${type}`, body = "Una frase corta.") => ({ type, title, body });
+const SLIDES = [slide("cover"), slide("step"), slide("step"), slide("step"), slide("cta")];
+const carousel = (topic: string, slides: unknown[] = SLIDES, over: Record<string, unknown> = {}) => ({ line: "zero", topic, kind: "carousel", text: caption(`Texto de ${topic}.`), slides, ...over });
 const drafting = (...drafts: unknown[]) => fakeAgents({ community: () => ({ output: { drafts } }) });
 
 function factory(over: Record<string, unknown> = {}, opts: { token?: boolean; delivered?: boolean } = {}) {
@@ -313,7 +325,7 @@ describe("drafts", () => {
     const { social, ctx } = await run(drafting(draft("Tema")));
     expect(social.uploads).toHaveLength(1);
     expect(social.uploads[0]!.line).toBe("zero");
-    expect(social.items).toEqual([{ kind: "post", text: `Texto de Tema\n\n${DEFAULT_SOCIAL_SIGNATURE}`, imageUrl: `https://img.example/${social.uploads[0]!.name}` }]);
+    expect(social.items).toEqual([{ kind: "post", text: `${caption("Texto de Tema.")}\n\n${DEFAULT_SOCIAL_SIGNATURE}`, imageUrl: `https://img.example/${social.uploads[0]!.name}` }]);
     expect(ctx.store.listSocialPosts()[0]).toMatchObject({ line: "zero", channel: "falso", kind: "post", topic: "Tema", status: "published", url: "https://social.example/p/1", externalId: "id1" });
   });
 
@@ -382,7 +394,7 @@ describe("drafts", () => {
   });
 
   it("breaks mentions in what the channel receives", async () => {
-    const { social } = await run(drafting(draft("Tema", { text: "Hola @alguien" })));
+    const { social } = await run(drafting(draft("Tema", { text: caption("Hola @alguien.") })));
     expect(social.items[0]!.text).toContain("@​alguien");
   });
 
@@ -408,7 +420,7 @@ describe("drafts", () => {
   });
 
   it("publishes a web address intact", async () => {
-    const { social } = await run(drafting(draft("Tema", { text: "Mirá https://zerointheloop.com/a/b" })));
+    const { social } = await run(drafting(draft("Tema", { text: caption("Mirá https://zerointheloop.com/a/b ahora.") })));
     expect(social.items[0]!.text).toContain("https://zerointheloop.com/a/b");
   });
 
@@ -417,8 +429,8 @@ describe("drafts", () => {
     expect(social.items[0]!.text.endsWith(DEFAULT_SOCIAL_SIGNATURE)).toBe(true);
   });
 
-  it("cuts a long body and keeps the signature", async () => {
-    const { social } = await run(drafting(draft("Tema", { text: "a".repeat(3000) })));
+  it("cuts a long story text and keeps the signature", async () => {
+    const { social } = await run(drafting(draft("Tema", { kind: "story", text: "a".repeat(3000) })));
     expect(social.items[0]!.text.length).toBeLessThanOrEqual(2200);
     expect(social.items[0]!.text.endsWith(DEFAULT_SOCIAL_SIGNATURE)).toBe(true);
   });
@@ -428,6 +440,275 @@ describe("drafts", () => {
     expect(signed.length).toBeLessThanOrEqual(MAX_TEXT);
     expect(signed).not.toMatch(/\p{Cs}/u);
     expect(signedText("  ", "firma")).toBe("firma");
+  });
+});
+
+describe("carousels", { timeout: 60_000 }, () => {
+  const run = async (agents: ReturnType<typeof fakeAgents>, over: Record<string, unknown> = {}) => {
+    const { ctx } = factory(over);
+    const social = fakeSocial();
+    await communityPass(ctx, agents.runner, NOW, { social: social.social });
+    return { ctx, social };
+  };
+  const dropped = async (...drafts: unknown[]) => {
+    const { ctx } = factory();
+    const social = fakeSocial();
+    const result = await socialPostNow(ctx, drafting(...drafts).runner, { social: social.social, now: NOW });
+    return { result, social };
+  };
+
+  it("hands the channel a carousel with its images in order", async () => {
+    const { social, ctx } = await run(drafting(carousel("Paso a paso")));
+    expect(social.items).toHaveLength(1);
+    const item = social.items[0]!;
+    if (item.kind !== "carousel") throw new Error("no es un carrusel");
+    const id = ctx.store.listSocialPosts()[0]!.id;
+    expect(item.imageUrls).toEqual([1, 2, 3, 4, 5].map((n) => `https://img.example/${id}-${n}.jpg`));
+    expect(social.uploads.map((u) => u.name)).toEqual([1, 2, 3, 4, 5].map((n) => `${id}-${n}.jpg`));
+    expect(item.text.endsWith(DEFAULT_SOCIAL_SIGNATURE)).toBe(true);
+    expect(ctx.store.listSocialPosts()[0]).toMatchObject({ kind: "carousel", status: "published" });
+  });
+
+  it("takes every type between cover and cta", async () => {
+    const { social } = await run(drafting(carousel("Todos", [slide("cover"), slide("step"), slide("myth"), slide("stat"), slide("before-after"), slide("quote"), slide("cta")])));
+    expect(social.items).toHaveLength(1);
+  });
+
+  it("takes 2 and 6 slides between cover and cta", async () => {
+    const six = await dropped(carousel("Seis", [slide("cover"), ...Array.from({ length: 6 }, () => slide("step")), slide("cta")]));
+    expect(six.social.items).toHaveLength(1);
+    const two = await dropped(carousel("Dos", [slide("cover"), slide("step"), slide("step"), slide("cta")]));
+    expect(two.social.items).toHaveLength(1);
+  });
+
+  it("discards one with no closing, and still publishes another draft of the run", async () => {
+    const { result, social } = await dropped(carousel("Sin cierre", [slide("cover"), slide("step"), slide("step"), slide("step")]), draft("Otro"));
+    expect(result.dropped).toBe(1);
+    expect(social.items).toHaveLength(1);
+    expect(social.items[0]!.kind).toBe("post");
+  });
+
+  it.each([
+    ["7 slides in the middle", [slide("cover"), ...Array.from({ length: 7 }, () => slide("step")), slide("cta")]],
+    ["1 slide in the middle", [slide("cover"), slide("step"), slide("cta")]],
+    ["no cover", [slide("step"), slide("step"), slide("step"), slide("cta")]],
+    ["a cover in the middle", [slide("cover"), slide("cover"), slide("step"), slide("cta")]],
+    ["a cta in the middle", [slide("cover"), slide("cta"), slide("step"), slide("cta")]],
+    ["an unknown type", [slide("cover"), slide("otro"), slide("step"), slide("cta")]],
+    ["a blank title", [slide("cover"), slide("step", "  "), slide("step"), slide("cta")]],
+    ["a myth with no body", [slide("cover"), slide("myth", "Mito", ""), slide("step"), slide("cta")]],
+    ["no slides", []],
+  ])("discards one with %s, without touching the others", async (_name, slides) => {
+    const { result, social } = await dropped(carousel("Malo", slides), draft("Otro"));
+    expect(result.dropped).toBe(1);
+    expect(social.items.map((i) => i.kind)).toEqual(["post"]);
+    expect(social.uploads).toHaveLength(1);
+  });
+
+  it("discards one with no slides field", async () => {
+    const { slides: _, ...bare } = carousel("Sin slides");
+    expect((await dropped(bare)).social.items).toHaveLength(0);
+  });
+
+  it("discards a post without an image", async () => {
+    const { image: _, ...bare } = draft("Sin imagen");
+    expect((await dropped(bare)).social.items).toHaveLength(0);
+  });
+
+  it("discards the whole carousel for a local path in one slide, uploading nothing", async () => {
+    const { result, social } = await dropped(carousel("Ruta", [slide("cover"), slide("step"), slide("step", "Título", "Está en /opt/app/x"), slide("cta")]));
+    expect(result.dropped).toBe(1);
+    expect(social.uploads).toHaveLength(0);
+    expect(social.items).toHaveLength(0);
+  });
+
+  it("discards the whole carousel for a reveal bridge in a slide", async () => {
+    const { social } = await dropped(carousel("Puente", [slide("cover"), slide("step", "¿El resultado?"), slide("step"), slide("cta")]));
+    expect(social.uploads).toHaveLength(0);
+  });
+
+  it("shares the posts' quota: only the first of a carousel and a post goes out", async () => {
+    const { ctx } = factory();
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Primero"), draft("Segundo")).runner, { social: social.social, now: NOW });
+    expect(social.items.map((i) => i.kind)).toEqual(["carousel"]);
+    expect(socialStatus(ctx).quota!.posts).toEqual({ used: 1, limit: 1 });
+  });
+
+  it("measures carousels against postsPerDay: two with one post a day publish one", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 1, storiesPerDay: 3 } });
+    const social = fakeSocial();
+    const result = await socialPostNow(ctx, drafting(carousel("Primero"), carousel("Segundo")).runner, { social: social.social, now: NOW });
+    expect(social.items.map((i) => i.kind)).toEqual(["carousel"]);
+    expect(result.dropped).toBe(1);
+    expect(socialStatus(ctx).quota!.posts).toEqual({ used: 1, limit: 1 });
+  });
+
+  it("publishes a carousel with no stories allowed", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 1, storiesPerDay: 0 } });
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Primero")).runner, { social: social.social, now: NOW });
+    expect(social.items.map((i) => i.kind)).toEqual(["carousel"]);
+  });
+
+  it("publishes no carousel with no posts allowed, whatever the stories' quota", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 0, storiesPerDay: 1 } });
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Primero")).runner, { social: social.social, now: NOW });
+    expect(social.items).toHaveLength(0);
+  });
+
+  it("says carrusel in the status", async () => {
+    const { ctx } = await run(drafting(carousel("Paso a paso")));
+    expect(formatSocialStatus(socialStatus(ctx))).toContain("carrusel");
+  });
+
+  it("numbers only its steps", async () => {
+    const { ctx } = factory();
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Dos pasos", [slide("cover"), slide("step"), slide("quote"), slide("step"), slide("cta")])).runner, { social: social.social, now: NOW });
+    const step = (number: number) => renderCard({ kind: "carousel", ...slide("step") as { type: "step"; title: string; body: string }, signature: DEFAULT_SOCIAL_SIGNATURE, number }).length;
+    expect(social.uploads[1]!.size).toBe(step(1));
+    expect(social.uploads[3]!.size).toBe(step(2));
+  });
+});
+
+describe("the audit", () => {
+  const run = async (...drafts: unknown[]) => {
+    const { ctx } = factory();
+    const social = fakeSocial();
+    return { result: await socialPostNow(ctx, drafting(...drafts).runner, { social: social.social, now: NOW }), social };
+  };
+
+  it.each([
+    ["a late hook", { text: caption(`${"a".repeat(179)}. Sigue.`) }, "hook"],
+    ["too few hashtags", { text: "Una frase.\n\n#uno #dos" }, "hashtags"],
+    ["too many hashtags", { text: "Una frase.\n\n#a #b #c #d #e #f" }, "hashtags"],
+    ["a hollow opening", { text: caption("En el mundo actual todo cambia.") }, "hollow"],
+    ["a dead closing", { text: caption("Salió algo nuevo. ¿Qué opinás?") }, "closing"],
+    ["negative parallelism", { text: caption("No es una herramienta, es una fábrica.") }, "parallelism"],
+    ["a text that does not fit", { text: caption(`Una frase. ${"a".repeat(2200)}`) }, "length"],
+    ["a tell on the image", { image: { title: "Hablemos de esto", body: "" } }, "reveal"],
+  ])("discards a post with %s, saying why and not what it said", async (_name, over, why) => {
+    const warn = vi.spyOn(log, "warn");
+    const { result, social } = await run(draft("Tema", over));
+    expect(social.items).toHaveLength(0);
+    expect(social.uploads).toHaveLength(0);
+    expect(result.dropped).toBe(1);
+    const logged = JSON.stringify(warn.mock.calls);
+    warn.mockRestore();
+    expect(logged).toContain(why);
+    expect(logged).not.toContain("todo cambia");
+    expect(logged).not.toContain("aaaaaaaa");
+  });
+
+  it("publishes a story with no hashtags whose image is clean", async () => {
+    const { social } = await run(draft("Tema", { kind: "story", text: "corto" }));
+    expect(social.items).toHaveLength(1);
+  });
+
+  it("discards a story with a tell on its image", async () => {
+    const { social } = await run(draft("Tema", { kind: "story", image: { title: "¿El resultado? Otro", body: "" } }));
+    expect(social.items).toHaveLength(0);
+  });
+});
+
+describe("Facebook Page tokens", () => {
+  const PAGE_TOKEN = `EAA${"a".repeat(40)}`;
+
+  it("are recognized as secrets", () => {
+    expect(findSecret(`x ${PAGE_TOKEN} y`)).toBe(PAGE_TOKEN);
+    expect(findSecret(`EAA${"a".repeat(19)}`)).toBeUndefined();
+    expect(() => parseFactory(`social: { signature: ${PAGE_TOKEN} }\n`)).toThrow(ConfigError);
+    expect(publicText(`token ${PAGE_TOKEN}`, []).removed).toBe(true);
+  });
+
+  it("make a draft be discarded", async () => {
+    const { ctx } = factory();
+    const social = fakeSocial();
+    await communityPass(ctx, drafting(draft("Tema", { text: caption(`Mirá ${PAGE_TOKEN} ahora.`) })).runner, NOW, { social: social.social });
+    expect(social.items).toHaveLength(0);
+    expect(social.uploads).toHaveLength(0);
+  });
+});
+
+describe("the station's guide and instructions", () => {
+  const prompt = () => {
+    const { ctx } = factory();
+    const social = ctx.config.social;
+    if (social === "off") throw new Error("apagada");
+    return communityPrompt(ctx, social, ctx.config.lines, ["algo"], NOW);
+  };
+
+  it("has the style guide in its prompt, with the color, the 7 types and the 125 characters", () => {
+    const text = prompt();
+    expect(text).toContain(readFileSync(new URL("../agents/community-style.md", import.meta.url), "utf8").trim());
+    for (const piece of ["#ff8a5c", "`cover`", "`step`", "`myth`", "`stat`", "`before-after`", "`quote`", "`cta`", "125"]) expect(text, piece).toContain(piece);
+  });
+
+  it("keeps it before and outside the data blocks", () => {
+    const text = prompt();
+    expect(text.indexOf("#ff8a5c")).toBeLessThan(text.indexOf("<data>"));
+    for (const block of text.match(/<data>[\s\S]*?<\/data>/g)!) expect(block).not.toContain("#ff8a5c");
+  });
+
+  it("names the forbidden services and keeps the station a drafter", () => {
+    const text = readFileSync(new URL("../agents/community.md", import.meta.url), "utf8");
+    for (const service of ["Publora", "WoopSocial", "Pixfaro", "Apify"]) expect(text, service).toContain(service);
+    expect(text).toContain("You only draft");
+    expect(text).toContain("outrank any skill");
+    expect(text).toMatch(/never run a skill's scripts/i);
+  });
+
+  it("gives the station room for its skills", () => {
+    const { community } = parseFactory("lines:\n  - name: zero\n    repo: /tmp/z\n").stations;
+    expect(community).toMatchObject({ maxTurns: 15, timeoutMinutes: 10 });
+  });
+
+  it("stays paused until someone resumes it, saying how", async () => {
+    const { ctx } = factory();
+    ctx.store.setKv("social:paused", "on");
+    const agents = drafting(draft("Tema"));
+    const social = fakeSocial();
+    const result = await socialPostNow(ctx, agents.runner, { social: social.social, now: NOW });
+    expect(agents.calls).toHaveLength(0);
+    expect(social.items).toHaveLength(0);
+    expect(result.reason).toContain("zero social resume");
+  });
+});
+
+describe("zero social skills", () => {
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prev;
+  });
+
+  it("assigns the 9 skills in the file for every line and warns about the missing ones", async () => {
+    process.env.CLAUDE_CONFIG_DIR = tempDir("claude-home-");
+    writeTree(process.env.CLAUDE_CONFIG_DIR, { "skills/ig-humanizer/SKILL.md": "---\nname: ig-humanizer\n---\nCuerpo\n" });
+    const { ctx } = factory();
+    const r = await socialSkills(ctx);
+    expect(COMMUNITY_SKILLS).toEqual(["ig-caption-writer", "ig-carousel-planner", "ig-content-planner", "ig-hashtag-strategist", "ig-hook-extractor", "ig-humanizer", "ig-profile-optimizer", "ig-repurposer", "instagram-carousel-skill"]);
+    expect(ctx.config.stations.community.skills).toEqual(COMMUNITY_SKILLS);
+    expect(parseFactory(readFileSync(ctx.home.config, "utf8")).stations.community.skills).toEqual(COMMUNITY_SKILLS);
+    expect(r.added).toEqual(COMMUNITY_SKILLS);
+    expect(r.missing).not.toContain("ig-humanizer");
+    expect(r.missing).toContain("ig-repurposer");
+    expect(formatSocialSkills(r)).toContain("ig-repurposer");
+  });
+
+  it("keeps each once and the others assigned, run twice", async () => {
+    process.env.CLAUDE_CONFIG_DIR = tempDir("claude-home-");
+    const { ctx } = factory({ stations: { community: { skills: ["mia", "ig-humanizer"] } } });
+    await socialSkills(ctx);
+    const second = await socialSkills(ctx);
+    const { skills } = ctx.config.stations.community;
+    expect(skills).toContain("mia");
+    for (const skill of COMMUNITY_SKILLS) expect(skills.filter((s) => s === skill), skill).toHaveLength(1);
+    expect(skills).toHaveLength(10);
+    expect(second.added).toEqual([]);
+    expect(formatSocialSkills(second)).toContain("ya estaban");
   });
 });
 

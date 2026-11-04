@@ -186,7 +186,7 @@ export interface ResearchNote {
   issueUrl?: string;
 }
 
-export type SocialKind = "post" | "story";
+export type SocialKind = "post" | "story" | "carousel";
 export type SocialPostStatus = "publishing" | "published" | "failed";
 
 /** One public post of the community station, recorded before the channel is called. */
@@ -801,12 +801,13 @@ export class Store {
   }
 
   /** Newest first. `live` leaves out the failed ones: what counts for the daily limits and for repeated topics. */
-  listSocialPosts(filter: { kind?: SocialKind; since?: Date; live?: boolean; limit?: number } = {}): SocialPost[] {
+  listSocialPosts(filter: { kind?: SocialKind | SocialKind[]; since?: Date; live?: boolean; limit?: number } = {}): SocialPost[] {
     const where: string[] = [];
     const values: (string | number)[] = [];
     if (filter.kind) {
-      where.push("kind = ?");
-      values.push(filter.kind);
+      const kinds = [filter.kind].flat();
+      where.push(`kind IN (${kinds.map(() => "?").join(", ")})`);
+      values.push(...kinds);
     }
     if (filter.since) {
       where.push("created_at >= ?");
