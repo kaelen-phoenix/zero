@@ -1,13 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { answer, requestWork, trace, type FactoryContext } from "../src/app.js";
-import { runJob, type RunnerDeps } from "../src/line/runner.js";
+import { isTransientNetworkError, networkRetryKey, runJob, type RunnerDeps } from "../src/line/runner.js";
+import { createGitHubTracker, type PullRequestsFactory } from "../src/tracker.js";
 import { statSync } from "node:fs";
 import { cleanReview, cleanup, fakeAgents, gitIn, gitRepo, simulatedBox, testFactory, validSpec, writeTree } from "./helpers.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  return cleanup();
+});
 
 const passes = `node -e "process.exit(0)"`;
 const checkHealth = `node -e "process.exit(require('fs').readFileSync('src/health.ts','utf8').includes('ok') ? 0 : 1)"`;
@@ -370,5 +375,275 @@ describe("production line", () => {
     const secondSpec = agents.calls.filter((c) => c.station === "spec")[1]!;
     expect(secondSpec.prompt).toContain("[finding] tests: los tests usan vitest (package.json)");
     expect((await ctx.townhall.recall({ kinds: ["proposal"] }))[0]).toMatchObject({ line: "demo", body: "agregar CI" });
+  });
+});
+
+describe("a passing network cut", () => {
+  const cut = (message = "read ECONNRESET") => new Error(message);
+  const coded = (code: string, message = "connection lost") => Object.assign(new Error(message), { code });
+  const retries = (ctx: FactoryContext, id: string) => ctx.store.getKv(networkRetryKey(id));
+
+  it("resumes from the checkpoint without redoing what was finished", async () => {
+    const { repo, ctx } = factory();
+    const agents = fakeAgents({
+      build: writeHealth(),
+      review: (_req, n) => {
+        if (n === 1) throw cut();
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+
+    const queued = await runJob(job.id, deps(ctx, agents.runner));
+    expect(queued).toMatchObject({ status: "queued", checkpoint: "spec", station: "review", attempt: 1 });
+    expect(queued.finishedAt).toBeFalsy();
+    expect(retries(ctx, job.id)).toBe("1");
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(agents.count).toMatchObject({ spec: 1, build: 1, review: 2 });
+    expect(existsSync(join(repo, "src/health.ts"))).toBe(true);
+  });
+
+  it.each(["ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED", "EPIPE"])("recognizes the code %s", async (code) => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: () => {
+        throw coded(code);
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "queued" });
+  });
+
+  it("recognizes a code in the cause", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      spec: () => {
+        throw new Error("fetch failed", { cause: coded("ECONNRESET") });
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "queued", checkpoint: "none" });
+  });
+
+  it("tells a whole code from one inside another word, and survives a cycle of causes", () => {
+    const cycle: Error & { cause?: unknown } = new Error("boom");
+    cycle.cause = cycle;
+    expect(isTransientNetworkError(cycle)).toBe(false);
+    expect(isTransientNetworkError(cut("the EPIPELINE broke"))).toBe(false);
+    expect(isTransientNetworkError("read ECONNRESET")).toBe(true);
+    expect(isTransientNetworkError(undefined)).toBe(false);
+  });
+
+  it("fails on the third cut, with the reason of today", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: writeHealth(),
+      review: () => {
+        throw cut();
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("queued");
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("queued");
+    const failed = await runJob(job.id, deps(ctx, agents.runner));
+    expect(failed).toMatchObject({ status: "failed", reason: expect.stringContaining("Error inesperado: read ECONNRESET") });
+    expect(agents.count.review).toBe(3);
+    expect(retries(ctx, job.id)).toBe("2");
+    expect((await ctx.townhall.recall({ kinds: ["blocker"] }))[0]).toMatchObject({ job: job.id });
+  });
+
+  it("fails on any other error at once, without spending a retry", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: () => {
+        throw new Error("boom");
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "failed", reason: "Error inesperado: boom" });
+    expect(retries(ctx, job.id)).toBeUndefined();
+  });
+
+  it("does not retry a setup command whose output names a network code", async () => {
+    const repo = gitRepo();
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, setup: [`node -e "console.log('npm ERR! code ECONNRESET');process.exit(1)"`], verify: [passes] }] });
+    const agents = fakeAgents({});
+    const { job } = requestWork(ctx, { text: "health" });
+    const failed = await runJob(job.id, deps(ctx, agents.runner));
+    expect(failed).toMatchObject({ status: "failed", reason: expect.stringContaining("setup") });
+    expect(agents.calls).toEqual([]);
+    expect(retries(ctx, job.id)).toBeUndefined();
+  });
+
+  it("does not retry a setup whose command cannot even reach the box", async () => {
+    const ctx = testFactory({ level: "L3", isolation: "container", lines: [{ name: "demo", repo: gitRepo(), setup: [passes], verify: [passes] }] });
+    const agents = fakeAgents({});
+    const { job } = requestWork(ctx, { text: "health" });
+    const box = {
+      ...simulatedBox(agents.runner).box,
+      shell: async () => {
+        throw coded("ECONNREFUSED");
+      },
+    };
+    expect(await runJob(job.id, deps(ctx, agents.runner, { box }))).toMatchObject({ status: "failed", reason: "Error inesperado: connection lost" });
+    expect(agents.calls).toEqual([]);
+  });
+
+  it("lets a stop win over the retry", async () => {
+    const { ctx } = factory();
+    const controller = new AbortController();
+    const agents = fakeAgents({
+      build: () => {
+        controller.abort("stop");
+        throw cut();
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner), controller.signal)).toMatchObject({ status: "stopped", reason: "Lo detuviste vos." });
+    expect(retries(ctx, job.id)).toBeUndefined();
+  });
+
+  it("does not spend the last attempt, and drops what the cut build wrote", async () => {
+    const repo = gitRepo();
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, verify: [passes], maxAttempts: 1 }] });
+    const agents = fakeAgents({
+      build: (req, n) => {
+        if (n === 1) {
+          writeTree(req.cwd, { "half-done.txt": "x" });
+          throw cut();
+        }
+        writeHealth()(req);
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "queued", attempt: 0 });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "delivered", attempt: 1 });
+    const files = gitIn(repo, "ls-tree", "-r", "--name-only", "main");
+    expect(files).not.toContain("half-done.txt");
+    expect(files).toContain("src/health.ts");
+  });
+
+  it("resumes at the agent that writes, dropping what it wrote, on the same attempt", async () => {
+    const repo = gitRepo({ "README.md": "# demo\n", "docs.md": "Write the docs.\n" });
+    const ctx = testFactory({
+      level: "L2",
+      isolation: "worktree",
+      lines: [{ name: "demo", repo, verify: [passes], agents: [{ name: "docs", type: "build", instructions: "docs.md" }] }],
+    });
+    const agents = fakeAgents({
+      build: writeHealth(),
+      docs: (req, n) => {
+        writeTree(req.cwd, n === 1 ? { "half-done.txt": "x" } : { "docs/health.md": "ok\n" });
+        if (n === 1) throw cut();
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "queued", station: "docs", attempt: 1 });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(agents.count).toMatchObject({ build: 1, docs: 2 });
+    const files = gitIn(repo, "ls-tree", "-r", "--name-only", "main");
+    expect(files).not.toContain("half-done.txt");
+    expect(files).toContain("docs/health.md");
+  });
+
+  it("fails without rejecting when the work copy cannot be cleaned", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: (req) => {
+        rmSync(join(req.cwd, ".git"), { recursive: true, force: true });
+        throw cut();
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "failed", reason: "Error inesperado: read ECONNRESET" });
+    expect(retries(ctx, job.id)).toBeUndefined();
+  });
+});
+
+describe("a pull request that may already exist", () => {
+  const collision = () => Object.assign(new Error("Validation Failed: A pull request already exists for kaelen:zero/x."), { status: 422 });
+
+  function pullRequestLine() {
+    const repo = gitRepo();
+    const bare = gitRepo();
+    gitIn(bare, "config", "receive.denyCurrentBranch", "ignore");
+    gitIn(repo, "remote", "add", "origin", "https://github.com/kaelen/demo.git");
+    gitIn(repo, "remote", "set-url", "--push", "origin", bare);
+    vi.stubEnv("GH_TOKEN", "test-token");
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request", verify: [passes] }] });
+    const { job } = requestWork(ctx, { text: "health" });
+    // A fixed base keeps the job from fetching the remote's.
+    ctx.store.updateJob(job.id, { base: "main" });
+    return { ctx, job };
+  }
+
+  /** A fake adapter that plays one outcome per call and records the pull requests it created. */
+  function adapter(...outcomes: (Error | string)[]) {
+    const created: string[] = [];
+    const pullRequests: PullRequestsFactory = () => ({
+      openPullRequest: async () => {
+        const outcome = outcomes.shift()!;
+        if (outcome instanceof Error) throw outcome;
+        created.push(outcome);
+        return outcome;
+      },
+    });
+    return { created, pullRequests };
+  }
+
+  it("ends in the integration-blocked question after a cut, and approving retries only the integration", async () => {
+    const { ctx, job } = pullRequestLine();
+    const agents = fakeAgents({ build: writeHealth() });
+    const url = "https://github.com/kaelen/demo/pull/7";
+    const { created, pullRequests } = adapter(new Error("read ECONNRESET"), collision(), url);
+    const run = () => runJob(job.id, deps(ctx, agents.runner, { pullRequests }));
+
+    expect(await run()).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate" });
+    const waiting = await run();
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "integration-blocked" } });
+    expect(waiting.question!.text).toContain(`zero/${job.id}`);
+    expect(created).toEqual([]);
+
+    await answer(ctx, job.id, "approve");
+    const done = await run();
+    expect(done).toMatchObject({ status: "delivered", delivery: { mode: "pull-request", url } });
+    expect(created).toEqual([url]);
+    expect(agents.count).toEqual({ spec: 1, build: 1, review: 1, security: 1 });
+  });
+
+  it("lets any other error from GitHub through", async () => {
+    const { ctx, job } = pullRequestLine();
+    const refused = Object.assign(new Error("Validation Failed: no commits between main and the branch"), { status: 422 });
+    const done = await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner, { pullRequests: adapter(refused).pullRequests }));
+    expect(done).toMatchObject({ status: "failed", reason: expect.stringContaining("no commits between") });
+  });
+
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  it("recognizes the collision as the real adapter reports it", async () => {
+    const { ctx, job } = pullRequestLine();
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) =>
+      init.method === "POST"
+        ? json(422, { message: "Validation Failed", errors: [{ resource: "PullRequest", code: "custom", message: "A pull request already exists for kaelen:zero/x." }] })
+        : json(200, []),
+    );
+    const waiting = await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner, { pullRequests: createGitHubTracker }));
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "integration-blocked" } });
+  });
+
+  it("updates the open pull request the listing returns instead of creating another", async () => {
+    const url = "https://github.com/kaelen/demo/pull/7";
+    const methods: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      methods.push(init.method!);
+      return init.method === "GET" ? json(200, [{ number: 7, html_url: url }]) : json(200, { number: 7, html_url: url });
+    });
+    const opened = await createGitHubTracker("test-token", "kaelen/demo").openPullRequest({ head: "zero/x", base: "main", title: "t", body: "b" });
+    expect(opened).toBe(url);
+    expect(methods).toEqual(["GET", "PATCH"]);
   });
 });
