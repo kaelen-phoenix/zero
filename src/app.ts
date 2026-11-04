@@ -4,11 +4,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
-import { AGENT_ACCESS, agentInstructions } from "./agent.js";
+import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
-import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, loadFactory, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
+import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, loadFactory, SiteSchema, socialEnabled, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
@@ -17,7 +17,10 @@ import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
+import { communityRun, socialQuota, socialRanToday, SOCIAL_PAUSED_KEY, type CommunityResult, type SocialQuota } from "./line/community.js";
+import type { SocialFactory } from "./social/channel.js";
+import { INSTAGRAM_TOKEN } from "./social/instagram.js";
+import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SocialPost, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
@@ -97,6 +100,46 @@ export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
   });
   child.unref();
   return true;
+}
+
+export interface SocialStatus {
+  on: boolean;
+  /** Why it is off; never holds the token. */
+  why?: string;
+  paused: boolean;
+  quota?: SocialQuota;
+  lines: string[];
+  /** The automatic pass of today already ran. */
+  ranToday: boolean;
+  /** Newest first. */
+  posts: SocialPost[];
+  lastFailure?: SocialPost;
+}
+
+/** What `zero social status` shows: whether it posts, today's quota, the lines it talks about and what it published. */
+export function socialStatus(ctx: FactoryContext, now = (ctx.now ?? (() => new Date()))()): SocialStatus {
+  const social = ctx.config.social;
+  const why = social === "off" ? "`social: off` en la definición de la fábrica." : !ctx.secrets.has(INSTAGRAM_TOKEN) ? `falta el token de Instagram: guardalo con \`zero secret set ${INSTAGRAM_TOKEN}\` (la guía está en el README).` : undefined;
+  return {
+    on: !why,
+    why,
+    paused: ctx.store.getKv(SOCIAL_PAUSED_KEY) === "on",
+    quota: social === "off" ? undefined : socialQuota(ctx, social, now),
+    lines: ctx.config.lines.filter(socialEnabled).map((l) => l.name),
+    ranToday: socialRanToday(ctx, now),
+    posts: ctx.store.listSocialPosts({ limit: 20 }),
+    lastFailure: ctx.store.listSocialPosts().find((p) => p.status === "failed"),
+  };
+}
+
+export function setSocialPaused(ctx: FactoryContext, paused: boolean) {
+  if (paused) ctx.store.setKv(SOCIAL_PAUSED_KEY, "on");
+  else ctx.store.deleteKv(SOCIAL_PAUSED_KEY);
+}
+
+/** A pass without waiting for tomorrow, with the same gates except for waiting for the factory to be idle. */
+export function socialPostNow(ctx: FactoryContext, runAgent: AgentRunner, opts: { social?: SocialFactory; now?: Date } = {}): Promise<CommunityResult> {
+  return communityRun(ctx, runAgent, opts.now ?? (ctx.now ?? (() => new Date()))(), { social: opts.social });
 }
 
 export interface RequestResult {

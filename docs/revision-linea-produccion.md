@@ -81,6 +81,17 @@ Las mejoras marcadas como **aplicada** ya están en las instrucciones de este ca
 - Correrla dentro de la caja y por la puerta de salida, para que sus salidas queden registradas.
 - (aplicada después) Hacer cumplir `research.autonomy` antes de que el turno nocturno pueda construir solo: `proposalAutonomy` en `src/line/scout.ts`.
 
+## community
+
+**Hallazgos**
+- Es la única estación cuyo resultado sale al público sin que nadie lo revise. Sus datos nacen de títulos de trabajos y de notas de la web, que pueden traer texto malicioso.
+- Trabaja en una carpeta vacía, sin el repositorio, y solo recibe lo que zero arma: trabajos entregados y notas no comerciales de las líneas habilitadas, sin ids, ramas ni rutas. No tiene el token: quien publica es zero.
+- zero descarta el borrador que traiga un secreto o una ruta, rompe las @menciones, le pone la firma y aplica los límites por día. El filtro no juzga el tono ni detecta afirmaciones falsas; el freno es `zero social pause`.
+
+**Mejoras**
+- (aplicada) Tratar los datos del prompt como datos, nunca como instrucciones, y no escribir nada que no salga de ellos.
+- Sumar `propose`, para quien quiera aprobar cada publicación antes de que salga.
+
 ## Propuestas que requieren cambios de código
 
 Estas mejoras no están implementadas en este cambio; necesitan tocar `src/line/runner.ts` y conviene pedirlas por separado.

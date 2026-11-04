@@ -14,10 +14,12 @@ import { lineSignature, loadFactory, type FactoryConfig, type LineConfig } from 
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
+import { communityPass } from "./line/community.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { signedIssues, signedMerges } from "./signature.js";
+import type { SocialFactory } from "./social/channel.js";
 import { log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
@@ -46,6 +48,10 @@ export interface DaemonOptions {
   scout?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
+  /** Run the community station while the factory is idle. Defaults to on, except in `once` runs. */
+  community?: boolean;
+  /** The public channel and the image host; tests inject fakes. */
+  social?: SocialFactory;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -182,20 +188,26 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     exporting = exportPass(ctx).finally(() => (exporting = undefined));
   };
 
-  // The night shift: while the factory is idle, scout proposes work and then research reads the web (once a day per line),
-  // one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
-  // limits.usdPerNight: each computes what is left only after the other's spans are recorded. Shutdown cuts research short.
+  // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and community
+  // posts, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
+  // limits.usdPerNight: each computes what is left only after the others' spans are recorded. Shutdown cuts research and community short.
   let idle: Promise<void> | undefined;
+  let communityAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
     if (idle || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
-    if (!scouts && !researches) return;
+    // The token lives in the keychain, so this is not asked on every wake-up.
+    const posts = (opts.community ?? !opts.once) && ctx.config.social !== "off" && Date.now() - communityAt >= (opts.once ? 0 : INTAKE_MS);
+    if (!scouts && !researches && !posts) return;
+    if (posts) communityAt = Date.now();
     idle = (async () => {
       if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+      if (posts && !researchStop.signal.aborted)
+        await communityPass(ctx, agentRunner(ctx.config), now(), { social: opts.social, signal: researchStop.signal }).catch((err) => log.warn("community failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
   };
 
@@ -269,7 +281,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
   } finally {
-    // A shutdown cuts research short; a `once` run lets it finish.
+    // A shutdown cuts research and community short; a `once` run lets them finish.
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;

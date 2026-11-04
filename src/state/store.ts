@@ -186,6 +186,26 @@ export interface ResearchNote {
   issueUrl?: string;
 }
 
+export type SocialKind = "post" | "story";
+export type SocialPostStatus = "publishing" | "published" | "failed";
+
+/** One public post of the community station, recorded before the channel is called. */
+export interface SocialPost {
+  id: string;
+  line: string;
+  channel: string;
+  kind: SocialKind;
+  topic: string;
+  /** The signed text sent to the channel. */
+  text: string;
+  status: SocialPostStatus;
+  url?: string;
+  externalId?: string;
+  error?: string;
+  createdAt: string;
+  publishedAt?: string;
+}
+
 /** A connection recorded by the egress gate, numbered in the order the host read it. */
 export interface EgressRow extends EgressEvent {
   seq: number;
@@ -290,6 +310,21 @@ CREATE TABLE IF NOT EXISTS research_notes (
   business INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS research_notes_line ON research_notes(line, created_at);
+CREATE TABLE IF NOT EXISTS social_posts (
+  id TEXT PRIMARY KEY,
+  line TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  text TEXT NOT NULL,
+  status TEXT NOT NULL,
+  url TEXT,
+  external_id TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  published_at TEXT
+);
+CREATE INDEX IF NOT EXISTS social_posts_created ON social_posts(created_at);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -386,6 +421,23 @@ function toResearchNote(r: Row): ResearchNote {
     createdAt: String(r.created_at),
     issueNumber: r.issue_number == null ? undefined : Number(r.issue_number),
     issueUrl: str(r.issue_url),
+  };
+}
+
+function toSocialPost(r: Row): SocialPost {
+  return {
+    id: String(r.id),
+    line: String(r.line),
+    channel: String(r.channel),
+    kind: String(r.kind) as SocialKind,
+    topic: String(r.topic),
+    text: String(r.text),
+    status: String(r.status) as SocialPostStatus,
+    url: str(r.url),
+    externalId: str(r.external_id),
+    error: str(r.error),
+    createdAt: String(r.created_at),
+    publishedAt: str(r.published_at),
   };
 }
 
@@ -727,6 +779,42 @@ export class Store {
     }
     const sql = `SELECT * FROM research_notes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
     return (this.db.prepare(sql).all(...values, filter.limit ?? -1) as Row[]).map(toResearchNote);
+  }
+
+  createSocialPost(input: Pick<SocialPost, "line" | "channel" | "kind" | "topic" | "text">): SocialPost {
+    const id = newId();
+    this.db
+      .prepare("INSERT INTO social_posts (id, line, channel, kind, topic, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'publishing', ?)")
+      .run(id, input.line, input.channel, input.kind, input.topic, input.text, this.stamp());
+    return this.getSocialPost(id)!;
+  }
+
+  getSocialPost(id: string): SocialPost | undefined {
+    const row = this.db.prepare("SELECT * FROM social_posts WHERE id = ?").get(id) as Row | undefined;
+    return row && toSocialPost(row);
+  }
+
+  finishSocialPost(id: string, result: { url?: string; externalId?: string } | { error: string }): SocialPost {
+    if ("error" in result) this.db.prepare("UPDATE social_posts SET status = 'failed', error = ? WHERE id = ?").run(result.error, id);
+    else this.db.prepare("UPDATE social_posts SET status = 'published', url = ?, external_id = ?, published_at = ? WHERE id = ?").run(result.url ?? null, result.externalId ?? null, this.stamp(), id);
+    return this.getSocialPost(id)!;
+  }
+
+  /** Newest first. `live` leaves out the failed ones: what counts for the daily limits and for repeated topics. */
+  listSocialPosts(filter: { kind?: SocialKind; since?: Date; live?: boolean; limit?: number } = {}): SocialPost[] {
+    const where: string[] = [];
+    const values: (string | number)[] = [];
+    if (filter.kind) {
+      where.push("kind = ?");
+      values.push(filter.kind);
+    }
+    if (filter.since) {
+      where.push("created_at >= ?");
+      values.push(filter.since.toISOString());
+    }
+    if (filter.live) where.push("status <> 'failed'");
+    const sql = `SELECT * FROM social_posts ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
+    return (this.db.prepare(sql).all(...values, filter.limit ?? -1) as Row[]).map(toSocialPost);
   }
 
   getKv(key: string): string | undefined {

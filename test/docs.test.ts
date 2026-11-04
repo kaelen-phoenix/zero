@@ -131,6 +131,15 @@ describe("documentation up to date", () => {
     expect(blocks(en).find((b) => b.body.startsWith("# Agent: a11y"))!.body).toBe(blocks(es).find((b) => b.body.startsWith("# Agent: a11y"))!.body);
   });
 
+  it("documents social publishing in the code blocks of both, with the Meta guide", () => {
+    for (const [text, heading] of [[en, "## Social media"], [es, "## Redes sociales"]] as const) {
+      const code = blocks(text).map((b) => b.body).join("\n");
+      for (const piece of ["zero social status", "zero social post-now", "zero social pause", "zero social resume", "INSTAGRAM_ACCESS_TOKEN", "postsPerDay", "storiesPerDay"]) expect(code, piece).toContain(piece);
+      const body = section(text, heading);
+      for (const fact of ["Meta", "instagram_business_content_publish", "social.media.repository", "60"]) expect(body, fact).toContain(fact);
+    }
+  });
+
   it("starts Getting started with the clone", () => {
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
       const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;
