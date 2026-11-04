@@ -26,8 +26,8 @@ export function sh(command: string, cwd: string, opts: { timeoutMs?: number; sig
   });
 }
 
-export function git(args: string[], cwd: string): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+export function git(args: string[], cwd: string, env?: NodeJS.ProcessEnv): string {
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, ...(env && { env }) });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(r.stderr || r.stdout).trim()}`);
   return r.stdout.trim();
 }

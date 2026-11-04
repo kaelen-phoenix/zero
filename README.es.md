@@ -96,6 +96,10 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
 
+### Autor de los commits
+
+Por defecto los commits de la fábrica tienen como autor a `zero`, la identidad propia de la fábrica. Algunos servicios solo aceptan commits cuyo autor es una de sus cuentas: el plan Hobby de Vercel, por ejemplo, bloquea el despliegue ("GitHub couldn't verify an account for the commit"), así que las vistas previas de los pull requests fallan su check y la fusión automática nunca arranca. Con `commitAuthor: owner` (global, o en una línea, que manda) los commits de especificación, de intento y de merge tienen como autor a vos: el `user.name` y el `user.email` que da `git config` en el repositorio de la línea, leídos al hacer el commit y nunca escritos en el archivo de la fábrica. zero sigue como committer, así se sigue viendo que los hizo la fábrica. Si el repositorio no tiene nombre o email configurados, el commit sale con autor zero y el trabajo sigue. La detección de reversiones funciona igual, porque mira los mensajes y los SHA de los commits, no sus autores.
+
 ## zero, tu CI y tus herramientas de calidad
 
 zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
@@ -156,6 +160,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
   usdPerDay: 10           # solo si se paga por uso (clave de API) · 0 = solo motores gratuitos
@@ -180,6 +185,7 @@ lines:
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
+    commitAuthor: owner       # opcional: el autor de los commits de esta línea, sobre el global
     stations:                 # opcional: skills que un agente suma solo en esta línea
       build: { skills: [nextjs, shadcn] }
     signature: off            # opcional: la firma propia de esta línea, reemplaza la global
