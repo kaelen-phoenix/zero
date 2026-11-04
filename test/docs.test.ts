@@ -135,27 +135,18 @@ describe("documentation up to date", () => {
     expect(blocks(en).find((b) => b.body.startsWith("# Agent: a11y"))!.body).toBe(blocks(es).find((b) => b.body.startsWith("# Agent: a11y"))!.body);
   });
 
-  it("documents social publishing in the code blocks of both, with the Meta guide", () => {
-    for (const [text, heading] of [[en, "## Social media"], [es, "## Redes sociales"]] as const) {
-      const code = blocks(text).map((b) => b.body).join("\n");
-      for (const piece of ["zero social status", "zero social post-now", "zero social pause", "zero social resume", "INSTAGRAM_ACCESS_TOKEN", "postsPerDay", "storiesPerDay"]) expect(code, piece).toContain(piece);
-      const body = section(text, heading);
-      for (const fact of ["Meta", "instagram_business_content_publish", "social.media.repository", "60"]) expect(body, fact).toContain(fact);
+  it("no longer documents the removed proof of concept", () => {
+    for (const text of [en, es]) {
+      for (const piece of ["## Social media", "## Redes sociales", "zero social", "INSTAGRAM_ACCESS_TOKEN"]) expect(text, piece).not.toContain(piece);
     }
-  });
-
-  it("documents carousels, the audit, the symbol and the skills command in both", () => {
-    for (const [text, heading] of [[en, "## Social media"], [es, "## Redes sociales"]] as const) {
-      const code = blocks(text).map((b) => b.body).join("\n");
-      expect(code).toContain("zero social skills");
-      const body = section(text, heading);
-      for (const fact of ["1080x1350", "1080x1920", "125", "zero-symbol.png", "zero social skills"]) expect(body, fact).toContain(fact);
-      expect(text).not.toContain("1080x1080");
-    }
-    expect(section(en, "## Social media")).toMatch(/carousels?/i);
-    expect(section(es, "## Redes sociales")).toMatch(/carrusel/i);
-    expect(en).not.toMatch(/Carousels[^.\n]*later stages/);
-    expect(es).not.toMatch(/carruseles[^.\n]*próximas etapas/i);
+    const guide = read("AGENTS.md");
+    for (const piece of ["src/social/", "src/line/community.ts", "communityPass"]) expect(guide, piece).not.toContain(piece);
+    expect(guide).toContain("(`idlePasses`: scout, then research, then the packages' stations)");
+    expect(read("docs/revision-linea-produccion.md")).not.toMatch(/community|zero social/);
+    const agents = readdirSync(new URL("../agents/", import.meta.url));
+    expect(agents).not.toContain("community.md");
+    expect(agents).not.toContain("community-style.md");
+    expect(read("agents/research.md")).not.toContain("community");
   });
 
   it("shows .agents/** in the protected paths example of both READMEs", () => {

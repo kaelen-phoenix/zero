@@ -74,12 +74,12 @@ export function periodStart(shift: NightShift, now: Date): Date {
 }
 
 /** Stations that work while the factory is idle; they share `limits.usdPerNight`. */
-const IDLE_STATIONS = new Set(["scout", "research", "community"]);
+const IDLE_STATIONS = new Set(["scout", "research"]);
 
 /** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
 export const PACKAGE_AGENT_PREFIX = "package:";
 
-/** What the idle-time stations (scout, research, community and the packages' stations) spent since `since`, so together they never pass the night cap. */
+/** What the idle-time stations (scout, research and the packages' stations) spent since `since`, so together they never pass the night cap. */
 export function scoutSpent(store: Store, since: Date): number {
   return store
     .spansSince(AGENT_SPAN, since)

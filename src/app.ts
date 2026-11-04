@@ -8,7 +8,7 @@ import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, socialEnabled, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { factoryConfig, loadPackages, packageFolder, readManifest, withPackages } from "./packages.js";
@@ -19,10 +19,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey } from "./line/packages.js";
-import { communityRun, socialQuota, socialRanToday, SOCIAL_PAUSED_KEY, type CommunityResult, type SocialQuota } from "./line/community.js";
-import type { SocialFactory } from "./social/channel.js";
-import { INSTAGRAM_TOKEN } from "./social/instagram.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SocialPost, type SpanRow } from "./state/store.js";
+import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
@@ -102,46 +99,6 @@ export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
   });
   child.unref();
   return true;
-}
-
-export interface SocialStatus {
-  on: boolean;
-  /** Why it is off; never holds the token. */
-  why?: string;
-  paused: boolean;
-  quota?: SocialQuota;
-  lines: string[];
-  /** The automatic pass of today already ran. */
-  ranToday: boolean;
-  /** Newest first. */
-  posts: SocialPost[];
-  lastFailure?: SocialPost;
-}
-
-/** What `zero social status` shows: whether it posts, today's quota, the lines it talks about and what it published. */
-export function socialStatus(ctx: FactoryContext, now = (ctx.now ?? (() => new Date()))()): SocialStatus {
-  const social = ctx.config.social;
-  const why = social === "off" ? "`social: off` en la definición de la fábrica." : !ctx.secrets.has(INSTAGRAM_TOKEN) ? `falta el token de Instagram: guardalo con \`zero secret set ${INSTAGRAM_TOKEN}\` (la guía está en el README).` : undefined;
-  return {
-    on: !why,
-    why,
-    paused: ctx.store.getKv(SOCIAL_PAUSED_KEY) === "on",
-    quota: social === "off" ? undefined : socialQuota(ctx, social, now),
-    lines: ctx.config.lines.filter(socialEnabled).map((l) => l.name),
-    ranToday: socialRanToday(ctx, now),
-    posts: ctx.store.listSocialPosts({ limit: 20 }),
-    lastFailure: ctx.store.listSocialPosts().find((p) => p.status === "failed"),
-  };
-}
-
-export function setSocialPaused(ctx: FactoryContext, paused: boolean) {
-  if (paused) ctx.store.setKv(SOCIAL_PAUSED_KEY, "on");
-  else ctx.store.deleteKv(SOCIAL_PAUSED_KEY);
-}
-
-/** A pass without waiting for tomorrow, with the same gates except for waiting for the factory to be idle. */
-export function socialPostNow(ctx: FactoryContext, runAgent: AgentRunner, opts: { social?: SocialFactory; now?: Date } = {}): Promise<CommunityResult> {
-  return communityRun(ctx, runAgent, opts.now ?? (ctx.now ?? (() => new Date()))(), { social: opts.social });
 }
 
 export interface RequestResult {
@@ -855,22 +812,6 @@ export async function removeSkill(ctx: FactoryContext, input: { skill: string; s
   if (!current.includes(input.skill)) return `La skill ${input.skill} no estaba asignada a ${where}.`;
   ctx.config = await editConfig(ctx, (doc) => doc.setIn(path, doc.createNode(current.filter((s) => s !== input.skill))));
   return `Skill ${input.skill} quitada de ${where}.`;
-}
-
-/** The skills the community station works with; `zero social skills` assigns them. */
-export const COMMUNITY_SKILLS = ["ig-caption-writer", "ig-carousel-planner", "ig-content-planner", "ig-hashtag-strategist", "ig-hook-extractor", "ig-humanizer", "ig-profile-optimizer", "ig-repurposer", "instagram-carousel-skill"];
-
-export interface SocialSkills {
-  added: string[];
-  missing: string[];
-}
-
-/** Assigns them for every line, keeping what is already assigned: the station runs with no line, so only the global list reaches it. */
-export async function socialSkills(ctx: FactoryContext): Promise<SocialSkills> {
-  const before = currentSkills(ctx, "community");
-  for (const skill of COMMUNITY_SKILLS) await addSkill(ctx, { skill, station: "community" });
-  const available = availableSkills(ctx.config);
-  return { added: COMMUNITY_SKILLS.filter((s) => !before.includes(s)), missing: COMMUNITY_SKILLS.filter((s) => resolveSkill(s, available).problem) };
 }
 
 export function skillList(ctx: FactoryContext): SkillList {

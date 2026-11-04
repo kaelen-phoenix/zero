@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { ConfigError, effectiveLevel, findLine, lineAutonomy, parseFactory } from "../src/config.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AGENT_ACCESS } from "../src/agent.js";
+import { AGENT_STATIONS, ConfigError, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAutonomy, parseFactory } from "../src/config.js";
 import { factoryHome } from "../src/home.js";
 import { addLine, detectClients, detectCommands, initFactory, slug } from "../src/init.js";
+import { SKILL_STATIONS } from "../src/skills.js";
 import { cleanup, gitRepo, tempDir } from "./helpers.js";
 
 afterEach(cleanup);
@@ -163,5 +165,86 @@ describe("night shift configuration", () => {
       expect(() => parseFactory(`nightShift: { hours: "${hours}" }`)).toThrow(/nightShift\.hours/);
     }
     expect(() => parseFactory("lines:\n  - { name: a, repo: /r/a, nightShift: { autonomy: yolo } }")).toThrow(ConfigError);
+  });
+});
+
+describe("a file with retired keys", () => {
+  /** The notice is once per process: a fresh copy of the module stands for a new process. */
+  async function fresh() {
+    vi.resetModules();
+    const { log } = await import("../src/log.js");
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const config = await import("../src/config.js");
+    return { parse: config.parseFactory, ConfigError: config.ConfigError, warn };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["social: off", "social: { postsPerDay: 2 }", "social: { otra: 1 }"])("ignores %s with a notice", async (text) => {
+    const { parse, warn } = await fresh();
+    const cfg = parse(text);
+    expect(cfg).not.toHaveProperty("social");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain("social");
+  });
+
+  it("ignores the global station with a notice", async () => {
+    const { parse, warn } = await fresh();
+    expect(parse("stations: { community: { skills: [x] } }").stations).not.toHaveProperty("community");
+    expect(warn.mock.calls[0]![0]).toContain("stations.community");
+  });
+
+  it("ignores the keys of a line, even though its stations are strict", async () => {
+    const { parse, warn } = await fresh();
+    const cfg = parse("lines:\n  - name: a\n    repo: /r/a\n    social: { enabled: true }\n    stations: { community: { skills: [x] }, build: { skills: [y] } }\n");
+    expect(cfg.lines[0]).not.toHaveProperty("social");
+    expect(cfg.lines[0]!.stations).toEqual({ build: { skills: ["y"] } });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain("lines[].social");
+    expect(warn.mock.calls[0]![0]).toContain("lines[].stations.community");
+  });
+
+  it("still refuses any other unknown station of a line", async () => {
+    const { parse, ConfigError: Refused } = await fresh();
+    expect(() => parse("lines:\n  - name: a\n    repo: /r/a\n    stations: { noexiste: {} }\n")).toThrow(Refused);
+  });
+
+  it("warns once, however many times the file is parsed", async () => {
+    const { parse, warn } = await fresh();
+    parse("social: off");
+    parse("social: off");
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing about a file without them", async () => {
+    const { parse, warn } = await fresh();
+    parse("lines:\n  - name: a\n    repo: /r/a\n");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("still refuses a credential inside them", async () => {
+    const { parse, ConfigError: Refused } = await fresh();
+    expect(() => parse(`social: { signature: IGAA${"a".repeat(36)} }`)).toThrow(Refused);
+  });
+
+  it("keeps them written in the file when editing another key", async () => {
+    const path = join(tempDir(), "zero.factory.yaml");
+    writeFileSync(path, "social: { postsPerDay: 2 } # mine\nconcurrency: 1\n");
+    const cfg = await editFactory(path, (doc) => doc.set("concurrency", 3));
+    expect(cfg.concurrency).toBe(3);
+    expect(readFileSync(path, "utf8")).toContain("social: { postsPerDay: 2 } # mine");
+  });
+
+  it("frees the name for a custom agent", () => {
+    const cfg = parseFactory("agents:\n  - { name: community, instructions: agents/c.md }\n");
+    expect(cfg.agents[0]!.name).toBe("community");
+  });
+
+  it("lists the remaining agent stations in order", () => {
+    const stations = ["spec", "build", "review", "security", "reply", "scout", "research"];
+    expect(AGENT_STATIONS).toEqual(stations);
+    expect(SKILL_STATIONS).toEqual(stations);
+    expect(Object.keys(AGENT_ACCESS)).toEqual(stations);
+    expect(FIXED_STATIONS).not.toContain("community");
   });
 });

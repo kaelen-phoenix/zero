@@ -502,67 +502,6 @@ En las líneas de GitHub cada nota se publica también como issue en el repo de 
 
 Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
 
-## Redes sociales
-
-La estación `community` hace que la fábrica maneje su propia cuenta de Instagram: con la fábrica libre, mira lo que se entregó y arma borradores de publicaciones, carruseles e historias, y zero los publica sin esperar aprobación. Queda apagada hasta que guardes un token.
-
-```yaml
-social:
-  postsPerDay: 1                # publicaciones y carruseles por día local, en total
-  storiesPerDay: 3              # historias por día local
-  signature: "Publicado por la fábrica zero (IA) · zerointheloop.com"
-  media:
-    repository: owner/public-repo # dónde se alojan las imágenes; sin esto, el repo de la línea de la publicación
-lines:
-  - name: tienda
-    repo: /path/to/tienda
-    social: { enabled: true }   # por defecto solo está habilitada la línea llamada zero
-```
-
-`social: off` la apaga. La estación corre después de `scout` y `research`, como mucho una vez por día local, solo con la fábrica libre, y con facturación por uso comparte con ellas `limits.usdPerNight`.
-
-```sh
-zero social status      # si está encendida o por qué no, cupo de hoy, líneas habilitadas, publicaciones con enlaces, última falla
-zero social post-now    # una pasada ya mismo; respeta pausa, andon, token, presupuesto y límites
-zero social pause       # no sale nada hasta que la reanudes
-zero social resume
-zero social skills      # le asigna a la estación sus 9 skills y dice cuáles no están instaladas
-```
-
-Qué recibe la estación y qué hace zero:
-
-- La estación es de solo lectura y tiene una carpeta vacía en lugar del repositorio. Su prompt trae solo los trabajos entregados y las notas de investigación que no son de negocio, de los últimos 7 días y de las líneas habilitadas, sin ids de trabajo, ramas ni rutas de tu máquina, más los temas ya publicados. No tiene el token ni el canal: quien publica es zero.
-- Una `story` para algo visible, un `post` para una función nueva, un `carousel` cuando la idea necesita pasos, y nunca un tema repetido (se compara sin mayúsculas ni acentos).
-- Un carrusel tiene portada con gancho, de 2 a 6 slides (paso, mito/verdad, dato grande, antes/después, cita) y cierre con llamado a la acción, y cuenta como publicación en `postsPerDay`. En Instagram es un contenedor por slide con `is_carousel_item`, después un `CAROUSEL` con `children` y pie de foto, y después `media_publish`, igual con token de Instagram o de página de Facebook.
-- Antes de publicar, zero descarta el borrador que traiga un secreto o una ruta local en el texto o en la imagen, y rompe las @menciones. El filtro es de mejor esfuerzo: no detecta afirmaciones falsas, y el nombre de un cliente escrito en lenguaje común pasa, por eso las líneas de clientes quedan apagadas. El freno es `zero social pause`.
-- Además, zero audita cada borrador con los criterios del modo audit de `ig-humanizer` y descarta el que no pasa, dejando el motivo en el registro: la primera frase o línea tiene que terminar dentro de los 125 caracteres, de 3 a 5 hashtags solos en el último párrafo, un texto que entre con la firma y ninguna de las frases que delatan a una IA, también en las imágenes. Una historia no muestra pie de foto, así que solo se audita su imagen. Son reglas fijas: puede pasar un texto artificial y descartarse uno bueno, y un descarte no se reintenta en esa corrida.
-- Cada texto termina con `social.signature` y cada imagen, incluidos todos los slides de un carrusel, la lleva en el pie, aunque la `signature` general esté en `off`, así siempre se nota que es una IA.
-- Las imágenes las hace zero, sin ningún modelo: tarjetas JPEG en naranja, negro y blanco cálido, con fuentes incluidas con zero, de 1080x1350 para publicaciones y slides de carrusel y 1080x1920 para historias. Cada una lleva el símbolo de `site/brand/zero-symbol.png`, más grande en la portada.
-- `zero social skills` le asigna a la estación sus skills de Instagram en el archivo de la fábrica. La estación las usa para ideas y redacción, por debajo de `agents/community.md` y `agents/community-style.md`, y nunca sus partes que publican por servicios externos.
-- Una falla queda como `failed` con su motivo, no frena el borrador siguiente y no se reintenta sola ese día.
-
-Las imágenes con IA, las capturas del panel, el resumen semanal, la vista en el panel, la aprobación antes de publicar (`propose`) y otras redes quedan para próximas etapas.
-
-### Conectar la cuenta de Instagram
-
-zero usa la API de Instagram con login de Instagram, así que no hace falta una página de Facebook.
-
-1. Pasá la cuenta de Instagram a profesional (empresa o creador) desde su configuración.
-2. En [developers.facebook.com](https://developers.facebook.com/apps) creá una app de Meta de tipo Negocios y agregá el producto **Instagram**, en "Configuración de la API con inicio de sesión de Instagram".
-3. Agregá la cuenta como evaluadora de Instagram de la app y aceptá la invitación desde la cuenta. Para tu propia cuenta alcanza con eso; no hace falta la revisión de la app.
-4. Generá ahí el token de acceso de la cuenta, con los permisos `instagram_business_basic` e `instagram_business_content_publish`. Empieza con `IGAA` y dura unos 60 días.
-5. Guardalo en el llavero del sistema, nunca en un archivo:
-
-```sh
-zero secret set INSTAGRAM_ACCESS_TOKEN
-```
-
-6. Las imágenes tienen que estar en una URL pública, así que zero sube cada una como asset de una prerelease con la etiqueta `zero-social-media`, con tu sesión de `gh`. El repositorio tiene que ser público: en uno privado zero no sube nada y la publicación queda `failed`. Si el repo de tu línea es privado, indicá uno público en `social.media.repository`. Crear esa release puede avisarles a quienes siguen el repositorio.
-
-Por ahora zero no renueva el token. A los 60 días, más o menos, las publicaciones empiezan a aparecer como `failed` en `zero social status`: generá uno nuevo y guardalo de la misma forma.
-
-Si en tu app de Meta solo aparece la opción con inicio de sesión de Facebook, también sirve: vinculá la cuenta de Instagram a una página de Facebook, generá un token de página (no vence) con `instagram_basic` e `instagram_content_publish`, guardalo como `INSTAGRAM_ACCESS_TOKEN` y guardá el identificador de la cuenta de Instagram como `INSTAGRAM_USER_ID` (`zero secret set INSTAGRAM_USER_ID`). Con ese identificador zero publica a través de la API Graph de Facebook en lugar de la de Instagram.
-
 ## Caja de aislamiento
 
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
