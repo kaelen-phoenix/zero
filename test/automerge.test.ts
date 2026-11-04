@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { briefing, factoryStatus } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { formatStatus } from "../src/format.js";
-import { mergeDecision, pollMerges, type Check, type MergeApi, type PullRequestState } from "../src/line/automerge.js";
+import { mergeDecision, pollMerges, watchedJobs, type Check, type MergeApi, type PullRequestState } from "../src/line/automerge.js";
 import { finalizeJob } from "../src/line/finish.js";
+import { runJob } from "../src/line/runner.js";
 import type { JobSource } from "../src/state/store.js";
-import { cleanup, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory, validSpec, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -58,6 +59,111 @@ async function deliveredJob(opts: { autoMerge?: boolean; source?: JobSource } = 
   await finalizeJob(ctx, job, "delivered", { delivery: { mode: "pull-request", branch: `zero/${job.id}`, url, ...(opts.autoMerge !== false && { autoMerge: true }) } });
   return { ctx, job };
 }
+
+/** A delivered pull request against a real bare remote, whose base then changed the same file. */
+async function conflictedPullRequest(attempt = 1) {
+  const repo = gitRepo({ "a.txt": "base\n" });
+  const remote = tempDir("zero-remote-");
+  run("git", ["init", "-q", "--bare", "-b", "main"], remote);
+  gitIn(repo, "remote", "add", "origin", remote);
+  gitIn(repo, "push", "-q", "origin", "main");
+  const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request", autoMerge: true }] });
+  const job = ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 });
+  const branch = `zero/${job.id}`;
+  gitIn(repo, "checkout", "-q", "-b", branch);
+  writeTree(repo, { "a.txt": "job\n" });
+  gitIn(repo, "commit", "-q", "-am", "job");
+  gitIn(repo, "push", "-q", "origin", branch);
+  gitIn(repo, "checkout", "-q", "main");
+  writeTree(repo, { "a.txt": "theirs\n" });
+  gitIn(repo, "commit", "-q", "-am", "theirs");
+  gitIn(repo, "push", "-q", "origin", "main");
+  const head = gitIn(repo, "rev-parse", branch);
+  const url = "https://github.com/kaelen/demo/pull/10";
+  ctx.store.updateJob(job.id, { spec: validSpec(), checkpoint: "review", base: "origin/main", branch, attempt });
+  await finalizeJob(ctx, ctx.store.getJob(job.id)!, "delivered", { delivery: { mode: "pull-request", branch, url, autoMerge: true } });
+  const gh = fakeGitHub(green);
+  gh.state.pr = pr({ mergeable: false, headSha: head });
+  return { ctx, job, repo, remote, head, url, gh };
+}
+
+describe("pull requests with conflicts", () => {
+  it("go back to the queue, without a comment, while the job has attempts left", async () => {
+    const { ctx, job, gh } = await conflictedPullRequest();
+    await pollMerges(ctx, () => gh.api);
+    const queued = ctx.store.getJob(job.id)!;
+    expect(queued).toMatchObject({ status: "queued", checkpoint: "review" });
+    expect(queued.finishedAt).toBeUndefined();
+    expect(gh.did).toEqual([]);
+  });
+
+  for (const checks of [[{ name: "e2e", done: false, ok: false }], [{ name: "e2e", done: true, ok: false }]]) {
+    it(`go back to the queue also with ${checks[0]!.done ? "failed" : "unfinished"} checks`, async () => {
+      const { ctx, job, gh } = await conflictedPullRequest();
+      gh.state.checks = checks;
+      await pollMerges(ctx, () => gh.api);
+      expect(ctx.store.getJob(job.id)).toMatchObject({ status: "queued", checkpoint: "review" });
+      expect(gh.did).toEqual([]);
+    });
+  }
+
+  it("get the resolution on the same pull request, which is watched again", async () => {
+    const { ctx, job, repo, remote, url, gh } = await conflictedPullRequest();
+    await pollMerges(ctx, () => gh.api);
+    const agents = fakeAgents({ build: (req) => writeTree(req.cwd, { "a.txt": "resolved\n" }) });
+    const done = await runJob(job.id, { ...ctx, runAgent: agents.runner });
+    expect(done).toMatchObject({ status: "delivered", attempt: 2 });
+    expect(done.delivery?.url).toBe(url);
+    expect(agents.count.spec).toBeUndefined();
+    const pushed = `refs/heads/zero/${job.id}`;
+    expect(run("git", ["show", `${pushed}:a.txt`], remote)).toBe("resolved");
+    run("git", ["merge-base", "--is-ancestor", gitIn(repo, "rev-parse", "origin/main"), pushed], remote);
+    expect(watchedJobs(ctx).map((j) => j.id)).toEqual([job.id]);
+    expect(gh.did).toEqual([]);
+  });
+
+  it("are only reported when the job has no attempts left", async () => {
+    const { ctx, job, gh } = await conflictedPullRequest(3);
+    await pollMerges(ctx, () => gh.api);
+    await pollMerges(ctx, () => gh.api);
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+    expect(gh.did).toEqual(["comment #10: La fábrica no funde este pull request: tiene conflictos con la rama base. Queda abierto; si se arregla, lo funde en la próxima revisión."]);
+    expect(factoryStatus(ctx).merges).toMatchObject([{ status: "blocked" }]);
+  });
+
+  it("are only reported when someone else pushed to them", async () => {
+    const { ctx, job, gh } = await conflictedPullRequest();
+    gh.state.pr = pr({ mergeable: false, headSha: "someone-else" });
+    await pollMerges(ctx, () => gh.api);
+    await pollMerges(ctx, () => gh.api);
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+    expect(gh.did).toHaveLength(1);
+  });
+
+  it("are only reported when that head was already tried", async () => {
+    const { ctx, job, gh } = await conflictedPullRequest();
+    await pollMerges(ctx, () => gh.api);
+    // Back as it was: the same head still has conflicts after the job ran.
+    ctx.store.finishJob(job.id, "delivered", { delivery: { mode: "pull-request", branch: `zero/${job.id}`, url: "https://github.com/kaelen/demo/pull/10", autoMerge: true } });
+    await pollMerges(ctx, () => gh.api);
+    await pollMerges(ctx, () => gh.api);
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+    expect(gh.did).toHaveLength(1);
+    expect(factoryStatus(ctx).merges).toMatchObject([{ status: "blocked" }]);
+  });
+
+  for (const ending of ["failed", "stopped"] as const) {
+    it(`get one comment when the resolution ends ${ending}, and no more retries`, async () => {
+      const { ctx, job, gh } = await conflictedPullRequest();
+      await pollMerges(ctx, () => gh.api);
+      await finalizeJob(ctx, ctx.store.getJob(job.id)!, ending, { reason: "no" });
+      await pollMerges(ctx, () => gh.api);
+      await pollMerges(ctx, () => gh.api);
+      expect(gh.did).toEqual(["comment #10: La fábrica no funde este pull request: la fábrica no pudo resolver sus conflictos. Queda abierto con conflictos."]);
+      expect(ctx.store.getJob(job.id)!.status).toBe(ending);
+    });
+  }
+});
 
 describe("automatic merging", () => {
   it("gives the api factory the job's line, so the daemon signs with that line's signature", async () => {

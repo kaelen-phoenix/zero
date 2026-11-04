@@ -3,6 +3,7 @@ import type { FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
 import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
+import { tryGit } from "../shell.js";
 import type { Job } from "../state/store.js";
 
 /**
@@ -99,6 +100,10 @@ export interface MergeState {
   why?: string;
   /** Last problem the pull request was told about, so each is said once. */
   reported?: string;
+  /** The head the factory last tried to resolve conflicts on, so each head gets one try. */
+  resolving?: string;
+  /** Kept here because a job that fails loses its delivery. */
+  pullRequest?: { repository: string; number: number };
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -125,7 +130,23 @@ export function watchedJobs(ctx: FactoryContext): Job[] {
   });
 }
 
-async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number) {
+/**
+ * A pull request with conflicts goes back to the line to update and resolve,
+ * unless the job has no attempts left, someone else pushed to it, or this head
+ * was already tried. Returns whether it did.
+ */
+function resolveConflicts(ctx: FactoryContext, job: Job, head: string, state: MergeState, pullRequest: { repository: string; number: number }): boolean {
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line || !job.spec || job.attempt >= line.maxAttempts || state.resolving === head) return false;
+  if (tryGit(["rev-parse", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return false;
+  ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "waiting", why: "la fábrica está resolviendo los conflictos", resolving: head, pullRequest } satisfies MergeState));
+  ctx.store.updateJob(job.id, { status: "queued", checkpoint: "review", station: "integrate", finishedAt: null });
+  log.info("pull request has conflicts; job back in the queue to resolve them", { job: job.id, url: job.delivery!.url });
+  return true;
+}
+
+async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, target: { repository: string; number: number }) {
+  const { number } = target;
   const key = mergeKey(job.id);
   const raw = ctx.store.getKv(key);
   const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
@@ -138,12 +159,14 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
   if (since > WATCH_MS) return save({ status: "expired", why: "pasaron 14 días sin poder fundirlo" });
+  // Read directly: with unfinished or failed checks the decision does not get to the conflict.
+  if (pr.mergeable === false && resolveConflicts(ctx, job, pr.headSha, state, target)) return;
   if (decision.kind === "wait") return save({ ...state, status: "waiting", why: decision.why });
   if (decision.kind === "blocked") {
     if (state.reported !== decision.key) {
       await gh.comment(number, `La fábrica no funde este pull request: ${decision.why}. Queda abierto; si se arregla, lo funde en la próxima revisión.`);
     }
-    return save({ status: "blocked", why: decision.why, reported: decision.key });
+    return save({ ...state, status: "blocked", why: decision.why, reported: decision.key });
   }
 
   recordMergeCommit(ctx, job, await gh.merge(number, pr.headSha));
@@ -162,8 +185,27 @@ function waiting(ctx: FactoryContext, job: Job, why: string) {
   ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...state, status: "waiting", why: why.slice(0, 300) } satisfies MergeState));
 }
 
+/** Jobs that went back to resolve their pull request's conflicts and ended without doing it: the pull request hears it once, and they are not retried. */
+async function reportFailedResolutions(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined) {
+  for (const job of ctx.store.listJobs({ status: ["failed", "stopped"], limit: 200 })) {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
+    if (!state?.pullRequest || FINAL.has(state.status)) continue;
+    const gh = api(state.pullRequest.repository, ctx.config.lines.find((l) => l.name === job.line));
+    if (!gh) continue;
+    const why = "la fábrica no pudo resolver sus conflictos";
+    try {
+      await gh.comment(state.pullRequest.number, `La fábrica no funde este pull request: ${why}. Queda abierto con conflictos.`);
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...state, status: "expired", why } satisfies MergeState));
+    } catch (err) {
+      log.warn("could not report a failed resolution", { job: job.id, error: String(err) });
+    }
+  }
+}
+
 /** One pass over every pull request waiting to be merged; one that fails never stops the others. */
 export async function pollMerges(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined): Promise<void> {
+  await reportFailedResolutions(ctx, api);
   for (const job of watchedJobs(ctx)) {
     const pr = pullRequestOf(job.delivery!.url!);
     const gh = pr && api(pr.repository, ctx.config.lines.find((l) => l.name === job.line));
@@ -172,7 +214,7 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
       continue;
     }
     try {
-      await watch(ctx, job, gh, pr.number);
+      await watch(ctx, job, gh, pr);
     } catch (err) {
       log.warn("automatic merge failed", { job: job.id, error: String(err) });
       waiting(ctx, job, `no se pudo consultar GitHub: ${err instanceof Error ? err.message : String(err)}`);

@@ -102,6 +102,9 @@ function describe(s: SpanRow): string {
   if (typeof a["zero.cost.usd"] === "number") parts.push(a["zero.cost.source"] === "unknown" ? "costo desconocido" : traceUsd(a["zero.cost.usd"] as number));
   if (a["zero.skills"]) parts.push(`skills: ${a["zero.skills"]}`);
   if (a["zero.skills.missing"]) parts.push(`skills faltantes: ${a["zero.skills.missing"]}`);
+  if (a["zero.paths.declared"]) parts.push(`declarado: ${a["zero.paths.declared"]}`);
+  if (a["zero.paths.changed"]) parts.push(`cambiado: ${a["zero.paths.changed"]}`);
+  if (a["zero.paths.undeclared"]) parts.push(`fuera de lo declarado: ${a["zero.paths.undeclared"]}`);
   if (a["process.command_line"]) parts.push(`\`${a["process.command_line"]}\` → ${a["process.exit.code"]}`);
   if (a["zero.outcome"]) parts.push(String(a["zero.outcome"]));
   if (a["error.message"]) parts.push(`error: ${a["error.message"]}`);

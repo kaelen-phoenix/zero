@@ -1,6 +1,7 @@
-import { existsSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { CommitAuthor } from "./config.js";
 import { git, tryGit } from "./shell.js";
 
@@ -38,13 +39,19 @@ export interface ChangedFile {
   path: string;
 }
 
+/**
+ * What merging the newest base into a job's branch did. `conflict` leaves the
+ * merge in progress in the work copy; `refused` leaves nothing behind.
+ */
+export type BaseUpdate = { kind: "up-to-date" } | { kind: "merged"; commit: string } | { kind: "conflict"; paths: string[] } | { kind: "refused"; reason: string };
+
 /** A job's own copy of the line's repository, on its own branch. */
 export interface WorkCopy {
   cwd: string;
   branch: string;
   base: string;
   hasChanges(): boolean;
-  /** Commits everything; returns false when there was nothing to commit. */
+  /** Commits everything, concluding a merge in progress; returns false when there was nothing to commit. */
   commitAll(message: string): boolean;
   /** Drops uncommitted changes, including new files (ignored files such as node_modules are kept). */
   discardChanges(): void;
@@ -55,6 +62,10 @@ export interface WorkCopy {
   commitsAhead(): number;
   /** Makes the job's branch available in the line's repository, ready to integrate. */
   publish(): void;
+  /** Whether a merge is waiting to be concluded in this copy. */
+  mergeInProgress(): boolean;
+  /** Merges the newest base into the branch, as a factory commit with this message. */
+  updateFromBase(message: string): BaseUpdate;
 }
 
 /** Untracked files present in a work copy, e.g. what a setup command such as `npm install` created. */
@@ -103,6 +114,16 @@ export async function openCloneCopy(repo: string, base: string, branch: string, 
   return {
     ...copy,
     publish: () => void git(["fetch", "-q", path, `+refs/heads/${branch}:refs/heads/${branch}`], repo),
+    // A clone's base only moves when it is fetched from the line's repository.
+    updateFromBase(message) {
+      try {
+        const baseRef = git(["rev-parse", "--symbolic-full-name", base], repo);
+        git(["fetch", "-q", "--update-head-ok", repo, `+${baseRef}:${baseRef}`], path);
+      } catch (err) {
+        return { kind: "refused", reason: err instanceof Error ? err.message : String(err) };
+      }
+      return copy.updateFromBase(message);
+    },
   };
 }
 
@@ -113,6 +134,7 @@ export async function openCloneCopy(repo: string, base: string, branch: string, 
  */
 export function workCopyAt(cwd: string, base: string, branch: string, exclude: string[] = [], identity?: { author: CommitAuthor; repo: string }): WorkCopy {
   const scope = ["--", ".", ...exclude.map((p) => `:(exclude)${p}`)];
+  const mergeInProgress = () => tryGit(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd) !== undefined;
   return {
     cwd,
     branch,
@@ -120,7 +142,8 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
     hasChanges: () => git(["status", "--porcelain", ...scope], cwd).length > 0,
     commitAll(message) {
       git(["add", "-A", ...scope], cwd);
-      if (!git(["diff", "--cached", "--name-only"], cwd)) return false;
+      // A resolved merge may match HEAD, and it still has to be concluded.
+      if (!mergeInProgress() && !git(["diff", "--cached", "--name-only"], cwd)) return false;
       git([...FACTORY_IDENTITY, "commit", "-q", "-m", message], cwd, identity && authorEnv(identity.author, identity.repo));
       return true;
     },
@@ -151,7 +174,29 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
     commitsAhead: () => Number(git(["rev-list", "--count", `${base}..HEAD`], cwd)),
     // A worktree shares the repository: its branch is already there.
     publish: () => {},
+    mergeInProgress,
+    updateFromBase(message) {
+      const before = git(["rev-parse", "HEAD"], cwd);
+      const env = identity && authorEnv(identity.author, identity.repo);
+      const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-edit", "-q", "-m", message, base], { cwd, encoding: "utf8", windowsHide: true, ...(env && { env }) });
+      if (r.status === 0) {
+        const commit = git(["rev-parse", "HEAD"], cwd);
+        return commit === before ? { kind: "up-to-date" } : { kind: "merged", commit };
+      }
+      const paths = git(["-c", "core.quotepath=off", "diff", "--name-only", "--diff-filter=U"], cwd).split("\n").filter(Boolean);
+      if (paths.length) return { kind: "conflict", paths };
+      tryGit(["merge", "--abort"], cwd);
+      return { kind: "refused", reason: (r.stderr || r.stdout || String(r.error ?? "")).trim() };
+    },
   };
+}
+
+/** Which of these files still hold conflict markers; a file the resolution deleted holds none. */
+export function filesWithMarkers(cwd: string, paths: string[]): string[] {
+  return paths.filter((p) => {
+    const file = join(cwd, p);
+    return existsSync(file) && /^(<{7}|>{7})( |\r?$)/m.test(readFileSync(file, "latin1"));
+  });
 }
 
 export function removeWorkCopy(repo: string, path: string) {

@@ -103,6 +103,12 @@ describe("documentation up to date", () => {
     expect(es).not.toContain("Turno nocturno (en camino)");
   });
 
+  it("documents parallel jobs and conflicts in both READMEs", () => {
+    for (const text of [en, es]) {
+      for (const fact of ["`parallel`", "`paths`", "`maxAttempts`", "`autoMerge`", "parallel: 1"]) expect(text, fact).toContain(fact);
+    }
+  });
+
   it("documents OTLP export as available in both READMEs", () => {
     for (const [text, observability, next] of [[es, "## Observabilidad", "## Próximas etapas"], [en, "## Observability", "## Next steps"]] as const) {
       const body = section(text, observability);

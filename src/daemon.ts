@@ -13,6 +13,7 @@ import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, loadFactory, type FactoryConfig, type LineConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob } from "./line/finish.js";
+import { autonomous, mayStart } from "./line/parallel.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
@@ -72,8 +73,9 @@ interface Running {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The factory working on its own: one job per line at a time, up to the
- * configured concurrency, resuming anything a previous run left unfinished.
+ * The factory working on its own: up to each line's `parallel` jobs at a time
+ * when their declared paths do not overlap (`mayStart`), up to the configured
+ * concurrency, resuming anything a previous run left unfinished.
  */
 export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): Promise<void> {
   const { store } = ctx;
@@ -239,12 +241,13 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
           }
           // The night shift's own jobs never go ahead of other work: one at a time, and only while no other job is queued or running.
           if (autonomous(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !autonomous(j)))) continue;
-          const busy = [...running.values()].some((r) => r.line === job.line);
-          if (busy) continue;
-          if (!ctx.config.lines.some((l) => l.name === job.line)) {
+          const line = ctx.config.lines.find((l) => l.name === job.line);
+          if (!line) {
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
+          const sameLine = [...running].filter(([, r]) => r.line === job.line).flatMap(([id]) => store.getJob(id) ?? []);
+          if (!mayStart(job, sameLine, line.parallel)) continue;
           if (running.size >= ctx.config.concurrency) {
             startable = true;
             break;
@@ -288,9 +291,6 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     log.info("factory stopped", { pid: process.pid });
   }
 }
-
-/** A job the night shift opened on its own, under the line's `build` or `auto` autonomy. */
-const autonomous = (job: Job) => job.source?.kind === "night-shift" && Boolean(job.source.autonomy);
 
 /** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own after. */
 export function ownerFirst(jobs: Job[]): Job[] {

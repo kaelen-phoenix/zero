@@ -7,7 +7,8 @@ import type { Delivery } from "../state/store.js";
 import { createGitHubTracker } from "../tracker.js";
 import { authorEnv, checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
 
-export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; reason: string };
+/** `baseMoved`: the base got something that conflicts after the job's last update, so the job updates again instead of parking. */
+export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; reason: string; baseMoved?: boolean };
 
 export interface IntegrateOptions {
   jobId: string;
@@ -19,13 +20,16 @@ export interface IntegrateOptions {
   scratchDir: string;
   /** Who authors the merge commit (`merge` mode); zero is always the committer. Absent: zero. */
   author?: CommitAuthor;
+  /** The pull request this job already delivered: it gets the new commits instead of a new one. */
+  existing?: Delivery;
 }
 
-function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
+function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): "merged" | "conflict" | "refused" {
   const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], { cwd: dir, encoding: "utf8", windowsHide: true, ...(env && { env }) });
-  if (r.status === 0) return true;
+  if (r.status === 0) return "merged";
+  const conflict = Boolean(tryGit(["diff", "--name-only", "--diff-filter=U"], dir));
   tryGit(["merge", "--abort"], dir);
-  return false;
+  return conflict ? "conflict" : "refused";
 }
 
 /**
@@ -41,16 +45,18 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
     if (git(["status", "--porcelain", "--untracked-files=no"], owner)) {
       return { ok: false, reason: `La rama ${line.baseBranch} está abierta en ${owner} con cambios sin guardar. Guardalos (commit) o descartalos y la fábrica integra el trabajo.` };
     }
-    if (!mergeIn(owner, copy.branch, message, env)) {
-      return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos (o pisaría archivos sin seguimiento en ${owner}). La rama ${copy.branch} queda lista para resolverlo.` };
+    const merged = mergeIn(owner, copy.branch, message, env);
+    if (merged !== "merged") {
+      return { ok: false, baseMoved: merged === "conflict", reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos (o pisaría archivos sin seguimiento en ${owner}). La rama ${copy.branch} queda lista para resolverlo.` };
     }
   } else {
     const temp = join(opts.scratchDir, `merge-${opts.jobId}`);
     removeWorkCopy(line.repo, temp);
     git(["worktree", "add", "-q", temp, line.baseBranch], line.repo);
     try {
-      if (!mergeIn(temp, copy.branch, message, env)) {
-        return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos. La rama ${copy.branch} queda lista para resolverlo.` };
+      const merged = mergeIn(temp, copy.branch, message, env);
+      if (merged !== "merged") {
+        return { ok: false, baseMoved: merged === "conflict", reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos. La rama ${copy.branch} queda lista para resolverlo.` };
       }
     } finally {
       removeWorkCopy(line.repo, temp);
@@ -73,7 +79,13 @@ export function githubRepository(url: string): string | undefined {
 
 /** Published from the line's repository: its remote is GitHub, and the branch is already there (a box copy is fetched back first). */
 async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {
-  const url = tryGit(["remote", "get-url", line.remote], line.repo);
+  if (opts.existing?.url) {
+    // Never forced: if someone else pushed in the meantime, this fails and the job parks.
+    const pushed = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
+    if (pushed.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(pushed.stderr || pushed.stdout).trim()}` };
+    return { ok: true, delivery: opts.existing };
+  }
+  const url =tryGit(["remote", "get-url", line.remote], line.repo);
   const repository = url && githubRepository(url);
   if (!repository) return { ok: false, reason: `El remoto "${line.remote}" no es un repositorio de GitHub.` };
   const token = githubToken();

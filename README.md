@@ -95,7 +95,7 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 ### Auto-merge
 
-With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
+With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. If it has conflicts with the base, the factory updates it and resolves them itself as one more attempt of the job, pushing to the same pull request. It only says the pull request stays open, once, when the job has no attempts left, someone else pushed to it, that same head was already tried, or the resolution failed. `zero status` and the panel show the ones waiting.
 
 ### Commit author
 
@@ -179,7 +179,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
   block: []
 engine: claude            # default engine: claude · codex · antigravity · or your own
-concurrency: 2            # jobs at a time (each line does one at a time)
+concurrency: 2            # jobs at a time across all lines (each line: its `parallel`)
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
@@ -203,6 +203,7 @@ lines:
     setup: ["npm ci"]     # runs in every new copy
     verify: ["npm test"]  # everything must pass before the review
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
+    parallel: 1           # jobs of this line at a time, when they do not overlap
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     autoMerge: false          # with pull-request: the factory merges when all checks pass
     commitAuthor: owner       # optional: this line's commit author, over the global one
@@ -223,6 +224,16 @@ The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
 - `bin/`, with the tools zero downloads with your permission (cloudflared);
 - `gate/`, shared with the egress gate: its rules, the passes of the running boxes and their records;
 - `daemon.log`.
+
+### Parallel jobs (`parallel`)
+
+By default a line runs one job at a time. With `parallel: 3`, it runs up to three when they do not overlap; the global `concurrency` still applies.
+
+- **Each job declares what it expects to touch.** The spec station returns `paths`, a list of file or folder patterns. A job builds only when its patterns do not overlap those of the other running jobs of its line; when the factory cannot rule out an overlap, it treats it as one. A job that declared nothing runs alone.
+- **The comparison stays in the trace.** At integration, `zero trace` records what was declared, what the job changed and what it changed outside the declaration. A difference does not change the outcome.
+- **Before integrating, the job updates.** On `merge` and `pull-request` lines, the newest base is merged into the job's branch. If that changed something, verification runs again.
+- **A conflict is one more attempt.** The job goes back to build with the merge in progress and the conflicted files as feedback, then passes verification and the reviews again, within `maxAttempts`. A file that still has conflict markers is never committed. If you had approved the integration, it asks again, because the code is new.
+- **The night shift's own jobs do not change.** They run one at a time and only with the factory free.
 
 ### Fallback engines (`fallback`)
 

@@ -95,7 +95,7 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 ### Fusión automática
 
-Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
+Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. Si tiene conflictos con la base, la fábrica lo actualiza y los resuelve sola como un intento más del trabajo, publicando en el mismo pull request. Solo avisa que queda abierto, una vez, cuando al trabajo no le quedan intentos, otra persona publicó en él, esa misma punta ya se intentó o la resolución falló. `zero status` y el panel muestran los que esperan.
 
 ### Autor de los commits
 
@@ -179,7 +179,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
   block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
-concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+concurrency: 2            # trabajos a la vez entre todas las líneas (cada línea: su `parallel`)
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
@@ -203,6 +203,7 @@ lines:
     setup: ["npm ci"]     # se ejecuta en cada copia nueva
     verify: ["npm test"]  # todo debe pasar antes de la revisión
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
+    parallel: 1           # trabajos de esta línea a la vez, cuando no se pisan
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
     commitAuthor: owner       # opcional: el autor de los commits de esta línea, sobre el global
@@ -223,6 +224,16 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `bin/`, con las herramientas que zero descarga con tu permiso (cloudflared);
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
+
+### Trabajos en paralelo (`parallel`)
+
+Por defecto una línea corre un trabajo a la vez. Con `parallel: 3`, corre hasta tres cuando no se pisan; el límite global `concurrency` se sigue respetando.
+
+- **Cada trabajo declara qué espera tocar.** La estación spec devuelve `paths`, una lista de patrones de archivos o carpetas. Un trabajo construye solo cuando sus patrones no se solapan con los de los otros trabajos en curso de su línea; si la fábrica no puede descartar un solape, lo trata como tal. Un trabajo que no declaró nada corre solo.
+- **La comparación queda en la traza.** Al integrar, `zero trace` registra lo declarado, lo que el trabajo cambió y lo que cambió fuera de lo declarado. Una diferencia no cambia el resultado.
+- **Antes de integrar, el trabajo se actualiza.** En las líneas `merge` y `pull-request`, la base más reciente se fusiona en la rama del trabajo. Si eso cambió algo, la verificación vuelve a correr.
+- **Un conflicto es un intento más.** El trabajo vuelve a build con la fusión en curso y los archivos en conflicto como comentario, y después pasa de nuevo la verificación y las revisiones, dentro de `maxAttempts`. Un archivo que todavía tiene marcadores de conflicto nunca se guarda en un commit. Si ya habías aprobado la integración, pregunta de nuevo, porque el código es nuevo.
+- **Los trabajos propios del turno nocturno no cambian.** Corren de a uno y solo con la fábrica libre.
 
 ### Motores de reemplazo (`fallback`)
 

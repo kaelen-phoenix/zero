@@ -13,9 +13,10 @@ import { git, sh, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
-import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
+import { filesWithMarkers, openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
+import { autonomous, declaredPaths, undeclaredFiles } from "./parallel.js";
 import { decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
 import {
@@ -97,9 +98,10 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 
   job = store.updateJob(jobId, { status: "running" });
   try {
-    const copy = await prepareWorkCopy(deps, job, line, isolation, shell);
+    let copy = await prepareWorkCopy(deps, job, line, isolation, shell);
     job = reload();
 
+    const specified = job.checkpoint === "none";
     if (job.checkpoint === "none") {
       const outcome = await specStation(lineDeps, job, line, copy, signal, addCost, learn);
       check();
@@ -113,44 +115,69 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       return askOwner(deps, job, { kind: "spec-ready", text: `Antes de empezar, ¿te parece bien?\n\n${plainSpec(spec)}` });
     }
 
-    if (job.checkpoint === "spec") {
-      const outcome = await buildLoop(lineDeps, jobId, line, level, copy, spec, signal, addCost, learn, shell);
-      if (outcome) return outcome;
-      job = reload();
-    }
+    // A job that just got its spec on a line that runs jobs together goes back to the queue, so the daemon can compare its paths before it builds.
+    if (specified && line.parallel > 1 && !autonomous(job)) return store.updateJob(jobId, { status: "queued" });
 
-    const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
-    if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
-    if (!job.approvals.integrate) {
-      const held = nightShiftHold(deps, job, copy);
-      if (held) {
-        // The branch reaches the line's repository now, so it survives a rejection even from the box.
+    // Each turn ends delivered, parked or failed, unless updating from the base sends the job back to build.
+    for (;;) {
+      if (job.checkpoint === "spec") {
+        const outcome = await buildLoop(lineDeps, jobId, line, level, copy, spec, signal, addCost, learn, shell);
+        if (outcome) return outcome;
+        job = reload();
+      }
+
+      const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
+      if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
+      if (!job.approvals.integrate) {
+        const held = nightShiftHold(deps, job, copy);
+        if (held) {
+          // The branch reaches the line's repository now, so it survives a rejection even from the box.
+          copy.publish();
+          // Never integrated without a human: a timeout rejects it, whatever approvals.onTimeout says.
+          return askOwner(deps, job, { kind: "before-integrate", text: held }, { onTimeout: "reject" });
+        }
+        if (decide(level, "before-integrate") === "ask") {
+          return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
+        }
+      }
+      check();
+      if (line.integrate !== "branch") {
+        // A pull request's first fetch may have failed: from here on it is measured against the remote's base.
+        if (line.integrate === "pull-request" && job.base === line.baseBranch && fetchRemoteBase(line, jobId)) {
+          job = store.updateJob(jobId, { base: `${line.remote}/${line.baseBranch}` });
+          copy = await prepareWorkCopy(deps, job, line, isolation, shell);
+        }
+        const updated = await updateBeforeIntegrating(deps, jobId, line, copy, signal, shell);
+        job = reload();
+        if (updated === "build") continue;
+        if (updated !== "current") return updated;
+      }
+      job = store.updateJob(jobId, { station: "integrate" });
+      const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async (span) => {
         copy.publish();
-        // Never integrated without a human: a timeout rejects it, whatever approvals.onTimeout says.
-        return askOwner(deps, job, { kind: "before-integrate", text: held }, { onTimeout: "reject" });
-      }
-      if (decide(level, "before-integrate") === "ask") {
-        return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
-      }
-    }
-    check();
-    job = store.updateJob(jobId, { station: "integrate" });
-    const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
-      copy.publish();
-      return integrate(line, copy, {
-        jobId,
-        title: spec.title,
-        body: deliveryBody(spec, job!, store, lineSignature(config, line)),
-        signature: lineSignature(config, line),
-        scratchDir: join(deps.home.worktrees, line.name),
-        author: commitAuthor(config, line),
+        // What the job said it would touch against what it did; only for the trace, it never changes the outcome.
+        const declared = declaredPaths(job!) ?? [];
+        const changed = copy.changedFiles().map((f) => f.path).filter((p) => !p.startsWith(`openspec/changes/${changeName(jobId)}/`));
+        span.set({ "zero.paths.declared": declared.join(", "), "zero.paths.changed": changed.join(", "), "zero.paths.undeclared": undeclaredFiles(changed, declared).join(", ") });
+        return integrate(line, copy, {
+          jobId,
+          title: spec.title,
+          body: deliveryBody(spec, job!, store, lineSignature(config, line)),
+          signature: lineSignature(config, line),
+          scratchDir: join(deps.home.worktrees, line.name),
+          author: commitAuthor(config, line),
+          existing: job!.delivery,
+        });
       });
-    });
-    if (!result.ok) {
-      return askOwner(deps, reload(), { kind: "integration-blocked", text: `${result.reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
+      if (!result.ok && result.baseMoved) {
+        // Another job got in between the update and the merge: update again.
+        job = reload();
+        continue;
+      }
+      if (!result.ok) return integrationBlocked(deps, reload(), result.reason);
+      log.info("job delivered", { job: jobId, delivery: describeDelivery(result.delivery) });
+      return await finalizeJob(deps, reload(), "delivered", { delivery: result.delivery });
     }
-    log.info("job delivered", { job: jobId, delivery: describeDelivery(result.delivery) });
-    return await finalizeJob(deps, reload(), "delivered", { delivery: result.delivery });
   } catch (err) {
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
@@ -297,10 +324,89 @@ export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getPropo
  */
 function startingBase(line: LineConfig, jobId: string): string {
   if (line.integrate !== "pull-request") return line.baseBranch;
+  return fetchRemoteBase(line, jobId) ? `${line.remote}/${line.baseBranch}` : line.baseBranch;
+}
+
+/** Brings the remote's base to the line's repository; when it fails, the job goes on with the last one it knows. */
+function fetchRemoteBase(line: LineConfig, jobId: string): boolean {
   const fetched = spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 });
-  if (fetched.status === 0) return `${line.remote}/${line.baseBranch}`;
-  log.warn("cannot fetch the base branch; starting from the local one", { job: jobId, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
-  return line.baseBranch;
+  if (fetched.status === 0) return true;
+  log.warn("cannot fetch the base branch", { job: jobId, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
+  return false;
+}
+
+const integrationBlocked = (deps: RunnerDeps, job: Job, reason: string) =>
+  askOwner(deps, job, { kind: "integration-blocked", text: `${reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
+
+/** A merge with the base waits for build to resolve these paths (JSON list). */
+const conflictKey = (jobId: string) => `conflict:${jobId}`;
+/** The branch got the base and that has not been verified yet. */
+const resyncKey = (jobId: string) => `resync:${jobId}`;
+
+const updateMessage = (deps: RunnerDeps, jobId: string, line: LineConfig) => withTrailer(`zero(${jobId}): actualizado con la rama base`, lineSignature(deps.config, line));
+
+/** The verify station, on the job's own commits; whatever it leaves behind (coverage, build output) must never end up in a later commit. */
+async function verifyStation(deps: RunnerDeps, jobId: string, line: LineConfig, copy: WorkCopy, signal: AbortSignal, shell: Shell, parentId: string) {
+  const { store, tracer, config } = deps;
+  const job = store.updateJob(jobId, { station: "verify" });
+  const verified = await tracer.within("zero.station.verify", { jobId, parentId, attrs: { "zero.station": "verify" } }, async (span) =>
+    verifyChange(copy, {
+      commands: line.verify,
+      protectedPaths: config.limits.protectedPaths,
+      allowedProtected: job.approvals.protectedPaths,
+      tracer,
+      jobId,
+      parentId: span.id,
+      signal,
+      run: (command, o) => shell(command, copy.cwd, { ...o, station: "verify" }),
+    }),
+  );
+  copy.discardChanges();
+  if (signal.aborted) throw new Interrupted(reasonOf(signal));
+  return verified;
+}
+
+/**
+ * Merges the newest base into the job's branch right before integrating, and
+ * verifies again whenever that changed something, until the branch holds the
+ * base. `current`: ready to integrate. `build`: back to the build station as a
+ * new attempt, whose code the owner has not approved. A job means it parked.
+ * The pending mark goes in before the merge, so no interruption can skip the verification.
+ */
+async function updateBeforeIntegrating(deps: RunnerDeps, jobId: string, line: LineConfig, copy: WorkCopy, signal: AbortSignal, shell: Shell): Promise<"current" | "build" | Job> {
+  const { store, tracer } = deps;
+  const backToBuild = (feedback: string) => {
+    const { integrate: _, ...approvals } = store.getJob(jobId)!.approvals;
+    store.updateJob(jobId, { feedback, checkpoint: "spec", station: "build", approvals });
+    return "build" as const;
+  };
+  for (;;) {
+    if (signal.aborted) throw new Interrupted(reasonOf(signal));
+    if (store.getKv(resyncKey(jobId))) {
+      const verified = await verifyStation(deps, jobId, line, copy, signal, shell, tracer.jobSpanId(jobId));
+      store.deleteKv(resyncKey(jobId));
+      if (!verified.ok) {
+        return backToBuild(verified.kind === "failed" ? `Después de actualizar con la rama base:\n${verified.feedback}` : `Después de actualizar con la rama base, el cambio modifica rutas protegidas (${verified.paths.join(", ")}). Revertí esos cambios y no las toques.`);
+      }
+    }
+    if (line.integrate === "pull-request") fetchRemoteBase(line, jobId);
+    copy.discardChanges();
+    store.setKv(resyncKey(jobId), "pending");
+    const update = copy.updateFromBase(updateMessage(deps, jobId, line));
+    if (update.kind === "merged") continue;
+    store.deleteKv(resyncKey(jobId));
+    switch (update.kind) {
+      case "up-to-date":
+        return "current";
+      case "conflict":
+        store.setKv(conflictKey(jobId), JSON.stringify(update.paths));
+        // The branch reaches the line's repository now, so it survives if the attempts run out, even from the box.
+        copy.publish();
+        return backToBuild(`Actualizar con la rama base produjo conflictos en:\n${update.paths.map((p) => `- ${p}`).join("\n")}\nLa fusión está en curso en la copia de trabajo: resolvé los marcadores en esos archivos conservando la intención de ambos lados. No ejecutes git merge ni abort, ni hagas commit.`);
+      case "refused":
+        return integrationBlocked(deps, store.getJob(jobId)!, `No se pudo actualizar la rama con ${copy.base}: ${update.reason}`);
+    }
+  }
 }
 
 /** Returns a failure reason, or undefined once the spec is stored at checkpoint `spec`. */
@@ -424,6 +530,20 @@ async function buildLoop(
   const memory = memoryBlock(await deps.townhall.recall({ line: line.name, kinds: ["lesson", "finding", "blocker"], limit: config.townhall.recallLimit }));
   const specFiles = `openspec/changes/${changeName(jobId)}/`;
   const custom = lineAgents(config, line);
+  // The paths a merge with the base left for build to resolve, starting the merge again if it was dropped along the way.
+  const pendingConflict = (): string[] | undefined => {
+    const raw = store.getKv(conflictKey(jobId));
+    if (!raw) return undefined;
+    if (copy.mergeInProgress()) return JSON.parse(raw) as string[];
+    copy.discardChanges();
+    const update = copy.updateFromBase(updateMessage(deps, jobId, line));
+    if (update.kind !== "conflict") {
+      store.deleteKv(conflictKey(jobId));
+      return undefined;
+    }
+    store.setKv(conflictKey(jobId), JSON.stringify(update.paths));
+    return update.paths;
+  };
 
   for (;;) {
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
@@ -452,6 +572,7 @@ async function buildLoop(
 
     if (!resuming) {
       job = store.updateJob(jobId, { attempt, station: "build" });
+      let conflicted = pendingConflict();
       const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) => {
         for (let switched = 0; ; switched++) {
           const choice = choose(deps, "build");
@@ -468,6 +589,7 @@ async function buildLoop(
               `## Specification (the contract)\n${contract}`,
               memory,
               job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
+              conflicted && `## Merge conflicts to resolve\nThe base branch is being merged into this branch and these files have conflicts:\n${conflicted.map((p) => `- ${p}`).join("\n")}\nThe merge is in progress: resolve the markers keeping the intent of both sides.`,
               `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
             ]
               .filter(Boolean)
@@ -477,6 +599,7 @@ async function buildLoop(
           if (signal.aborted || !goesOn(deps, r, "build", switched)) return r;
           // Cut short by the plan: its half-done changes are dropped and the same attempt goes on with a replacement.
           copy.discardChanges();
+          conflicted = pendingConflict();
         }
       });
       if (signal.aborted) {
@@ -501,30 +624,25 @@ async function buildLoop(
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
         continue;
       }
+      if (conflicted) {
+        const left = filesWithMarkers(copy.cwd, conflicted);
+        if (left.length) {
+          // Never committed: the merge is dropped here and starts again on the next attempt.
+          copy.discardChanges();
+          failAttempt(`Quedaron marcadores de conflicto sin resolver en: ${left.join(", ")}. La fusión con la rama base está en curso de nuevo: resolvelos en esos archivos, sin hacer commit.`);
+          continue;
+        }
+      }
       copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}`, lineSignature(config, line)));
+      store.deleteKv(conflictKey(jobId));
       if (!copy.changedFiles().some((f) => !f.path.startsWith(specFiles))) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
         continue;
       }
     }
 
-    store.updateJob(jobId, { station: "verify" });
+    const verified = await verifyStation(deps, jobId, line, copy, signal, shell, attemptSpan.id);
     job = store.getJob(jobId)!;
-    const verified = await tracer.within("zero.station.verify", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "verify" } }, async (span) =>
-      verifyChange(copy, {
-        commands: line.verify,
-        protectedPaths: config.limits.protectedPaths,
-        allowedProtected: job.approvals.protectedPaths,
-        tracer,
-        jobId,
-        parentId: span.id,
-        signal,
-        run: (command, o) => shell(command, copy.cwd, { ...o, station: "verify" }),
-      }),
-    );
-    // Whatever verification left behind (coverage, build output) must never end up in a later commit.
-    copy.discardChanges();
-    if (signal.aborted) throw new Interrupted(reasonOf(signal));
     if (!verified.ok && verified.kind === "protected") {
       if (decide(level, "protected-path") === "fail") {
         failAttempt(`El cambio modificó rutas protegidas (${verified.paths.join(", ")}). Revertí esos cambios y no las toques.`);

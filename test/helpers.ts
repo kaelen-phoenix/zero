@@ -94,6 +94,7 @@ export const validSpec = (over: Partial<Spec> = {}): Spec => ({
     },
   ],
   tasks: ["Add the route", "Add a test"],
+  paths: [],
   risks: [],
   learnings: [],
   followUps: [],
