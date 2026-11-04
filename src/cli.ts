@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -16,6 +16,7 @@ import { install } from "./install.js";
 import { log } from "./log.js";
 import { serveStdio } from "./mcp/server.js";
 import { downloadCloudflared, downloadPlan, findCloudflared } from "./panel/tunnel.js";
+import { monthlyMarkdown, reportHtml } from "./report.js";
 
 const USAGE = `zero: tu fábrica de software, en tu máquina
 
@@ -30,6 +31,8 @@ Uso diario (también desde el chat):
   zero stop [trabajo]            Andon: detiene un trabajo, o toda la fábrica
   zero resume                    Reanuda la fábrica
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
+  zero informe [línea] [--mes AAAA-MM] [--html]
+                                 Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas)
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
@@ -82,6 +85,8 @@ async function main(argv: string[]): Promise<number> {
       informativo: { type: "boolean" },
       note: { type: "string" },
       days: { type: "string" },
+      mes: { type: "string" },
+      html: { type: "boolean" },
       label: { type: "string" },
       station: { type: "string" },
       detach: { type: "boolean" },
@@ -199,6 +204,14 @@ async function main(argv: string[]): Promise<number> {
       case "briefing": {
         const b = await briefing(ctx, values.days ? Number(values.days) : 1);
         console.log(`# ${b.title}\n\n${b.body}`);
+        return 0;
+      }
+      case "informe": {
+        const line = rest[0];
+        if (values.html && !line) throw new Error("Para exportar en HTML indicá la línea: zero informe <línea> --html");
+        const report = monthlyReport(ctx, { line, month: values.mes });
+        if (!line) console.error("Aviso: este resultado junta todas las líneas. Para compartirlo, pedí una sola: zero informe <línea>");
+        console.log(values.html ? reportHtml(report.lines[0]!) : monthlyMarkdown(report));
         return 0;
       }
       case "proposals": {

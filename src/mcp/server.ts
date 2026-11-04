@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
+import { monthlyMarkdown } from "../report.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
 Use it when the owner wants something built or changed in one of their projects ("lines"): send the request with zero_request in the owner's words and let the factory do the work. Do not implement it yourself in this chat.
@@ -179,6 +180,20 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         const b = await briefing(ctx, days ?? 1);
         return `# ${b.title}\n\n${b.body}`;
       }),
+  );
+
+  server.registerTool(
+    "zero_monthly_report",
+    {
+      title: "Informe mensual por línea",
+      description: "Monthly report of one line or of every line, in Markdown, for the owner to share with that line's client: delivered jobs with origin and link, plus totals and the month's cost. Written by code from stored data; it sends nothing to anyone.",
+      inputSchema: {
+        line: z.string().optional().describe("Only this line; omit for every line."),
+        month: z.string().optional().describe("Calendar month as YYYY-MM; the previous month by default."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ line, month }) => withFactory(home, (ctx) => monthlyMarkdown(monthlyReport(ctx, { line, month }))),
   );
 
   server.registerTool(
