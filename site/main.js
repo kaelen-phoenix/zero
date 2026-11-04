@@ -150,6 +150,7 @@
     "theme.auto": "auto",
     "theme.light": "light",
     "theme.dark": "dark",
+    "foot.instagram": "zero in the loop on Instagram",
     "foot.built": 'This site was built by <a href="https://zerointheloop.com">zero in the loop</a>',
   };
 

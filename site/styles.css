@@ -263,6 +263,8 @@ button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-co
   font: 0.8rem var(--mono);
   color: var(--muted);
 }
+.foot .social { display: inline-flex; }
+.foot .social svg { width: 1.1em; height: 1.1em; }
 .foot .switch { margin-left: auto; }
 
 @media (max-width: 40rem) {

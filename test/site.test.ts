@@ -569,6 +569,55 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
     expect(loadSite().EN["foot.built"]).toContain("This site was built by");
     expect(loadSite().EN["foot.built"]).toContain('<a href="https://zerointheloop.com">zero in the loop</a>');
   });
+
+  describe("enlace de Instagram", () => {
+    const footer = /<footer class="foot">([\s\S]*?)<\/footer>/.exec(html)![1]!;
+    const instagram = /<a\b[^>]*href="https:\/\/www\.instagram\.com\/zerointheloop\/"[^>]*>([\s\S]*?)<\/a>/.exec(footer);
+
+    it("abre en una pestaña nueva, con noopener", () => {
+      expect(instagram).not.toBeNull();
+      const tag = /^<a\b[^>]*>/.exec(instagram![0])![0];
+      expect(tag).toContain('target="_blank"');
+      expect(/\srel="([^"]*)"/.exec(tag)?.[1]?.split(/\s+/)).toContain("noopener");
+    });
+
+    it("viene justo después de GitHub y antes del selector de tema", () => {
+      const links = [...footer.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)];
+      const at = links.findIndex((m) => m[1] === "https://github.com/kaelen-phoenix/zero");
+      expect(links[at + 1]![1]).toBe("https://www.instagram.com/zerointheloop/");
+      expect(links[at + 1]!.index).toBeLessThan(footer.indexOf('class="switch"'));
+    });
+
+    it("muestra solo un ícono decorativo que sigue el color del texto", () => {
+      const inner = instagram![1]!;
+      const svg = /<svg\b[^>]*>[\s\S]*?<\/svg>/.exec(inner)![0];
+      expect(svg).toMatch(/<svg[^>]*aria-hidden="true"/);
+      expect(svg).toContain("currentColor");
+      expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+      expect(svg).not.toMatch(/\b(href|src)=|<image|<script/);
+      expect(inner.replace(svg, "").trim()).toBe("");
+    });
+
+    it("el ícono tiene ancho y alto explícitos en el CSS", () => {
+      const rule = /\.foot \.social svg\s*\{([^}]*)\}/.exec(read("site/styles.css"))?.[1];
+      expect(rule).toMatch(/(^|[\s;])width:\s*[\d.]+[a-z]+/);
+      expect(rule).toMatch(/(^|[\s;])height:\s*[\d.]+[a-z]+/);
+    });
+
+    it("su nombre accesible cambia con el idioma", () => {
+      const tag = /^<a\b[^>]*>/.exec(instagram![0])![0];
+      expect(tag).toContain('aria-label="Instagram de zero in the loop"');
+      expect(tag).toContain('data-i18n-label="foot.instagram"');
+      const site = loadSite();
+      expect(site.EN["foot.instagram"]).toBe("zero in the loop on Instagram");
+      const doc = fakeDocument();
+      const link = doc.elements.find((e) => e.getAttribute("data-i18n-label") === "foot.instagram")!;
+      site.applyLanguage(doc, "en", fakeStorage());
+      expect(link.getAttribute("aria-label")).toBe("zero in the loop on Instagram");
+      site.applyLanguage(doc, "es", fakeStorage());
+      expect(link.getAttribute("aria-label")).toBe("Instagram de zero in the loop");
+    });
+  });
 });
 
 describe("sitio del proyecto: tema", () => {
