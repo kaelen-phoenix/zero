@@ -149,21 +149,6 @@ describe("documentation up to date", () => {
     expect(read("agents/research.md")).not.toContain("community");
   });
 
-  it("leaves no code or dependency of the removed proof of concept", () => {
-    const sources = (dir: string) => readdirSync(new URL(`../${dir}/`, import.meta.url), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts")).map((f) => read(`${dir}/${f}`));
-    const src = sources("src");
-    expect(src.filter((text) => text.includes("social_posts"))).toEqual([]);
-    expect([...src, ...sources("test")].filter((text) => /^import [^\n]* from "[^"]*social\//m.test(text))).toEqual([]);
-
-    const removed = ["@resvg/resvg-js", "@expo-google-fonts/anton", "dejavu-fonts-ttf", "jpeg-js"];
-    const direct = JSON.parse(read("package.json")).dependencies;
-    const root = JSON.parse(read("package-lock.json")).packages[""].dependencies;
-    for (const name of removed) {
-      expect(direct, name).not.toHaveProperty([name]);
-      expect(root, name).not.toHaveProperty([name]);
-    }
-  });
-
   it("shows .agents/** in the protected paths example of both READMEs", () => {
     // normalize drops double-quoted strings, so the block comparison above cannot see this line.
     const line = '  protectedPaths: [".github/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]';

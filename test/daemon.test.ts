@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { stringify } from "yaml";
-import { agentName } from "../src/agent.js";
 import { ANDON_KEY, DAEMON_KEY, daemonInfo, requestWork } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
-import { cleanup, fakeAgents, gitRepo, simulatedBox, tempDir, testFactory, writeTree } from "./helpers.js";
+import { cleanup, fakeAgents, gitRepo, simulatedBox, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -74,19 +72,6 @@ describe("daemon", () => {
     clock += 2 * 3_600_000;
     await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => builder().runner });
     expect(ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: expect.stringContaining("Se rechazó solo: venció sin respuesta") });
-  });
-
-  it("runs scout, research and the packages' stations while idle, and nothing else", async () => {
-    const dir = tempDir("zero-pkg-");
-    writeTree(dir, {
-      "zero-package.yaml": stringify({ interface: 1, name: "hello", version: "1.0.0", stations: [{ name: "nota", module: "nota.mjs", instructions: "nota.md" }] }),
-      "nota.mjs": `export async function pass(ctx) { await ctx.runAgent({ prompt: "p" }); }\n`,
-      "nota.md": "# nota\nWrite a note.\n",
-    });
-    const ctx = factory({ packages: [{ path: dir, allowCode: true }], lines: [{ name: "demo", repo: gitRepo(), verify: [passes], stations: { research: { skills: ["investigar"] } } }] });
-    const agents = fakeAgents({});
-    await runDaemon(ctx, { once: true, pollMs: 10, panel: false, scout: true, research: true, packages: true, agentRunner: () => agents.runner });
-    expect(agents.calls.map(agentName)).toEqual(["scout", "research", "package:hello/nota"]);
   });
 
   it("hands the box to jobs once it is ready and the engines have their credentials", async () => {

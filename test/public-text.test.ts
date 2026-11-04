@@ -1,8 +1,6 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { ConfigError, parseFactory } from "../src/config.js";
 import { publicText } from "../src/public-text.js";
-import { findSecret, redact } from "../src/secrets.js";
 
 const REPO = "/srv/obra/zero";
 const WIN_REPO = "C:\\Users\\Ana María\\obra\\zero";
@@ -64,25 +62,5 @@ describe("public text filter", () => {
     expect(out.removed).toBe(true);
     expect(out.text).toContain("https://zerointheloop.com/a");
     expect(out.text).not.toContain("/opt/app");
-  });
-});
-
-describe("Instagram token shape", () => {
-  it("is recognised by redact and findSecret", () => {
-    const token = `IGAA${"a".repeat(36)}`;
-    expect(token).toHaveLength(40);
-    expect(findSecret(`x ${token} y`)).toBe(token);
-    expect(redact(`x ${token} y`)).not.toContain(token);
-  });
-});
-
-describe("Facebook Page tokens", () => {
-  const PAGE_TOKEN = `EAA${"a".repeat(40)}`;
-
-  it("are recognized as secrets", () => {
-    expect(findSecret(`x ${PAGE_TOKEN} y`)).toBe(PAGE_TOKEN);
-    expect(findSecret(`EAA${"a".repeat(19)}`)).toBeUndefined();
-    expect(() => parseFactory(`social: { signature: ${PAGE_TOKEN} }\n`)).toThrow(ConfigError);
-    expect(publicText(`token ${PAGE_TOKEN}`, []).removed).toBe(true);
   });
 });

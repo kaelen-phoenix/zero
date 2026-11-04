@@ -11,6 +11,7 @@ Se quita de zero la prueba de concepto de publicación en redes sociales, que no
 - Supuesto: Los cambios viejos bajo `openspec/changes/` quedan como están, porque son el registro histórico del proyecto y el pedido no los incluye.
 - Supuesto: Quien ya tenga un token guardado lo conserva en su llavero: zero no borra secretos ni claves de `kv`, solo deja de usarlos. Tampoco se tocan las publicaciones ya hechas ni los archivos ya subidos fuera de la máquina.
 - Supuesto: Un valor inválido bajo `social` antes hacía fallar la carga; ahora se ignora con el aviso, como pide este cambio.
+- Supuesto: Los archivos `test/social-*.test.ts` conservan su ruta, porque la verificación de zero rechaza borrar un archivo de prueba. Las pruebas del código quitado salen, y esos archivos pasan a comprobar la quita.
 - Supuesto: Regenerar `package-lock.json` puede necesitar acceso a la red; si no lo hay, hay que editarlo de modo que `npm ci` siga funcionando.
 
 ## Capabilities
