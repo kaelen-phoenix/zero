@@ -105,10 +105,12 @@ export function formatAgents(lists: LineAgentList[]): string {
   if (!lists.length) return "La fábrica no tiene líneas.";
   const out: string[] = [];
   for (const l of lists) {
-    out.push(`Línea ${l.line}: spec → build → verify → review → security${l.agents.map((a) => ` → ${a.name}`).join("")} → integrate`);
+    const at = (type: string) => l.agents.filter((a) => a.type === type).map((a) => ` → ${a.name}`).join("");
+    out.push(`Línea ${l.line}: spec → build${at("build")} → verify → review → security${at("review")} → integrate`);
     if (!l.agents.length) out.push(`- sin agentes a medida (agregá uno con \`zero agent add <nombre> --line ${l.line}\`)`);
     for (const a of l.agents) {
-      out.push(`- ${a.name} (${a.blocking ? "bloqueante" : "informativo"}, ${a.origin === "factory" ? "global" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
+      const kind = a.type === "build" ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}` : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
+      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }
   return out.join("\n");

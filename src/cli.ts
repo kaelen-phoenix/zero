@@ -60,8 +60,10 @@ Panel en el navegador:
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero agent list [--line <nombre>]   Agentes a medida de cada línea, en el orden en que corren
-  zero agent add <nombre> --line <línea> [--informativo]
-                                 Suma un agente revisor a la línea (crea .zero/agents/<nombre>.md con una plantilla)
+  zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build] [--archivos <patrón>]...
+                                 Suma un agente a la línea (crea .zero/agents/<nombre>.md con una plantilla): revisor de
+                                 solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
+                                 cuando el cambio toca --archivos
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
@@ -83,6 +85,8 @@ async function main(argv: string[]): Promise<number> {
       spec: { type: "boolean" },
       reject: { type: "boolean" },
       informativo: { type: "boolean" },
+      tipo: { type: "string" },
+      archivos: { type: "string", multiple: true },
       note: { type: "string" },
       days: { type: "string" },
       mes: { type: "string" },
@@ -288,7 +292,7 @@ async function main(argv: string[]): Promise<number> {
         }
         if (action !== "add" && action !== "remove") break;
         if (!name || !values.line) throw new Error(`Indicá el agente y la línea: zero agent ${action} <nombre> --line <línea>`);
-        console.log(action === "add" ? await addAgent(ctx, { name, line: values.line, blocking: !values.informativo }) : await removeAgent(ctx, { name, line: values.line }));
+        console.log(action === "add" ? await addAgent(ctx, { name, line: values.line, blocking: !values.informativo, type: values.tipo, files: values.archivos }) : await removeAgent(ctx, { name, line: values.line }));
         return 0;
       }
       case "skill": {

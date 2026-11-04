@@ -46,7 +46,7 @@ export interface AgentRequest<T = unknown> {
   /**
    * A project's own agent, run in place of `station`'s agent: its name, its
    * instructions (read by zero from the line's repository or the factory
-   * folder) and its settings. Always read-only.
+   * folder), its access and its settings.
    */
   custom?: CustomAgentRun;
 }
@@ -54,6 +54,7 @@ export interface AgentRequest<T = unknown> {
 export interface CustomAgentRun {
   name: string;
   instructions: string;
+  access: "read" | "write";
   engine?: string;
   model?: string;
   maxTurns: number;
@@ -220,8 +221,8 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
         instructions: engine.nativeSkills ? instructions : withSkillText(instructions, skills?.skills ?? []),
         prompt: fullPrompt,
         cwd,
-        // A custom agent is read-only, whatever station it works like.
-        access: custom ? "read" : ACCESS[station],
+        // A custom agent has its own access, whatever station it works like.
+        access: custom ? custom.access : ACCESS[station],
         schema: jsonSchema,
         model,
         maxTurns: stationCfg.maxTurns,

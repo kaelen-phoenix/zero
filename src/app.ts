@@ -228,7 +228,7 @@ export interface FactoryGuide {
   /** What each policy event does at the effective level. */
   policy: { event: PolicyEvent; decision: PolicyDecision }[];
   agents: AgentGuide[];
-  lines: Pick<LineConfig, "name" | "repo" | "baseBranch" | "verify" | "integrate" | "autoMerge" | "issues">[];
+  lines: (Pick<LineConfig, "name" | "repo" | "baseBranch" | "verify" | "integrate" | "autoMerge" | "issues"> & { agents: AgentListEntry[] })[];
 }
 
 const POLICY_EVENTS: PolicyEvent[] = ["spec-ready", "before-integrate", "protected-path", "budget-exceeded", "egress-suspicious"];
@@ -265,7 +265,7 @@ export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
         };
       }),
     ),
-    lines: cfg.lines.map(({ name, repo, baseBranch, verify, integrate, autoMerge, issues }) => ({ name, repo, baseBranch, verify, integrate, autoMerge, issues })),
+    lines: cfg.lines.map(({ name, repo, baseBranch, verify, integrate, autoMerge, issues }) => ({ name, repo, baseBranch, verify, integrate, autoMerge, issues, agents: agentList(ctx, name)[0]!.agents })),
   };
 }
 
@@ -562,8 +562,10 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
 
   const final = FINAL_STATUSES.includes(job.status);
   const setupOpen = spans.some((sp) => sp.name === "zero.setup" && !sp.end);
-  // A line's custom agents run after security; until the line view shows them, their pieces sit there.
-  const station = job.station && ((LINE_STATIONS as readonly string[]).includes(job.station) ? (job.station as LineStation) : "security");
+  // Until the line view shows a line's custom agents, their pieces sit where they run: those that write at build, the reviewers at security.
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  const writing = line && lineAgents(ctx.config, line).some((a) => a.type === "build" && a.name === job.station);
+  const station = job.station && ((LINE_STATIONS as readonly string[]).includes(job.station) ? (job.station as LineStation) : writing ? "build" : "security");
   const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? station : (station ?? (setupOpen ? "setup" : undefined));
   // The last station an attempt reached carries the attempt's failure, since verify and the reviews end well and report.
   const failedIn = current?.status === "error" ? ATTEMPT_STATIONS.filter((st) => last(st)).at(-1) : undefined;
@@ -824,6 +826,10 @@ export interface AgentListEntry {
   name: string;
   /** `factory`: a global agent, for every line; `line`: the line's own. */
   origin: "factory" | "line";
+  /** `build`: it writes, between build and verify. `review`: read-only, after security. */
+  type: "review" | "build";
+  /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
+  files: string[];
   blocking: boolean;
   /** Where zero reads its instructions. */
   path: string;
@@ -841,9 +847,10 @@ export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList
   const targets = lineName ? [findLine(ctx.config, lineName)] : ctx.config.lines;
   return targets.map((line) => ({
     line: line.name,
-    agents: lineAgents(ctx.config, line).map((a) => {
+    // Those that write run first, whatever the file's order between the two types.
+    agents: [...lineAgents(ctx.config, line).filter((a) => a.type === "build"), ...lineAgents(ctx.config, line).filter((a) => a.type === "review")].map((a) => {
       const path = join(a.origin === "line" ? line.repo : dirname(ctx.home.config), a.instructions);
-      return { name: a.name, origin: a.origin, blocking: a.blocking, path, missing: !existsSync(path) };
+      return { name: a.name, origin: a.origin, type: a.type, files: a.files, blocking: a.blocking, path, missing: !existsSync(path) };
     }),
   }));
 }
@@ -862,14 +869,34 @@ You are the "${name}" agent of this project, a read-only reviewer that runs afte
 - You are read-only: do not modify anything.
 `;
 
+const writerTemplate = (name: string) => `# Agent: ${name}
+
+You are the "${name}" agent of this project. You run after zero's build station and before verify, on the change build committed, and you write in the work copy. What you write goes through verify, protected paths, review and security like the rest of the change.
+
+## What to do
+- Describe here the work this agent does on every change (for example translations, accessibility fixes or documentation).
+- Only work on what the change touched, with \`git diff\` against the base branch. If it needs nothing from you, change nothing.
+
+## Rules
+- Leave your changes uncommitted: zero commits them under your name.
+- Do not push, change branches, or touch credentials or CI configuration.
+- If you end abnormally, zero discards your changes and the attempt goes back to build.
+`;
+
 /**
  * Adds a custom agent to a line: creates its instructions from a template in
  * the line's repository (never overwriting them) and adds it to the factory
  * file, keeping the file's comments.
  */
-export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean }): Promise<string> {
+export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean; type?: string; files?: string[] }): Promise<string> {
   const name = input.name.trim();
   const blocking = input.blocking ?? true;
+  const type = input.type ?? "review";
+  const files = input.files ?? [];
+  if (type !== "review" && type !== "build") throw new Error(`El tipo "${type}" no existe: usá review o build.`);
+  if (type === "build" && !blocking) throw new Error("Un agente que escribe no puede ser informativo: si falla, falla el intento.");
+  if (type === "review" && files.length) throw new Error("--archivos solo vale con --tipo build: un agente de revisión corre en cada trabajo.");
+  if (files.some((f) => !f.trim())) throw new Error("Los patrones de --archivos no pueden estar vacíos.");
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`El nombre "${name}" no sirve para un agente: usá minúsculas, dígitos y guiones.`);
   if ((FIXED_STATIONS as readonly string[]).includes(name)) throw new Error(`"${name}" es una estación fija de zero; elegí otro nombre para el agente.`);
   const line = findLine(ctx.config, input.line);
@@ -880,17 +907,19 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   await mkdir(dirname(path), { recursive: true });
   let created = true;
   try {
-    await writeFile(path, agentTemplate(name, blocking), { flag: "wx" });
+    await writeFile(path, type === "build" ? writerTemplate(name) : agentTemplate(name, blocking), { flag: "wx" });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     created = false;
   }
+  const entry = type === "build" ? { name, type, ...(files.length && { files }) } : { name, blocking };
   ctx.config = await editFactory(ctx.home.config, (doc) => {
-    const node = doc.createNode({ name, blocking });
+    const node = doc.createNode(entry);
     if (doc.hasIn(["lines", index, "agents"])) doc.addIn(["lines", index, "agents"], node);
-    else doc.setIn(["lines", index, "agents"], doc.createNode([{ name, blocking }]));
+    else doc.setIn(["lines", index, "agents"], doc.createNode([entry]));
   });
-  return `Agente ${name} agregado a la línea ${line.name} (${blocking ? "bloqueante" : "informativo"}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
+  const kind = type === "build" ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}` : blocking ? "bloqueante" : "informativo";
+  return `Agente ${name} agregado a la línea ${line.name} (${kind}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
 }
 
 /** Takes a custom agent out of a line's configuration; its instructions file stays. */
