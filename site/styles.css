@@ -225,7 +225,7 @@ tbody th { font-weight: 600; white-space: nowrap; }
 .dense span { color: var(--muted); font-size: 0.85rem; }
 .training > li { display: flex; flex-direction: column; gap: 0.75rem; }
 .training .on-request { margin-top: auto; font: 500 0.75rem/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
-.training .button { align-self: flex-start; cursor: pointer; }
+.training .button { align-self: flex-start; cursor: pointer; font: 500 0.9rem var(--mono); text-align: center; }
 .training .button:hover { background: transparent; color: var(--fg); }
 .compat { display: grid; gap: 0 2rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
 .compat h3 { margin: 1rem 0 0; }

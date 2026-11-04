@@ -145,7 +145,6 @@ type Site = {
   applyLanguage(doc: unknown, lang: string, storage: unknown): string;
   setTheme(doc: unknown, theme: string, storage: unknown): string;
   copyCode(doc: unknown, button: unknown, nav: unknown): Promise<boolean>;
-  trainingMailto(doc: unknown, button: unknown): string;
 };
 
 /** Runs main.js in a context without a document, as the tests' stand-in for a browser. */
@@ -382,13 +381,12 @@ describe("sitio del proyecto: instalación y flujo", () => {
 
 describe("sitio del proyecto: capacitaciones", () => {
   const FORMATS = ["talk", "workshop", "mentoring"];
-  const ADDRESS = ["kaelen.dev", "gmail.com"].join("@");
+  const INSTAGRAM_CHAT = "https://ig.me/m/zerointheloop";
 
-  /** The subject and body of a mailto: URL, decoded. */
-  function mail(url: string): { to: string; subject: string; body: string } {
-    const m = /^mailto:([^?]+)\?subject=([^&]*)&body=(.*)$/.exec(url);
-    expect(m, url).not.toBeNull();
-    return { to: m![1]!, subject: decodeURIComponent(m![2]!), body: decodeURIComponent(m![3]!) };
+  /** The call-to-action links of the section: opening tag, format, i18n key and visible text. */
+  function ctaLinks(): { tag: string; format: string; key: string; text: string }[] {
+    return [...section("training").matchAll(/(<a\b[^>]*\bdata-training="([^"]+)"[^>]*\bdata-i18n="([^"]+)"[^>]*>)([^<]*)<\/a>/g)]
+      .map((m) => ({ tag: m[1]!, format: m[2]!, key: m[3]!, text: m[4]! }));
   }
 
   it("el menú enlaza la sección, marcada solo para español", () => {
@@ -426,35 +424,56 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(loadSite().EN[topics!.key]!.trim()).not.toBe("");
   });
 
-  it("cada formato tiene un botón de verdad: La quiero / I want this", () => {
-    const buttons = [...section("training").matchAll(/<button type="button"[^>]*\bdata-training="([^"]+)"[^>]*\bdata-i18n="([^"]+)"[^>]*>([^<]*)<\/button>/g)];
-    expect(buttons.map((b) => b[1])).toEqual(FORMATS);
-    for (const b of buttons) {
-      expect(b[3]).toBe("La quiero");
-      expect(loadSite().EN[b[2]!]).toBe("I want this");
+  it("cada formato tiene un enlace con estilo de botón al chat de Instagram", () => {
+    const links = ctaLinks();
+    expect(links.map((l) => l.format)).toEqual(FORMATS);
+    for (const { tag } of links) {
+      expect(tag, tag).toMatch(/\sclass="button"/);
+      expect(tag, tag).toContain(` href="${INSTAGRAM_CHAT}"`);
+      expect(tag, tag).toContain(' target="_blank"');
+      expect(tag, tag).toMatch(/\srel="[^"]*\bnoopener\b[^"]*"/);
     }
   });
 
-  it("arma el correo en español con el título del formato y campos para completar", () => {
-    const url = loadSite().trainingMailto(fakeDocument(), new FakeElement({ "data-training": "talk" }));
-    expect(url.startsWith(`mailto:${ADDRESS}?subject=`)).toBe(true);
-    const { subject, body } = mail(url);
-    expect(subject).toBe("Capacitación: Charla abierta");
-    for (const field of ["Nombre:", "Cuántas personas:", "Qué busca"]) expect(body).toContain(field);
-    expect(body).not.toContain("Empresa");
-    expect(url).not.toMatch(/ /);
+  it("la sección no tiene elementos button", () => {
+    expect(section("training")).not.toMatch(/<button/);
   });
 
-  it("arma el correo en inglés cuando la página está en inglés", () => {
-    const site = loadSite();
-    const doc = fakeDocument();
-    site.applyLanguage(doc, "en", fakeStorage());
-    const { to, subject, body } = mail(site.trainingMailto(doc, new FakeElement({ "data-training": "mentoring" })));
-    expect(to).toBe(ADDRESS);
-    expect(subject).toBe(`Training: ${site.EN["training.mentoring.title"]}`);
-    expect(subject).toBe("Training: One-on-one mentoring");
-    for (const field of ["Name", "How many people", "What you are looking for"]) expect(body).toContain(field);
-    expect(body).not.toContain("Company");
+  it("el texto del enlace se traduce: La quiero / I want this", () => {
+    const EN = loadSite().EN;
+    const links = ctaLinks();
+    expect(links).toHaveLength(3);
+    for (const { key, text } of links) {
+      expect(text).toBe("La quiero");
+      expect(key).toBe("training.cta");
+      expect(EN[key]).toBe("I want this");
+    }
+  });
+
+  it("el destino del enlace es el mismo en los dos idiomas", () => {
+    const links = ctaLinks();
+    expect(links).toHaveLength(3);
+    for (const { tag } of links) {
+      expect(tag, tag).not.toContain("data-i18n-href");
+      expect(tag, tag).toContain(` href="${INSTAGRAM_CHAT}"`);
+    }
+  });
+
+  it("el enlace funciona sin JavaScript: main.js no arma ni intercepta nada", () => {
+    expect((loadSite() as unknown as Record<string, unknown>).trainingMailto).toBeUndefined();
+    for (const code of ["trainingMailto", "MAIL_PARTS", "mailto:", "data-training"]) expect(js, code).not.toContain(code);
+  });
+
+  it("sin aviso de noscript sobre el correo", () => {
+    expect(section("training")).not.toMatch(/<noscript/);
+    expect(loadSite().EN).not.toHaveProperty(["training.noscript"]);
+  });
+
+  it("el enlace conserva el aspecto del botón: texto centrado y monoespaciada de peso 500", () => {
+    const rule = /\.training \.button \{([^}]*)\}/.exec(css);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("text-align: center");
+    expect(rule![1]).toMatch(/font:\s*500\b[^;]*var\(--mono\)/);
   });
 
   it("no hay capacitaciones para empresas en ninguna parte del sitio", () => {
@@ -465,10 +484,9 @@ describe("sitio del proyecto: capacitaciones", () => {
     for (const { file, text } of textFiles) expect(text, file).not.toMatch(/empresa|compan(y|ies)/i);
   });
 
-  it("la dirección no aparece entera en ningún archivo del sitio", () => {
+  it("no queda rastro de la dirección de correo en ningún archivo del sitio", () => {
     for (const { file, text } of textFiles) {
-      expect(text, file).not.toContain(ADDRESS);
-      expect(text, file).not.toMatch(/mailto:[^"'\s?]*@/);
+      for (const trace of ["mailto:", "kaelen.dev", "gmail.com"]) expect(text, `${file}: ${trace}`).not.toContain(trace);
     }
   });
 
@@ -514,17 +532,6 @@ describe("sitio del proyecto: capacitaciones", () => {
 
   it("styles.css oculta [hidden] aunque una clase fije display", () => {
     expect(css).toMatch(/\[hidden\]\s*\{\s*display:\s*none/);
-  });
-
-  it("sin JavaScript explica cómo escribir a mano", () => {
-    const noscript = /<noscript>([\s\S]*?)<\/noscript>/.exec(section("training"));
-    expect(noscript).not.toBeNull();
-    const hint = translatable(noscript![1]!);
-    expect(hint).toHaveLength(1);
-    expect(hint[0]!.inner).toContain("kaelen.dev");
-    expect(hint[0]!.inner).toContain("gmail.com");
-    expect(hint[0]!.inner).not.toContain(ADDRESS);
-    expect(loadSite().EN[hint[0]!.key]!.trim()).not.toBe("");
   });
 });
 
@@ -718,7 +725,7 @@ describe("sitio del proyecto: WhatsApp", () => {
     expectLink(onlyAnchor(line), MESSAGE_EN);
   });
 
-  it("los botones de correo de Capacitaciones siguen igual", () => {
+  it("los tres formatos de Capacitaciones siguen igual", () => {
     expect([...section("training").matchAll(/data-training="([^"]+)"/g)].map((m) => m[1])).toEqual(["talk", "workshop", "mentoring"]);
   });
 });
@@ -903,5 +910,11 @@ describe("README", () => {
   it.each([["README.md", "Spanish"], ["README.es.md", "español"]])("%s aclara que la sección está solo en la versión en español", (file, word) => {
     const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
     expect(paragraph).toContain(word);
+  });
+
+  it.each([["README.md", "email"], ["README.es.md", "correo"]])("%s dice que los botones abren el chat de Instagram, no un correo", (file, mail) => {
+    const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
+    expect(paragraph).toContain("Instagram");
+    expect(paragraph).not.toContain(mail);
   });
 });
