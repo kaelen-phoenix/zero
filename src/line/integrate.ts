@@ -4,7 +4,7 @@ import type { CommitAuthor, LineConfig, Signature } from "../config.js";
 import { git, tryGit } from "../shell.js";
 import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
-import { createGitHubTracker } from "../tracker.js";
+import { createGitHubTracker, type PullRequestsFactory } from "../tracker.js";
 import { authorEnv, checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
 
 export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; reason: string };
@@ -19,6 +19,8 @@ export interface IntegrateOptions {
   scratchDir: string;
   /** Who authors the merge commit (`merge` mode); zero is always the committer. Absent: zero. */
   author?: CommitAuthor;
+  /** GitHub's pull requests; defaults to the real adapter. */
+  pullRequests?: PullRequestsFactory;
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
@@ -71,6 +73,12 @@ export function githubRepository(url: string): string | undefined {
   return url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/)?.[1];
 }
 
+/** GitHub refused to open a pull request because the branch already has one. */
+function pullRequestExists(err: unknown): boolean {
+  const { status, message } = (err ?? {}) as { status?: unknown; message?: unknown };
+  return status === 422 && typeof message === "string" && message.includes("already exists");
+}
+
 /** Published from the line's repository: its remote is GitHub, and the branch is already there (a box copy is fetched back first). */
 async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {
   const url = tryGit(["remote", "get-url", line.remote], line.repo);
@@ -80,7 +88,13 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   if (!token) return { ok: false, reason: "Para abrir la solicitud de cambio hace falta GH_TOKEN o haber iniciado sesión con `gh auth login`." };
   const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
-  const pr = await createGitHubTracker(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: opts.title, body: opts.body });
+  let pr: string;
+  try {
+    pr = await (opts.pullRequests ?? createGitHubTracker)(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: opts.title, body: opts.body });
+  } catch (err) {
+    if (!pullRequestExists(err)) throw err;
+    return { ok: false, reason: `GitHub dice que ya existe una solicitud de cambio para la rama ${copy.branch}, así que no se abrió otra. Revisala en GitHub.` };
+  }
   return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr, ...(line.autoMerge && { autoMerge: true }) } };
 }
 

@@ -6,6 +6,9 @@ export interface PullRequests {
   openPullRequest(pr: { head: string; base: string; title: string; body: string }): Promise<string>;
 }
 
+/** How a pull request adapter is made; tests inject their own. */
+export type PullRequestsFactory = (token: string, repository: string) => PullRequests;
+
 export function createGitHubTracker(token: string, repository: string): PullRequests {
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) throw new Error(`Invalid repository "${repository}", expected owner/repo`);

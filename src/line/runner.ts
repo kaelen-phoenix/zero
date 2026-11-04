@@ -13,6 +13,7 @@ import { git, sh, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
+import type { PullRequestsFactory } from "../tracker.js";
 import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, STOPPED_BY_YOU, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
@@ -39,6 +40,8 @@ export interface RunnerDeps extends LedgerDeps {
   box?: BoxExecutor;
   /** What the effective level sees; defaults to "ready" exactly when a box is given. */
   boxAvailability?: BoxAvailability;
+  /** GitHub's pull requests; defaults to the real adapter. */
+  pullRequests?: PullRequestsFactory;
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
@@ -52,6 +55,31 @@ class Interrupted extends Error {
   constructor(readonly why: StopReason | "quota") {
     super(`interrupted: ${why}`);
   }
+}
+
+/** The first preparation of a work copy failed. Never retried: a resumed job finds the copy made and skips setup. */
+class SetupFailed extends Error {}
+
+/** How many times one job goes back to the queue after a network cut, in its whole life. */
+const MAX_NETWORK_RETRIES = 2;
+
+/** The kv key that counts a job's network retries. */
+export const networkRetryKey = (jobId: string) => `network-retry:${jobId}`;
+
+const NETWORK_CODES = /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|EPIPE)\b/;
+
+/** Whether an exception is a passing network cut, by the `code` or message of the error or of its chain of causes. */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (err instanceof SetupFailed) return false;
+  let current = err;
+  for (let depth = 0; depth < 5; depth++) {
+    if (typeof current === "string") return NETWORK_CODES.test(current);
+    if (typeof current !== "object" || current === null) return false;
+    const { code, message, cause } = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if ([code, message].some((text) => typeof text === "string" && NETWORK_CODES.test(text))) return true;
+    current = cause;
+  }
+  return false;
 }
 
 const reasonOf = (signal: AbortSignal): StopReason => (signal.reason === "stop" || signal.reason === "andon" ? signal.reason : "shutdown");
@@ -96,8 +124,9 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     deps.townhall.publish([...learnings.map((l) => ({ ...l, line: line.name, job: jobId })), ...extra]);
 
   job = store.updateJob(jobId, { status: "running" });
+  let opened: WorkCopy | undefined;
   try {
-    const copy = await prepareWorkCopy(deps, job, line, isolation, shell);
+    const copy = (opened = await prepareWorkCopy(deps, job, line, isolation, shell));
     job = reload();
 
     if (job.checkpoint === "none") {
@@ -144,6 +173,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         signature: lineSignature(config, line),
         scratchDir: join(deps.home.worktrees, line.name),
         author: commitAuthor(config, line),
+        pullRequests: deps.pullRequests,
       });
     });
     if (!result.ok) {
@@ -158,8 +188,33 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       if (why === "quota") log.info("subscription plan used up; job back in the queue until it renews", { job: jobId });
       return store.updateJob(jobId, { status: "queued" });
     }
+    const requeued = isTransientNetworkError(err) ? requeueAfterCut(deps, jobId, opened, err) : undefined;
+    if (requeued) return requeued;
     log.error("job crashed", { job: jobId, error: err instanceof Error ? err.stack : String(err) });
     return fail(`Error inesperado: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Puts a job back in the queue after a network cut, or returns undefined when
+ * it has no retries left or cannot be left clean, so that it fails. Half-done
+ * changes never reach a later commit, and a cut build does not spend an attempt.
+ */
+function requeueAfterCut(deps: RunnerDeps, jobId: string, copy: WorkCopy | undefined, err: unknown): Job | undefined {
+  const { store } = deps;
+  try {
+    const retries = Number(store.getKv(networkRetryKey(jobId)) ?? 0);
+    if (retries >= MAX_NETWORK_RETRIES) return undefined;
+    copy?.discardChanges();
+    const job = store.getJob(jobId)!;
+    // Without a copy the build never started, so the attempt on record is an earlier, real one.
+    if (copy && job.station === "build" && job.attempt > 0) store.updateJob(jobId, { attempt: job.attempt - 1 });
+    store.setKv(networkRetryKey(jobId), String(retries + 1));
+    log.info("network cut; job back in the queue to resume from its checkpoint", { job: jobId, station: job.station, retry: retries + 1, error: err instanceof Error ? err.message : String(err) });
+    return store.updateJob(jobId, { status: "queued" });
+  } catch (cleanup) {
+    log.error("cannot put the job back in the queue after a network cut", { job: jobId, error: cleanup instanceof Error ? cleanup.message : String(cleanup) });
+    return undefined;
   }
 }
 
@@ -180,22 +235,26 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
     return open(exclude);
   }
-  const bare = await open([]);
-  deps.store.updateJob(job.id, { worktree: path, branch, base });
-  if (line.setup.length) {
-    await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
-      for (const command of line.setup) {
-        const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
-        span.set({ "process.command_line": command, "process.exit.code": r.code });
-        if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
-      }
-    });
+  try {
+    const bare = await open([]);
+    deps.store.updateJob(job.id, { worktree: path, branch, base });
+    if (line.setup.length) {
+      await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
+        for (const command of line.setup) {
+          const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
+          span.set({ "process.command_line": command, "process.exit.code": r.code });
+          if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
+        }
+      });
+    }
+    git(["checkout", "-q", "--", "."], bare.cwd);
+    const exclude = untrackedPaths(bare.cwd);
+    await mkdir(join(deps.home.jobs, job.id), { recursive: true });
+    await writeFile(excludeFile, JSON.stringify(exclude));
+    return await open(exclude);
+  } catch (err) {
+    throw new SetupFailed(err instanceof Error ? err.message : String(err), { cause: err });
   }
-  git(["checkout", "-q", "--", "."], bare.cwd);
-  const exclude = untrackedPaths(bare.cwd);
-  await mkdir(join(deps.home.jobs, job.id), { recursive: true });
-  await writeFile(excludeFile, JSON.stringify(exclude));
-  return open(exclude);
 }
 
 /**
