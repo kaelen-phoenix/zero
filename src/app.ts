@@ -8,6 +8,7 @@ import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
+import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
@@ -67,6 +68,8 @@ export interface DaemonInfo {
   alive: boolean;
   pid?: number;
   beatAt?: string;
+  /** Some process holds the daemon lock, even if its heartbeat is stale. Only `factoryStatus` fills it in. */
+  lockHeld?: boolean;
 }
 
 function pidAlive(pid: number): boolean {
@@ -87,7 +90,7 @@ export function daemonInfo(store: Store, now = new Date()): DaemonInfo {
 
 /** Starts the daemon in the background when it is not running. Returns true if it had to start it. */
 export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
-  if (daemonInfo(ctx.store).alive) return false;
+  if (daemonInfo(ctx.store).alive || daemonLockHeld(ctx.home)) return false;
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot locate the zero CLI to start the daemon");
   const log = openSync(ctx.home.daemonLog, "a");
@@ -99,6 +102,80 @@ export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
   });
   child.unref();
   return true;
+}
+
+export interface ShutdownResult {
+  status: "stopped" | "not-running" | "timeout";
+  /** The daemon still running when the wait ran out. */
+  pid?: number;
+}
+
+/** Asks the daemon to stop and waits until it has really gone: lock released and no live heartbeat left. */
+export async function shutdownFactory(ctx: FactoryContext, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<ShutdownResult> {
+  const { timeoutMs = 60_000, pollMs = 250 } = opts;
+  const now = () => (ctx.now ?? (() => new Date()))();
+  const running = () => daemonLockHeld(ctx.home) || daemonInfo(ctx.store, now()).alive;
+  if (!running()) return { status: "not-running" };
+  ctx.store.setKv(SHUTDOWN_KEY, now().toISOString());
+  // On timeout the request stays, so the daemon still stops when it wakes up.
+  for (const deadline = Date.now() + timeoutMs; running(); await new Promise((r) => setTimeout(r, pollMs))) {
+    if (Date.now() >= deadline) return { status: "timeout", pid: daemonInfo(ctx.store, now()).pid };
+  }
+  return { status: "stopped" };
+}
+
+export interface ProcessEntry {
+  pid: number;
+  ppid: number;
+  command: string;
+}
+
+/** The output of the Win32_Process query: one object, or an array of them, or nothing. */
+export function parseWindowsProcesses(json: string): ProcessEntry[] {
+  if (!json.trim()) return [];
+  const rows = [JSON.parse(json) as { ProcessId: number; ParentProcessId: number; CommandLine: string | null }].flat();
+  return rows.map((r) => ({ pid: r.ProcessId, ppid: r.ParentProcessId, command: r.CommandLine ?? "" }));
+}
+
+/** The output of `ps`: pid, parent pid and the command line, one process per line. */
+export function parsePosixProcesses(text: string): ProcessEntry[] {
+  return text.split("\n").flatMap((line) => {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), command: m[3]!.trim() }] : [];
+  });
+}
+
+/** The machine's processes that could be daemons. Throws when they cannot be listed. */
+export function listDaemonCandidates(): ProcessEntry[] {
+  const windows = process.platform === "win32";
+  const r = windows
+    ? spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`], { encoding: "utf8", windowsHide: true, timeout: 10_000 })
+    : spawnSync("ps", ["-A", "-o", "pid=", "-o", "ppid=", "-o", "args="], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
+  if (r.error || r.status !== 0) throw r.error ?? new Error(`process listing exited with ${r.status}`);
+  return windows ? parseWindowsProcesses(r.stdout) : parsePosixProcesses(r.stdout);
+}
+
+/** `node [flags] <zero entry> start`, and nothing after it: `--detach` only launches, and other commands end soon. */
+function isDaemonCommand(command: string): boolean {
+  const exe = /^\s*("[^"]+"|\S+)\s*(.*)$/s.exec(command);
+  if (!exe || !/^node(\.exe)?$/i.test(exe[1]!.replaceAll('"', "").split(/[\\/]/).pop()!)) return false;
+  const args = exe[2]!.replace(/^(?:(?:(?:--import|--require|-r|--loader|--experimental-loader)\s+(?:"[^"]*"|\S+)|-\S+)\s+)*/, "");
+  return /^"?(?:[^"]*[\\/])?(?:cli\.js|cli\.ts|cli\.mjs|zero)"?\s+start\s*$/i.test(args);
+}
+
+/**
+ * The pids of zero daemons on this machine, of any factory: a command line does not say its ZERO_HOME.
+ * Never throws: not being able to list them must not get in the way of the status. It starts a process, so only `zero status` calls it.
+ */
+export function daemonProcesses(list: () => ProcessEntry[] = listDaemonCandidates): number[] {
+  try {
+    const daemons = list().filter((p) => p.pid !== process.pid && isDaemonCommand(p.command));
+    // A development wrapper and the process it runs are one daemon.
+    return daemons.filter((p) => !daemons.some((parent) => parent.pid === p.ppid)).map((p) => p.pid);
+  } catch (err) {
+    log.warn("cannot list processes", { error: String(err) });
+    return [];
+  }
 }
 
 export interface RequestResult {
@@ -173,6 +250,8 @@ export interface FactoryStatus {
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
   daemon: DaemonInfo;
+  /** Zero daemons found on the machine; only `zero status` looks for them. */
+  daemonProcesses?: number[];
   andon: boolean;
   budget: BudgetState;
   today: Metrics;
@@ -199,7 +278,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     box,
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
     packages: ctx.config.loadedPackages?.problems ?? [],
-    daemon: daemonInfo(ctx.store, now),
+    daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
     today: computeMetrics(ctx.store, startOfDay(now), now),

@@ -161,7 +161,7 @@ function budgetStat(s: FactoryStatus): string {
 
 export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, flash?: string): string {
   const t = s.today;
-  const state = s.andon ? `<span class="bad">DETENIDA (andon)</span>` : s.daemon.alive ? `<span class="ok">en marcha</span>` : "apagada";
+  const state = s.andon ? `<span class="bad">DETENIDA (andon)</span>` : s.daemon.alive ? `<span class="ok">en marcha</span>` : s.daemon.lockHeld ? `<span class="bad">no responde${s.daemon.pid ? ` (proceso ${s.daemon.pid})` : ""}</span>` : "apagada";
   const box =
     s.isolation !== "container"
       ? "Caja de aislamiento desactivada: los trabajos corren en copias locales."

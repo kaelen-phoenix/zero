@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { EgressEvent, EgressRule } from "../box/egress.js";
 
 /** node:sqlite is still flagged experimental; load it without printing that warning on every command. */
-function loadSqlite(): typeof import("node:sqlite") {
+export function loadSqlite(): typeof import("node:sqlite") {
   const emit = process.emitWarning;
   process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
     if (String(warning).includes("SQLite")) return;

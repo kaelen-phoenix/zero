@@ -3,6 +3,7 @@ import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, 
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
@@ -80,11 +81,26 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * configured concurrency, resuming anything a previous run left unfinished.
  */
 export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): Promise<void> {
+  // First of all: a daemon that does not hold the lock must not change anything, not even the shutdown request meant for the one that does.
+  const lock = acquireDaemonLock(ctx.home);
+  if (!lock) {
+    const { pid } = daemonInfo(ctx.store);
+    throw new Error(`La fábrica ya está en marcha${pid ? ` (proceso ${pid})` : ""}.`);
+  }
+  try {
+    await factoryLoop(ctx, opts);
+  } finally {
+    lock.release();
+  }
+}
+
+async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<void> {
   const { store } = ctx;
   const pollMs = opts.pollMs ?? 2_000;
   const agentRunner = opts.agentRunner ?? createAgentRunner;
   const now = () => (ctx.now ?? (() => new Date()))();
 
+  // A daemon of an earlier version holds no lock: only its heartbeat tells it is there.
   const other = daemonInfo(store, now());
   if (other.alive && other.pid !== process.pid) throw new Error(`La fábrica ya está en marcha (proceso ${other.pid}).`);
   const beat = () => store.setKv(DAEMON_KEY, JSON.stringify({ pid: process.pid, beatAt: now().toISOString() }));
