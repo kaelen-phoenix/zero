@@ -85,11 +85,42 @@ describe("panel access", () => {
     expect(p.ctx.store.listJobs()).toHaveLength(0);
   });
 
+  it("takes an action whose Origin matches the Host", async () => {
+    const p = await panel();
+    const r = await p.post("/request", { text: "algo" }, { cookie: p.cookie, origin: p.base });
+    expect(r.status).toBe(303);
+    expect(p.ctx.store.listJobs()).toHaveLength(1);
+  });
+
+  it("takes an action with Origin null when Sec-Fetch-Site says same-origin", async () => {
+    const p = await panel();
+    const r = await p.post("/request", { text: "algo" }, { cookie: p.cookie, origin: "null", "sec-fetch-site": "same-origin" });
+    expect(r.status).toBe(303);
+    expect(p.ctx.store.listJobs()).toHaveLength(1);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ["Origin null without Sec-Fetch-Site", { origin: "null" }],
+    ["Origin null with Sec-Fetch-Site none", { origin: "null", "sec-fetch-site": "none" }],
+    ["another site's Origin", { origin: "https://evil.example" }],
+    ["another site's Origin with Sec-Fetch-Site same-origin", { origin: "https://evil.example", "sec-fetch-site": "same-origin" }],
+    ["Sec-Fetch-Site cross-site", { "sec-fetch-site": "cross-site" }],
+    ["Sec-Fetch-Site cross-site with Origin null", { origin: "null", "sec-fetch-site": "cross-site" }],
+  ])("refuses an action with %s", async (_name, headers) => {
+    const p = await panel();
+    const r = await p.post("/request", { text: "algo" }, { cookie: p.cookie, ...headers });
+    expect(r.status).toBe(403);
+    expect(p.ctx.store.listJobs()).toHaveLength(0);
+  });
+
   it("sends a strict content security policy", async () => {
     const r = await (await panel()).get("/");
     expect(r.headers.get("content-security-policy")).toMatch(/default-src 'none'.*script-src 'nonce-[^']+'.*frame-ancestors 'none'/);
     expect(r.headers.get("cache-control")).toBe("no-store");
-    expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(r.headers.get("referrer-policy")).toBe("same-origin");
+    const html = await r.text();
+    expect(html).toContain(`<meta name="referrer" content="same-origin">`);
+    expect(html).not.toContain("no-referrer");
   });
 });
 
