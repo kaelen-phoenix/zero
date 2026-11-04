@@ -1,0 +1,19 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Agregar el cambio de OpenSpec. Todo texto público de este cambio (commits, documentación, comentarios, OpenSpec) describe la quita únicamente como la de una prueba de concepto que no era parte del núcleo.
+- [ ] 1.2 Mover `publicText` de `src/social/filter.ts` a `src/public-text.ts`, actualizar su comentario para que no hable de publicaciones, y cambiar el import en `src/line/packages.ts`. Hacerlo antes de borrar `src/social/`.
+- [ ] 1.3 Mover `test/social-filter.test.ts` a `test/public-text.test.ts` con sus mismas expectativas, y llevar allí la prueba de formas de credencial `EAA…` que hoy está en `test/social-pass.test.ts`.
+- [ ] 1.4 En `src/config.ts`: quitar `SocialSchema`, `DEFAULT_SOCIAL_SIGNATURE`, `social` global y por línea, `stations.community`, `lines[].stations.community`, `socialEnabled` y `community` de `FIXED_STATIONS` y `AGENT_STATIONS`; actualizar el comentario de `usdPerNight`.
+- [ ] 1.5 En `parseFactory`: después de `findSecret` y antes de `FactorySchema.safeParse`, detectar las cuatro claves viejas sobre el YAML ya parseado, quitar `community` de cada `lines[].stations` (ese objeto es estricto y si no fallaría) y registrar el aviso en español una vez por proceso con un `Set` local y `log.warn`. `src/config.ts` no puede importar `warnOnce` de `src/packages.ts`, porque ese módulo ya importa de config. `FactorySchema` y `LineSchema` no son estrictos, así que descartan las demás claves solos.
+- [ ] 1.6 Borrar `src/line/community.ts`, `src/social/`, `agents/community.md` y `agents/community-style.md`.
+- [ ] 1.7 Quitar `community` de `AgentStation` y `AGENT_ACCESS` en `src/agent.ts`, de `SKILL_STATIONS` en `src/skills.ts`, de `IDLE_STATIONS` y su comentario en `src/line/scout.ts`, de la guía en `src/panel/html.ts` y de `agents/research.md`.
+- [ ] 1.8 En `src/daemon.ts`: quitar `communityPass`, las opciones `community` y `social`, `communityAt`, `posts`, y ajustar el comentario de la vuelta ociosa; scout, research y paquetes siguen en ese orden.
+- [ ] 1.9 En `src/app.ts`, `src/cli.ts` y `src/format.ts`: quitar `socialStatus`, `setSocialPaused`, `socialPostNow`, `socialSkills`, `COMMUNITY_SKILLS`, sus tipos y formatos, el caso `social`, y las líneas de la ayuda, incluido `community` en la lista de agentes de `zero skill`.
+- [ ] 1.10 En `src/state/store.ts`: quitar `SocialKind`, `SocialPost`, `toSocialPost`, sus métodos y el `CREATE TABLE`/`CREATE INDEX` de `social_posts`, sin agregar ningún `DROP`. Conservar los patrones `IGAA` y `EAA` de `src/secrets.ts`, y dejar sin tocar las claves viejas de `kv`.
+- [ ] 1.11 Quitar las cuatro dependencias de `package.json` y regenerar `package-lock.json` con npm. Dejar `site/brand/zero-symbol.png`, que es un recurso de marca del sitio.
+- [ ] 1.12 Borrar `test/social-pass.test.ts`, `test/social-render.test.ts`, `test/social-instagram.test.ts` y `test/social-audit.test.ts`; actualizar las listas de estaciones de `test/skills.test.ts` y `test/panel-guide.test.ts`; cambiar en `test/docs.test.ts` las dos pruebas de la sección por una que verifique su ausencia.
+- [ ] 1.13 Agregar pruebas: carga de archivos con las claves viejas y aviso único (`test/config.test.ts`), tabla existente intacta y base nueva sin ella, comando desconocido y ayuda de la CLI, y la vuelta ociosa del daemon sin la estación.
+- [ ] 1.14 Quitar la sección de `README.md` y la equivalente de `README.es.md`, que incluye la guía para conectar la cuenta; quitar los párrafos correspondientes de `AGENTS.md` y actualizar sus referencias a `idlePasses`, `limits.usdPerNight`, `AGENT_STATIONS` y estaciones sin repositorio; quitar la sección `## community` de `docs/revision-linea-produccion.md`.
+- [ ] 1.15 Correr `npm run typecheck`, `npm test`, `npm run build` y `npx openspec validate --all`, y buscar en `src/`, `test/` y `agents/` restos de `community`, `social_posts`, `socialEnabled` y `src/social`.
