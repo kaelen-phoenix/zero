@@ -19,7 +19,7 @@ El panel vive en el proceso del daemon: existe exactamente cuando la fábrica es
 - Las respuestas llevan:
   - CSP estricta (`default-src 'none'`, script con nonce);
   - `frame-ancestors 'none'`;
-  - `Referrer-Policy: no-referrer`;
+  - `Referrer-Policy: same-origin`;
   - `Cache-Control: no-store`.
 
 ### Túnel: cloudflared quick tunnel

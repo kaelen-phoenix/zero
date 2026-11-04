@@ -40,12 +40,16 @@ async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
 /** Came through https (the tunnel), so the cookie can be marked Secure. */
 const viaHttps = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https" || String(req.headers["cf-visitor"] ?? "").includes("https");
 
-/** An action must come from the panel's own pages: same-site cookie, and Origin (when sent) matching Host. */
+/**
+ * An action must come from the panel's own pages: same-site cookie, and Origin (when sent) matching Host.
+ * Browsers may send `Origin: null` on a page's own form posts, so null counts only when Sec-Fetch-Site vouches for it.
+ */
 function sameOrigin(req: IncomingMessage): boolean {
   const site = req.headers["sec-fetch-site"];
   if (site && site !== "same-origin" && site !== "none") return false;
   const origin = req.headers.origin;
   if (!origin) return true;
+  if (origin === "null") return site === "same-origin";
   try {
     return new URL(origin).host === req.headers.host;
   } catch {
@@ -53,7 +57,7 @@ function sameOrigin(req: IncomingMessage): boolean {
   }
 }
 
-/** The page an action returns to (the panel sends no Referer). */
+/** The page an action returns to (from its path, never from the Referer). */
 function returnTo(path: string): string {
   const job = /^\/job\/([0-9a-f]{8})\//.exec(path)?.[1];
   if (job) return `/job/${job}`;
@@ -99,7 +103,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
   });
   const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}) => {

@@ -97,7 +97,7 @@ const REFRESH = `setInterval(() => {
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
   const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
+<meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
 ${opts.flash ? `<div class="card flash">${esc(opts.flash)}</div>` : ""}${body}</main>
 ${opts.refresh ? `<script nonce="${opts.nonce}">${REFRESH}</script>` : ""}</body></html>`;
