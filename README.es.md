@@ -243,7 +243,7 @@ Todo lo que construye la fábrica lleva la firma de zero in the loop. Cada commi
 
 ## Agentes a medida
 
-Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Por ahora son revisores de solo lectura que corren después de `review` y `security`, sobre el mismo cambio: primero los globales y después los de la línea, cada grupo en el orden del archivo.
+Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay dos tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.
 
 ```yaml
 lines:
@@ -281,9 +281,27 @@ zero agent list --line web
 zero agent add a11y --line web                 # crea .zero/agents/a11y.md con una plantilla y suma el agente
 zero agent add seo --line web --informativo    # un agente que solo informa
 zero agent remove seo --line web               # sale de la configuración; el archivo queda
+zero agent add docs --line web --tipo build --archivos "**/*.md"   # un agente que escribe, solo cuando el cambio toca esos archivos
 ```
 
-Los agentes globales leen sus instrucciones relativas a la carpeta de la fábrica (donde está `zero.factory.yaml`). Cada agente recibe el pedido, la especificación y el cambio (`git diff` contra la base), y responde como `review`: hallazgos con archivo y línea, que zero verifica, y aprendizajes para el townhall. Un agente bloqueante con hallazgos `high` o `critical` verificados rechaza el intento, y build los recibe como feedback, con el nombre del agente; uno informativo solo los deja en su traza. Si falta el archivo de instrucciones de un agente bloqueante, el trabajo falla nombrando la ruta; uno informativo se saltea con una advertencia. Sus llamadas aparecen en la traza, el estado y el presupuesto como las de cualquier estación (`zero.station.<nombre>`).
+Los agentes globales leen sus instrucciones relativas a la carpeta de la fábrica (donde está `zero.factory.yaml`). Cada agente revisor recibe el pedido, la especificación y el cambio (`git diff` contra la base), y responde como `review`: hallazgos con archivo y línea, que zero verifica, y aprendizajes para el townhall. Un agente bloqueante con hallazgos `high` o `critical` verificados rechaza el intento, y build los recibe como feedback, con el nombre del agente; uno informativo solo los deja en su traza. Si falta el archivo de instrucciones de un agente bloqueante, el trabajo falla nombrando la ruta; uno informativo se saltea con una advertencia. Sus llamadas aparecen en la traza, el estado y el presupuesto como las de cualquier estación (`zero.station.<nombre>`).
+
+**Agentes que escriben.** Traducciones, arreglos de accesibilidad, documentación: un agente con `type: build` hace trabajo en la línea en vez de solo revisarlo.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: docs
+        type: build                       # escribe en la copia de trabajo, entre build y verify
+        files: ["**/*.md", "site/**"]     # opcional: corre solo cuando el cambio toca estos archivos
+        timeoutMinutes: 10
+```
+
+La línea queda `spec → build → docs → verify → review → security → integrate`. Corre en cada intento después de build, con sus propios `engine`, `model`, `maxTurns`, `timeoutMinutes` y `skills`. Sin `files` corre en cada trabajo; con `files`, zero compara los patrones (distingue mayúsculas) con lo que el cambio toca hasta ese momento, sin contar los archivos de la especificación del trabajo, y si nada coincide lo saltea sin llamarlo. Cuando termina bien, zero commitea lo que escribió, con el nombre del agente, antes del agente siguiente o de `verify`; terminar sin cambios está bien. Si termina de forma anormal, zero descarta lo que dejó sin commitear, los agentes siguientes no corren y el intento vuelve a `build` con un feedback que nombra al agente, consumiendo el intento. Si el plan lo corta, sigue con un reemplazo de su cadena o el trabajo vuelve a la cola; si lo corta el presupuesto del trabajo, se aplica la regla del presupuesto; en los dos casos el trabajo retoma en ese agente sin rehacer `build` ni los agentes que ya terminaron. En estos agentes se rechazan `after`, `access: read` y `blocking: false`, y en un revisor, `files`.
+
+Las mismas garantías que `build`: tiempos límite, la caja de aislamiento montada con escritura cuando la hay, el motor elegido de su cadena y su span en la traza (`zero.station.<nombre>`). Sus instrucciones se leen del repo de la línea o de la carpeta de la fábrica, nunca de la copia de trabajo, y si falta el archivo el trabajo falla nombrando la ruta. Todo lo que escribe pasa por `verify`, las rutas protegidas (incluida `.zero/**`), `review`, `security` y los agentes revisores, igual que lo que escribe `build`. Cada uno suma una llamada por intento con el mismo presupuesto del trabajo, así que `files` también ayuda a cuidar el costo.
 
 **Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
 

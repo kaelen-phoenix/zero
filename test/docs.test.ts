@@ -40,6 +40,14 @@ describe("README in English and Spanish", () => {
     expect(esTop).toContain("Español");
   });
 
+  it("documents the custom agents that write, in the code blocks of both", () => {
+    for (const text of [en, es]) {
+      const code = blocks(text).map((b) => b.body).join("\n");
+      for (const piece of ["type: build", "files:", "--tipo build"]) expect(code).toContain(piece);
+      expect(section(text, text === en ? "## Custom agents" : "## Agentes a medida")).not.toMatch(/For now they are read-only|Por ahora son revisores/);
+    }
+  });
+
   it("each file is in its language", () => {
     expect(en).toContain("## How it works");
     expect(en).not.toContain("## Cómo funciona");

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation, CustomAgentRun } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "../budget.js";
@@ -390,6 +390,18 @@ async function customInstructions(deps: RunnerDeps, line: LineConfig, agent: Lin
   return { ok: true, text: await readFile(path, "utf8") };
 }
 
+/** How a custom agent runs: its own settings and access, with the instructions zero read for it. */
+const customRun = (agent: LineAgent, instructions: string): CustomAgentRun => ({
+  name: agent.name,
+  instructions,
+  access: agent.access,
+  engine: agent.engine,
+  model: agent.model,
+  maxTurns: agent.maxTurns,
+  timeoutMinutes: agent.timeoutMinutes,
+  skills: agent.skills,
+});
+
 /** Below this share of the job's dollar cap left, an attempt billed per use is not started. */
 const MIN_ATTEMPT_SHARE = 0.1;
 
@@ -406,7 +418,7 @@ function budgetStop(deps: RunnerDeps, job: Job, level: Level, spec: Spec, billed
   });
 }
 
-/** The build → verify → review → security loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
+/** The build → the agents that write → verify → review → security → the reviewing agents loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
 async function buildLoop(
   deps: RunnerDeps,
   jobId: string,
@@ -423,14 +435,19 @@ async function buildLoop(
   const contract = renderSpecDelta(spec, false);
   const memory = memoryBlock(await deps.townhall.recall({ line: line.name, kinds: ["lesson", "finding", "blocker"], limit: config.townhall.recallLimit }));
   const specFiles = `openspec/changes/${changeName(jobId)}/`;
-  const custom = lineAgents(config, line);
+  const agents = lineAgents(config, line);
+  const writers = agents.filter((a) => a.type === "build");
+  const custom = agents.filter((a) => a.type === "review");
+  // What the change itself touches: the job's spec files do not count.
+  const changedCode = () => copy.changedFiles().map((f) => f.path).filter((p) => !p.startsWith(specFiles));
 
   for (;;) {
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
     let job = store.getJob(jobId)!;
     // A job interrupted after building resumes at the station it was in, without rebuilding.
+    const resumingWriter = job.attempt > 0 ? writers.findIndex((a) => a.name === job.station) : -1;
     const resumingCustom = job.attempt > 0 ? custom.findIndex((a) => a.name === job.station) : -1;
-    const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security" || resumingCustom >= 0);
+    const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security" || resumingWriter >= 0 || resumingCustom >= 0);
     const attempt = resuming ? job.attempt : job.attempt + 1;
     const flagged = await egressStop(deps, jobId, level);
     if (flagged) return flagged;
@@ -441,7 +458,7 @@ async function buildLoop(
     // An attempt that starts with less than a small share of the cap would only be cut short by it.
     const billed = jobBilledUsd(store, jobId, nowOf(deps));
     const cap = job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0);
-    const next = choose(deps, resumingCustom >= 0 ? custom[resumingCustom]! : resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
+    const next = choose(deps, resumingWriter >= 0 ? writers[resumingWriter]! : resumingCustom >= 0 ? custom[resumingCustom]! : resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
     if ((billed >= cap || cap - billed < cap * MIN_ATTEMPT_SHARE) && next.billing !== "subscription") return budgetStop(deps, job, level, spec, billed);
 
     const attemptSpan = tracer.start("zero.attempt", { jobId, parentId: tracer.jobSpanId(jobId), attrs: { "zero.attempt": attempt } });
@@ -502,7 +519,87 @@ async function buildLoop(
         continue;
       }
       copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}`, lineSignature(config, line)));
-      if (!copy.changedFiles().some((f) => !f.path.startsWith(specFiles))) {
+      if (!changedCode().length) {
+        failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
+        continue;
+      }
+    }
+
+    // The line's own agents that write, in order, each on what the last one committed; a job stopped in one of them resumes there.
+    if (!resuming || resumingWriter >= 0) {
+      let failed = false;
+      for (const writer of writers.slice(Math.max(resumingWriter, 0))) {
+        const station = writer.name;
+        if (writer.files.length && !changedCode().some((p) => writer.files.some((g) => posix.matchesGlob(p, g)))) {
+          tracer.start(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }).end("ok", { "zero.skipped": true });
+          continue;
+        }
+        job = store.updateJob(jobId, { station });
+        const loaded = await customInstructions(deps, line, writer);
+        if (!loaded.ok) {
+          attemptSpan.end("error", { "error.message": `instructions missing: ${loaded.path}` });
+          return finalizeJob(deps, store.getJob(jobId)!, "failed", {
+            reason: `No se encontraron las instrucciones del agente "${station}" en ${loaded.path}. Crealas (por ejemplo con \`zero agent add ${station} --line ${line.name} --tipo build\`) o quitá el agente, y volvé a pedir el trabajo.`,
+          });
+        }
+        const own = customRun(writer, loaded.text);
+        const run = await tracer.within(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }, async (span) => {
+          for (let switched = 0; ; switched++) {
+            const choice = choose(deps, writer);
+            const r = await deps.runAgent({
+              // A custom agent that writes works like build, under its own name.
+              station: "build",
+              custom: own,
+              line: line.name,
+              cwd: copy.cwd,
+              signal,
+              engine: engineOf(choice),
+              maxBudgetUsd: callCap(deps, store.getJob(jobId)!, choice),
+              trace: { tracer, jobId, parentId: span.id },
+              prompt: [
+                requestBlock(job),
+                `## Specification (the contract)\n${contract}`,
+                memory,
+                job.feedback && `## Feedback from the previous attempt\n${job.feedback}`,
+                `You are this project's own "${station}" agent. The change so far is committed: see it with \`git diff ${copy.base}...HEAD\`. Do only what your instructions cover, on top of it, and leave your changes uncommitted: zero commits them. Never commit, push, change branches, or touch credentials or CI configuration. If this change needs nothing from you, change nothing.`,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            });
+            addCost(r.costUsd);
+            if (signal.aborted || !goesOn(deps, r, writer, switched)) return r;
+            // Cut short by the plan: its half-done changes are dropped and the same attempt goes on with a replacement.
+            copy.discardChanges();
+          }
+        });
+        if (signal.aborted) {
+          attemptSpan.end("error", { "error.message": "interrupted" });
+          throw new Interrupted(reasonOf(signal));
+        }
+        if (run.quota?.limited) {
+          // The plan cut the call short: the attempt and the station stay, so only this agent runs again after the renewal.
+          copy.discardChanges();
+          attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          quotaStop(run);
+        }
+        if (run.budgetLimited) {
+          // The job's dollar cap cut the call short: the owner decides, and it resumes at this agent.
+          copy.discardChanges();
+          attemptSpan.end("error", { "error.message": "job budget used up" });
+          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+        }
+        if (!run.ok) {
+          // Unlike build, nothing half-done stays for the next commit to pick up as someone else's work.
+          copy.discardChanges();
+          failAttempt(`El agente ${station} terminó de forma anormal (${run.text.slice(0, 500)}). Sus cambios se descartaron.`);
+          failed = true;
+          break;
+        }
+        copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}, agente ${station}`, lineSignature(config, line)));
+      }
+      if (failed) continue;
+      // An agent that undid the whole change leaves nothing to deliver, the same as a build that changed nothing.
+      if (!changedCode().length) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
         continue;
       }
@@ -543,7 +640,7 @@ async function buildLoop(
     }
 
     // Two read-only checks of the same change: the general review, then an independent security read.
-    // Then the line's custom agents, read-only too, in order; a job stopped in one of them resumes there.
+    // Then the line's reviewing agents, read-only too, in order; a job stopped in one of them resumes there.
     let rejected = false;
     const reviewers: Who[] = resumingCustom >= 0 ? custom.slice(resumingCustom) : ["review", "security", ...custom];
     for (const reviewer of reviewers) {
@@ -563,7 +660,7 @@ async function buildLoop(
           tracer.start(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }).end("ok", { "zero.skipped": true, "zero.instructions.missing": loaded.path });
           continue;
         }
-        own = { name: agent.name, instructions: loaded.text, engine: agent.engine, model: agent.model, maxTurns: agent.maxTurns, timeoutMinutes: agent.timeoutMinutes, skills: agent.skills };
+        own = customRun(agent, loaded.text);
       }
       const ask = agent
         ? `You are this project's own "${agent.name}" agent. Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
@@ -574,7 +671,7 @@ async function buildLoop(
         for (let tryNo = 1; tryNo <= 2; tryNo++) {
           const choice = choose(deps, reviewer);
           const run = await deps.runAgent({
-            // A custom agent works like review: read-only, with the review schema.
+            // A reviewing agent works like review: read-only, with the review schema.
             station: agent ? "review" : (reviewer as "review" | "security"),
             ...(own && { custom: own }),
             line: line.name,

@@ -93,6 +93,21 @@ function job(ctx: FactoryContext, text: string, patch: JobPatch = {}) {
   return ctx.store.updateJob(job.id, patch);
 }
 
+describe("a line's own agents on the production line", () => {
+  it("place a job in an agent that writes at build, and in a reviewer at security", () => {
+    const ctx = testFactory({ level: "L2", isolation: "worktree", agents: [{ name: "site", type: "build" }], lines: [{ name: "tienda", repo: gitRepo(), agents: [{ name: "docs", type: "build" }, { name: "a11y" }] }] });
+    const rowAt = (station: string) => {
+      const { id } = job(ctx, station, { status: "running", station });
+      return productionLine(ctx).rows.find((r) => r.id === id)!;
+    };
+    expect(rowAt("docs")).toMatchObject({ at: "build" });
+    expect(rowAt("site")).toMatchObject({ at: "build" });
+    const reviewer = rowAt("a11y");
+    expect(reviewer).toMatchObject({ at: "security" });
+    expect(reviewer.stations.find((s) => s.name === "security")!.state).toBe("active");
+  });
+});
+
 /** The station states and texts of one job's row. */
 function stations(html: string, id: string): Record<string, { state: string; text: string }> {
   const row = rowOf(html, id);

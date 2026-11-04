@@ -173,6 +173,26 @@ describe("panel guide pages", () => {
     expect(plain((await (await panel({ lines: [] })).text("/agents")).split("<h2>Líneas</h2>")[1]!)).toContain("Todavía no hay líneas");
   });
 
+  it("lists each line's own agents in running order, with their type and escaped patterns", async () => {
+    const repo = gitRepo();
+    const html = await (
+      await panel({ lines: [{ name: "tienda", repo, agents: [{ name: "a11y" }, { name: "docs", type: "build", files: ["<site>/**"] }] }] })
+    ).text("/agents");
+    const line = html.split("<h2>Líneas</h2>")[1]!;
+    expect(line.indexOf('data-agent="docs"')).toBeGreaterThan(-1);
+    expect(line.indexOf('data-agent="docs"')).toBeLessThan(line.indexOf('data-agent="a11y"'));
+    const [docs, a11y] = line.split('data-agent="a11y"') as [string, string];
+    expect(docs).toContain("modifica el código");
+    expect(docs).toContain(esc("<site>/**"));
+    expect(line).not.toContain("<site>");
+    expect(a11y).toContain("solo lectura");
+    expect(plain(line)).not.toContain("No tiene agentes a medida");
+  });
+
+  it("says when a line has no agents of its own", async () => {
+    expect(plain((await (await panel()).text("/agents")).split("<h2>Líneas</h2>")[1]!)).toContain("No tiene agentes a medida");
+  });
+
   it("never shows keys or secrets", async () => {
     const p = await panel(
       { level: "L3", isolation: "container", engine: "mine", engines: { mine: { command: ["mine-cli", "--token-from-env"], secrets: ["MY_API_TOKEN"] } } },

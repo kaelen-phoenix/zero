@@ -681,6 +681,16 @@ function agentSkillsSection(s: AgentGuide["skills"]): string {
   return `<div class="skills"><h3>Skills</h3>${general}${lines}</div>`;
 }
 
+/** A line's custom agents in the order they run, with what each may do. */
+function lineAgentItems(agents: FactoryGuide["lines"][number]["agents"]): string {
+  if (!agents.length) return `<li>No tiene agentes a medida.</li>`;
+  const items = agents.map((a) => {
+    const kind = a.type === "build" ? `<span class="badge warn">modifica el código</span> <span class="muted">entre build y verify</span>` : `<span class="badge ok">solo lectura</span> <span class="muted">después de security${a.blocking ? "" : ", solo informa"}</span>`;
+    return `<li data-agent="${esc(a.name)}"><code>${esc(a.name)}</code> ${kind}${a.files.length ? ` · solo si el cambio toca ${codes(a.files, "")}` : ""}</li>`;
+  });
+  return `<li>Agentes a medida, en el orden en que corren:<ul class="skills">${items.join("")}</ul></li>`;
+}
+
 export function agentsPage(g: FactoryGuide, nonce: string): string {
   const agents = g.agents
     .map((a) => {
@@ -706,7 +716,8 @@ ${agentSkillsSection(a.skills)}
 <li>Entrega: <b>${DELIVERY[l.integrate]}</b></li>
 <li>${l.autoMerge ? "Se funde sola cuando GitHub dice que está lista." : "No se funde sola."}</li>
 <li>${l.issues ? `Toma issues de GitHub con la etiqueta <b>${esc(l.issues.label)}</b>.` : "No toma issues de GitHub."}</li>
-<li>Rutas protegidas: ${codes(g.limits.protectedPaths, "ninguna")}</li></ul></div>`,
+<li>Rutas protegidas: ${codes(g.limits.protectedPaths, "ninguna")}</li>
+${lineAgentItems(l.agents)}</ul></div>`,
         )
         .join("")
     : `<div class="card muted">Todavía no hay líneas. Agregá una con <code>zero line add</code>.</div>`;

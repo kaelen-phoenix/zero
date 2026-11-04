@@ -243,7 +243,7 @@ Everything the factory builds is signed by zero in the loop. Every commit it mak
 
 ## Custom agents
 
-Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). For now they are read-only reviewers that run after `review` and `security`, on the same change: the global ones first, then the line's, each in file order.
+Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). There are two types. `type: review` (the default) is a read-only reviewer that runs after `review` and `security`, on the same change. `type: build` writes in the work copy, after `build` and before `verify`, and can never run after `verify`. Within each type, the global ones go first, then the line's, each in file order.
 
 ```yaml
 lines:
@@ -281,9 +281,27 @@ zero agent list --line web
 zero agent add a11y --line web                 # creates .zero/agents/a11y.md from a template and adds the agent
 zero agent add seo --line web --informativo    # an agent that only reports
 zero agent remove seo --line web               # out of the configuration; its file stays
+zero agent add docs --line web --tipo build --archivos "**/*.md"   # an agent that writes, only when the change touches those files
 ```
 
-Global agents read their instructions relative to the factory folder (where `zero.factory.yaml` is). Each agent gets the request, the specification and the change (`git diff` against the base), and answers like `review`: findings with file and line, which zero checks, and learnings for the townhall. A blocking agent with verified `high` or `critical` findings rejects the attempt, and build gets them as feedback, naming the agent; an informative one only leaves them on its trace. If a blocking agent's instructions file is missing, the job fails naming the path; an informative one is skipped with a warning. Their calls show up in the trace, the status and the budget like any station's (`zero.station.<name>`).
+Global agents read their instructions relative to the factory folder (where `zero.factory.yaml` is). Each reviewing agent gets the request, the specification and the change (`git diff` against the base), and answers like `review`: findings with file and line, which zero checks, and learnings for the townhall. A blocking agent with verified `high` or `critical` findings rejects the attempt, and build gets them as feedback, naming the agent; an informative one only leaves them on its trace. If a blocking agent's instructions file is missing, the job fails naming the path; an informative one is skipped with a warning. Their calls show up in the trace, the status and the budget like any station's (`zero.station.<name>`).
+
+**Agents that write.** Translations, accessibility fixes, documentation: an agent with `type: build` does work on the line instead of only reviewing it.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: docs
+        type: build                       # writes in the work copy, between build and verify
+        files: ["**/*.md", "site/**"]     # optional: it runs only when the change touches these files
+        timeoutMinutes: 10
+```
+
+The line becomes `spec → build → docs → verify → review → security → integrate`. It runs in every attempt after build, with its own `engine`, `model`, `maxTurns`, `timeoutMinutes` and `skills`. Without `files` it runs on every job; with `files`, zero compares the patterns (case-sensitive) with what the change touches so far, without the job's specification files, and otherwise skips it without calling it. When it ends well zero commits what it wrote, naming the agent, before the next agent or `verify`; ending without changes is fine. If it ends abnormally, zero discards what it left uncommitted, the next agents do not run, and the attempt goes back to `build` with feedback naming the agent, using up the attempt. If the plan cuts it short, it goes on with a replacement from its chain or the job goes back to the queue; if the job's budget does, the budget rule applies; in both cases the job resumes at that agent without redoing `build` or the agents that finished. `after`, `access: read` and `blocking: false` are refused on these agents, and `files` on a reviewer.
+
+The same guarantees as `build`: timeouts, the isolation box mounted read-write when there is one, the engine chosen from its chain, and its span in the trace (`zero.station.<name>`). Its instructions are read from the line's repository or the factory folder, never from the work copy, and if the file is missing the job fails naming the path. All it writes goes through `verify`, protected paths (including `.zero/**`), `review`, `security` and the reviewing agents, like what `build` writes. Each one adds a call per attempt under the same job budget, so `files` also keeps the cost down.
 
 **Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
 

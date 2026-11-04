@@ -144,21 +144,26 @@ export const CustomEngineSchema = z.object({
 export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
 
 /**
- * A project's own agent: for now a read-only reviewer that runs after review
- * and security, on the same change. It adds to the line; it never replaces or
- * skips a fixed station.
+ * A project's own agent. `review`: a read-only reviewer that runs after review
+ * and security, on the same change. `build`: it writes in the work copy, after
+ * build and before verify, so all it touches goes through every check. It adds
+ * to the line; it never replaces or skips a fixed station, and nothing lets one
+ * that writes run after verify.
  */
 export const CustomAgentSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "usá minúsculas, dígitos y guiones"),
     /** Its instructions, relative to the line's repository (line agents) or to the factory folder (global agents). */
     instructions: z.string().min(1).optional(),
-    /** Where it runs in the line; only after review (and security) for now. */
-    after: z.enum(["review"], { error: "por ahora un agente a medida solo puede correr después de review" }).default("review"),
-    /** Only read-only agents for now; whatever they write is discarded. */
-    access: z.literal("read", { error: "por ahora un agente a medida solo puede ser de lectura (access: read)" }).default("read"),
-    /** True: its verified high or critical findings send the change back to build, like review. False: it only reports. */
-    blocking: z.boolean().default(true),
+    type: z.enum(["review", "build"], { error: "el tipo de un agente a medida tiene que ser review o build" }).default("review"),
+    /** Where it runs in the line, derived from its type; a reviewer may still say `review`. */
+    after: z.string({ error: "after tiene que ser un texto" }).optional(),
+    /** Derived from its type: whatever a reviewer writes is discarded. */
+    access: z.string({ error: "access tiene que ser un texto" }).optional(),
+    /** Reviewers only. True: its verified high or critical findings send the change back to build, like review. False: it only reports. */
+    blocking: z.boolean().optional(),
+    /** `build` only: run only when the change touches one of these globs. Empty: on every job. */
+    files: z.array(z.string().min(1, "los patrones de files no pueden estar vacíos")).optional(),
     engine: z.string().optional(),
     model: z.string().optional(),
     maxTurns: z.number().int().positive().default(40),
@@ -166,7 +171,29 @@ export const CustomAgentSchema = z
     skills: z.array(z.string().min(1)).default([]),
   })
   .strict()
-  .transform((a) => ({ ...a, instructions: a.instructions ?? `.zero/agents/${a.name}.md` }));
+  .superRefine((a, ctx) => {
+    const issue = (field: string, message: string) => ctx.addIssue({ code: "custom", path: [field], message });
+    if (a.type === "build") {
+      if (a.after !== undefined) issue("after", `el agente "${a.name}" escribe: un agente que escribe corre entre build y verify, sin after`);
+      if (a.access !== undefined && a.access !== "write") issue("access", `el agente "${a.name}" escribe: su access solo puede ser write`);
+      if (a.blocking === false) issue("blocking", `el agente "${a.name}" escribe: si falla, falla el intento, así que no puede ser blocking: false`);
+    } else {
+      if (a.after !== undefined && a.after !== "review") issue("after", `un agente de revisión solo puede correr después de review; para escribir antes de verify usá type: build`);
+      if (a.access !== undefined && a.access !== "read") issue("access", `un agente de revisión solo puede ser de lectura (access: read); para escribir usá type: build`);
+      if (a.files !== undefined) issue("files", `el agente "${a.name}" es de revisión: files solo vale con type: build`);
+    }
+  })
+  .transform((a) => {
+    const writes = a.type === "build";
+    return {
+      ...a,
+      instructions: a.instructions ?? `.zero/agents/${a.name}.md`,
+      after: (writes ? "build" : "review") as "build" | "review",
+      access: (writes ? "write" : "read") as "write" | "read",
+      blocking: writes || (a.blocking ?? true),
+      files: a.files ?? [],
+    };
+  });
 
 /** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
 export const COMMIT_AUTHORS = ["zero", "owner"] as const;
@@ -303,6 +330,8 @@ export const FactorySchema = z
     }
     const checkAgents = (agents: CustomAgent[], path: (string | number)[], taken: Set<string>) => {
       for (const [i, agent] of agents.entries()) {
+        // An agent with a bad field never went through its transform; that problem is already reported.
+        if (!agent.instructions) continue;
         const at = [...path, i];
         const issue = (field: string, message: string) => ctx.addIssue({ code: "custom", path: [...at, field], message });
         if ((FIXED_STATIONS as readonly string[]).includes(agent.name)) issue("name", `el agente "${agent.name}" usa el nombre de una estación fija de zero; elegí otro`);
@@ -342,7 +371,7 @@ export function instructionsProblem(path: string): string | undefined {
 /** A custom agent that applies to a line, and where its instructions live: the line's repository or the factory folder. */
 export type LineAgent = CustomAgent & { origin: "factory" | "line" };
 
-/** The custom agents of a line, in the order they run: the global ones, then the line's own, each in file order. */
+/** The custom agents of a line, in file order: the global ones, then the line's own. Each type runs in this order at its own point of the line. */
 export function lineAgents(config: Pick<FactoryConfig, "agents">, line: Pick<LineConfig, "agents">): LineAgent[] {
   return [...config.agents.map((a) => ({ ...a, origin: "factory" as const })), ...line.agents.map((a) => ({ ...a, origin: "line" as const }))];
 }

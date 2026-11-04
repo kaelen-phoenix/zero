@@ -36,7 +36,7 @@ describe("custom agents in the factory file", () => {
   it("fill their defaults", () => {
     const cfg = parseFactory("lines:\n  - name: web\n    repo: /work/web\n    agents:\n      - name: a11y\n");
     expect(cfg.lines[0]!.agents).toEqual([
-      { name: "a11y", instructions: ".zero/agents/a11y.md", after: "review", access: "read", blocking: true, maxTurns: 40, timeoutMinutes: 15, skills: [] },
+      { name: "a11y", type: "review", instructions: ".zero/agents/a11y.md", after: "review", access: "read", blocking: true, files: [], maxTurns: 40, timeoutMinutes: 15, skills: [] },
     ]);
     expect(parseFactory("{}").agents).toEqual([]);
   });
@@ -310,8 +310,8 @@ describe("zero agent", () => {
       {
         line: "web",
         agents: [
-          { name: "docs", origin: "factory", blocking: true, path: join(dirname(ctx.home.config), ".zero/agents/docs.md"), missing: true },
-          { name: "a11y", origin: "line", blocking: false, path: join(repo, ".zero/agents/a11y.md"), missing: false },
+          { name: "docs", origin: "factory", type: "review", files: [], blocking: true, path: join(dirname(ctx.home.config), ".zero/agents/docs.md"), missing: true },
+          { name: "a11y", origin: "line", type: "review", files: [], blocking: false, path: join(repo, ".zero/agents/a11y.md"), missing: false },
         ],
       },
     ]);
