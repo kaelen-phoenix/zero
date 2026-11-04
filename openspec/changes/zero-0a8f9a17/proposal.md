@@ -16,7 +16,7 @@ Capacidad nueva: paquetes de agentes, una forma genérica y gratuita de extender
 - Supuesto: Interpretación: en la interfaz 1 las estaciones tienen solo acceso `read` para sus agentes y validan la salida con `ctx.z`, la instancia de zod de zero, para no depender de que el paquete traiga la misma versión.
 - Supuesto: Node guarda en caché los módulos importados: un cambio en el código de una estación necesita reiniciar el daemon. El `config` y el manifiesto se releen en cada vuelta.
 - Supuesto: `npm install` no se pudo probar en esta corrida y los tests usan un instalador falso, así que la primera instalación real desde npm es la prueba verdadera, sobre todo en Windows, donde `npm` es un `.cmd`. `--ignore-scripts` evita los scripts de instalación, pero un paquete que los necesite no va a quedar completo.
-- Supuesto: Antes de fundir: zero genera el commit de especificación citando el pedido textual en `proposal.md`. Build puede cambiar ese párrafo en el resultado final, pero el commit sigue en el historial de la rama, y una fusión normal lo conserva. Si no querés que quede en el historial público, fundí esta solicitud de cambio con squash y no con fusión automática.
+- Las propuestas que genera zero se escriben con el resumen y los requisitos de la especificación, sin copiar el texto del pedido.
 
 ## Capabilities
 

@@ -57,12 +57,18 @@ describe("spec station output", () => {
   it("renders a change that `openspec validate` accepts", async () => {
     const root = tempDir("zero-openspec-");
     writeTree(root, { "openspec/config.yaml": "schema: spec-driven\n" });
-    const files = renderOpenSpecChange(validSpec(), { jobId: "abc123", request: "agregá /health", newCapability: true });
+    const files = renderOpenSpecChange(validSpec(), { jobId: "abc123", newCapability: true });
     await writeFiles(join(root, "openspec", "changes", changeName("abc123")), files);
     const bin = join(process.cwd(), "node_modules", "@fission-ai", "openspec", "bin", "openspec.js");
     const r = spawnSync(process.execPath, [bin, "validate", changeName("abc123")], { cwd: root, encoding: "utf8" });
     expect(`${r.stdout}${r.stderr}`).toContain("is valid");
     expect(r.status).toBe(0);
+  });
+
+  it("describes the change in the proposal without quoting the request", () => {
+    const proposal = renderOpenSpecChange(validSpec(), { jobId: "abc123", newCapability: true })["proposal.md"]!;
+    expect(proposal).toContain(validSpec().summary);
+    expect(proposal).not.toContain("Pedido original");
   });
 
   it("explains the spec in plain words for the owner", () => {

@@ -367,7 +367,7 @@ async function specStation(
     await learn(spec.learnings, spec.followUps.map((f) => ({ kind: "proposal" as const, line: line.name, job: job.id, source: "spec", topic: f.slice(0, 80), body: f })));
     if (!spec.feasible) return `El pedido no se puede hacer sin ayuda: ${spec.reason}`;
 
-    const files = renderOpenSpecChange(spec, { jobId: job.id, request: job.request, newCapability: !capabilityExists(copy.cwd, spec.capability) });
+    const files = renderOpenSpecChange(spec, { jobId: job.id, newCapability: !capabilityExists(copy.cwd, spec.capability) });
     await writeFiles(join(deps.home.jobs, job.id, "openspec"), files);
     if (existsSync(join(copy.cwd, "openspec"))) {
       await writeFiles(join(copy.cwd, "openspec", "changes", changeName(job.id)), files);

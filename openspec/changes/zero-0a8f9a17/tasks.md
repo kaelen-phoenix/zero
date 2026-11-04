@@ -14,5 +14,6 @@
 - [x] 1.10 Crear test/packages.test.ts con los escenarios de esta especificación, usando carpetas temporales, módulos .mjs reales y `fakeAgents`; agregar `/* @vite-ignore */` al import dinámico si vitest lo necesita.
 - [x] 1.11 Agregar la sección `## Agent packages` / `## Paquetes de agentes` antes de `## Night shift` / `## Turno nocturno` en los dos README, con los mismos bloques de código, y las comprobaciones en test/docs.test.ts, incluido el que carga el ejemplo. En inglés no usar `owner` fuera de código; en español no usar la palabra vetada por test/wording.test.ts.
 - [x] 1.12 Agregar docs/adr/0002-paquetes-de-agentes.md, en español, con la decisión: código en el proceso del daemon con permiso explícito, interfaz versionada y paquete roto fuera sin frenar la fábrica; presentar los paquetes solo como extensión con agentes de terceros o propios. Actualizar la sección Layout de AGENTS.md con src/packages.ts y src/line/packages.ts.
-- [x] 1.13 En openspec/changes/zero-0a8f9a17/proposal.md, reemplazar el párrafo `Pedido original` por una frase neutra que describa la capacidad nueva. Revisar que commits, ADR y README cumplan lo mismo.
+- [x] 1.13 Revisar que el ADR y los README presenten los paquetes solo como extensión con agentes de terceros o propios.
 - [x] 1.14 Correr `npm run typecheck`, `npm test`, `npm run build` y `npx openspec validate --all`.
+- [x] 1.15 spec.ts: `renderOpenSpecChange` deja de copiar el texto del pedido en `proposal.md`, con su test.
