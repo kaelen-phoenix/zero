@@ -4,6 +4,7 @@ import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, jobCost, jobName, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
+import { reportSection, type MonthlyReport } from "../report.js";
 import { FINAL_STATUSES, type Job, type ResearchNote } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
 import type { SkillView } from "../skills.js";
@@ -94,12 +95,28 @@ const REFRESH = `setInterval(() => {
 }, 15000);`;
 
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
+  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
 ${opts.flash ? `<div class="card flash">${esc(opts.flash)}</div>` : ""}${body}</main>
 ${opts.refresh ? `<script nonce="${opts.nonce}">${REFRESH}</script>` : ""}</body></html>`;
+}
+
+/** The "Informe mensual" tab: a GET form to choose line and month, then each line's report with its downloads. */
+export function reportPage(view: { report?: MonthlyReport; error?: string; names: string[]; line?: string; month?: string }, nonce: string): string {
+  const month = view.report?.month ?? view.month ?? "";
+  const names = [...new Set([...view.names, ...(view.report?.lines.map((l) => l.line) ?? []), ...(view.line ? [view.line] : [])])];
+  const options = names.map((n) => `<option value="${esc(n)}"${n === view.line ? " selected" : ""}>${esc(n)}</option>`).join("");
+  const form = `<div class="card"><h1>Informe mensual</h1>
+<p class="muted">Armado solo con lo que la fábrica ya tiene guardado. Nada se envía a nadie: lo descargás y lo compartís vos si querés.</p>
+<form method="get" action="/report"><label for="r-line">Línea</label><select id="r-line" name="line"><option value="">Todas las líneas</option>${options}</select>
+<label for="r-mes">Mes (AAAA-MM)</label><input id="r-mes" type="text" name="mes" value="${esc(month)}" placeholder="2026-10"><button class="primary">Ver informe</button></form></div>`;
+  const download = (line: string, format: "md" | "html", label: string) => `<a href="/report/export?line=${encodeURIComponent(line)}&amp;mes=${encodeURIComponent(month)}&amp;format=${format}">${label}</a>`;
+  const body = view.error
+    ? `<div class="card bad">${esc(view.error)}</div>`
+    : (view.report?.lines ?? []).map((l) => `<div class="card">${reportSection(l)}<p>Descargar: ${download(l.line, "md", "Markdown")} · ${download(l.line, "html", "HTML")}</p></div>`).join("");
+  return page("Informe mensual", form + body, { nonce });
 }
 
 /** The only page without a session: exchanges the key in the link's fragment for a cookie, then clears it from the address bar. */

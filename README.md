@@ -68,12 +68,13 @@ zero status <id>               # a job's detail, and the question if it is waiti
 zero approve <id>              # approve (or --reject --note "why")
 zero trace <id>                # step by step: stations, attempts, agents, commands, cost
 zero briefing                  # report: production, cost, lessons, what needs you
+zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to share with its client
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
 ```
 
-The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), and `zero_egress` and `zero_egress_block` (internet egress).
+The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), and `zero_egress` and `zero_egress_block` (internet egress).
 
 ## GitHub issues
 
@@ -130,7 +131,8 @@ With the factory running, the panel shows:
 - each job's trace;
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
-- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first).
+- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
+- the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
 From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
 
@@ -146,6 +148,24 @@ zero panel rotate              # new key: previous links stop working
 - The key lives in the system keychain.
 - Remote access uses `cloudflared` (Apache-2.0). zero downloads it with your permission from its official releases and, on Windows, verifies Cloudflare's signature.
 - While the tunnel is open, Cloudflare carries the panel's traffic. Close it when you are not using it.
+
+## Monthly report
+
+A summary per line and calendar month, for you and to share with that line's client. Code writes it from `state.db`, never a model, and it writes nothing back.
+
+```sh
+zero informe                                # the previous month, every line (a warning reminds you to ask for one line before sharing)
+zero informe tienda --mes 2026-10           # one line, one month, in Markdown
+zero informe tienda --mes 2026-10 --html    # a standalone HTML document (it needs a line)
+```
+
+- It lists each delivered job: title, request and delivery dates, origin (owner's request, GitHub issue, night-shift proposal approved by you or taken on its own, research), what changed (the summary of its spec) and the link to the pull request or commit.
+- Totals: delivered jobs, and apart, as information and not as work done, failed and stopped ones. Attempts, time and cost add up every job finished in the month, failed and stopped included; time runs from request to close, waits included.
+- The part of the cost that came from a subscription is marked as an estimate that was not charged. The cost goes in the exported file too: edit it if you do not want your client to see it.
+- A job counts in the month it finished, in local time.
+- What you share carries no secrets, no local paths and nothing from other lines. It is cleaned by patterns, so read it before sending it: a title that names another line by name stays as written.
+- The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
+- Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
 
 ## The factory (`~/.zero/zero.factory.yaml`)
 

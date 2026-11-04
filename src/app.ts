@@ -14,6 +14,7 @@ import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
+import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
@@ -21,6 +22,7 @@ import { formatEgressSites, jobName } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { buildLineReport, parseMonth, previousMonth, type MonthlyReport } from "./report.js";
 import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
@@ -308,6 +310,36 @@ export function requestFromResearchNote(ctx: FactoryContext, id: string): Reques
     `Fuentes:\n${note.sources.map((u) => `- ${u}`).join("\n")}`,
   ].join("\n\n");
   return requestWork(ctx, { text, line: note.line, source: { kind: "research", note: note.id } });
+}
+
+/**
+ * The monthly report: for one line or every line, the jobs that finished in a
+ * calendar month (the previous one by default). Reads only; the CLI, the panel
+ * and the chat all come through here.
+ */
+export function monthlyReport(ctx: FactoryContext, input: { line?: string; month?: string } = {}): MonthlyReport {
+  const month = input.month ?? previousMonth((ctx.now ?? (() => new Date()))());
+  const { from, to } = parseMonth(month);
+  const finished = ctx.store
+    .finishedSince(from)
+    .filter((j) => FINAL_STATUSES.includes(j.status) && Date.parse(j.finishedAt!) < to.getTime())
+    .sort((a, b) => a.finishedAt!.localeCompare(b.finishedAt!) || a.id.localeCompare(b.id));
+  const configured = ctx.config.lines.map((l) => l.name);
+  const retired = [...new Set(finished.map((j) => j.line))].filter((l) => !configured.includes(l)).sort();
+  const names = input.line ? [input.line] : [...configured, ...retired];
+  if (input.line && !configured.includes(input.line) && !retired.includes(input.line)) {
+    throw new Error(`La línea "${input.line}" no está configurada y no tiene trabajos terminados en ${month}.`);
+  }
+  const allRepos = ctx.config.lines.map((l) => l.repo);
+  return {
+    month,
+    lines: names.map((name) => {
+      const config = ctx.config.lines.find((l) => l.name === name);
+      const jobs = finished.filter((j) => j.line === name);
+      const repository = config && jobs.some((j) => j.delivery?.commit) ? lineRepository(config) : undefined;
+      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository });
+    }),
+  };
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */

@@ -68,12 +68,13 @@ zero status <id>               # detalle de un trabajo, y la pregunta si te est�
 zero approve <id>              # aprobar (o --reject --note "por qué")
 zero trace <id>                # paso a paso: estaciones, intentos, agentes, comandos, costo
 zero briefing                  # informe: producción, costo, aprendizajes, lo que te necesita
+zero informe [line] [--mes AAAA-MM] [--html]   # informe mensual por línea, para compartir con su cliente
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), y `zero_egress` y `zero_egress_block` (salidas a internet).
+Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), y `zero_egress` y `zero_egress_block` (salidas a internet).
 
 ## Issues de GitHub
 
@@ -130,7 +131,8 @@ Con la fábrica en marcha, el panel muestra:
 - la traza de cada trabajo;
 - las salidas a internet y el informe;
 - las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
-- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes).
+- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes);
+- el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
 Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
 
@@ -146,6 +148,24 @@ zero panel rotate              # clave nueva: los links anteriores dejan de serv
 - La clave vive en el llavero del sistema.
 - El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
 - Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
+
+## Informe mensual
+
+Un resumen por línea y mes calendario, para vos y para compartir con el cliente de esa línea. Lo arma código a partir de `state.db`, nunca un modelo, y no escribe nada.
+
+```sh
+zero informe                                # el mes anterior, todas las líneas (un aviso recuerda pedir una sola antes de compartir)
+zero informe tienda --mes 2026-10           # una línea, un mes, en Markdown
+zero informe tienda --mes 2026-10 --html    # un documento HTML autónomo (necesita una línea)
+```
+
+- Lista cada trabajo entregado: título, fechas de pedido y de entrega, origen (pedido del dueño, issue de GitHub, propuesta del turno nocturno aprobada por vos o tomada por su cuenta, investigación), qué cambió (el resumen de su spec) y el link a la solicitud de cambio o al commit.
+- Totales: trabajos entregados y, aparte, como información y no como trabajo hecho, los fallidos y los detenidos. Intentos, tiempo y costo suman todos los trabajos terminados en el mes, incluidos los fallidos y detenidos; el tiempo va del pedido al cierre e incluye las esperas.
+- La parte del costo que vino de una suscripción se marca como un estimado que no se cobró. El costo va también en el archivo exportado: editalo si no querés que lo vea tu cliente.
+- Un trabajo cuenta en el mes en que terminó, en hora local.
+- Lo que compartís no lleva secretos, ni rutas locales, ni nada de otras líneas. La limpieza se basa en patrones, así que leelo antes de mandarlo: un título que nombre a otra línea por su nombre queda como está.
+- La pestaña "Informe mensual" del panel deja elegir línea y mes y descargar cada línea en Markdown o HTML. En el chat, `zero_monthly_report` devuelve el mismo Markdown y solo lee.
+- Nada se envía solo: ninguna pasada del daemon lo genera ni lo publica. Solo existe cuando lo pedís, y vos decidís a quién se lo das.
 
 ## La fábrica (`~/.zero/zero.factory.yaml`)
 
