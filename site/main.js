@@ -151,6 +151,7 @@
     "theme.auto": "auto",
     "theme.light": "light",
     "theme.dark": "dark",
+    "foot.instagram": "zero in the loop on Instagram",
     "foot.built": 'This site was built by <a href="https://zerointheloop.com">zero in the loop</a>',
     "foot.whatsapp": "zero in the loop on WhatsApp",
     "href.whatsapp": "https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop",
