@@ -90,6 +90,18 @@ describe("proposals as GitHub issues", () => {
     expect(ctx.store.getProposal(p.id)).toMatchObject({ issueNumber: 5, issueUrl: "https://github.com/kaelen/demo/issues/5" });
   });
 
+  it("gives the api factory the line it acts for, so the daemon signs with that line's signature", async () => {
+    const ctx = factory();
+    ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub();
+    const asked: unknown[][] = [];
+    await syncProposalIssues(ctx, (...args) => {
+      asked.push(args);
+      return gh.api;
+    });
+    expect(asked).toEqual([["kaelen/demo", ctx.config.lines[0]]]);
+  });
+
   it("leaves lines without GitHub alone", async () => {
     const ctx = factory([{ name: "demo", repo: githubRepo("https://gitlab.com/kaelen/demo.git") }]);
     const p = ctx.store.createProposal({ ...idea, line: "demo" });

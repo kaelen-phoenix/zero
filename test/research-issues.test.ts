@@ -58,6 +58,18 @@ describe("research notes as GitHub issues", () => {
     expect(ctx.store.getResearchNote(note.id)).toMatchObject({ issueNumber: 10, issueUrl: "https://github.com/kaelen/demo/issues/10" });
   });
 
+  it("gives the api factory the line it acts for", async () => {
+    const ctx = factory();
+    ctx.store.createResearchNote({ line: "demo", ...finding });
+    const gh = fakeGitHub();
+    const asked: unknown[][] = [];
+    await syncResearchIssues(ctx, (...args) => {
+      asked.push(args);
+      return gh.api;
+    });
+    expect(asked).toEqual([["kaelen/demo", ctx.config.lines[0]]]);
+  });
+
   it("leaves lines without GitHub alone", async () => {
     const ctx = factory("https://gitlab.com/kaelen/demo.git");
     const note = ctx.store.createResearchNote({ line: "demo", ...finding });

@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import type { CommitAuthor, LineConfig } from "../config.js";
+import type { CommitAuthor, LineConfig, Signature } from "../config.js";
 import { git, tryGit } from "../shell.js";
+import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker } from "../tracker.js";
 import { authorEnv, checkedOutAt, FACTORY_IDENTITY, removeWorkCopy, type WorkCopy } from "../workspace.js";
@@ -11,7 +12,9 @@ export type IntegrateResult = { ok: true; delivery: Delivery } | { ok: false; re
 export interface IntegrateOptions {
   jobId: string;
   title: string;
+  /** Already signed by the caller; `signature` is for the merge commit's trailer. */
   body: string;
+  signature?: Signature;
   /** Directory for a temporary copy when the base branch is not checked out anywhere. */
   scratchDir: string;
   /** Who authors the merge commit (`merge` mode); zero is always the committer. Absent: zero. */
@@ -31,7 +34,7 @@ function mergeIn(dir: string, branch: string, message: string, env: NodeJS.Proce
  * merge conflicts, nothing changes and the caller parks the job.
  */
 export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): IntegrateResult {
-  const message = `zero: ${opts.title} (${opts.jobId})`;
+  const message = withTrailer(`zero: ${opts.title} (${opts.jobId})`, opts.signature);
   const env = authorEnv(opts.author, line.repo);
   const owner = checkedOutAt(line.repo, line.baseBranch);
   if (owner) {

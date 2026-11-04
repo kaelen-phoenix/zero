@@ -60,6 +60,17 @@ async function deliveredJob(opts: { autoMerge?: boolean; source?: JobSource } = 
 }
 
 describe("automatic merging", () => {
+  it("gives the api factory the job's line, so the daemon signs with that line's signature", async () => {
+    const { ctx } = await deliveredJob();
+    const gh = fakeGitHub(green);
+    const asked: unknown[][] = [];
+    await pollMerges(ctx, (...args) => {
+      asked.push(args);
+      return gh.api;
+    });
+    expect(asked[0]).toEqual(["kaelen/demo", ctx.config.lines[0]]);
+  });
+
   it("merges a ready pull request, deletes its branch and tells the issue", async () => {
     const { ctx, job } = await deliveredJob({ source: { kind: "github-issue", repository: "kaelen/demo", number: 7, url: "u" } });
     const gh = fakeGitHub(green);
