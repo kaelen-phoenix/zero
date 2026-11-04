@@ -134,6 +134,7 @@
     "training.mentoring": "For a person or a team, in their own repos.",
     "training.onrequest": "on request",
     "training.cta": "I want this",
+    "training.whatsapp": 'You can also write on <a href="https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop" target="_blank" rel="noopener">WhatsApp</a> at +54 9 11 5981-3335.',
     "training.noscript": "Without JavaScript the button does not open your email: write to kaelen.dev at gmail.com with the subject \"Training:\" and the format you are interested in.",
     "links.label": "Links",
     "links.title": "Keep reading.",
@@ -152,6 +153,8 @@
     "theme.dark": "dark",
     "foot.instagram": "zero in the loop on Instagram",
     "foot.built": 'This site was built by <a href="https://zerointheloop.com">zero in the loop</a>',
+    "foot.whatsapp": "zero in the loop on WhatsApp",
+    "href.whatsapp": "https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop",
   };
 
   const MESSAGES = {

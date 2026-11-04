@@ -1,0 +1,11 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 En `site/index.html`, dentro de `<footer class="foot">`, después del enlace de GitHub (y del de Instagram, si ya está en la base) y antes de la versión, agregar `<a class="social" href="https://wa.me/5491159813335?text=Hola%2C%20quiero%20saber%20m%C3%A1s%20sobre%20zero%20in%20the%20loop" target="_blank" rel="noopener" data-i18n-href="href.whatsapp" data-i18n-label="foot.whatsapp" aria-label="WhatsApp de zero in the loop">` con un SVG en línea simple (globo de diálogo con auricular), `aria-hidden="true"`, `focusable="false"` y `stroke`/`fill` en `currentColor`. Si el enlace de Instagram ya existe, usar el mismo trazo y la misma clase que su ícono.
+- [x] 1.2 En `site/index.html`, dentro de `#training`, entre la lista de formatos y el `<noscript>`, agregar `<p class="note" data-i18n="training.whatsapp">También podés escribir por <a href="…mismo href en español…" target="_blank" rel="noopener">WhatsApp</a> al +54 9 11 5981-3335.</p>`. No usar la palabra "empresarial" ni "empresa": `test/site.test.ts` las prohíbe en todos los archivos del sitio.
+- [x] 1.3 En `site/main.js`, agregar a `EN`: `"href.whatsapp": "https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop"`, `"foot.whatsapp": "zero in the loop on WhatsApp"` y `"training.whatsapp"` con la línea en inglés (`You can also write on <a …>WhatsApp</a> at +54 9 11 5981-3335.`), con el enlace en inglés, `target="_blank"` y `rel="noopener"`.
+- [x] 1.4 En `site/styles.css`, en la sección Footer, agregar (si Instagram no lo trajo ya) `.foot .social { display: inline-flex; }` y `.foot .social svg { width: 1.1em; height: 1.1em; }`, sin colores nuevos.
+- [x] 1.5 En `test/site.test.ts`, cambiar la prueba 'los enlaces al README siguen el idioma elegido' para que filtre por `data-i18n-href` igual a `href.readme`, conservando sus aserciones: hoy exige exactamente tres elementos con ese atributo y que todos lleven a la URL del README.
+- [x] 1.6 En `test/site.test.ts`, agregar pruebas de cada escenario: destino, parámetro text decodificado, target, rel y posición en el pie; SVG monocromo y decorativo; regla de tamaño en el CSS; aria-label y href con `applyLanguage` en ambos sentidos; línea de `#training` y su versión en inglés.
+- [x] 1.7 Correr `npm run typecheck`, `npm test` y `npx openspec validate --all`.

@@ -620,6 +620,109 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
   });
 });
 
+describe("sitio del proyecto: WhatsApp", () => {
+  const WHATSAPP = "https://wa.me/5491159813335";
+  const MESSAGE_ES = "Hola, quiero saber más sobre zero in the loop";
+  const MESSAGE_EN = "Hi, I want to know more about zero in the loop";
+  const NUMBER = "+54 9 11 5981-3335";
+  const footer = /<footer class="foot">([\s\S]*?)<\/footer>/.exec(html)![1]!;
+  const footerLink = /<a\b[^>]*\bdata-i18n-href="href\.whatsapp"[^>]*>([\s\S]*?)<\/a>/.exec(footer)!;
+  const icon = /<svg\b[\s\S]*<\/svg>/.exec(footerLink[1]!)![0];
+
+  /** Checks an anchor's opening tag: destination, decoded message, new tab and rel. */
+  function expectLink(tag: string, message: string) {
+    const url = new URL(/\shref="([^"]*)"/.exec(tag)![1]!);
+    expect(url.origin + url.pathname).toBe(WHATSAPP);
+    expect(url.searchParams.get("text")).toBe(message);
+    expect(tag).toMatch(/\starget="_blank"/);
+    expect(/\srel="([^"]*)"/.exec(tag)![1]!.split(/\s+/)).toContain("noopener");
+  }
+
+  /** The opening tag of the only anchor in some markup. */
+  function onlyAnchor(markup: string): string {
+    const anchors = markup.match(/<a\b[^>]*>/g) ?? [];
+    expect(anchors).toHaveLength(1);
+    return anchors[0]!;
+  }
+
+  it("el pie enlaza a WhatsApp con el mensaje en español, en otra pestaña", () => {
+    expectLink(/^<a\b[^>]*>/.exec(footerLink[0])![0], MESSAGE_ES);
+  });
+
+  it("el enlace viene después de GitHub (e Instagram) y antes de la versión y el tema", () => {
+    const at = footer.indexOf(footerLink[0]);
+    expect(footer.indexOf('href="https://github.com/kaelen-phoenix/zero">GitHub</a>')).toBeGreaterThan(-1);
+    expect(footer.indexOf('href="https://github.com/kaelen-phoenix/zero">GitHub</a>')).toBeLessThan(at);
+    expect(footer.indexOf("instagram.com")).toBeLessThan(at);
+    expect(at).toBeLessThan(footer.indexOf('id="version"'));
+    expect(at).toBeLessThan(footer.indexOf("data-theme-choice"));
+  });
+
+  it("el ícono es decorativo, de un solo color y sin recursos externos", () => {
+    expect(icon).toMatch(/<svg\b[^>]*\saria-hidden="true"/);
+    const paints = [...icon.matchAll(/\s(?:fill|stroke)="([^"]*)"/g)].map((m) => m[1]);
+    expect(paints).toContain("currentColor");
+    for (const paint of paints) expect(["none", "currentColor"]).toContain(paint);
+    expect(icon).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(/i);
+    expect(icon).not.toMatch(/\s(?:xlink:)?href=|\ssrc=|<image\b|<script\b/i);
+  });
+
+  it("el ícono tiene ancho y alto en styles.css", () => {
+    const rule = /\.foot \.social svg\s*\{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/\bwidth:\s*[\d.]+\w+/);
+    expect(rule).toMatch(/\bheight:\s*[\d.]+\w+/);
+  });
+
+  it("el enlace del pie no agrega texto visible", () => {
+    expect(footerLink[1]!.replace(/<[^>]+>/g, "").trim()).toBe("");
+  });
+
+  it("el nombre accesible está en los dos idiomas", () => {
+    expect(footerLink[0]).toMatch(/\saria-label="WhatsApp de zero in the loop"/);
+    expect(footerLink[0]).toMatch(/\sdata-i18n-label="foot\.whatsapp"/);
+    const site = loadSite();
+    const doc = fakeDocument();
+    const link = doc.elements.find((e) => e.getAttribute("data-i18n-label") === "foot.whatsapp")!;
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(link.getAttribute("aria-label")).toBe("zero in the loop on WhatsApp");
+    site.applyLanguage(doc, "es", fakeStorage());
+    expect(link.getAttribute("aria-label")).toBe("WhatsApp de zero in the loop");
+  });
+
+  it("el mensaje inicial sigue el idioma elegido", () => {
+    const site = loadSite();
+    const doc = fakeDocument();
+    const link = doc.elements.find((e) => e.getAttribute("data-i18n-href") === "href.whatsapp")!;
+    const markup = link.getAttribute("href")!;
+    const message = () => {
+      const url = new URL(link.getAttribute("href")!);
+      expect(url.origin + url.pathname).toBe(WHATSAPP);
+      return url.searchParams.get("text");
+    };
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(message()).toBe(MESSAGE_EN);
+    site.applyLanguage(doc, "es", fakeStorage());
+    expect(link.getAttribute("href")).toBe(markup);
+    expect(message()).toBe(MESSAGE_ES);
+  });
+
+  it("Capacitaciones ofrece WhatsApp con el número, en español", () => {
+    const line = translatable(section("training")).find((t) => t.key === "training.whatsapp")!;
+    expect(line.inner).toContain(NUMBER);
+    expectLink(onlyAnchor(line.inner), MESSAGE_ES);
+  });
+
+  it("la línea de Capacitaciones tiene su versión en inglés", () => {
+    const line = loadSite().EN["training.whatsapp"]!;
+    expect(line).toContain(NUMBER);
+    expectLink(onlyAnchor(line), MESSAGE_EN);
+  });
+
+  it("los botones de correo de Capacitaciones siguen igual", () => {
+    expect([...section("training").matchAll(/data-training="([^"]+)"/g)].map((m) => m[1])).toEqual(["talk", "workshop", "mentoring"]);
+  });
+});
+
 describe("sitio del proyecto: tema", () => {
   it("guarda la elección explícita en localStorage y auto quita el atributo", () => {
     const site = loadSite();
@@ -700,7 +803,7 @@ describe("sitio del proyecto: idiomas", () => {
 
   it("los enlaces al README siguen el idioma elegido", () => {
     const doc = fakeDocument();
-    const links = doc.elements.filter((e) => e.hasAttribute("data-i18n-href"));
+    const links = doc.elements.filter((e) => e.getAttribute("data-i18n-href") === "href.readme");
     expect(links).toHaveLength(3);
     site.applyLanguage(doc, "en", fakeStorage());
     for (const el of links) expect(el.getAttribute("href")).toBe(README_EN);

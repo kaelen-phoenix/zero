@@ -266,6 +266,8 @@ button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-co
 .foot .social { display: inline-flex; }
 .foot .social svg { width: 1.1em; height: 1.1em; }
 .foot .switch { margin-left: auto; }
+.foot .social { display: inline-flex; }
+.foot .social svg { width: 1.1em; height: 1.1em; }
 
 @media (max-width: 40rem) {
   .top { gap: 0.75rem; flex-wrap: wrap; }
