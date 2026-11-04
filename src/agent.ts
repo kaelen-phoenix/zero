@@ -5,7 +5,7 @@ import { z } from "zod";
 import { customAgentChain, stationChain, type FactoryConfig } from "./config.js";
 import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult, type QuotaReport } from "./engines/index.js";
 import { log } from "./log.js";
-import { assignedSkills, discoverSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
+import { assignedSkills, availableSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
 
@@ -162,7 +162,7 @@ export function toEngineSchema(schema: z.ZodType): Record<string, unknown> {
 function resolvedSkills(config: FactoryConfig, station: AgentStation, line: string | undefined, claudeHome?: string, custom?: CustomAgentRun): { skills: Skill[]; missing: string[] } {
   const refs = custom ? [...new Set(custom.skills)] : assignedSkills(config, station, line);
   if (!refs.length) return { skills: [], missing: [] };
-  const available = discoverSkills(claudeHome);
+  const available = availableSkills(config, claudeHome);
   const skills: Skill[] = [];
   const missing: string[] = [];
   for (const ref of refs) {

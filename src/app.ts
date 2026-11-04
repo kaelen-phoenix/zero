@@ -1,22 +1,24 @@
-import { spawn } from "node:child_process";
-import { existsSync, openSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, openSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
-import { discoverSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
+import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
-import { AGENT_STATIONS, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, loadFactory, SiteSchema, socialEnabled, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, socialEnabled, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
+import { factoryConfig, loadPackages, packageFolder, readManifest, withPackages } from "./packages.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
+import { stationLastKey } from "./line/packages.js";
 import { communityRun, socialQuota, socialRanToday, SOCIAL_PAUSED_KEY, type CommunityResult, type SocialQuota } from "./line/community.js";
 import type { SocialFactory } from "./social/channel.js";
 import { INSTAGRAM_TOKEN } from "./social/instagram.js";
@@ -44,7 +46,7 @@ export interface FactoryContext extends LedgerDeps {
 }
 
 export async function openFactory(home: FactoryHome = factoryHome(), now?: () => Date): Promise<FactoryContext> {
-  const config = await loadFactory(home.config);
+  const config = await factoryConfig(home);
   await mkdir(home.root, { recursive: true });
   const store = new Store(home.db, now);
   return { home, config, store, tracer: new Tracer(store, now), townhall: openTownhall(home, now), secrets: new SecretStore(home), now };
@@ -211,6 +213,8 @@ export interface FactoryStatus {
   box: { status?: BoxStatus; availability: BoxAvailability };
   /** Assigned skills that do not resolve; agents run without them. */
   skills: SkillProblem[];
+  /** Packages left out, whole or only their stations; the factory works without them. */
+  packages: PackageProblem[];
   daemon: DaemonInfo;
   andon: boolean;
   budget: BudgetState;
@@ -236,7 +240,8 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
     }),
     box,
-    skills: skillProblems(ctx.config, discoverSkills()),
+    skills: skillProblems(ctx.config, availableSkills(ctx.config)),
+    packages: ctx.config.loadedPackages?.problems ?? [],
     daemon: daemonInfo(ctx.store, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -708,7 +713,7 @@ export async function setEgressRule(ctx: FactoryContext, input: string, action: 
   const site = parsed.data;
   const { egress } = ctx.config;
   const listed = egress.allow.includes(site) || egress.block.includes(site);
-  ctx.config = await editFactory(ctx.home.config, (doc) => {
+  ctx.config = await editConfig(ctx, (doc) => {
     const allow = egress.allow.filter((s) => s !== site);
     const block = egress.block.filter((s) => s !== site);
     if (action === "allow") allow.push(site);
@@ -724,7 +729,7 @@ export async function setEgressRule(ctx: FactoryContext, input: string, action: 
 
 export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<string> {
   if (mode !== "blocklist" && mode !== "allowlist") throw new Error('El modo es "blocklist" (sale todo salvo lo sospechoso y lo bloqueado) o "allowlist" (solo lo permitido).');
-  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(["egress", "mode"], mode));
+  ctx.config = await editConfig(ctx, (doc) => doc.setIn(["egress", "mode"], mode));
   return mode === "allowlist"
     ? `Modo allowlist: la caja solo sale a tus sitios permitidos (${ctx.config.egress.allow.join(", ") || "ninguno todavía"}) y a los de tus motores.`
     : "Modo blocklist: la caja sale a todo salvo lo sospechoso y lo que bloquees.";
@@ -742,7 +747,7 @@ export interface AgentSkills {
 }
 
 /** Read-only: each agent's skills, general and per line, as the panel and the chat show them. */
-export function agentSkills(config: FactoryConfig, available: Skill[] = discoverSkills()): AgentSkills[] {
+export function agentSkills(config: FactoryConfig, available: Skill[] = availableSkills(config)): AgentSkills[] {
   return SKILL_STATIONS.map((station) => ({
     station,
     general: config.stations[station].skills.map((s) => skillView(s, available)),
@@ -795,7 +800,7 @@ export async function setIssueIntake(ctx: FactoryContext, input: { line?: string
   const line = findLine(ctx.config, input.line);
   const index = ctx.config.lines.findIndex((l) => l.name === line.name);
   const label = input.on ? (input.label ?? line.issues?.label ?? "zero") : undefined;
-  ctx.config = await editFactory(ctx.home.config, (doc) => {
+  ctx.config = await editConfig(ctx, (doc) => {
     if (label) doc.setIn(["lines", index, "issues"], doc.createNode({ label }));
     else doc.deleteIn(["lines", index, "issues"]);
   });
@@ -838,8 +843,8 @@ export async function addSkill(ctx: FactoryContext, input: { skill: string; stat
   const where = input.line ? `${station} en la línea ${input.line}` : `${station} en todas las líneas`;
   const current = currentSkills(ctx, station, input.line);
   if (current.includes(skill)) return `La skill ${skill} ya estaba asignada a ${where}.`;
-  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(path, doc.createNode([...current, skill])));
-  const { problem } = resolveSkill(skill, discoverSkills());
+  ctx.config = await editConfig(ctx, (doc) => doc.setIn(path, doc.createNode([...current, skill])));
+  const { problem } = resolveSkill(skill, availableSkills(ctx.config));
   return `Skill ${skill} asignada a ${where}.${problem ? ` Ojo: ${problem}; el agente trabaja sin ella hasta que esté.` : ""}`;
 }
 
@@ -848,7 +853,7 @@ export async function removeSkill(ctx: FactoryContext, input: { skill: string; s
   const where = input.line ? `${station} en la línea ${input.line}` : `${station}`;
   const current = currentSkills(ctx, station, input.line);
   if (!current.includes(input.skill)) return `La skill ${input.skill} no estaba asignada a ${where}.`;
-  ctx.config = await editFactory(ctx.home.config, (doc) => doc.setIn(path, doc.createNode(current.filter((s) => s !== input.skill))));
+  ctx.config = await editConfig(ctx, (doc) => doc.setIn(path, doc.createNode(current.filter((s) => s !== input.skill))));
   return `Skill ${input.skill} quitada de ${where}.`;
 }
 
@@ -864,12 +869,12 @@ export interface SocialSkills {
 export async function socialSkills(ctx: FactoryContext): Promise<SocialSkills> {
   const before = currentSkills(ctx, "community");
   for (const skill of COMMUNITY_SKILLS) await addSkill(ctx, { skill, station: "community" });
-  const available = discoverSkills();
+  const available = availableSkills(ctx.config);
   return { added: COMMUNITY_SKILLS.filter((s) => !before.includes(s)), missing: COMMUNITY_SKILLS.filter((s) => resolveSkill(s, available).problem) };
 }
 
 export function skillList(ctx: FactoryContext): SkillList {
-  const available = discoverSkills();
+  const available = availableSkills(ctx.config);
   const assignments: SkillAssignment[] = [];
   for (const station of SKILL_STATIONS) {
     assignments.push({ station, skills: ctx.config.stations[station].skills });
@@ -881,10 +886,15 @@ export function skillList(ctx: FactoryContext): SkillList {
   return { assignments, available, problems: skillProblems(ctx.config, available) };
 }
 
+/** Edits the factory file and keeps `ctx.config` with what its packages bring. */
+async function editConfig(ctx: FactoryContext, edit: Parameters<typeof editFactory>[1]): Promise<FactoryConfig> {
+  return withPackages(await editFactory(ctx.home.config, edit), ctx.home);
+}
+
 export interface AgentListEntry {
   name: string;
-  /** `factory`: a global agent, for every line; `line`: the line's own. */
-  origin: "factory" | "line";
+  /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
+  origin: "factory" | "line" | "package";
   /** `build`: it writes, between build and verify. `review`: read-only, after security. */
   type: "review" | "build";
   /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
@@ -908,7 +918,7 @@ export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList
     line: line.name,
     // Those that write run first, whatever the file's order between the two types.
     agents: [...lineAgents(ctx.config, line).filter((a) => a.type === "build"), ...lineAgents(ctx.config, line).filter((a) => a.type === "review")].map((a) => {
-      const path = join(a.origin === "line" ? line.repo : dirname(ctx.home.config), a.instructions);
+      const path = agentInstructionsPath(a, line.repo, dirname(ctx.home.config));
       return { name: a.name, origin: a.origin, type: a.type, files: a.files, blocking: a.blocking, path, missing: !existsSync(path) };
     }),
   }));
@@ -972,7 +982,7 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
     created = false;
   }
   const entry = type === "build" ? { name, type, ...(files.length && { files }) } : { name, blocking };
-  ctx.config = await editFactory(ctx.home.config, (doc) => {
+  ctx.config = await editConfig(ctx, (doc) => {
     const node = doc.createNode(entry);
     if (doc.hasIn(["lines", index, "agents"])) doc.addIn(["lines", index, "agents"], node);
     else doc.setIn(["lines", index, "agents"], doc.createNode([entry]));
@@ -987,12 +997,145 @@ export async function removeAgent(ctx: FactoryContext, input: { name: string; li
   const index = ctx.config.lines.findIndex((l) => l.name === line.name);
   const at = line.agents.findIndex((a) => a.name === input.name);
   if (at < 0) {
+    const packaged = ctx.config.loadedPackages?.agents.find((a) => a.name === input.name);
+    if (packaged) return `El agente ${input.name} viene del paquete ${packaged.package}: quitalo con \`zero package remove ${packaged.package}\`.`;
     const global = ctx.config.agents.some((a) => a.name === input.name);
     return global
       ? `El agente ${input.name} es global (vale para todas las líneas): quitalo de \`agents\` en ${ctx.home.config}.`
       : `La línea ${line.name} no tiene un agente ${input.name}.`;
   }
   const path = join(line.repo, line.agents[at]!.instructions);
-  ctx.config = await editFactory(ctx.home.config, (doc) => doc.deleteIn(["lines", index, "agents", at]));
+  ctx.config = await editConfig(ctx, (doc) => doc.deleteIn(["lines", index, "agents", at]));
   return `Agente ${input.name} quitado de la línea ${line.name}. Sus instrucciones siguen en ${path}.`;
+}
+
+export interface PackageStationView {
+  name: string;
+  /** Whether its pass may run: its entry allows the code and its folder is fine. */
+  allowed: boolean;
+  /** Declared secrets not saved yet, by name; the pass waits for them. */
+  missingSecrets: string[];
+  lastRun?: string;
+}
+
+export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
+  source: "path" | "npm";
+  allowCode: boolean;
+  stations: PackageStationView[];
+}
+
+export interface PackageList {
+  packages: PackageView[];
+  problems: PackageProblem[];
+}
+
+/** What is installed, what each package brings and what keeps part of it from working; never a secret's value. */
+export function packageList(ctx: FactoryContext): PackageList {
+  const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
+  return {
+    problems: loaded.problems,
+    packages: loaded.packages.map((p) => ({
+      name: p.name,
+      version: p.version,
+      dir: p.dir,
+      agents: p.agents,
+      skills: p.skills,
+      source: p.entry.npm ? "npm" : "path",
+      allowCode: p.entry.allowCode,
+      stations: p.stations.map((name) => {
+        const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
+        return {
+          name,
+          allowed: Boolean(station),
+          missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
+          lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
+        };
+      }),
+    })),
+  };
+}
+
+/** Installs a package from npm into `dir`; tests inject a fake. */
+export type PackageInstaller = (dir: string, name: string) => Promise<void>;
+
+/** Install scripts never run: installing a package does not run its code. */
+export function npmInstallArgs(dir: string, name: string): string[] {
+  return ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", dir, name];
+}
+
+const npmInstall: PackageInstaller = async (dir, name) => {
+  const windows = process.platform === "win32";
+  // On Windows npm is a .cmd, which only a shell can start. The name was validated, and the folder is the only other free text.
+  const args = npmInstallArgs(dir, name).map((a) => (windows && a === dir ? `"${a}"` : a));
+  const r = spawnSync("npm", args, { encoding: "utf8", shell: windows, windowsHide: true, timeout: 600_000 });
+  if (r.status !== 0) throw new Error(`npm no pudo instalar ${name}: ${(r.stderr || String(r.error ?? "")).trim().slice(0, 500)}`);
+};
+
+const looksLikePath = (source: string) => /^[.~/\\]|^[a-z]:/i.test(source) || /[\\]/.test(source) || (source.includes("/") && !source.startsWith("@"));
+
+/**
+ * Adds a package to the factory file, keeping its comments. The manifest, and
+ * whether it fits among the others, is checked before touching the file. Adding
+ * one already declared only updates its permission.
+ */
+export async function packageAdd(ctx: FactoryContext, input: { source: string; allowCode?: boolean; install?: PackageInstaller }): Promise<string> {
+  const source = input.source.trim();
+  if (!source) throw new Error("Indicá la carpeta o el paquete: zero package add <carpeta|paquete-npm>");
+  const folder = looksLikePath(source) || (existsSync(source) && statSync(source).isDirectory());
+  if (!folder && !NPM_NAME.test(source)) throw new Error(`"${source}" no es una carpeta ni un nombre válido de paquete npm.`);
+  if (!folder) {
+    await mkdir(ctx.home.packages, { recursive: true });
+    await (input.install ?? npmInstall)(ctx.home.packages, source);
+  }
+  const allowCode = input.allowCode ?? false;
+  const entry: PackageEntry = folder ? { path: resolve(source), allowCode } : { npm: source, allowCode };
+  let name: string;
+  try {
+    name = readManifest(packageFolder(entry, ctx.home)).name;
+  } catch (err) {
+    throw new Error(`No se puede agregar ${source}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const declared = ctx.config.packages.findIndex((p) => (folder ? p.path && resolve(dirname(ctx.home.config), p.path) === entry.path : p.npm === source));
+  if (declared < 0) {
+    const others = ctx.config.packages;
+    const fit = loadPackages({ ...ctx.config, packages: [...others, entry] }, ctx.home);
+    const problem = fit.problems.find((p) => p.package === name || p.package === source);
+    if (problem && !fit.packages.some((p) => p.index === others.length)) throw new Error(`No se puede agregar ${name}: ${problem.reason}`);
+  }
+  ctx.config = await editConfig(ctx, (doc) => {
+    if (declared >= 0) {
+      if (allowCode) doc.setIn(["packages", declared, "allowCode"], true);
+      return;
+    }
+    const node = { ...(entry.path ? { path: entry.path } : { npm: entry.npm }), ...(allowCode && { allowCode }) };
+    if (doc.hasIn(["packages"])) doc.addIn(["packages"], doc.createNode(node));
+    else doc.setIn(["packages"], doc.createNode([node]));
+  });
+  const added = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
+  const stations = added?.stations ?? [];
+  const lines = [`Paquete ${name}${added ? ` ${added.version}` : ""} ${declared >= 0 ? "ya estaba declarado" : "agregado"}.`];
+  if (added?.agents.length) lines.push(`Agentes: ${added.agents.join(", ")}.`);
+  if (added?.skills.length) lines.push(`Skills: ${added.skills.join(", ")}.`);
+  if (stations.length && !allowCode && !added?.entry.allowCode) lines.push(`Sus estaciones (${stations.join(", ")}) no corren hasta que des el permiso: \`zero package add ${source} --permitir-codigo\`. Ese código corre con los permisos de tu usuario, así que dalo solo si confiás en el paquete.`);
+  else if (stations.length) lines.push(`Sus estaciones (${stations.join(", ")}) corren con los permisos de tu usuario cuando la fábrica está libre.`);
+  for (const p of ctx.config.loadedPackages?.problems ?? []) if (p.package === name && added?.entry.allowCode) lines.push(`Ojo: ${p.reason}.`);
+  return lines.join("\n");
+}
+
+/** Takes a package out of the factory file; its files stay. */
+export async function packageRemove(ctx: FactoryContext, input: { name: string }): Promise<string> {
+  const loaded = ctx.config.loadedPackages?.packages.find((p) => p.name === input.name);
+  // A package left out by a problem is still named by its manifest, when that can be read.
+  const manifestName = (p: PackageEntry) => {
+    try {
+      return readManifest(packageFolder(p, ctx.home)).name;
+    } catch {
+      return undefined;
+    }
+  };
+  const index = loaded?.index ?? ctx.config.packages.findIndex((p) => p.npm === input.name || p.path === input.name || manifestName(p) === input.name);
+  if (index < 0) return `La fábrica no tiene un paquete ${input.name}.`;
+  const dir = loaded?.dir ?? packageFolder(ctx.config.packages[index]!, ctx.home);
+  ctx.config = await editConfig(ctx, (doc) => doc.deleteIn(["packages", index]));
+  return `Paquete ${input.name} quitado de la fábrica. Sus archivos siguen en ${dir}.`;
 }

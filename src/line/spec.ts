@@ -65,7 +65,7 @@ export function renderSpecDelta(spec: Spec, newCapability: boolean): string {
 }
 
 /** The spec as an OpenSpec change: path (relative to the change directory) → content. */
-export function renderOpenSpecChange(spec: Spec, opts: { jobId: string; request: string; newCapability: boolean }): Record<string, string> {
+export function renderOpenSpecChange(spec: Spec, opts: { jobId: string; newCapability: boolean }): Record<string, string> {
   const capability = slug(spec.capability) || "change";
   const proposal = [
     "# Proposal",
@@ -73,8 +73,6 @@ export function renderOpenSpecChange(spec: Spec, opts: { jobId: string; request:
     "## Why",
     "",
     oneLine(spec.summary),
-    "",
-    `Pedido original: "${oneLine(opts.request)}"`,
     "",
     "## What Changes",
     "",
