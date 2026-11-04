@@ -9,7 +9,7 @@ import type { PackageStation } from "../config.js";
 import { log } from "../log.js";
 import { warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
-import { publicText } from "../social/filter.js";
+import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
 import { PACKAGE_AGENT_PREFIX, periodStart, scoutSpent } from "./scout.js";
 

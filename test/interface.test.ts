@@ -137,6 +137,29 @@ describe("zero secret (CLI)", () => {
   });
 });
 
+describe("a removed command (CLI)", () => {
+  const cli = (args: string[], home: string) =>
+    spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, ZERO_HOME: home }, input: "" });
+
+  it("treats zero social like any unknown command, without touching the state", () => {
+    const ctx = testFactory({ lines: [{ name: "demo", repo: gitRepo() }] });
+    const unknown = cli(["inexistente"], ctx.home.root);
+    const r = cli(["social", "status"], ctx.home.root);
+    expect(r.status).toBe(unknown.status);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toBe(unknown.stdout);
+    expect(ctx.store.getKv("social:paused")).toBeUndefined();
+    expect(ctx.store.listJobs()).toEqual([]);
+  });
+
+  it("is not in the help, and neither is the station", () => {
+    const { stdout } = cli(["help"], tempDir());
+    expect(stdout).toContain("zero status");
+    expect(stdout).not.toContain("zero social");
+    expect(stdout).not.toContain("community");
+  });
+});
+
 describe("zero proposals (CLI)", () => {
   const cli = (args: string[], home: string) =>
     spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, ZERO_HOME: home }, input: "" });

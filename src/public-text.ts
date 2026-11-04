@@ -1,6 +1,6 @@
-import { breakMentions } from "../intake/proposals.js";
-import { reportText } from "../report.js";
-import { redact } from "../secrets.js";
+import { breakMentions } from "./intake/proposals.js";
+import { reportText } from "./report.js";
+import { redact } from "./secrets.js";
 
 const LOCAL_PATH = "(ruta local)";
 const WEB_URL = /(https?:\/\/[^\s<>"'`)\]]+)/i;
@@ -26,8 +26,7 @@ function dropPaths(text: string): string {
 /**
  * Text fit for the whole internet: secrets and local paths out, @mentions
  * broken, web addresses untouched. A best-effort filter, like `scrub`, so
- * `removed` tells the caller something had to go: nobody reviews a post before
- * it leaves, so a draft that needed it is discarded, not published with holes.
+ * `removed` tells the caller something had to go.
  */
 export function publicText(text: string, repos: string[]): { text: string; removed: boolean } {
   const redacted = redact(text);

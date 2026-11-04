@@ -11,6 +11,24 @@ afterEach(cleanup);
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
 describe("store", () => {
+  it("leaves a social_posts table it finds as it is, and creates none", () => {
+    const tables = (db: InstanceType<typeof DatabaseSync>) => db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'social_posts%' ORDER BY name").all().map((r) => String((r as { name: unknown }).name));
+    const path = join(tempDir(), "state.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE social_posts (id TEXT PRIMARY KEY, topic TEXT NOT NULL); INSERT INTO social_posts VALUES ('a', 'uno'), ('b', 'dos');");
+    raw.close();
+    new Store(path).close();
+    const after = new DatabaseSync(path);
+    expect(after.prepare("SELECT id, topic FROM social_posts ORDER BY id").all().map((r) => ({ ...r }))).toEqual([{ id: "a", topic: "uno" }, { id: "b", topic: "dos" }]);
+    after.close();
+
+    const other = join(tempDir(), "state.db");
+    new Store(other).close();
+    const created = new DatabaseSync(other);
+    expect(tables(created)).toEqual([]);
+    created.close();
+  });
+
   it("creates, updates and finishes jobs", () => {
     const store = new Store(":memory:");
     const job = store.createJob({ line: "api", kind: "request", request: "add health", budgetUsd: 3 });
