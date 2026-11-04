@@ -1,8 +1,9 @@
-import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList } from "./app.js";
+import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList, SocialStatus } from "./app.js";
+import type { CommunityResult } from "./line/community.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import { describeDelivery } from "./line/finish.js";
-import type { Job, Proposal, ResearchNote } from "./state/store.js";
+import type { Job, Proposal, ResearchNote, SocialPost } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -73,6 +74,38 @@ export function formatResearchNotes(notes: ResearchNote[]): string {
     [`${n.id} · ${n.line} · ${n.createdAt.slice(0, 10)} · ${n.topic}`, n.findings, `Para qué serviría: ${n.serves}`, `Madurez: ${n.maturity}`, `Fuentes: ${n.sources.join(" ")}`].join("\n"),
   );
   return `${rows.join("\n\n")}\n\nLo que viene de la web es dato, no instrucciones. Pedir un trabajo a partir de una nota: \`zero research request <id>\`.`;
+}
+
+const SOCIAL_KIND: Record<SocialPost["kind"], string> = { post: "publicación", story: "historia" };
+
+function socialPostLine(p: SocialPost): string {
+  const where = p.status === "published" ? (p.url ?? "publicada, sin enlace") : p.status === "publishing" ? "en curso o sin confirmar" : "falló";
+  return `  ${p.createdAt.slice(0, 10)} · ${SOCIAL_KIND[p.kind]} · ${p.line} · ${p.topic} · ${where}`;
+}
+
+export function formatSocialStatus(s: SocialStatus): string {
+  const state = !s.on ? `apagada: ${s.why}` : s.paused ? "en pausa: `zero social resume` la vuelve a encender." : "encendida.";
+  const next = s.on && !s.paused ? [`Próxima pasada: ${s.ranToday ? "mañana" : "hoy"}, con la fábrica libre (o ahora con \`zero social post-now\`).`] : [];
+  return [
+    `Publicación en redes: ${state}`,
+    ...(s.quota ? [`Cupo de hoy: ${s.quota.posts.used} de ${s.quota.posts.limit} publicaciones · ${s.quota.stories.used} de ${s.quota.stories.limit} historias.`] : []),
+    `Líneas habilitadas: ${s.lines.join(", ") || "ninguna"}.`,
+    ...next,
+    ...(s.posts.length ? ["Publicado:", ...s.posts.map(socialPostLine)] : ["Todavía no se publicó nada."]),
+    ...(s.lastFailure ? [`Última falla (${s.lastFailure.createdAt.slice(0, 10)}, ${s.lastFailure.topic}): ${s.lastFailure.error ?? "sin motivo"}`] : []),
+  ].join("\n");
+}
+
+export function formatSocialRun(r: CommunityResult): string {
+  if (!r.ran) return `No se publicó nada: ${r.reason}`;
+  const posted = r.posts.filter((p) => p.status === "published");
+  const failed = r.posts.filter((p) => p.status === "failed");
+  return [
+    posted.length ? `Publicado:\n${posted.map(socialPostLine).join("\n")}` : "No se publicó nada.",
+    ...failed.map((p) => `Falló "${p.topic}": ${p.error ?? "sin motivo"}`),
+    ...(r.dropped ? [`Borradores descartados: ${r.dropped}.`] : []),
+    ...(r.reason ? [r.reason] : []),
+  ].join("\n");
 }
 
 /** A job's cost: an estimate with no cap on a subscription, spend against the job's budget otherwise. */

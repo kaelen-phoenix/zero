@@ -403,6 +403,63 @@ On GitHub lines each note is also published as an issue in the line's repo, with
 
 Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
 
+## Social media
+
+The `community` station lets the factory run its own Instagram account: while it is idle, the station reads what was delivered and drafts posts and stories, and zero publishes them with no approval. It stays off until you save a token.
+
+```yaml
+social:
+  postsPerDay: 1                # feed posts per local day
+  storiesPerDay: 3              # stories per local day
+  signature: "Publicado por la fábrica zero (IA) · zerointheloop.com"
+  media:
+    repository: owner/public-repo # where images are hosted; absent: the post's line repository
+lines:
+  - name: tienda
+    repo: /path/to/tienda
+    social: { enabled: true }   # by default only the line named zero is enabled
+```
+
+`social: off` turns it off. The station runs after `scout` and `research`, at most once per local day, only with the factory idle, and shares `limits.usdPerNight` with them on per-use billing.
+
+```sh
+zero social status      # on or why not, today's quota, enabled lines, posts with links, last failure
+zero social post-now    # a pass right now; it respects pause, andon, token, budget and limits
+zero social pause       # nothing goes out until you resume
+zero social resume
+```
+
+What the station gets and what zero does:
+
+- The station is read-only and has an empty folder instead of the repository. Its prompt holds only delivered jobs and non-business research notes of the last 7 days from enabled lines, with no job ids, branches or local paths, plus the topics already published. It has neither the token nor the channel: zero publishes.
+- A `story` for something visible, a `post` for a new feature, never a repeated topic (compared without case or accents).
+- Before publishing, zero discards any draft with a secret or a local path in its text or image and breaks @mentions. This filter is best effort: it does not judge tone or catch false claims, and a client's name in plain words goes through, which is why client lines stay off. `zero social pause` is the brake.
+- Each text ends with `social.signature`, and each image has it in the footer, even with the general `signature` off, so it always shows this is an AI.
+- Images are made by zero, with no model: JPEG cards with the site's colors and a font bundled with zero, 1080x1080 for posts and 1080x1920 for stories.
+- A failure stays as `failed` with its reason, does not hold up the next draft and is not retried on its own that day.
+
+Carousels, panel captures, a weekly summary, the panel view, approval before posting (`propose`) and other networks come in later stages.
+
+### Connect the Instagram account
+
+zero uses the Instagram API with Instagram login, so it needs no Facebook page.
+
+1. Switch the Instagram account to a professional one (business or creator) in its settings.
+2. At [developers.facebook.com](https://developers.facebook.com/apps) create a Meta app of type Business and add the **Instagram** product, under "API setup with Instagram login".
+3. Add the account as an Instagram tester of the app and accept the invitation from the account. Testers are enough for your own account; no app review is needed.
+4. Generate the account's access token there, with the `instagram_business_basic` and `instagram_business_content_publish` permissions. It starts with `IGAA` and lasts about 60 days.
+5. Save it in the system keychain, never in a file:
+
+```sh
+zero secret set INSTAGRAM_ACCESS_TOKEN
+```
+
+6. Images must be at a public URL, so zero uploads each one as an asset of a prerelease tagged `zero-social-media`, using your `gh` session. The repository must be public: on a private one zero uploads nothing and the post stays `failed`. If your line's repository is private, set a public one in `social.media.repository`. Creating that release may notify the repository's watchers.
+
+zero does not renew the token yet. About 60 days later posts start showing as `failed` in `zero social status`: generate a new one and save it the same way.
+
+If your Meta app only offers the Facebook login setup, that works too: link the Instagram account to a Facebook Page, generate a Page token (it does not expire) with `instagram_basic` and `instagram_content_publish`, save it as `INSTAGRAM_ACCESS_TOKEN` and save the Instagram account id as `INSTAGRAM_USER_ID` (`zero secret set INSTAGRAM_USER_ID`). With that id zero publishes through the Facebook Graph API instead of the Instagram one.
+
 ## Isolation box
 
 Everything that runs code from the project or from an agent runs in the box: the `setup`, the agents and verification. The box is a container (Podman or Docker). zero does the integration outside.

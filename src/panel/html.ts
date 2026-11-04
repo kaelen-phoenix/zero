@@ -659,6 +659,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
     cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
   },
+  community: {
+    name: "Redes (community)",
+    does: "Con la fábrica libre, mira lo que se entregó y las notas de investigación de las líneas habilitadas y arma borradores de publicaciones e historias.",
+    cannot: "No ve el repositorio ni publica: la fábrica filtra cada borrador, le pone la firma, genera la imagen y publica. El agente no tiene el token.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };

@@ -3,13 +3,14 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, SHUTDOWN_KEY, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { createAgentRunner } from "./agent.js";
+import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, setSocialPaused, SHUTDOWN_KEY, socialPostNow, socialStatus, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatSkills, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatSkills, formatSocialRun, formatSocialStatus, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -39,6 +40,11 @@ Uso diario (también desde el chat):
   zero research                  Notas de investigación de la web   [--line <nombre>] [--days N]
   zero research request <id>     Pide un trabajo en la línea de la nota, a partir de lo que encontró
 
+Redes (la fábrica publica sola lo que entrega):
+  zero social status             Si está encendida, el cupo de hoy, las líneas habilitadas y lo publicado
+  zero social post-now           Corre una pasada ahora, respetando pausa, andon, token, presupuesto y límites
+  zero social pause|resume       Frena o vuelve a encender la publicación
+
 Caja de aislamiento y credenciales:
   zero box status                Revisa la caja (contenedores) donde trabajan los agentes
   zero box setup [--yes]         Prepara la caja: pide permiso antes de instalar nada
@@ -67,7 +73,7 @@ Fábrica:
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
-                                 Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
+                                 Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research, community)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo
@@ -242,6 +248,21 @@ async function main(argv: string[]): Promise<number> {
         const r = requestFromResearchNote(ctx, rest[1]);
         const started = await ensureDaemon(ctx);
         console.log(`${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        return 0;
+      }
+      case "social": {
+        const action = rest[0] ?? "status";
+        if (action === "status") {
+          console.log(formatSocialStatus(socialStatus(ctx)));
+          return 0;
+        }
+        if (action === "post-now") {
+          console.log(formatSocialRun(await socialPostNow(ctx, createAgentRunner(ctx.config))));
+          return 0;
+        }
+        if (action !== "pause" && action !== "resume") break;
+        setSocialPaused(ctx, action === "pause");
+        console.log(action === "pause" ? "Publicación en pausa: no sale nada hasta que corras `zero social resume`." : "Publicación encendida de nuevo.");
         return 0;
       }
       case "issues": {

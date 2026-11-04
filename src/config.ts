@@ -91,6 +91,25 @@ const SignatureSchema = z.union([
 ]);
 export type Signature = { text: string; trailer: string };
 
+export const DEFAULT_SOCIAL_SIGNATURE = "Publicado por la fábrica zero (IA) · zerointheloop.com";
+
+/** The community station's public posts, or `off`. Absent: on as soon as there is a token. */
+const SocialSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Feed posts per local day. */
+      postsPerDay: z.number().int().min(0).default(1),
+      /** Stories per local day. */
+      storiesPerDay: z.number().int().min(0).default(3),
+      /** Last paragraph of every text and footer of every image, even with the general `signature` off: plain text, since the channel shows no Markdown. */
+      signature: z.string().trim().min(1).default(DEFAULT_SOCIAL_SIGNATURE),
+      /** Where the images are hosted; absent: the repository of the post's line. It must be public. */
+      media: z.object({ repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "usá cuenta/repo (por ejemplo kaelen-phoenix/zero)") }).strict().optional(),
+    })
+    .strict(),
+]);
+
 /** An OTLP/HTTP collector URL: http or https, never with credentials in it. */
 const OtlpEndpointSchema = z.string().refine((value) => {
   try {
@@ -141,7 +160,7 @@ export const CustomEngineSchema = z.object({
 });
 
 /** The stations zero itself defines; a custom agent never takes one of their names. */
-export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
+export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research", "community"] as const;
 
 /**
  * A project's own agent. `review`: a read-only reviewer that runs after review
@@ -217,12 +236,14 @@ export const LineSchema = z.object({
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema, community: LineSkillsSchema })
     .partial()
     .strict()
     .optional(),
   /** How far the night shift goes on its own on this line; absent: the global `nightShift.autonomy`. */
   nightShift: z.object({ autonomy: AutonomySchema }).strict().optional(),
+  /** Whether the community station may talk about this line in public; absent: only the line named `zero`. */
+  social: z.object({ enabled: z.boolean() }).strict().optional(),
   /** This line's signature; replaces the global one entirely. */
   signature: SignatureSchema.optional(),
   /** This line's own agents, after the global ones. */
@@ -270,7 +291,7 @@ export const FactorySchema = z
         usdPerJob: z.number().positive().default(3),
         /** Share of each subscription window (5 hours, week) the factory leaves to the owner, in percent. 0 = use the whole plan. */
         reservePercent: z.number().min(0).max(99).default(0),
-        /** What the scout and research stations may spend together per night shift period; per-use billing only. */
+        /** What the scout, research and community stations may spend together per night shift period; per-use billing only. */
         usdPerNight: z.number().nonnegative().default(1),
         protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
@@ -294,6 +315,8 @@ export const FactorySchema = z
         scout: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Reads the web once a day for skills, MCP servers and technologies; read-only, never installs anything. */
         research: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
+        /** Drafts public posts about what the factory delivered; no repository, zero publishes. */
+        community: stationSchema({ maxTurns: 5, timeoutMinutes: 5 }).prefault({}),
       })
       .prefault({}),
     /** Absent: on, at any hour the factory is idle. */
@@ -302,6 +325,8 @@ export const FactorySchema = z
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
+    /** Absent: on, but nothing happens until INSTAGRAM_ACCESS_TOKEN is saved. */
+    social: SocialSchema.default({ postsPerDay: 1, storiesPerDay: 3, signature: DEFAULT_SOCIAL_SIGNATURE }),
 
     /** Absent: traces stay only in state.db. */
     telemetry: TelemetrySchema.optional(),
@@ -387,11 +412,16 @@ export function customAgentChain(config: Pick<FactoryConfig, "engine" | "fallbac
 }
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research", "community"];
 
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {
   return line.nightShift?.autonomy ?? (config.nightShift === "off" ? "propose" : config.nightShift.autonomy);
+}
+
+/** Whether the community station may talk about a line: its own setting, else only the factory's own line. */
+export function socialEnabled(line: Pick<LineConfig, "name" | "social">): boolean {
+  return line.social?.enabled ?? line.name === "zero";
 }
 
 /** Who authors a line's commits: the line's own setting, else the global one. */
