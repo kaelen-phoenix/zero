@@ -89,6 +89,13 @@ describe("verification", () => {
     expect(protectedTouched([{ status: "M", path: ".claude/settings.json" }], defaults, [".claude/settings.json"])).toEqual([]);
   });
 
+  it("protects Codex skills by default", () => {
+    const defaults = parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths;
+    const files = [{ status: "A", path: ".agents/skills/x/SKILL.md" }, { status: "A", path: "src/x.ts" }];
+    expect(protectedTouched(files, defaults)).toEqual([".agents/skills/x/SKILL.md"]);
+    expect(protectedTouched([{ status: "A", path: ".agents/skills/x/SKILL.md" }], defaults, [".agents/skills/x/SKILL.md"])).toEqual([]);
+  });
+
   it("stops a diff that adds .claude/settings.json", async () => {
     const copy = await copyOf(gitRepo());
     writeTree(copy.cwd, { ".claude/settings.json": "{\"hooks\":{}}\n" });
