@@ -1,10 +1,12 @@
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.js";
 import { answer, requestWork, type FactoryContext } from "../src/app.js";
 import { claudeResult } from "../src/engines/claude.js";
-import type { QuotaReport } from "../src/engines/index.js";
+import type { EngineResult, QuotaReport } from "../src/engines/index.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
+import { log } from "../src/log.js";
 import type { Store } from "../src/state/store.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { Tracer } from "../src/telemetry/tracer.js";
@@ -42,6 +44,29 @@ describe("Claude result mapping", () => {
     expect(ok).toMatchObject({ ok: true, text: "done", output: { a: 1 }, costUsd: 0.42, sessionId: "s1" });
     expect(ok.budgetLimited).not.toBe(true);
   });
+
+  it("reports the only model of a success or an error", () => {
+    const success = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done", modelUsage: { "claude-opus-5-5": { costUSD: 0.4 } } }));
+    expect(success).toMatchObject({ ok: true, model: "claude-opus-5-5" });
+    const error = claudeResult(sdkResult({ subtype: "error_max_turns", errors: [], modelUsage: { "claude-sonnet-5-5": { costUSD: 0.1 } } }));
+    expect(error).toMatchObject({ ok: false, model: "claude-sonnet-5-5" });
+  });
+
+  it("reports the model that cost the most, the first one on a tie", () => {
+    const modelUsage = { "claude-haiku-5-5": { costUSD: 0.01 }, "claude-opus-5-5": { costUSD: 0.9 }, "claude-sonnet-5-5": { costUSD: 0.2 } };
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done", modelUsage })).model).toBe("claude-opus-5-5");
+    const tie = { "claude-sonnet-5-5": { costUSD: 0.2 }, "claude-opus-5-5": { costUSD: 0.2 } };
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done", modelUsage: tie })).model).toBe("claude-sonnet-5-5");
+  });
+
+  it("reports no model without modelUsage or with an empty one", () => {
+    const missing = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done" }));
+    expect(missing.ok).toBe(true);
+    expect(missing.model).toBeUndefined();
+    const empty = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done", modelUsage: {} }));
+    expect(empty.ok).toBe(true);
+    expect(empty.model).toBeUndefined();
+  });
 });
 
 describe("agent runner", () => {
@@ -51,6 +76,71 @@ describe("agent runner", () => {
     const run = await createAgentRunner(ctx.config, { execute })({ station: "build", prompt: "p", cwd: tempDir(), trace: { tracer: ctx.tracer, jobId: "j1" } });
     expect(run).toMatchObject({ ok: false, budgetLimited: true });
     expect(ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN)!.attrs).toMatchObject({ "zero.budget.limited": true });
+  });
+});
+
+describe("the model that answered", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** One review call: the model the station asks for and what the engine answers. */
+  async function answered(requested: string | undefined, result: EngineResult, opts: { schema?: z.ZodType; traced?: boolean } = {}) {
+    const ctx = testFactory({ engine: "claude", lines: [], ...(requested && { stations: { review: { model: requested } } }) });
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const execute: EngineExecute = async () => result;
+    const run = await createAgentRunner(ctx.config, { execute })({
+      station: "review",
+      prompt: "p",
+      cwd: tempDir(),
+      ...(opts.schema && { schema: opts.schema }),
+      ...(opts.traced !== false && { trace: { tracer: ctx.tracer, jobId: "j1" } }),
+    });
+    const notices = info.mock.calls.filter(([, fields]) => fields && "responded" in fields);
+    return { run, notices, span: ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN) };
+  }
+
+  it("records it next to the requested model and logs the difference", async () => {
+    const { span, notices } = await answered("claude-sonnet-5-5", { ok: true, text: "ok", model: "claude-opus-5-5" });
+    expect(span!.attrs).toMatchObject({ "gen_ai.request.model": "claude-sonnet-5-5", "gen_ai.response.model": "claude-opus-5-5" });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]![1]).toMatchObject({ requested: "claude-sonnet-5-5", responded: "claude-opus-5-5" });
+  });
+
+  it("leaves the attribute and the notice out when the engine does not report it", async () => {
+    const { span, notices } = await answered("claude-sonnet-5-5", { ok: true, text: "ok" });
+    expect(span!.status).toBe("ok");
+    expect(span!.attrs).not.toHaveProperty("gen_ai.response.model");
+    expect(notices).toEqual([]);
+  });
+
+  it("records it on a failed call", async () => {
+    const { span } = await answered("claude-sonnet-5-5", { ok: false, text: "error_max_turns", model: "claude-opus-5-5" });
+    expect(span!.status).toBe("error");
+    expect(span!.attrs).toMatchObject({ "gen_ai.response.model": "claude-opus-5-5" });
+  });
+
+  it("records it when the answer fails the schema", async () => {
+    const { run, span } = await answered(undefined, { ok: true, text: "ok", output: { a: "no" }, model: "claude-opus-5-5" }, { schema: z.object({ a: z.number() }) });
+    expect(run.ok).toBe(false);
+    expect(span!.status).toBe("error");
+    expect(span!.attrs).toMatchObject({ "gen_ai.response.model": "claude-opus-5-5" });
+  });
+
+  it("logs nothing when both models match", async () => {
+    const { span, notices } = await answered("claude-opus-5-5", { ok: true, text: "ok", model: "claude-opus-5-5" });
+    expect(span!.attrs).toMatchObject({ "gen_ai.response.model": "claude-opus-5-5" });
+    expect(notices).toEqual([]);
+  });
+
+  it("logs nothing when no model was requested, and still records it", async () => {
+    const { span, notices } = await answered(undefined, { ok: true, text: "ok", model: "claude-opus-5-5" });
+    expect(span!.attrs).toMatchObject({ "gen_ai.response.model": "claude-opus-5-5" });
+    expect(notices).toEqual([]);
+  });
+
+  it("logs the difference without a trace", async () => {
+    const { span, notices } = await answered("claude-sonnet-5-5", { ok: true, text: "ok", model: "claude-opus-5-5" }, { traced: false });
+    expect(span).toBeUndefined();
+    expect(notices).toHaveLength(1);
   });
 });
 
