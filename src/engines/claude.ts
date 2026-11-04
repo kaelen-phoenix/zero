@@ -119,14 +119,24 @@ export const claudeEngine: Engine = {
 
 const BUDGET_TEXT = "Reached maximum budget";
 
+/** The model that cost the most in a result's `modelUsage` (the first one on a tie); undefined when there is none. */
+function answeringModel(usage: SDKResultMessage["modelUsage"] | undefined): string | undefined {
+  let top: { model: string; cost: number } | undefined;
+  for (const [model, { costUSD }] of Object.entries(usage ?? {})) {
+    if (!top || costUSD > top.cost) top = { model, cost: costUSD };
+  }
+  return top?.model;
+}
+
 /** What an SDK result message means for zero; a call stopped at `maxBudgetUsd` is marked `budgetLimited`. */
 export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): EngineResult {
   const sessionId = result.session_id;
+  const model = answeringModel(result.modelUsage);
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
-    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
-  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
 }

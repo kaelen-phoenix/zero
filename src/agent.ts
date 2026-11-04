@@ -258,10 +258,14 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       "zero.cost.usd": run.costUsd,
       "zero.cost.source": run.costSource,
       "gen_ai.conversation.id": result.sessionId,
+      ...(result.model && { "gen_ai.response.model": result.model }),
       ...quotaAttrs(result.quota),
       ...(run.budgetLimited && { "zero.budget.limited": true }),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
     });
+    if (model && result.model && result.model !== model) {
+      log.info(`agent:${name} answered by another model`, { engine: engine.name, requested: model, responded: result.model });
+    }
     log.info(`agent:${name} done`, { engine: engine.name, ok: run.ok, costUsd: run.costUsd.toFixed(3) });
     return run;
   };
