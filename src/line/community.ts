@@ -289,7 +289,7 @@ async function publish(ctx: FactoryContext, social: Social, drafts: Draft[], lin
     const { draft, line } = item;
     const topic = normalizeTitle(draft.topic);
     const known = ctx.store.listSocialPosts({ live: true }).some((p) => normalizeTitle(p.topic) === topic);
-    const limit = draft.kind === "post" ? social.postsPerDay : social.storiesPerDay;
+    const limit = draft.kind === "story" ? social.storiesPerDay : social.postsPerDay;
     if (seenInRun.has(topic) || known || usedToday(ctx.store, draft.kind, now) >= limit) {
       result.dropped++;
       continue;

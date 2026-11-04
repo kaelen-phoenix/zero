@@ -535,6 +535,29 @@ describe("carousels", { timeout: 60_000 }, () => {
     expect(socialStatus(ctx).quota!.posts).toEqual({ used: 1, limit: 1 });
   });
 
+  it("measures carousels against postsPerDay: two with one post a day publish one", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 1, storiesPerDay: 3 } });
+    const social = fakeSocial();
+    const result = await socialPostNow(ctx, drafting(carousel("Primero"), carousel("Segundo")).runner, { social: social.social, now: NOW });
+    expect(social.items.map((i) => i.kind)).toEqual(["carousel"]);
+    expect(result.dropped).toBe(1);
+    expect(socialStatus(ctx).quota!.posts).toEqual({ used: 1, limit: 1 });
+  });
+
+  it("publishes a carousel with no stories allowed", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 1, storiesPerDay: 0 } });
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Primero")).runner, { social: social.social, now: NOW });
+    expect(social.items.map((i) => i.kind)).toEqual(["carousel"]);
+  });
+
+  it("publishes no carousel with no posts allowed, whatever the stories' quota", async () => {
+    const { ctx } = factory({ social: { postsPerDay: 0, storiesPerDay: 1 } });
+    const social = fakeSocial();
+    await socialPostNow(ctx, drafting(carousel("Primero")).runner, { social: social.social, now: NOW });
+    expect(social.items).toHaveLength(0);
+  });
+
   it("says carrusel in the status", async () => {
     const { ctx } = await run(drafting(carousel("Paso a paso")));
     expect(formatSocialStatus(socialStatus(ctx))).toContain("carrusel");
