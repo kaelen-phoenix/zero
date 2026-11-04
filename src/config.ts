@@ -184,6 +184,8 @@ export const LineSchema = z.object({
   integrate: z.enum(["merge", "branch", "pull-request"]).default("merge"),
   remote: z.string().default("origin"),
   maxAttempts: z.number().int().min(1).default(3),
+  /** Jobs of this line at the same time, when their declared paths do not overlap; the global `concurrency` still applies. */
+  parallel: z.number().int().min(1).default(1),
   /** Take GitHub issues carrying this label as requests (polled from the line's remote). Off when absent. */
   issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */

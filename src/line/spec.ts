@@ -26,6 +26,7 @@ export const SpecSchema = z.object({
   capability: z.string().describe("kebab-case name of the system behaviour this touches."),
   requirements: z.array(RequirementSchema),
   tasks: z.array(z.string()),
+  paths: z.array(z.string()).describe("Files or folders the job expects to touch, as repository-relative patterns (src/a/**, docs/x.md). Empty when unsure: the job then runs alone."),
   risks: z.array(z.string()),
   learnings: z.array(LearningSchema).describe("Durable facts about this codebase for future runs. Empty if nothing new."),
   followUps: z.array(z.string()).describe("Out-of-scope work worth doing. Empty if none."),

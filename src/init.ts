@@ -51,7 +51,7 @@ export function slug(text: string): string {
 }
 
 /** The line for a local git repository, or undefined when `path` is not inside one. */
-export function lineFromRepo(path: string): Omit<LineConfig, "integrate" | "remote" | "maxAttempts" | "autoMerge" | "agents"> | undefined {
+export function lineFromRepo(path: string): Omit<LineConfig, "integrate" | "remote" | "maxAttempts" | "parallel" | "autoMerge" | "agents"> | undefined {
   const repo = tryGit(["rev-parse", "--show-toplevel"], path);
   if (!repo) return undefined;
   const baseBranch = tryGit(["symbolic-ref", "--short", "HEAD"], repo) || "main";
