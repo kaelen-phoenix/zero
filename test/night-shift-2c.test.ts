@@ -60,6 +60,7 @@ describe("revert detection", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ kind: "lesson" });
     expect(posts[0]!.body).toContain("Agregar health");
+    expect(posts[0]!.body).toContain("quien está a cargo la revirtió");
   });
 
   it("leaves a merge nobody reverted approved", async () => {

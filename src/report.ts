@@ -110,11 +110,11 @@ function originLabel(job: Job): string {
     case "github-issue":
       return `Issue de GitHub #${job.source.number}`;
     case "night-shift":
-      return job.source.autonomy ? "Propuesta que el turno nocturno tomó por su cuenta" : "Propuesta del turno nocturno aprobada por el dueño";
+      return job.source.autonomy ? "Propuesta que el turno nocturno tomó por su cuenta" : "Propuesta del turno nocturno aprobada por la persona responsable";
     case "research":
       return "Investigación";
     default:
-      return "Pedido del dueño";
+      return "Pedido de la persona responsable";
   }
 }
 

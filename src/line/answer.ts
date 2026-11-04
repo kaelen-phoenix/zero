@@ -1,5 +1,5 @@
 import type { Approvals, Job } from "../state/store.js";
-import { closeQuestion, finalizeJob, type LedgerDeps } from "./finish.js";
+import { closeQuestion, finalizeJob, rejectedByYou, type LedgerDeps } from "./finish.js";
 
 export type Decision = "approve" | "reject";
 
@@ -34,11 +34,11 @@ function granted(job: Job): Approvals {
  * Applies the owner's answer to a waiting job. Approving puts it back in the
  * queue to continue after the approved point; rejecting stops it.
  */
-export async function answerJob(deps: LedgerDeps, job: Job, decision: Decision, note?: string): Promise<Job> {
+export async function answerJob(deps: LedgerDeps, job: Job, decision: Decision, note?: string, opts: { expired?: boolean } = {}): Promise<Job> {
   if (job.status !== "waiting" || !job.question) throw new Error(`El trabajo ${job.id} no está esperando una respuesta (estado: ${job.status}).`);
   if (decision === "reject") {
     const kept = (job.question.kind === "integration-blocked" || job.source?.kind === "night-shift") && job.branch ? ` La rama ${job.branch} queda disponible.` : "";
-    return finalizeJob(deps, job, "stopped", { reason: `Rechazado por el dueño${note ? `: ${note}` : "."}${kept}` });
+    return finalizeJob(deps, job, "stopped", { reason: `${opts.expired ? `Se rechazó solo: ${note}.` : rejectedByYou(note)}${kept}` });
   }
   return approveJob(deps, job);
 }

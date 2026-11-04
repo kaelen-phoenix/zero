@@ -47,7 +47,7 @@ export function breakMentions(text: string): string {
 /** How the issue is decided: from GitHub on `propose`, a record otherwise. */
 function howToDecide(proposal: Proposal, label: string, autonomy: Autonomy): string {
   if (autonomy !== "propose") {
-    return `Este issue es un registro: en esta línea el turno nocturno avanza solo (autonomía \`${autonomy}\`), así que ni la etiqueta ni cerrarlo deciden nada. Se cierra con la entrega. El dueño puede rechazarla desde la fábrica: \`zero proposals reject ${proposal.id}\`.`;
+    return `Este issue es un registro: en esta línea el turno nocturno avanza solo (autonomía \`${autonomy}\`), así que ni la etiqueta ni cerrarlo deciden nada. Se cierra con la entrega. Quien está a cargo puede rechazarla desde la fábrica: \`zero proposals reject ${proposal.id}\`.`;
   }
   return `Para decidirla desde GitHub (solo personas con permiso de escritura): ponele la etiqueta \`${label}\` para aprobarla, o cerrá el issue sin esa etiqueta para rechazarla. También desde la fábrica: \`zero proposals approve ${proposal.id}\` o \`zero proposals reject ${proposal.id} --note "<motivo>"\`, o desde el panel o el chat.`;
 }
@@ -77,10 +77,10 @@ async function publish(ctx: FactoryContext, line: LineConfig, proposal: Proposal
 function approvalText(ctx: FactoryContext, proposal: Proposal): string {
   const job = `\`${proposal.jobId ?? "?"}\``;
   if (ctx.store.getKv(fromGitHubKey(proposal.id))) return `Propuesta aprobada desde GitHub con la etiqueta de trabajo: la fábrica la tomó como trabajo ${job}.`;
-  if (proposal.decidedBy !== "night-shift") return `El dueño aprobó esta propuesta: la fábrica la tomó como trabajo ${job}.`;
+  if (proposal.decidedBy !== "night-shift") return `La persona responsable aprobó esta propuesta: la fábrica la tomó como trabajo ${job}.`;
   const source = proposal.jobId ? ctx.store.getJob(proposal.jobId)?.source : undefined;
   const autonomy = source?.kind === "night-shift" ? source.autonomy : undefined;
-  const after = autonomy === "auto" ? "se integra sola si pasa todas las estaciones" : "no se integra hasta que el dueño la apruebe";
+  const after = autonomy === "auto" ? "se integra sola si pasa todas las estaciones" : "no se integra hasta que la persona responsable la apruebe";
   return `El turno nocturno tomó esta propuesta por su cuenta como trabajo ${job} (autonomía de la línea: \`${autonomy ?? "?"}\`): ${after}.`;
 }
 
@@ -98,7 +98,7 @@ async function tellApproved(ctx: FactoryContext, line: LineConfig, repository: s
 async function tellRejected(ctx: FactoryContext, line: LineConfig, proposal: Proposal & { issueNumber: number }, gh: IssueApi) {
   const reason = proposal.note ? `con este motivo:\n\n${proposal.note.split("\n").map((l) => `> ${l}`).join("\n")}` : "sin dar motivo.";
   await gh.close(proposal.issueNumber);
-  await gh.comment(proposal.issueNumber, breakMentions(scrub(`El dueño rechazó esta propuesta ${reason}`, line)));
+  await gh.comment(proposal.issueNumber, breakMentions(scrub(`La persona responsable rechazó esta propuesta ${reason}`, line)));
   ctx.store.markProposalIssueTold(proposal.id, "rejected");
 }
 

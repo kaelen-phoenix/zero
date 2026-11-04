@@ -93,7 +93,7 @@ export async function detectReverts(ctx: FactoryContext, merges?: (repository: s
       log.info("the owner reverted a night-shift integration", { line: line.name, proposal: proposal.id, job: integration.job.id, commit: integration.commit });
       try {
         await ctx.townhall.publish([
-          { kind: "lesson", line: line.name, topic: "propuesta revertida", source: "", body: `"${proposal.title}": el turno nocturno la integró solo (trabajo ${integration.job.id}) y el dueño la revirtió en ${line.baseBranch}.` },
+          { kind: "lesson", line: line.name, topic: "propuesta revertida", source: "", body: `"${proposal.title}": el turno nocturno la integró solo (trabajo ${integration.job.id}) y quien está a cargo la revirtió en ${line.baseBranch}.` },
         ]);
       } catch (err) {
         log.warn("cannot record the revert in the townhall", { proposal: proposal.id, error: String(err) });

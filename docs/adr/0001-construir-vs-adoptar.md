@@ -5,7 +5,7 @@
 
 ## Contexto
 
-zero es una fábrica de software autónoma: ocupa el lugar del humano en el circuito y el dueño decide dónde vuelve a entrar. Requisitos:
+zero es una fábrica de software autónoma: ocupa el lugar del humano en el circuito y la persona responsable decide dónde vuelve a entrar. Requisitos:
 
 | # | Requisito |
 |---|---|
@@ -121,7 +121,7 @@ intención → spec + criterios ejecutables → N candidatos en paralelo (varios
 ## Decisiones tomadas (2026-10-26)
 
 Contexto añadido tras este ADR:
-- **Cada dueño tiene su propia fábrica en su máquina.** Funciona como un daemon local, sin servicio central y con un solo dueño.
+- **Cada persona responsable tiene su propia fábrica en su máquina.** Funciona como un daemon local, sin servicio central y con una sola persona a cargo.
 - **La fábrica debe poder usarla alguien que no programa.** Habrá un modo simple por defecto y un modo avanzado.
 - **Se configura desde un panel en el navegador**, que se abre al instalar.
 
@@ -130,7 +130,7 @@ Contexto añadido tras este ADR:
 | 1 | Construir o adoptar | **Construir zero propio**, reutilizando piezas libres donde sirvan (OpenSpec, ccusage…) |
 | 2 | Licencia | **Apache-2.0** |
 | 3 | Entrada de trabajo | **Las dos**: lenguaje natural por defecto (una estación lo convierte en un change de OpenSpec) o especificación directa para quien sepa. Las fuentes (panel, GitHub, Linear, Jira…) son plugins |
-| 4 | Autonomía | **Niveles L0–L3**, elegidos por cada dueño. **Por defecto se arranca en L3 (a oscuras)**, con límites duros y botón de parada |
+| 4 | Autonomía | **Niveles L0–L3**, elegidos por quien está a cargo. **Por defecto se arranca en L3 (a oscuras)**, con límites duros y botón de parada |
 | 5 | Protección del equipo | **En L3 los agentes trabajan siempre dentro de una caja aislada que prepara el instalador de zero.** Si en una máquina no es posible, la fábrica baja de nivel y explica por qué |
 | 6 | Configuración | **Un archivo legible (`zero.factory.yaml`) que escribe el panel.** Los secretos van al llavero del sistema operativo |
 
@@ -142,8 +142,8 @@ Consecuencias inmediatas:
 
 | # | Decisión | Elección |
 |---|---|---|
-| 7 | Cómo se usa zero | **Desde el chat del cliente de agentes del dueño** (Claude Code, Codex, agy, OpenCode). zero se instala como plugin (skills + servidor MCP stateless). El panel en el navegador queda para la configuración inicial y lo visual |
-| 8 | Dónde se hace el trabajo | **En segundo plano.** El daemon de zero ejecuta la línea con los mismos clientes en modo headless, con la cuenta del dueño, y sigue aunque se cierre el chat. Los avisos fuera del chat van por panel, email o Telegram |
+| 7 | Cómo se usa zero | **Desde el chat del cliente de agentes de la persona responsable** (Claude Code, Codex, agy, OpenCode). zero se instala como plugin (skills + servidor MCP stateless). El panel en el navegador queda para la configuración inicial y lo visual |
+| 8 | Dónde se hace el trabajo | **En segundo plano.** El daemon de zero ejecuta la línea con los mismos clientes en modo headless, con la cuenta de la persona responsable, y sigue aunque se cierre el chat. Los avisos fuera del chat van por panel, email o Telegram |
 
 Pendiente de verificar: los términos de uso de cada proveedor para ejecuciones headless con una suscripción personal.
 
@@ -178,11 +178,11 @@ L3 es real cuando la caja y las credenciales están listas.
 
 | # | Decisión | Elección |
 |---|---|---|
-| 10 | Salida a internet de la caja | **No limitarla por defecto: verla toda y bloquear lo sospechoso.** El dueño puede armar su lista de bloqueados o pasar a una lista de permitidos (`egress.mode`). Para que verla sirva, la caja no tiene salida propia ni DNS: sale solo por una puerta de zero (proxy propio en su contenedor, red interna del runtime). Un trabajo con salidas sospechosas no se integra solo (L3 falla, L0–L2 pregunta). Desde el chat solo se puede bloquear |
+| 10 | Salida a internet de la caja | **No limitarla por defecto: verla toda y bloquear lo sospechoso.** Quien está a cargo puede armar su lista de bloqueados o pasar a una lista de permitidos (`egress.mode`). Para que verla sirva, la caja no tiene salida propia ni DNS: sale solo por una puerta de zero (proxy propio en su contenedor, red interna del runtime). Un trabajo con salidas sospechosas no se integra solo (L3 falla, L0–L2 pregunta). Desde el chat solo se puede bloquear |
 
 | 11 | Panel y acceso remoto | **Panel servido por el daemon solo en `127.0.0.1`**, HTML del servidor, sin framework. Clave en el llavero, que viaja en el fragmento del link y se canjea por una cookie. Acceso desde el celular con un **túnel rápido de Cloudflare, temporal y a pedido** (`zero panel remote on|off`). Elegido porque funciona sin estar frente a la PC: no requiere administrador ni cuenta. La red privada (Tailscale/Headscale) queda como alternativa más privada |
 
-| 12 | Issues como entrada | **Revisión periódica (polling) de issues con una etiqueta**, no webhooks, porque la PC del dueño no tiene una dirección pública fija. Solo se toman issues **escritos y etiquetados** por personas con permiso de escritura, porque el texto de un desconocido podría editarse después de etiquetado. El issue recibe comentarios por estado, y el PR lo cierra |
+| 12 | Issues como entrada | **Revisión periódica (polling) de issues con una etiqueta**, no webhooks, porque la PC de la persona responsable no tiene una dirección pública fija. Solo se toman issues **escritos y etiquetados** por personas con permiso de escritura, porque el texto de un desconocido podría editarse después de etiquetado. El issue recibe comentarios por estado, y el PR lo cierra |
 | 13 | Seguridad y fusión automática | **Estación `security` de solo lectura** después de `review`, con sus propias instrucciones y motor configurable, y los mismos hallazgos con citas verificadas. **Fusión por polling** de los pull requests de líneas con `autoMerge`, cuando todos los checks de GitHub terminaron bien y GitHub los declara fundibles (y solo si el último commit sigue siendo el revisado). No se usa el auto-merge nativo de GitHub porque pide configurar protección de ramas en cada repositorio |
 | 14 | Comentarios del issue | **Estación `reply` de solo lectura y sin repositorio**, que recibe los hechos del trabajo calculados por zero (dónde está el cambio) y devuelve una decisión estructurada: responder, trabajo nuevo, aprobar o rechazar. zero valida la decisión contra el estado del trabajo. Solo comentarios de personas con permiso de escritura, y nunca los de otras personas como contexto |
 

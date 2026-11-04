@@ -2,13 +2,13 @@
 
 [English](README.md) · Español
 
-**zero in the loop**: la fábrica ocupa el lugar del humano en el circuito y el dueño decide dónde vuelve a entrar.
+**zero in the loop**: la fábrica ocupa el lugar del humano en el circuito y vos decidís dónde volver a entrar.
 
 zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo desde el chat de tu cliente de IA (Claude Code, Codex, agy…) o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.
 
 Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
-El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones, solo en la versión en español del sitio, lista los formatos que se ofrecen, y cada botón abre un correo al dueño.
+El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones, solo en la versión en español del sitio, lista los formatos que se ofrecen, y cada botón abre un correo a la persona responsable.
 
 ## Cómo funciona
 
@@ -159,7 +159,7 @@ zero informe tienda --mes 2026-10           # una línea, un mes, en Markdown
 zero informe tienda --mes 2026-10 --html    # un documento HTML autónomo (necesita una línea)
 ```
 
-- Lista cada trabajo entregado: título, fechas de pedido y de entrega, origen (pedido del dueño, issue de GitHub, propuesta del turno nocturno aprobada por vos o tomada por su cuenta, investigación), qué cambió (el resumen de su spec) y el link a la solicitud de cambio o al commit.
+- Lista cada trabajo entregado: título, fechas de pedido y de entrega, origen (tu pedido, issue de GitHub, propuesta del turno nocturno aprobada por vos o tomada por su cuenta, investigación), qué cambió (el resumen de su spec) y el link a la solicitud de cambio o al commit.
 - Totales: trabajos entregados y, aparte, como información y no como trabajo hecho, los fallidos y los detenidos. Intentos, tiempo y costo suman todos los trabajos terminados en el mes, incluidos los fallidos y detenidos; el tiempo va del pedido al cierre e incluye las esperas.
 - La parte del costo que vino de una suscripción se marca como un estimado que no se cobró. El costo va también en el archivo exportado: editalo si no querés que lo vea tu cliente.
 - Un trabajo cuenta en el mes en que terminó, en hora local.
@@ -305,7 +305,7 @@ Las mismas garantías que `build`: tiempos límite, la caja de aislamiento monta
 
 **Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
 
-Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de la copia del dueño del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web. `.zero/**` es siempre una ruta protegida, diga lo que diga `limits.protectedPaths`: un trabajo que cambia instrucciones de agentes te espera (o falla en L3) antes de poder entregarse.
+Garantías que impone zero, nunca el agente: los agentes a medida son de solo lectura (en la caja con montaje de solo lectura, y lo que escriben se descarta); se suman a la línea y no pueden apagar ni saltear las estaciones fijas, las rutas protegidas ni la verificación (no hay ningún campo para eso); y sus instrucciones vienen solo de tu copia del repo de la línea o de la carpeta de la fábrica, nunca de lo que el trabajo escribió en su copia ni de la web. `.zero/**` es siempre una ruta protegida, diga lo que diga `limits.protectedPaths`: un trabajo que cambia instrucciones de agentes te espera (o falla en L3) antes de poder entregarse.
 
 ## Turno nocturno
 
@@ -331,10 +331,10 @@ La autonomía de una línea es la suya (`lines[].nightShift.autonomy`) o, si no 
 - **`build`**: la propuesta se convierte sola en un trabajo normal de la línea, marcado como del turno nocturno. Pasa por todas las estaciones y se detiene antes de integrar: queda su rama y espera tu aprobación. Si no contestás, vence como rechazada aunque `approvals.onTimeout` sea `approve`: nunca se integra sola. Al aprobar la propuesta se integra según el `integrate` y el `autoMerge` de la línea; al rechazarla, el trabajo se detiene y su rama queda.
 - **`auto`**: se construye y se integra o despliega sola, según el `integrate` y el `autoMerge` de la línea, sin preguntar.
 
-En `build` y en `auto` el trabajo sigue las reglas de siempre: si toca algo protegido, se pasa del presupuesto, la verificación lo frena o la puerta de salida ve algo sospechoso, espera al dueño (o falla, según el nivel) como cualquier otro trabajo. Además:
+En `build` y en `auto` el trabajo sigue las reglas de siempre: si toca algo protegido, se pasa del presupuesto, la verificación lo frena o la puerta de salida ve algo sospechoso, te espera (o falla, según el nivel) como cualquier otro trabajo. Además:
 - **Tope diario.** Como mucho `maxAutoJobsPerDay` trabajos automáticos por día local, sumando todas las líneas (0 = ninguno). Al llegar, las propuestas que siguen esperan tu decisión.
 - **Propuestas pendientes de antes.** Si pasás una línea a `build` o `auto`, en la siguiente pasada del turno nocturno (dentro de su horario y con el andon apagado) se promueven solas sus propuestas pendientes, de la más vieja a la más nueva, respetando `maxAutoJobsPerDay`: se toman como si fueran nuevas. Las que nacieron de algo de terceros (marcadas por `scout` o que tocan un manifiesto de dependencias o de MCP), las nacidas de una nota de negocio y las que tocan la licencia, precios, cobros, pagos o textos legales nunca se promueven: siguen esperando tu decisión.
-- **Lo revertido.** Si revertís en la rama principal un cambio que el turno nocturno integró solo, sin tu aprobación, la fábrica lo detecta: la propuesta queda en estado `revertida` (en el panel, el grupo "Revertidas"), se anota en el townhall de la línea y `scout` no la vuelve a proponer. En las líneas con `integrate: merge` mira `git revert -m 1 <commit>` del merge. En las líneas con `integrate: pull-request` guarda el commit con el que GitHub fundió el pull request (merge o squash) y reconoce tanto `git revert` de ese commit como el botón Revert de GitHub (el pull request `Revert "…"`, cuyo commit dice `Reverts dueño/repo#N`); busca en la rama principal local y en la del remoto, tras un `git fetch`. No detecta deshacer a mano.
+- **Lo revertido.** Si revertís en la rama principal un cambio que el turno nocturno integró solo, sin tu aprobación, la fábrica lo detecta: la propuesta queda en estado `revertida` (en el panel, el grupo "Revertidas"), se anota en el townhall de la línea y `scout` no la vuelve a proponer. En las líneas con `integrate: merge` mira `git revert -m 1 <commit>` del merge. En las líneas con `integrate: pull-request` guarda el commit con el que GitHub fundió el pull request (merge o squash) y reconoce tanto `git revert` de ese commit como el botón Revert de GitHub (el pull request `Revert "…"`, cuyo commit dice `Reverts owner/repo#N`); busca en la rama principal local y en la del remoto, tras un `git fetch`. No detecta deshacer a mano.
 - **Tus pedidos van primero.** Un trabajo automático del turno nocturno nunca pasa delante de los tuyos y no arranca mientras haya otro trabajo en la cola o en curso.
 - **Propuestas nacidas de una nota de investigación.** Quedan marcadas con la nota de origen. Si agregan una dependencia, una skill de terceros, un servidor MCP o código de terceros, las regula `research.autonomy` (por defecto `propose`): se toma la más restrictiva entre esa y la de la línea, así que esperan tu decisión aunque la línea esté en `auto`. zero no se fía solo de lo que dice `scout`: también mira los manifiestos de dependencias y de MCP (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) en la propuesta y, antes de integrar, en los archivos que cambió el trabajo. Escribir una skill propia o asignar una ya instalada sigue la autonomía de la línea.
 - **Propuestas nacidas de una nota de negocio.** Las que `scout` saca de una nota de una skill de negocio (ver [Investigación](#investigación)) esperan siempre tu decisión, aunque la línea esté en `auto` o `build` y aunque `research.autonomy` sea `auto`.
@@ -464,7 +464,7 @@ telemetry:
       x-honeycomb-team: HONEYCOMB_API_KEY
 ```
 
-Guardá el valor con `zero secret set HONEYCOMB_API_KEY` (el llavero del sistema) o en una variable de entorno con el mismo nombre. El daemon envía cada trabajo terminado una sola vez, con su jerarquía (trabajo → estación → intento → agente o comando). De lo que sale se quitan los secretos, el repositorio de la línea, la carpeta personal del dueño y otras rutas locales. Si el colector no responde, la fábrica lo registra y sigue: reintenta el mismo lote hasta 5 veces con esperas crecientes y después lo saltea. `state.db` sigue siendo la fuente de verdad; los trabajos terminados antes de activar la exportación no se envían.
+Guardá el valor con `zero secret set HONEYCOMB_API_KEY` (el llavero del sistema) o en una variable de entorno con el mismo nombre. El daemon envía cada trabajo terminado una sola vez, con su jerarquía (trabajo → estación → intento → agente o comando). De lo que sale se quitan los secretos, el repositorio de la línea, tu carpeta personal y otras rutas locales. Si el colector no responde, la fábrica lo registra y sigue: reintenta el mismo lote hasta 5 veces con esperas crecientes y después lo saltea. `state.db` sigue siendo la fuente de verdad; los trabajos terminados antes de activar la exportación no se envían.
 
 ## Townhall
 
@@ -487,9 +487,9 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 
 ## Hacia dónde va: la intención es el producto
 
-Todo orquestador de IA parte del mismo supuesto: el código es el producto y los agentes son obreros que lo tocan. zero apunta a dar vuelta eso. **El producto es la intención del dueño; el código es su consecuencia**, algo que la fábrica puede volver a producir cuando haga falta.
+Todo orquestador de IA parte del mismo supuesto: el código es el producto y los agentes son obreros que lo tocan. zero apunta a dar vuelta eso. **El producto es tu intención; el código es su consecuencia**, algo que la fábrica puede volver a producir cuando haga falta.
 
-- **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. El dueño lee y edita intenciones, en su idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
+- **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. Vos leés y editás intenciones, en tu idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
 - **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
 - **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
 

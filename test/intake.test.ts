@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { answer, factoryStatus, requestWork, setIssueIntake } from "../src/app.js";
+import { answer, factoryStatus, requestWork, setIssueIntake, stop } from "../src/app.js";
 import { DEFAULT_SIGNATURE_TEXT, lineSignature, parseFactory } from "../src/config.js";
 import { formatStatus } from "../src/format.js";
 import { pollIssues, type Issue, type IssueApi, type IssueComment } from "../src/intake/github.js";
@@ -179,6 +179,28 @@ describe("GitHub issues as requests", () => {
     expect(gh.comments[1]!.body).toMatch(/la etiqueta la puso @triager/);
   });
 
+  it("tells the issue about a stopped job in the third person", async () => {
+    const ctx = issueFactory();
+    const gh = fakeGitHub();
+    gh.open(9);
+    await pollIssues(ctx, () => gh.api);
+    const job = ctx.store.listJobs()[0]!;
+    await stop(ctx, job.id);
+    expect(ctx.store.getJob(job.id)!.reason).toBe("Lo detuviste vos.");
+    await pollIssues(ctx, () => gh.api);
+    const body = gh.comments.at(-1)!.body;
+    expect(body).toContain(`El trabajo \`${job.id}\` se detuvo. Lo detuvo la persona responsable.`);
+    expect(body).not.toContain("detuviste");
+    expect(body).not.toContain("..");
+  });
+
+  it("gives the reply station a stopped job's reason in the third person", () => {
+    const ctx = issueFactory();
+    const { job } = requestWork(ctx, { text: "algo", line: "demo" });
+    const stopped = ctx.store.finishJob(job.id, "stopped", { reason: "Lo rechazaste vos: no era esto" });
+    expect(whereIsTheChange(ctx.config.lines[0]!, stopped)).toContain("Lo rechazó la persona responsable: no era esto");
+  });
+
   it("tells the issue when its job needs the owner and when it ends, once each", async () => {
     const ctx = issueFactory();
     const gh = fakeGitHub();
@@ -292,6 +314,15 @@ describe("comments on an issue", () => {
     expect(gh.comments.at(-1)!.body).toBe(`Agrego el pie de página.\n\nLo tomé como trabajo \`${next.id}\`. Te aviso acá cómo va.`);
     await poll();
     expect(ctx.store.listJobs()).toHaveLength(2);
+  });
+
+  it("writes a stopped job's reason in the third person in the follow-up request", async () => {
+    const { ctx, gh, job, poll } = await delivered({ action: "change", reply: "Sigo.", request: "Retomarlo." });
+    await finalizeJob(ctx, ctx.store.getJob(job.id)!, "stopped", { reason: "Lo detuviste vos." });
+    gh.say(4, "Retomalo");
+    await poll();
+    const next = ctx.store.listJobs().find((j) => j.id !== job.id)!;
+    expect(next.request).toContain("Entregado: nada (Lo detuvo la persona responsable.).");
   });
 
   it("answers a waiting question from a comment, and waits while the job works", async () => {
