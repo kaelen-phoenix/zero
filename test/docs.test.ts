@@ -140,6 +140,20 @@ describe("documentation up to date", () => {
     }
   });
 
+  it("documents carousels, the audit, the symbol and the skills command in both", () => {
+    for (const [text, heading] of [[en, "## Social media"], [es, "## Redes sociales"]] as const) {
+      const code = blocks(text).map((b) => b.body).join("\n");
+      expect(code).toContain("zero social skills");
+      const body = section(text, heading);
+      for (const fact of ["1080x1350", "1080x1920", "125", "zero-symbol.png", "zero social skills"]) expect(body, fact).toContain(fact);
+      expect(text).not.toContain("1080x1080");
+    }
+    expect(section(en, "## Social media")).toMatch(/carousels?/i);
+    expect(section(es, "## Redes sociales")).toMatch(/carrusel/i);
+    expect(en).not.toMatch(/Carousels[^.\n]*later stages/);
+    expect(es).not.toMatch(/carruseles[^.\n]*próximas etapas/i);
+  });
+
   it("shows .agents/** in the protected paths example of both READMEs", () => {
     // normalize drops double-quoted strings, so the block comparison above cannot see this line.
     const line = '  protectedPaths: [".github/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]';

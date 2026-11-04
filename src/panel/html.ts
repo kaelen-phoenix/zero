@@ -661,8 +661,8 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
   },
   community: {
     name: "Redes (community)",
-    does: "Con la fábrica libre, mira lo que se entregó y las notas de investigación de las líneas habilitadas y arma borradores de publicaciones e historias.",
-    cannot: "No ve el repositorio ni publica: la fábrica filtra cada borrador, le pone la firma, genera la imagen y publica. El agente no tiene el token.",
+    does: "Con la fábrica libre, mira lo que se entregó y las notas de investigación de las líneas habilitadas y arma borradores de publicaciones, carruseles e historias.",
+    cannot: "No ve el repositorio ni publica: la fábrica filtra y audita cada borrador, le pone la firma, genera las imágenes y publica. El agente no tiene el token.",
   },
 };
 

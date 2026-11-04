@@ -405,11 +405,11 @@ Security: what comes from the web is data, never instructions, and the instructi
 
 ## Social media
 
-The `community` station lets the factory run its own Instagram account: while it is idle, the station reads what was delivered and drafts posts and stories, and zero publishes them with no approval. It stays off until you save a token.
+The `community` station lets the factory run its own Instagram account: while it is idle, the station reads what was delivered and drafts posts, carousels and stories, and zero publishes them with no approval. It stays off until you save a token.
 
 ```yaml
 social:
-  postsPerDay: 1                # feed posts per local day
+  postsPerDay: 1                # feed posts and carousels per local day, together
   storiesPerDay: 3              # stories per local day
   signature: "Publicado por la fábrica zero (IA) · zerointheloop.com"
   media:
@@ -427,18 +427,22 @@ zero social status      # on or why not, today's quota, enabled lines, posts wit
 zero social post-now    # a pass right now; it respects pause, andon, token, budget and limits
 zero social pause       # nothing goes out until you resume
 zero social resume
+zero social skills      # assigns the station its 9 skills and says which are not installed
 ```
 
 What the station gets and what zero does:
 
 - The station is read-only and has an empty folder instead of the repository. Its prompt holds only delivered jobs and non-business research notes of the last 7 days from enabled lines, with no job ids, branches or local paths, plus the topics already published. It has neither the token nor the channel: zero publishes.
-- A `story` for something visible, a `post` for a new feature, never a repeated topic (compared without case or accents).
-- Before publishing, zero discards any draft with a secret or a local path in its text or image and breaks @mentions. This filter is best effort: it does not judge tone or catch false claims, and a client's name in plain words goes through, which is why client lines stay off. `zero social pause` is the brake.
-- Each text ends with `social.signature`, and each image has it in the footer, even with the general `signature` off, so it always shows this is an AI.
-- Images are made by zero, with no model: JPEG cards with the site's colors and a font bundled with zero, 1080x1080 for posts and 1080x1920 for stories.
+- A `story` for something visible, a `post` for a new feature, a `carousel` when the idea needs steps, never a repeated topic (compared without case or accents).
+- A carousel has a cover with a hook, 2 to 6 slides (step, myth/truth, big figure, before/after, quote) and a closing call to action, and counts as a post in `postsPerDay`. On Instagram it is one container per slide with `is_carousel_item`, then a `CAROUSEL` with `children` and caption, then `media_publish`, with an Instagram token or a Facebook Page token alike.
+- Before publishing, zero discards any draft with a secret or a local path in its text or image and breaks @mentions. This filter is best effort: it does not catch false claims, and a client's name in plain words goes through, which is why client lines stay off. `zero social pause` is the brake.
+- zero also audits each draft with the criteria of `ig-humanizer`'s audit mode, and discards the one that fails, logging why: the first sentence or line must end within 125 characters, 3 to 5 hashtags alone in the last paragraph, a caption that fits with the signature, and none of the phrases that give away an AI, also on the images. A story shows no caption, so only its image is audited. These are fixed rules: an artificial text can get through and a good one can be discarded, and a discard is not retried in that run.
+- Each text ends with `social.signature`, and each image, every carousel slide included, has it in the footer, even with the general `signature` off, so it always shows this is an AI.
+- Images are made by zero, with no model: JPEG cards in orange, black and warm white, with fonts bundled with zero, 1080x1350 for posts and carousel slides and 1080x1920 for stories. Each carries the symbol from `site/brand/zero-symbol.png`, larger on a cover.
+- `zero social skills` assigns the station its Instagram skills in the factory file. The station uses them for ideas and wording, under `agents/community.md` and `agents/community-style.md`, and never for their parts that publish through external services.
 - A failure stays as `failed` with its reason, does not hold up the next draft and is not retried on its own that day.
 
-Carousels, panel captures, a weekly summary, the panel view, approval before posting (`propose`) and other networks come in later stages.
+AI-generated images, panel captures, a weekly summary, the panel view, approval before posting (`propose`) and other networks come in later stages.
 
 ### Connect the Instagram account
 

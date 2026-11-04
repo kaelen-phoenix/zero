@@ -5,11 +5,12 @@ import type { LineConfig } from "../src/config.js";
 
 const TOKEN = `IGAA${"t".repeat(36)}`;
 const image = { kind: "post" as const, text: "Hola", imageUrl: "https://img.example/a.jpg" };
+const carousel = { kind: "carousel" as const, text: "Hola", imageUrls: ["https://img.example/1.jpg", "https://img.example/2.jpg", "https://img.example/3.jpg"] };
 
 interface Call {
   url: string;
   method: string;
-  body?: Record<string, string>;
+  body?: Record<string, string | boolean>;
   auth?: string;
 }
 
@@ -33,6 +34,61 @@ function fakeInstagram(opts: { statuses?: string[]; replies?: (call: Call) => Re
   const channel = instagramChannel({ token: TOKEN, fetch: send, sleep: async () => {}, maxPolls: 3, accountId: opts.accountId });
   return { channel, calls };
 }
+
+/** Each container created gets its own id, in order; `failing` never gets ready. */
+function fakeCarousel(opts: { accountId?: string; failing?: string } = {}) {
+  let containers = 0;
+  return fakeInstagram({
+    accountId: opts.accountId,
+    replies: (c) => {
+      const json = (value: unknown) => new Response(JSON.stringify(value));
+      if (c.url.endsWith("/77/media")) return json({ id: `k${++containers}` });
+      const status = /(k\d+)\?fields=status_code/.exec(c.url);
+      if (status) return json({ status_code: status[1] === opts.failing ? "ERROR" : "FINISHED" });
+      return undefined;
+    },
+  });
+}
+
+describe("Instagram carousels", () => {
+  it("creates one container per image, one holding them, and publishes that one last", async () => {
+    const { channel, calls } = fakeCarousel();
+    await expect(channel.publish(carousel)).resolves.toEqual({ id: "m1", url: "https://www.instagram.com/p/abc/" });
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(posts.map((c) => c.body)).toEqual([
+      { image_url: carousel.imageUrls[0], is_carousel_item: true },
+      { image_url: carousel.imageUrls[1], is_carousel_item: true },
+      { image_url: carousel.imageUrls[2], is_carousel_item: true },
+      { media_type: "CAROUSEL", children: "k1,k2,k3", caption: "Hola" },
+      { creation_id: "k4" },
+    ]);
+    expect(posts.at(-1)!.url.endsWith("/media_publish")).toBe(true);
+  });
+
+  it("waits for each container to be ready, the one holding them too", async () => {
+    const { channel, calls } = fakeCarousel();
+    await channel.publish(carousel);
+    const order = calls.map((c) => c.url);
+    const ready = (id: string) => order.findIndex((u) => u.includes(`${id}?fields=status_code`));
+    expect(ready("k3")).toBeGreaterThan(ready("k2"));
+    expect(ready("k3")).toBeLessThan(calls.findIndex((c) => c.body?.media_type === "CAROUSEL"));
+    expect(ready("k4")).toBeGreaterThan(calls.findIndex((c) => c.body?.media_type === "CAROUSEL"));
+    expect(ready("k4")).toBeLessThan(order.findIndex((u) => u.endsWith("/media_publish")));
+  });
+
+  it.each(["k1", "k2", "k3", "k4"])("rejects and never publishes when container %s fails", async (failing) => {
+    const { channel, calls } = fakeCarousel({ failing });
+    await expect(channel.publish(carousel)).rejects.toThrow("ERROR");
+    expect(calls.some((c) => c.url.endsWith("/media_publish"))).toBe(false);
+  });
+
+  it("goes through the Graph API with a Facebook Page token, and never asks who it is", async () => {
+    const { channel, calls } = fakeCarousel({ accountId: "77" });
+    await channel.publish(carousel);
+    expect(calls.every((c) => c.url.startsWith("https://graph.facebook.com/"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/me?"))).toBe(false);
+  });
+});
 
 describe("Instagram adapter", () => {
   it("publishes in two steps with the container's id", async () => {

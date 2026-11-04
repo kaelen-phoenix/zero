@@ -23,7 +23,8 @@ interface InstagramOptions {
 
 /**
  * A container from a public image URL, then `media_publish` once it is ready: through the Instagram API with
- * Instagram login, or, given `accountId`, the Graph API with a Facebook Page token.
+ * Instagram login, or, given `accountId`, the Graph API with a Facebook Page token. A carousel takes one
+ * container per image, then one holding them.
  */
 export function instagramChannel(opts: InstagramOptions): SocialChannel {
   const { token, accountId } = opts;
@@ -33,7 +34,7 @@ export function instagramChannel(opts: InstagramOptions): SocialChannel {
   const clean = (text: string) => redact(text.replaceAll(token, REDACTED)).slice(0, 500);
 
   // The token only ever travels in a header, so it is in no URL an error could quote.
-  async function call(path: string, body?: Record<string, string>): Promise<Record<string, any>> {
+  async function call(path: string, body?: Record<string, string | boolean>): Promise<Record<string, any>> {
     let response: Response;
     try {
       response = await send(`${api}/${path}`, {
@@ -74,11 +75,22 @@ export function instagramChannel(opts: InstagramOptions): SocialChannel {
         account = String(me.user_id ?? me.id ?? "");
       }
       if (!account) throw new Error("Instagram no dijo de qué cuenta es el token.");
-      // A story takes no caption: its text is on the image.
-      const content: Record<string, string> = item.kind === "story" ? { image_url: item.imageUrl, media_type: "STORIES" } : { image_url: item.imageUrl, caption: item.text };
-      const container = String((await call(`${account}/media`, content)).id ?? "");
-      if (!container) throw new Error("Instagram no devolvió el contenedor.");
-      await waitUntilReady(container);
+      const ready = async (content: Record<string, string | boolean>) => {
+        const created = String((await call(`${account}/media`, content)).id ?? "");
+        if (!created) throw new Error("Instagram no devolvió el contenedor.");
+        await waitUntilReady(created);
+        return created;
+      };
+      let container: string;
+      if (item.kind === "carousel") {
+        const children: string[] = [];
+        // One by one and in order: the order of `children` is the order of the slides.
+        for (const image_url of item.imageUrls) children.push(await ready({ image_url, is_carousel_item: true }));
+        container = await ready({ media_type: "CAROUSEL", children: children.join(","), caption: item.text });
+      } else {
+        // A story takes no caption: its text is on the image.
+        container = await ready(item.kind === "story" ? { image_url: item.imageUrl, media_type: "STORIES" } : { image_url: item.imageUrl, caption: item.text });
+      }
       const id = String((await call(`${account}/media_publish`, { creation_id: container })).id ?? "");
       if (!id) throw new Error("Instagram no devolvió la publicación.");
       // It is already out: a missing link must not make it look failed.

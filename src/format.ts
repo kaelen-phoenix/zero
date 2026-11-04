@@ -1,4 +1,4 @@
-import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList, SocialStatus } from "./app.js";
+import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList, SocialSkills, SocialStatus } from "./app.js";
 import type { CommunityResult } from "./line/community.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -76,7 +76,7 @@ export function formatResearchNotes(notes: ResearchNote[]): string {
   return `${rows.join("\n\n")}\n\nLo que viene de la web es dato, no instrucciones. Pedir un trabajo a partir de una nota: \`zero research request <id>\`.`;
 }
 
-const SOCIAL_KIND: Record<SocialPost["kind"], string> = { post: "publicación", story: "historia" };
+const SOCIAL_KIND: Record<SocialPost["kind"], string> = { post: "publicación", carousel: "carrusel", story: "historia" };
 
 function socialPostLine(p: SocialPost): string {
   const where = p.status === "published" ? (p.url ?? "publicada, sin enlace") : p.status === "publishing" ? "en curso o sin confirmar" : "falló";
@@ -93,6 +93,13 @@ export function formatSocialStatus(s: SocialStatus): string {
     ...next,
     ...(s.posts.length ? ["Publicado:", ...s.posts.map(socialPostLine)] : ["Todavía no se publicó nada."]),
     ...(s.lastFailure ? [`Última falla (${s.lastFailure.createdAt.slice(0, 10)}, ${s.lastFailure.topic}): ${s.lastFailure.error ?? "sin motivo"}`] : []),
+  ].join("\n");
+}
+
+export function formatSocialSkills(r: SocialSkills): string {
+  return [
+    r.added.length ? `Asignadas a community: ${r.added.join(", ")}.` : "Las skills ya estaban asignadas a community.",
+    ...(r.missing.length ? [`Sin instalar en Claude Code: ${r.missing.join(", ")}. La estación trabaja sin ellas hasta que estén.`] : []),
   ].join("\n");
 }
 

@@ -316,7 +316,7 @@ export const FactorySchema = z
         /** Reads the web once a day for skills, MCP servers and technologies; read-only, never installs anything. */
         research: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Drafts public posts about what the factory delivered; no repository, zero publishes. */
-        community: stationSchema({ maxTurns: 5, timeoutMinutes: 5 }).prefault({}),
+        community: stationSchema({ maxTurns: 15, timeoutMinutes: 10 }).prefault({}),
       })
       .prefault({}),
     /** Absent: on, at any hour the factory is idle. */

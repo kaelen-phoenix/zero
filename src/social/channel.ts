@@ -2,12 +2,8 @@ import type { FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
 import type { SocialKind } from "../state/store.js";
 
-/** What zero hands a channel: the kind, the signed text and a public image URL. */
-export interface SocialItem {
-  kind: SocialKind;
-  text: string;
-  imageUrl: string;
-}
+/** What zero hands a channel: the kind, the signed text and public image URLs, in order in a carousel. */
+export type SocialItem = { kind: Exclude<SocialKind, "carousel">; text: string; imageUrl: string } | { kind: "carousel"; text: string; imageUrls: string[] };
 
 export interface Published {
   id: string;
