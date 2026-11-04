@@ -1,4 +1,5 @@
-import type { EgressReport, FactoryStatus, LineAgentList, RequestResult, SkillList, SocialSkills, SocialStatus } from "./app.js";
+import type { EgressReport, FactoryStatus, LineAgentList, PackageList, RequestResult, SkillList, SocialSkills, SocialStatus } from "./app.js";
+import type { PackageProblem } from "./config.js";
 import type { CommunityResult } from "./line/community.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -150,9 +151,27 @@ export function formatAgents(lists: LineAgentList[]): string {
     if (!l.agents.length) out.push(`- sin agentes a medida (agregá uno con \`zero agent add <nombre> --line ${l.line}\`)`);
     for (const a of l.agents) {
       const kind = a.type === "build" ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}` : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
-      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
+      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }
+  return out.join("\n");
+}
+
+const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
+
+export function formatPackages(l: PackageList): string {
+  if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm>`.";
+  const out: string[] = [];
+  for (const p of l.packages) {
+    out.push(`${p.name} ${p.version} (${p.source === "npm" ? "npm" : "carpeta"}): ${p.dir}`);
+    if (p.agents.length) out.push(`- agentes: ${p.agents.join(", ")}`);
+    if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
+    for (const s of p.stations) {
+      const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
+      out.push(`- estación ${s.name}: ${state}`);
+    }
+  }
+  if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
   return out.join("\n");
 }
 
@@ -162,7 +181,7 @@ export function formatSkills(l: SkillList): string {
   for (const p of l.problems) out.push(`  ${skillWarning(p)}`);
   out.push("", "Skills disponibles en Claude Code:");
   if (!l.available.length) out.push("- ninguna (personales en ~/.claude/skills o de plugins instalados)");
-  for (const s of l.available) out.push(`- ${s.fullName}${s.source === "plugin" ? ` (plugin ${s.plugin})` : " (personal)"}`);
+  for (const s of l.available) out.push(`- ${s.fullName}${s.source === "plugin" ? ` (plugin ${s.plugin})` : s.source === "package" ? ` (paquete ${s.plugin})` : " (personal)"}`);
   return out.join("\n");
 }
 
@@ -188,6 +207,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   }
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
+  for (const p of s.packages) out.push(packageProblem(p));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   out.push(budgetLine(s.budget, now));
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);

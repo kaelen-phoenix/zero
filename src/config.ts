@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, win32 } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
 import { SECRET_NAME } from "./keychain.js";
 import { findSecret } from "./secrets.js";
+import type { Skill } from "./skills.js";
 
 export const LEVELS = ["L0", "L1", "L2", "L3"] as const;
 export type Level = (typeof LEVELS)[number];
@@ -214,6 +215,30 @@ export const CustomAgentSchema = z
     };
   });
 
+/** A package name as npm accepts it, optionally scoped; nothing a shell or npm could read as something else. */
+export const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+/**
+ * An installed agent package: where it is, and what the owner lets it do. The
+ * engine and the model are chosen here, never by the package's own manifest.
+ */
+export const PackageEntrySchema = z
+  .object({
+    /** A local folder: relative to the factory file's folder, or absolute. */
+    path: z.string().min(1).optional(),
+    /** A package installed in `<ZERO_HOME>/packages/node_modules`. */
+    npm: z.string().regex(NPM_NAME, "usá un nombre de paquete npm válido").optional(),
+    /** True: zero may import the package's stations, which run with the owner's permissions. */
+    allowCode: z.boolean().default(false),
+    /** What its stations receive as `ctx.config`. */
+    config: z.unknown().optional(),
+    engine: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm");
+export type PackageEntry = z.output<typeof PackageEntrySchema>;
+
 /** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
 export const COMMIT_AUTHORS = ["zero", "owner"] as const;
 export type CommitAuthor = (typeof COMMIT_AUTHORS)[number];
@@ -335,6 +360,8 @@ export const FactorySchema = z
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
+    /** Installed agent packages; what they bring is loaded by `src/packages.ts`, never written here. */
+    packages: z.array(PackageEntrySchema).default([]),
     /** Who authors the factory's commits on lines that do not say; zero is always the committer. */
     commitAuthor: z.enum(COMMIT_AUTHORS).default("zero"),
     lines: z.array(LineSchema).default([]),
@@ -368,6 +395,9 @@ export const FactorySchema = z
       }
     };
     checkAgents(cfg.agents, ["agents"], new Set());
+    for (const [i, entry] of cfg.packages.entries()) {
+      if (entry.engine && !known.includes(entry.engine)) ctx.addIssue({ code: "custom", path: ["packages", i, "engine"], message: `el paquete usa el motor "${entry.engine}", que no existe; motores conocidos: ${known.join(", ")}` });
+    }
     const seen = new Set<string>();
     for (const [i, line] of cfg.lines.entries()) {
       checkAgents(line.agents, ["lines", i, "agents"], new Set(cfg.agents.map((a) => a.name)));
@@ -379,7 +409,56 @@ export const FactorySchema = z
     }
   });
 
-export type FactoryConfig = z.infer<typeof FactorySchema>;
+/** A custom agent a package brought, already with its entry's engine and model. */
+export type PackageAgent = CustomAgent & { package: string; packageDir: string };
+
+/** A station whose code may run: its entry allows it and its folder is outside the factory's work. */
+export interface PackageStation {
+  package: string;
+  name: string;
+  /** Absolute path of the module. */
+  module: string;
+  /** Absolute path of its agent's instructions; absent: `ctx.runAgent` has nothing to run. */
+  instructions?: string;
+  /** Full names (`<package>:<skill>`). */
+  skills: string[];
+  secrets: string[];
+  everyMinutes: number;
+  timeoutMinutes: number;
+  maxTurns: number;
+  entry: PackageEntry;
+}
+
+export interface LoadedPackage {
+  name: string;
+  version: string;
+  dir: string;
+  /** Its position in `packages`. */
+  index: number;
+  entry: PackageEntry;
+  agents: string[];
+  skills: string[];
+  /** Every station of its manifest, whether or not its code may run. */
+  stations: string[];
+}
+
+export interface PackageProblem {
+  /** The package's name, or its path or npm name when the manifest cannot be read. */
+  package: string;
+  reason: string;
+}
+
+/** What `src/packages.ts` found on disk for the file's `packages`. */
+export interface LoadedPackages {
+  packages: LoadedPackage[];
+  agents: PackageAgent[];
+  skills: Skill[];
+  stations: PackageStation[];
+  problems: PackageProblem[];
+}
+
+/** `loadedPackages` never comes from the file: the schema drops that key, and only `src/packages.ts` sets it. */
+export type FactoryConfig = z.infer<typeof FactorySchema> & { loadedPackages?: LoadedPackages };
 export type LineConfig = z.infer<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
@@ -393,12 +472,21 @@ export function instructionsProblem(path: string): string | undefined {
   return undefined;
 }
 
-/** A custom agent that applies to a line, and where its instructions live: the line's repository or the factory folder. */
-export type LineAgent = CustomAgent & { origin: "factory" | "line" };
+/** A custom agent that applies to a line, and where its instructions live: the line's repository, the factory folder or its package. */
+export type LineAgent = CustomAgent & { origin: "factory" | "line" | "package"; package?: string; packageDir?: string };
 
-/** The custom agents of a line, in file order: the global ones, then the line's own. Each type runs in this order at its own point of the line. */
-export function lineAgents(config: Pick<FactoryConfig, "agents">, line: Pick<LineConfig, "agents">): LineAgent[] {
-  return [...config.agents.map((a) => ({ ...a, origin: "factory" as const })), ...line.agents.map((a) => ({ ...a, origin: "line" as const }))];
+/** The custom agents of a line, in order: the file's global ones, those of the packages, then the line's own. Each type runs in this order at its own point of the line. */
+export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackages">, line: Pick<LineConfig, "agents">): LineAgent[] {
+  return [
+    ...config.agents.map((a) => ({ ...a, origin: "factory" as const })),
+    ...(config.loadedPackages?.agents ?? []).map((a) => ({ ...a, origin: "package" as const })),
+    ...line.agents.map((a) => ({ ...a, origin: "line" as const })),
+  ];
+}
+
+/** Where zero reads a custom agent's instructions: never the job's work copy. */
+export function agentInstructionsPath(agent: LineAgent, repo: string, factoryDir: string): string {
+  return join(agent.origin === "package" ? agent.packageDir! : agent.origin === "line" ? repo : factoryDir, agent.instructions);
 }
 
 /** The engines a custom agent may run on: its own (or the factory's), then the global replacements. */

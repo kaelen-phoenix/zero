@@ -4,13 +4,13 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
 import { createAgentRunner } from "./agent.js";
-import { addAgent, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, setSocialPaused, SHUTDOWN_KEY, socialPostNow, socialSkills, socialStatus, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, addSkill, agentList, answer, approveProposal, briefing, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, setSocialPaused, SHUTDOWN_KEY, socialPostNow, socialSkills, socialStatus, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatSkills, formatSocialRun, formatSocialSkills, formatSocialStatus, formatStatus } from "./format.js";
+import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatSocialRun, formatSocialSkills, formatSocialStatus, formatStatus } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -72,6 +72,10 @@ Fábrica:
                                  solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
                                  cuando el cambio toca --archivos
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
+  zero package list              Paquetes de agentes instalados: qué traen y qué problema tienen
+  zero package add <carpeta|paquete-npm> [--permitir-codigo]
+                                 Instala un paquete; sus estaciones solo corren con --permitir-codigo (con los permisos de tu usuario)
+  zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research, community)
@@ -94,6 +98,7 @@ async function main(argv: string[]): Promise<number> {
       informativo: { type: "boolean" },
       tipo: { type: "string" },
       archivos: { type: "string", multiple: true },
+      "permitir-codigo": { type: "boolean" },
       note: { type: "string" },
       days: { type: "string" },
       mes: { type: "string" },
@@ -308,6 +313,17 @@ async function main(argv: string[]): Promise<number> {
         const started = await ensureDaemon(ctx);
         printPanel(panelLinks(ctx, { rotate: action === "rotate" }), action === "rotate");
         if (started) console.log("\nLa fábrica estaba apagada: la encendí (el panel tarda unos segundos en responder).");
+        return 0;
+      }
+      case "package": {
+        const [action, name] = rest;
+        if (action === "list" || !action) {
+          console.log(formatPackages(packageList(ctx)));
+          return 0;
+        }
+        if (action !== "add" && action !== "remove") break;
+        if (!name) throw new Error(action === "add" ? "Indicá la carpeta o el paquete: zero package add <carpeta|paquete-npm>" : "Indicá el paquete: zero package remove <nombre>");
+        console.log(action === "add" ? await packageAdd(ctx, { source: name, allowCode: values["permitir-codigo"] }) : await packageRemove(ctx, { name }));
         return 0;
       }
       case "agent": {

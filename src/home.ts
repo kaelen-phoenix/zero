@@ -14,6 +14,8 @@ export interface FactoryHome {
   gate: string;
   /** Optional helper binaries zero downloads with the owner's consent (cloudflared). */
   bin: string;
+  /** Agent packages installed from npm, in its `node_modules`. */
+  packages: string;
 }
 
 export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".zero")): FactoryHome {
@@ -28,5 +30,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     daemonLog: join(abs, "daemon.log"),
     gate: join(abs, "gate"),
     bin: join(abs, "bin"),
+    packages: join(abs, "packages"),
   };
 }

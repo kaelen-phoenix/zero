@@ -10,11 +10,13 @@ import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
-import { lineSignature, loadFactory, type FactoryConfig, type LineConfig } from "./config.js";
+import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
+import { factoryConfig } from "./packages.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { communityPass } from "./line/community.js";
+import { packagesPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -50,6 +52,8 @@ export interface DaemonOptions {
   research?: boolean;
   /** Run the community station while the factory is idle. Defaults to on, except in `once` runs. */
   community?: boolean;
+  /** Run the stations of the installed packages while the factory is idle. Defaults to on, except in `once` runs. */
+  packages?: boolean;
   /** The public channel and the image host; tests inject fakes. */
   social?: SocialFactory;
 }
@@ -188,11 +192,12 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     exporting = exportPass(ctx).finally(() => (exporting = undefined));
   };
 
-  // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and community
-  // posts, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
-  // limits.usdPerNight: each computes what is left only after the others' spans are recorded. Shutdown cuts research and community short.
+  // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line), community
+  // posts and the packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
+  // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
   let idle: Promise<void> | undefined;
   let communityAt = 0;
+  let packagesAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
     if (idle || running.size) return;
@@ -200,14 +205,19 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // The token lives in the keychain, so this is not asked on every wake-up.
     const posts = (opts.community ?? !opts.once) && ctx.config.social !== "off" && Date.now() - communityAt >= (opts.once ? 0 : INTAKE_MS);
-    if (!scouts && !researches && !posts) return;
+    // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
+    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
+    if (!scouts && !researches && !posts && !stations) return;
     if (posts) communityAt = Date.now();
+    if (stations) packagesAt = Date.now();
     idle = (async () => {
       if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
       if (posts && !researchStop.signal.aborted)
         await communityPass(ctx, agentRunner(ctx.config), now(), { social: opts.social, signal: researchStop.signal }).catch((err) => log.warn("community failed", { error: String(err) }));
+      if (stations && !researchStop.signal.aborted)
+        await packagesPass(ctx, agentRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
   };
 
@@ -219,7 +229,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
         break;
       }
       try {
-        ctx.config = await loadFactory(ctx.home.config);
+        ctx.config = await factoryConfig(ctx.home);
       } catch (err) {
         log.error("cannot load factory definition; not starting new jobs", { error: String(err) });
         await sleep(pollMs);

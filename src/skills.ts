@@ -13,9 +13,10 @@ export type SkillStation = (typeof SKILL_STATIONS)[number];
 export interface Skill {
   /** Short name: the skill's directory. */
   name: string;
-  /** `name` for personal skills, `plugin:name` for plugin skills. */
+  /** `name` for personal skills, `plugin:name` for plugin skills, `package:name` for a package's skills. */
   fullName: string;
-  source: "personal" | "plugin";
+  source: "personal" | "plugin" | "package";
+  /** The plugin it came from; for a package's skill, the package. */
   plugin?: string;
   dir: string;
   /** Short description from the SKILL.md frontmatter, when it has one. */
@@ -125,13 +126,22 @@ export function discoverSkills(claudeHome = defaultClaudeHome()): Skill[] {
   return out.map(withDescription);
 }
 
-/** `plugin:skill` resolves by full name; a short name only when exactly one skill has it. */
+/** What the owner's Claude Code has plus what the loaded packages bring. */
+export function availableSkills(config: Pick<FactoryConfig, "loadedPackages">, claudeHome = defaultClaudeHome()): Skill[] {
+  return [...discoverSkills(claudeHome), ...(config.loadedPackages?.skills ?? [])];
+}
+
+/**
+ * `plugin:skill` resolves by full name; a short name only when exactly one
+ * skill has it. A package's skills only go by full name, so installing one never
+ * makes the owner's own short names ambiguous.
+ */
 export function resolveSkill(ref: string, available: Skill[]): { skill?: Skill; problem?: string } {
   if (ref.includes(":")) {
     const exact = available.find((s) => s.fullName === ref);
     return exact ? { skill: exact } : { problem: "no está instalada en Claude Code" };
   }
-  const matches = available.filter((s) => s.name === ref);
+  const matches = available.filter((s) => s.name === ref && s.source !== "package");
   if (matches.length === 1) return { skill: matches[0] };
   if (matches.length > 1) return { problem: `hay varias skills con ese nombre; usá el nombre completo: ${matches.map((s) => s.fullName).join(", ")}` };
   return { problem: "no está instalada en Claude Code" };

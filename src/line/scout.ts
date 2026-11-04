@@ -76,11 +76,14 @@ export function periodStart(shift: NightShift, now: Date): Date {
 /** Stations that work while the factory is idle; they share `limits.usdPerNight`. */
 const IDLE_STATIONS = new Set(["scout", "research", "community"]);
 
-/** What the idle-time stations (scout, research and community) spent since `since`, so together they never pass the night cap. */
+/** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
+export const PACKAGE_AGENT_PREFIX = "package:";
+
+/** What the idle-time stations (scout, research, community and the packages' stations) spent since `since`, so together they never pass the night cap. */
 export function scoutSpent(store: Store, since: Date): number {
   return store
     .spansSince(AGENT_SPAN, since)
-    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])))
+    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX))
     .reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
 }
 

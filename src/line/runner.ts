@@ -5,7 +5,7 @@ import { dirname, join, posix } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation, CustomAgentRun } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "../budget.js";
-import { commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
+import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { signText, withTrailer } from "../signature.js";
@@ -381,11 +381,11 @@ async function specStation(
 
 /**
  * A custom agent's instructions, read by zero from the owner's copy of the
- * line's repository (line agents) or from the factory folder (global agents):
- * never from the job's work copy, whatever the job wrote there.
+ * line's repository (line agents), the factory folder (global agents) or its
+ * package: never from the job's work copy, whatever the job wrote there.
  */
 async function customInstructions(deps: RunnerDeps, line: LineConfig, agent: LineAgent): Promise<{ ok: true; text: string } | { ok: false; path: string }> {
-  const path = join(agent.origin === "line" ? line.repo : dirname(deps.home.config), agent.instructions);
+  const path = agentInstructionsPath(agent, line.repo, dirname(deps.home.config));
   if (!existsSync(path)) return { ok: false, path };
   return { ok: true, text: await readFile(path, "utf8") };
 }

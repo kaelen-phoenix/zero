@@ -22,8 +22,8 @@ const BUILT_IN: Record<string, Requirement | null> = {
 };
 
 /** The engines the factory's stations and every line's custom agents use, their replacements included. */
-export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine" | "fallback"> & Partial<Pick<FactoryConfig, "agents" | "lines">>): string[] {
-  const custom = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((line) => line.agents)];
+export function stationEngines(config: Pick<FactoryConfig, "stations" | "engine" | "fallback"> & Partial<Pick<FactoryConfig, "agents" | "lines" | "loadedPackages">>): string[] {
+  const custom = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((line) => line.agents), ...(config.loadedPackages?.agents ?? [])];
   return [...new Set([...AGENT_STATIONS.flatMap((s) => stationChain(config, s)), ...custom.flatMap((a) => customAgentChain(config, a))].map((l) => l.engine))];
 }
 

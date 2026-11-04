@@ -1,6 +1,10 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { packagesPass } from "../src/line/packages.js";
+import { SecretStore, memoryKeyring } from "../src/keychain.js";
+import { factoryConfig } from "../src/packages.js";
+import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const en = read("README.md");
@@ -166,6 +170,54 @@ describe("documentation up to date", () => {
       expect(first.body).toContain("git clone https://github.com/kaelen-phoenix/zero");
       expect(first.body).toContain("npm install && npm run build");
     }
+  });
+});
+
+describe("agent packages", () => {
+  afterEach(cleanup);
+  const HEADINGS = [[en, "## Agent packages"], [es, "## Paquetes de agentes"]] as const;
+
+  it("documents the format in the same place of both", () => {
+    for (const [text, heading] of HEADINGS) {
+      const body = section(text, heading);
+      for (const piece of ["zero-package.yaml", "interface: 1", "allowCode", "zero package add", "export async function pass", "ctx.runAgent", "ctx.deliveredJobs"]) expect(body, piece).toContain(piece);
+    }
+    const order = (text: string, a: string, b: string) => expect(text.indexOf(a)).toBeLessThan(text.indexOf(b));
+    order(en, "## Agent packages", "## Night shift");
+    order(es, "## Paquetes de agentes", "## Turno nocturno");
+    expect(section(en, "## Agent packages")).toMatch(/your user's permissions/);
+    expect(section(es, "## Paquetes de agentes")).toMatch(/permisos de tu usuario/);
+  });
+
+  it("presents packages only as a way to extend zero", () => {
+    for (const [text, heading] of HEADINGS) {
+      const body = section(text, heading);
+      expect(body, heading).not.toMatch(/community|enterprise|premium|commercial|comercial|edition|edición/i);
+      expect(body, heading).toMatch(/third-party|terceros/);
+    }
+  });
+
+  it.each(HEADINGS)("has an example that works when copied (%#)", async (text, heading) => {
+    const found = blocks(section(text, heading));
+    const manifest = found.find((b) => b.info === "yaml" && b.body.includes("interface: 1"))!.body;
+    const code = found.find((b) => b.info === "js" && b.body.includes("export async function pass"))!.body;
+    const dir = tempDir("zero-example-");
+    writeTree(dir, {
+      "zero-package.yaml": manifest,
+      "stations/note.mjs": code,
+      "stations/note.md": "# note\nOne sentence.\n",
+      "agents/hello-review.md": "# hello-review\n",
+      "skills/greeting/SKILL.md": "# greeting\n",
+    });
+    const ctx = testFactory({ packages: [{ path: dir, allowCode: true, config: { greeting: "Hello" } }], lines: [] });
+    ctx.config = await factoryConfig(ctx.home);
+    ctx.secrets = new SecretStore(ctx.home, memoryKeyring(), { HELLO_TOKEN: "abc" });
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    const agents = fakeAgents({ "package:hello/note": () => ({ output: { sentence: "Hola." } }) });
+    await packagesPass(ctx, agents.runner, new Date());
+    expect(agents.calls).toHaveLength(1);
+    expect(agents.calls[0]!.prompt).toContain("Hello");
+    expect(JSON.parse(ctx.store.getKv("package:hello/note:state:last")!)).toBe("Hola.");
   });
 });
 

@@ -123,11 +123,12 @@ export function jobBilledUsd(store: Store, jobId: string, now = new Date()): num
 type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback"> & {
   agents?: Pick<CustomAgent, "engine" | "model">[];
   lines?: { agents?: Pick<CustomAgent, "engine" | "model">[] }[];
+  loadedPackages?: { agents: Pick<CustomAgent, "engine" | "model">[] };
 };
 
-/** The chains of every custom agent, global and per line. */
+/** The chains of every custom agent: global, per line and from packages. */
 function customAgentChains(config: BudgetConfig): ChainLink[][] {
-  const agents = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((l) => l.agents ?? [])];
+  const agents = [...(config.agents ?? []), ...(config.lines ?? []).flatMap((l) => l.agents ?? []), ...(config.loadedPackages?.agents ?? [])];
   return agents.map((a) => customAgentChain(config, a));
 }
 
