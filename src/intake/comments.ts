@@ -7,7 +7,7 @@ import { answer, requestWork, type FactoryContext } from "../app.js";
 import { pickEngine } from "../budget.js";
 import type { LineConfig } from "../config.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
-import { describeDelivery } from "../line/finish.js";
+import { describeDelivery, reasonForOthers } from "../line/finish.js";
 import { log } from "../log.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
 import { TRUSTED, type IssueApi, type IssueComment, type IssueState } from "./github.js";
@@ -37,7 +37,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** Where the job's change is now, computed by zero (never guessed by an agent). */
 export function whereIsTheChange(line: LineConfig, job: Job, merge?: MergeState): string {
   const d = job.delivery;
-  if (job.status === "failed" || job.status === "stopped") return `The job did not deliver anything (${job.status}): ${job.reason ?? "no detail"}.`;
+  if (job.status === "failed" || job.status === "stopped") return `The job did not deliver anything (${job.status}): ${job.reason ? reasonForOthers(job.reason) : "no detail"}.`;
   if (job.status === "waiting") return `The job is waiting for the owner's answer to: ${job.question?.text ?? "(no question)"}`;
   if (!d) return "The job has not delivered yet.";
   if (d.mode === "merge") {
@@ -116,7 +116,7 @@ async function handle(ctx: FactoryContext, line: LineConfig, repository: string,
   }
   if (reply.action === "change" && FINAL_STATUSES.includes(job.status) && reply.request.trim()) {
     const issueText = job.request;
-    const text = `${issueText}\n\n## Seguimiento del trabajo ${job.id}\nEntregado: ${job.delivery ? describeDelivery(job.delivery) : `nada (${job.reason ?? job.status})`}.\n\n## Lo que pide ahora @${owner.author}\n${reply.request.trim()}`.slice(0, MAX_REQUEST);
+    const text = `${issueText}\n\n## Seguimiento del trabajo ${job.id}\nEntregado: ${job.delivery ? describeDelivery(job.delivery) : `nada (${job.reason ? reasonForOthers(job.reason) : job.status})`}.\n\n## Lo que pide ahora @${owner.author}\n${reply.request.trim()}`.slice(0, MAX_REQUEST);
     const r = requestWork(ctx, { text, line: line.name, source: job.source });
     await gh.comment(number, `${reply.reply}\n\nLo tomé como trabajo \`${r.job.id}\`. Te aviso acá cómo va.`);
     return save({ job: r.job.id, reported: "queued" });

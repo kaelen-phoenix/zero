@@ -13,7 +13,7 @@ import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
-import { describeDelivery, finalizeJob, type LedgerDeps } from "./line/finish.js";
+import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
@@ -193,7 +193,7 @@ export async function stop(ctx: FactoryContext, id?: string): Promise<{ job?: Jo
   const job = getJob(ctx, id);
   if (FINAL_STATUSES.includes(job.status)) return { job };
   if (job.status === "running") return { job: ctx.store.updateJob(id, { stopRequested: true }) };
-  return { job: await finalizeJob(ctx, job, "stopped", { reason: "Detenido por el dueño." }) };
+  return { job: await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU }) };
 }
 
 export function resume(ctx: FactoryContext) {
@@ -510,7 +510,7 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
   if (built) {
     if (built.status === "waiting") await answerJob(ctx, built, "reject", reason);
     else if (built.status === "running") ctx.store.updateJob(built.id, { stopRequested: true });
-    else await finalizeJob(ctx, built, "stopped", { reason: `Rechazado por el dueño${reason ? `: ${reason}` : "."}` });
+    else await finalizeJob(ctx, built, "stopped", { reason: rejectedByYou(reason) });
   }
   const proposal = ctx.store.transaction(() => {
     if (!built) pendingProposal(ctx, id);

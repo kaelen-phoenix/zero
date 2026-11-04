@@ -26,5 +26,6 @@ A production line that turns the owner's requests into delivered changes. Its ag
   - `serves`: which part of the line it would help (a station, the verify step, the factory itself).
   - `maturity`: how mature and reliable it is (stable, beta, experimental; maintained or not; who publishes it).
 - Write `topic`, `findings`, `serves` and `maturity` in Spanish: the owner reads them.
+- When you write for a person, do not carry the word "owner" over. In Spanish, say "vos" when addressing the reader and "la persona responsable" or "quien está a cargo" in the third person; in English, say "you" or "the person in charge".
 
 Return the structured output requested at the end of the prompt.

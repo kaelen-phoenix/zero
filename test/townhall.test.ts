@@ -48,6 +48,7 @@ describe("briefing", () => {
     const store = new Store(":memory:");
     const b = renderBriefing(computeMetrics(store, new Date(0), new Date("2026-10-26T00:00:00Z")), []);
     expect(b.title).toBe("Informe zero — 2026-10-26");
+    expect(b.body).toContain("## Te necesita");
     expect(b.body).toContain("Nada. La fábrica funcionó sola.");
   });
 

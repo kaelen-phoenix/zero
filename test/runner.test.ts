@@ -96,7 +96,7 @@ describe("production line", () => {
     const { job } = requestWork(ctx, { text: "algo" });
     await runJob(job.id, deps(ctx, fakeAgents({}).runner));
     const stopped = await answer(ctx, job.id, "reject", "no era esto");
-    expect(stopped).toMatchObject({ status: "stopped", reason: "Rechazado por el dueño: no era esto" });
+    expect(stopped).toMatchObject({ status: "stopped", reason: "Lo rechazaste vos: no era esto" });
   });
 
   it("retries the build with the verification output as feedback", async () => {
@@ -290,7 +290,7 @@ describe("production line", () => {
     const controller = new AbortController();
     const agents = fakeAgents({ build: () => (controller.abort("stop"), { ok: false, text: "cancelled" }) });
     const { job } = requestWork(ctx, { text: "health" });
-    expect(await runJob(job.id, deps(ctx, agents.runner), controller.signal)).toMatchObject({ status: "stopped", reason: "Detenido por el dueño." });
+    expect(await runJob(job.id, deps(ctx, agents.runner), controller.signal)).toMatchObject({ status: "stopped", reason: "Lo detuviste vos." });
   });
 
   it("parks the job when the owner's copy has unsaved changes, and retries after approval", async () => {

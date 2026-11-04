@@ -14,7 +14,7 @@ interface Call {
 }
 
 /** Instagram as a table of replies: status codes of the container in order, and overrides by path. */
-function fakeInstagram(opts: { statuses?: string[]; replies?: (call: Call) => Response | undefined } = {}) {
+function fakeInstagram(opts: { statuses?: string[]; replies?: (call: Call) => Response | undefined; accountId?: string } = {}) {
   const calls: Call[] = [];
   const statuses = [...(opts.statuses ?? ["FINISHED"])];
   const send = (async (url: string, init: RequestInit) => {
@@ -30,7 +30,7 @@ function fakeInstagram(opts: { statuses?: string[]; replies?: (call: Call) => Re
     if (url.includes("m1?fields=permalink")) return json({ permalink: "https://www.instagram.com/p/abc/" });
     return new Response("{}", { status: 404 });
   }) as unknown as typeof fetch;
-  const channel = instagramChannel({ token: TOKEN, fetch: send, sleep: async () => {}, maxPolls: 3 });
+  const channel = instagramChannel({ token: TOKEN, fetch: send, sleep: async () => {}, maxPolls: 3, accountId: opts.accountId });
   return { channel, calls };
 }
 
@@ -45,6 +45,13 @@ describe("Instagram adapter", () => {
     const order = calls.map((c) => c.url);
     expect(order.findIndex((u) => u.includes("status_code"))).toBeLessThan(order.findIndex((u) => u.endsWith("media_publish")));
     expect(calls.filter((c) => c.url.includes("status_code"))).toHaveLength(2);
+  });
+
+  it("goes through the Graph API with a Facebook Page token and the linked account", async () => {
+    const { channel, calls } = fakeInstagram({ accountId: "77" });
+    await expect(channel.publish(image)).resolves.toEqual({ id: "m1", url: "https://www.instagram.com/p/abc/" });
+    expect(calls.every((c) => c.url.startsWith("https://graph.facebook.com/v21.0/"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/me?"))).toBe(false);
   });
 
   it("sends a story without a caption", async () => {

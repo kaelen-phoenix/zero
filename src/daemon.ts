@@ -12,7 +12,7 @@ import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, loadFactory, type FactoryConfig, type LineConfig } from "./config.js";
 import { answerJob } from "./line/answer.js";
-import { finalizeJob } from "./line/finish.js";
+import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { communityPass } from "./line/community.js";
 import { researchPass } from "./line/research.js";
@@ -246,7 +246,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
         for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
           if (job.stopRequested) {
-            await finalizeJob(ctx, job, "stopped", { reason: "Detenido por el dueño." });
+            await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
           // The night shift's own jobs never go ahead of other work: one at a time, and only while no other job is queued or running.
@@ -316,6 +316,6 @@ async function expireQuestions(ctx: FactoryContext) {
     const q = job.question;
     if (!q || Date.parse(q.expiresAt) > now) continue;
     log.info("question expired", { job: job.id, kind: q.kind, default: q.onTimeout });
-    await answerJob(ctx, job, q.onTimeout, "venció sin respuesta");
+    await answerJob(ctx, job, q.onTimeout, "venció sin respuesta", { expired: true });
   }
 }

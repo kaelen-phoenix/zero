@@ -74,8 +74,8 @@ describe("motto", () => {
   it("uses the site's motto in both languages", () => {
     expect(en).toContain("zero in the loop");
     expect(es).toContain("zero in the loop");
-    expect(en).toContain("the owner decides where to step back in");
-    expect(es).toContain("el dueño decide dónde vuelve a entrar");
+    expect(en).toContain("you decide where to step back in");
+    expect(es).toContain("vos decidís dónde volver a entrar");
   });
 
   it("leaves no Kaelen mention nor the old motto in the documentation", () => {
@@ -138,6 +138,12 @@ describe("documentation up to date", () => {
       const body = section(text, heading);
       for (const fact of ["Meta", "instagram_business_content_publish", "social.media.repository", "60"]) expect(body, fact).toContain(fact);
     }
+  });
+
+  it("shows .agents/** in the protected paths example of both READMEs", () => {
+    // normalize drops double-quoted strings, so the block comparison above cannot see this line.
+    const line = '  protectedPaths: [".github/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]';
+    for (const text of [en, es]) expect(text.split("\n")).toContain(line);
   });
 
   it("starts Getting started with the clone", () => {

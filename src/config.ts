@@ -105,7 +105,7 @@ const SocialSchema = z.union([
       /** Last paragraph of every text and footer of every image, even with the general `signature` off: plain text, since the channel shows no Markdown. */
       signature: z.string().trim().min(1).default(DEFAULT_SOCIAL_SIGNATURE),
       /** Where the images are hosted; absent: the repository of the post's line. It must be public. */
-      media: z.object({ repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "usá dueño/repo") }).strict().optional(),
+      media: z.object({ repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "usá cuenta/repo (por ejemplo kaelen-phoenix/zero)") }).strict().optional(),
     })
     .strict(),
 ]);
@@ -293,7 +293,7 @@ export const FactorySchema = z
         reservePercent: z.number().min(0).max(99).default(0),
         /** What the scout, research and community stations may spend together per night shift period; per-use billing only. */
         usdPerNight: z.number().nonnegative().default(1),
-        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".claude/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]),
+        protectedPaths: z.array(z.string()).default([".github/**", ".zero/**", ".claude/**", ".agents/**", ".mcp.json", ".env", ".env.*", "**/*.pem", "**/*.key"]),
       })
       .prefault({}),
     approvals: z

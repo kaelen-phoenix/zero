@@ -10,7 +10,7 @@ import { signText } from "../signature.js";
 import type { SocialFactory } from "../social/channel.js";
 import { publicText } from "../social/filter.js";
 import { githubMedia, octokitReleases } from "../social/github-media.js";
-import { INSTAGRAM_TOKEN, instagramChannel } from "../social/instagram.js";
+import { INSTAGRAM_ACCOUNT, INSTAGRAM_TOKEN, instagramChannel } from "../social/instagram.js";
 import { renderCard } from "../social/render.js";
 import { REDACTED } from "../secrets.js";
 import { lineRepository } from "../intake/github.js";
@@ -164,7 +164,7 @@ const realSocial: SocialFactory = (token, ctx) => {
   const gh = githubToken();
   const social = ctx.config.social;
   const repository = social !== "off" ? social.media?.repository : undefined;
-  return { channel: instagramChannel({ token }), media: githubMedia(gh ? octokitReleases(gh) : undefined, (line) => repository ?? lineRepository(line)) };
+  return { channel: instagramChannel({ token, accountId: ctx.secrets.get(INSTAGRAM_ACCOUNT) ?? undefined }), media: githubMedia(gh ? octokitReleases(gh) : undefined, (line) => repository ?? lineRepository(line)) };
 };
 
 /**
