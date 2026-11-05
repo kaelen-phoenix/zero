@@ -5,7 +5,7 @@ import { ANDON_KEY, approveProposal, briefing, rejectProposal, requestWork, SHUT
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import type { QuotaReport } from "../src/engines/index.js";
-import { insideHours, normalizeTitle, scoutPass } from "../src/line/scout.js";
+import { insideHours, normalizeTitle, scoutPass, scoutSpent } from "../src/line/scout.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
 
@@ -158,6 +158,57 @@ describe("scout spending", () => {
     await scoutPass(ctx, agents.runner, at(3));
     expect(agents.calls).toHaveLength(1);
     expect(agents.calls[0]!.maxBudgetUsd).toBeUndefined();
+  });
+
+  it("subscription estimates leave the cap of a per-use engine whole", async () => {
+    const { ctx } = factory({ lines: [{ name: "tienda", repo: gitRepo() }], stations: { scout: { engine: "codex" } } });
+    spent(ctx, 5, { billing: "subscription", windows: [] });
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "build", "zero.engine": "codex" } }).end("ok", { "zero.cost.usd": 0, ...quotaAttrs({ billing: "api", windows: [] }) });
+    const agents = scouting([]);
+    await scoutPass(ctx, agents.runner, at(3));
+    expect(agents.calls[0]!.engine?.name).toBe("codex");
+    expect(agents.calls[0]!.maxBudgetUsd).toBe(1);
+  });
+});
+
+describe("what counts against usdPerNight", () => {
+  const record = (ctx: ReturnType<typeof factory>["ctx"], agent: string, usd: number, engine: string, quota?: QuotaReport) =>
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": agent, "zero.engine": engine } }).end("ok", { "zero.cost.usd": usd, ...quotaAttrs(quota) });
+  const subscription: QuotaReport = { billing: "subscription", windows: [] };
+  const api: QuotaReport = { billing: "api", windows: [] };
+  const counted = (ctx: ReturnType<typeof factory>["ctx"]) => scoutSpent(ctx.store, at(0), at(3));
+
+  it("only what is charged, of every idle station", () => {
+    const { ctx } = factory();
+    record(ctx, "scout", 0.4, "codex", api);
+    record(ctx, "research", 5, "claude", subscription);
+    record(ctx, "package:p/s", 3, "claude", subscription);
+    expect(counted(ctx)).toBeCloseTo(0.4);
+    record(ctx, "package:p/s", 0.2, "codex", api);
+    expect(counted(ctx)).toBeCloseTo(0.6);
+  });
+
+  it("an old span follows its engine's latest reading", () => {
+    const onPlan = factory().ctx;
+    record(onPlan, "scout", 2, "claude");
+    record(onPlan, "build", 0, "claude", subscription);
+    expect(counted(onPlan)).toBe(0);
+    const perUse = factory().ctx;
+    record(perUse, "scout", 2, "claude");
+    record(perUse, "build", 0, "claude", api);
+    expect(counted(perUse)).toBe(2);
+  });
+
+  it("an old span of an engine without readings counts", () => {
+    const { ctx } = factory();
+    record(ctx, "scout", 2, "claude");
+    expect(counted(ctx)).toBe(2);
+  });
+
+  it("other stations do not count", () => {
+    const { ctx } = factory();
+    record(ctx, "build", 7, "codex", api);
+    expect(counted(ctx)).toBe(0);
   });
 });
 

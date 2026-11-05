@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractJson } from "../src/agent.js";
 import { FactorySchema } from "../src/config.js";
-import { antigravityEngine, antigravityInvocation, codexInvocation, customEngine, customInvocation, finalText, fullPrompt } from "../src/engines/cli.js";
+import { antigravityEngine, antigravityInvocation, codexAnswer, codexEvents, codexInvocation, codexLoginBilling, codexWindows, customEngine, customInvocation, finalText, fullPrompt } from "../src/engines/cli.js";
 import { resolveEngine, type EngineRequest } from "../src/engines/index.js";
 
 const req = (over: Partial<EngineRequest> = {}): EngineRequest => ({
@@ -21,6 +21,39 @@ describe("codex", () => {
     expect(inv.args.at(-1)).toBe("-");
     expect(inv.stdin).toContain("You are the coder.");
     expect(codexInvocation(req(), { lastMessage: "/t/last" }).args).toContain("workspace-write");
+  });
+
+  it("asks for events, with the prompt still last", () => {
+    for (const r of [req(), req({ access: "read", model: "m" })]) {
+      const { args } = codexInvocation(r, { lastMessage: "/t/last", schema: "/t/s.json" });
+      expect(args).toContain("--json");
+      expect(args.at(-1)).toBe("-");
+    }
+  });
+});
+
+describe("codex events", () => {
+  it("skip what is not a JSON object, with any line ending", () => {
+    expect(codexEvents('{"type":"a"}\r\nnada\n[1]\n42\n{roto\n\n  {"type":"b"}\n')).toEqual([{ type: "a" }, { type: "b" }]);
+  });
+
+  it("plain text is the answer when there are no events", () => {
+    expect(codexAnswer("hola")).toBe("hola");
+    expect(codexAnswer('{"type":"turn.started"}')).toBe("");
+  });
+
+  it("the session's words decide its billing", () => {
+    expect(codexLoginBilling("Logged in using ChatGPT")).toBe("subscription");
+    expect(codexLoginBilling("Logged in using an API key - sk-***")).toBe("api");
+    expect(codexLoginBilling("Not logged in")).toBeUndefined();
+    expect(codexLoginBilling("algo distinto")).toBeUndefined();
+  });
+
+  it("a very deep event does not break the reading", () => {
+    let event = '{"rate_limits":{"primary":{"used_percent":10}}}';
+    for (let i = 0; i < 50_000; i++) event = `{"a":${event}}`;
+    expect(codexWindows(event)).toEqual([]);
+    expect(codexWindows('{"a":{"rate_limits":{"primary":{"used_percent":10}}}}')).toMatchObject([{ name: "primary", label: "primary" }]);
   });
 });
 

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
 import { ANDON_KEY, proposalRequest, requestWork, type FactoryContext } from "../app.js";
-import { budgetState, pickEngine } from "../budget.js";
+import { billedUsd, budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type Autonomy, type FactoryConfig, type LineConfig } from "../config.js";
 import { lineRepository, TRUSTED, type Issue, type IssueApi } from "../intake/github.js";
 import { log } from "../log.js";
@@ -79,12 +79,12 @@ const IDLE_STATIONS = new Set(["scout", "research"]);
 /** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
 export const PACKAGE_AGENT_PREFIX = "package:";
 
-/** What the idle-time stations (scout, research and the packages' stations) spent since `since`, so together they never pass the night cap. */
-export function scoutSpent(store: Store, since: Date): number {
-  return store
+/** What the idle-time stations (scout, research and the packages' stations) were really charged since `since`, so together they never pass the night cap. */
+export function scoutSpent(store: Store, since: Date, now = new Date()): number {
+  const idle = store
     .spansSince(AGENT_SPAN, since)
-    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX))
-    .reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
+    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX));
+  return billedUsd(store, idle, now);
 }
 
 /** Titles compared without case, accents or extra whitespace. */
@@ -298,7 +298,7 @@ export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now:
     if (!choice.available) return;
     let cap: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now);
       if (left <= 0) return;
       cap = Math.round(left * 1e6) / 1e6;
     }
