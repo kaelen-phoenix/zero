@@ -72,12 +72,24 @@ export function finalText(stdout: string): string {
   return trimmed;
 }
 
-async function execute(name: string, inv: Invocation, req: EngineRequest): Promise<EngineResult> {
+/** A clean exit without text is an engine failure, not an empty answer. */
+function fromText(name: string, text: string, stderr: string): EngineResult {
+  if (text.trim()) return { ok: true, text };
+  const tail = stderr.trim().slice(-2000);
+  return { ok: false, text: `${name} devolvió salida vacía${tail ? `: ${tail}` : ""}` };
+}
+
+async function execute(
+  name: string,
+  inv: Invocation,
+  req: EngineRequest,
+  output: (r: ProcessResult) => string | Promise<string> = (r) => finalText(r.stdout),
+): Promise<EngineResult> {
   const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal);
   if (r.cancelled) return { ok: false, text: `${name} cancelled` };
   if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min` };
   if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${(r.stderr || r.stdout).slice(-2000)}` };
-  return { ok: true, text: finalText(r.stdout) };
+  return fromText(name, await output(r), r.stderr);
 }
 
 // ── OpenAI Codex ─────────────────────────────────────────────────────────────
@@ -110,10 +122,10 @@ export const codexEngine: Engine = {
     try {
       const files = { lastMessage: join(dir, "last.txt"), schema: req.schema && join(dir, "schema.json") };
       if (files.schema) await writeFile(files.schema, JSON.stringify(req.schema));
-      const result = await execute("codex", codexInvocation(req, files), req);
-      if (!result.ok) return result;
-      const text = (await readFile(files.lastMessage, "utf8").catch(() => result.text)).trim();
-      return { ok: true, text };
+      // The answer is the last message; stdout is only the fallback when that file cannot be read.
+      return await execute("codex", codexInvocation(req, files), req, async (r) =>
+        (await readFile(files.lastMessage, "utf8").catch(() => finalText(r.stdout))).trim(),
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -194,7 +194,7 @@ stations:                 # engine, model and time limit per station (optional)
   review: { engine: codex, timeoutMinutes: 15 }
   security: { engine: claude }   # the security review; with another engine, the look is more independent
   build: { skills: [pdf] }       # skills from your Claude Code (personal or from plugins; `plugin:skill` if the name repeats)
-engines:                  # any other agent CLI, no code needed
+engines:                  # any other agent CLI, no code needed; ending without printing anything counts as a failure
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
 lines:
   - name: tienda

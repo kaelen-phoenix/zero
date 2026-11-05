@@ -194,7 +194,7 @@ stations:                 # motor, modelo y tiempo límite por estación (opcion
   review: { engine: codex, timeoutMinutes: 15 }
   security: { engine: claude }   # la revisión de seguridad; con otro motor, la mirada es más independiente
   build: { skills: [pdf] }       # skills de tu Claude Code (personales o de plugins; `plugin:skill` si el nombre se repite)
-engines:                  # cualquier otro CLI de agentes, sin código
+engines:                  # cualquier otro CLI de agentes, sin código; terminar sin imprimir nada cuenta como fallo
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
 lines:
   - name: tienda
