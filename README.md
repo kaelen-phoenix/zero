@@ -344,6 +344,7 @@ stations:
     skills: [greeting]
     secrets: [HELLO_TOKEN]         # the only names ctx.secrets gives it
     everyMinutes: 1440
+    schedule: ["08:00", "12:00", "18:00"] # local times at which scheduled runs, even with the factory busy
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # lets ctx.requestJob open jobs; without it, it cannot
 ```
@@ -371,6 +372,11 @@ export async function pass(ctx) {
   ctx.state.set("last", run.output.sentence);
   ctx.log.info("summary saved", { lines: ctx.lines.length, hasToken: Boolean(ctx.secrets.get("HELLO_TOKEN")) });
 }
+
+export async function scheduled(ctx, { at }) {
+  ctx.state.set("lastCheck", at);
+  ctx.log.info("checked", { at, lines: ctx.lines.length, hasToken: Boolean(ctx.secrets.get("HELLO_TOKEN")) });
+}
 ```
 
 **What a station receives**, the `ctx` of interface 1:
@@ -381,7 +387,7 @@ export async function pass(ctx) {
 | `ctx.signal` | Aborted when the pass runs out of time or the factory shuts down |
 | `ctx.config` | The entry's `config`, through `parseConfig` if there is one |
 | `ctx.secrets.get(name)` | Only the names it declared; save them with `zero secret set` |
-| `ctx.runAgent({ prompt, schema })` | A read-only agent in an empty folder, with the station's instructions and skills. Returns `{ ok, text, output, costUsd }` |
+| `ctx.runAgent({ prompt, schema })` | A read-only agent in an empty folder, with the station's instructions and skills. Returns `{ ok, text, output, costUsd }`. In `scheduled` it throws an error |
 | `ctx.z` | zero's zod, for the `schema` |
 | `ctx.log.info`, `ctx.log.warn` | To zero's log, without the values of its secrets |
 | `ctx.lines` | Line names only |
@@ -392,6 +398,8 @@ export async function pass(ctx) {
 `ctx.runAgent` records each call as `package:<package>/<station>`, picks the engine from the entry's chain and shares the `limits.usdPerNight` cap on pay-per-use. With no engine or no cap left, it returns `ok: false` without calling anyone.
 
 `ctx.requestJob` lets a station detect something and send the change through the normal line (spec, build, verify, review, integration) instead of touching a repository on its own. It only works if the station's manifest declares `requests: { perLinePerDay: N }`, where N is a whole number above zero. You get `{ reason }` and no job when the station declares no `requests`, the line is not one of `ctx.lines`, the text is empty or not text, the andon is on, the budget is used up, the pass has ended, or the station already opened N jobs on that line today (each station and line counts on its own, per local day, and a refused request spends nothing). The text is cut to 4000 characters, without the station's secrets, recognizable tokens or local paths, and agents receive it as a third party's data, naming where it came from. These jobs follow their line's level and integration like any request of yours: on L2 or L3 they integrate without asking. The factory starts them after your work, one at a time, and only with nothing else queued or running. Status, panel, briefing and monthly report show them as `pedido por paquete <package>/<station>`.
+
+**Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
 **How to install one:**
 

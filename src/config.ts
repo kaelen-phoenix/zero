@@ -400,6 +400,8 @@ export interface PackageStation {
   skills: string[];
   secrets: string[];
   everyMinutes: number;
+  /** Local times, `HH:MM`, at which `scheduled` runs; empty: never. */
+  schedule: string[];
   timeoutMinutes: number;
   maxTurns: number;
   /** Absent: `ctx.requestJob` refuses every request. */

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { packagesPass } from "../src/line/packages.js";
+import { packagesPass, scheduledPass } from "../src/line/packages.js";
 import { SecretStore, memoryKeyring } from "../src/keychain.js";
 import { factoryConfig } from "../src/packages.js";
 import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.js";
@@ -171,7 +171,7 @@ describe("agent packages", () => {
   it("documents the format in the same place of both", () => {
     for (const [text, heading] of HEADINGS) {
       const body = section(text, heading);
-      for (const piece of ["zero-package.yaml", "interface: 1", "allowCode", "zero package add", "export async function pass", "ctx.runAgent", "ctx.deliveredJobs", "ctx.requestJob", "perLinePerDay"]) expect(body, piece).toContain(piece);
+      for (const piece of ["zero-package.yaml", "interface: 1", "allowCode", "zero package add", "export async function pass", "ctx.runAgent", "ctx.deliveredJobs", "ctx.requestJob", "perLinePerDay", "schedule:", "export async function scheduled"]) expect(body, piece).toContain(piece);
     }
     const order = (text: string, a: string, b: string) => expect(text.indexOf(a)).toBeLessThan(text.indexOf(b));
     order(en, "## Agent packages", "## Night shift");
@@ -209,6 +209,29 @@ describe("agent packages", () => {
     expect(agents.calls).toHaveLength(1);
     expect(agents.calls[0]!.prompt).toContain("Hello");
     expect(JSON.parse(ctx.store.getKv("package:hello/note:state:last")!)).toBe("Hola.");
+  });
+
+  it.each(HEADINGS)("has a schedule that works when copied (%#)", async (text, heading) => {
+    const found = blocks(section(text, heading));
+    const dir = tempDir("zero-example-");
+    writeTree(dir, {
+      "zero-package.yaml": found.find((b) => b.info === "yaml" && b.body.includes("interface: 1"))!.body,
+      "stations/note.mjs": found.find((b) => b.info === "js" && b.body.includes("export async function scheduled"))!.body,
+      "stations/note.md": "# note\nOne sentence.\n",
+      "agents/hello-review.md": "# hello-review\n",
+      "skills/greeting/SKILL.md": "# greeting\n",
+    });
+    const ctx = testFactory({ packages: [{ path: dir, allowCode: true, config: { greeting: "Hello" } }], lines: [] });
+    ctx.config = await factoryConfig(ctx.home);
+    ctx.secrets = new SecretStore(ctx.home, memoryKeyring(), { HELLO_TOKEN: "abc" });
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    expect(ctx.config.loadedPackages!.stations[0]!.schedule).toEqual(["08:00", "12:00", "18:00"]);
+    await scheduledPass(ctx, new Date(2026, 10, 4, 12, 0));
+    expect(JSON.parse(ctx.store.getKv("package:hello/note:state:lastCheck")!)).toBe("12:00");
+  });
+
+  it("describes the scheduled passes in AGENTS.md", () => {
+    expect(read("AGENTS.md")).toContain("scheduledPass");
   });
 });
 

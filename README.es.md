@@ -344,6 +344,7 @@ stations:
     skills: [greeting]
     secrets: [HELLO_TOKEN]         # los únicos nombres que le da ctx.secrets
     everyMinutes: 1440
+    schedule: ["08:00", "12:00", "18:00"] # horas locales en las que corre scheduled, aunque la fábrica esté ocupada
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # deja que ctx.requestJob abra trabajos; sin esto, no puede
 ```
@@ -371,6 +372,11 @@ export async function pass(ctx) {
   ctx.state.set("last", run.output.sentence);
   ctx.log.info("summary saved", { lines: ctx.lines.length, hasToken: Boolean(ctx.secrets.get("HELLO_TOKEN")) });
 }
+
+export async function scheduled(ctx, { at }) {
+  ctx.state.set("lastCheck", at);
+  ctx.log.info("checked", { at, lines: ctx.lines.length, hasToken: Boolean(ctx.secrets.get("HELLO_TOKEN")) });
+}
 ```
 
 **Lo que recibe una estación**, el `ctx` de la interfaz 1:
@@ -381,7 +387,7 @@ export async function pass(ctx) {
 | `ctx.signal` | Se aborta cuando a la pasada se le acaba el tiempo o la fábrica se apaga |
 | `ctx.config` | El `config` de la entrada, pasado por `parseConfig` si existe |
 | `ctx.secrets.get(nombre)` | Solo los nombres que declaró; se guardan con `zero secret set` |
-| `ctx.runAgent({ prompt, schema })` | Un agente de solo lectura en una carpeta vacía, con las instrucciones y skills de la estación. Devuelve `{ ok, text, output, costUsd }` |
+| `ctx.runAgent({ prompt, schema })` | Un agente de solo lectura en una carpeta vacía, con las instrucciones y skills de la estación. Devuelve `{ ok, text, output, costUsd }`. En `scheduled` lanza un error |
 | `ctx.z` | El zod de zero, para el `schema` |
 | `ctx.log.info`, `ctx.log.warn` | Al registro de zero, sin los valores de sus secretos |
 | `ctx.lines` | Solo los nombres de las líneas |
@@ -392,6 +398,8 @@ export async function pass(ctx) {
 `ctx.runAgent` registra cada llamada como `package:<paquete>/<estación>`, elige el motor de la cadena de la entrada y comparte el tope `limits.usdPerNight` en el pago por uso. Sin motor o sin tope restante devuelve `ok: false` sin llamar a nadie.
 
 `ctx.requestJob` deja que una estación detecte algo y mande el cambio por la línea normal (especificación, construcción, verify, revisión, integración) en vez de tocar un repositorio por su cuenta. Solo funciona si el manifiesto de la estación declara `requests: { perLinePerDay: N }`, con N entero mayor que cero. Recibís `{ reason }` y ningún trabajo cuando la estación no declara `requests`, la línea no es una de `ctx.lines`, el texto está vacío o no es texto, el andon está activo, se agotó el presupuesto, la pasada terminó o la estación ya abrió N trabajos en esa línea hoy (cada estación y línea cuenta aparte, por día local, y un pedido rechazado no gasta nada). El texto se recorta a 4000 caracteres, sin los secretos de la estación, tokens reconocibles ni rutas locales, y los agentes lo reciben como datos de un tercero, con su origen. Estos trabajos siguen el nivel y la integración de su línea como cualquier pedido tuyo: en L2 o L3 se integran sin preguntarte. La fábrica los arranca después de tu trabajo, de a uno y solo sin nada más en cola o en marcha. El estado, el panel, el briefing y el informe mensual los muestran como `pedido por paquete <paquete>/<estación>`.
+
+**Pasadas con horario.** Con `schedule` (una lista de horas locales `HH:MM`, sin repetir), zero llama a `scheduled(ctx, { at })` del módulo en cada una de esas horas en vez de a `pass`; `at` es la hora tal como la escribe el manifiesto y `ctx.now` la hora real de la pasada. Corren aunque haya trabajos en cola o en marcha y aunque se haya agotado el presupuesto, porque no pueden usar un modelo: `ctx.runAgent` lanza un error y no llama a ningún motor. Sí tienen `ctx.secrets`, `ctx.state` (los mismos valores que `pass`), `ctx.log` y `ctx.lines`, y el resto de `ctx` funciona igual. Cada hora corre como máximo una vez por día local y cuenta como usada antes de la llamada, así que la que falla o supera `timeoutMinutes` no se repite ese día. Una hora que no pudo correr (la fábrica estaba apagada, el andon activo o faltaba un secreto declarado) corre después solo si no pasaron más de 2 horas, de la más vieja a la más nueva, y si no espera al día siguiente; con el andon activo no arranca ninguna. `pass` sigue con su propio ritmo en el tiempo libre, así que una estación puede exportar una, la otra o las dos. Las dos pueden correr a la vez y comparten `ctx.state`: tenelo en cuenta al escribir la estación.
 
 **Cómo instalar uno:**
 
