@@ -49,6 +49,8 @@ export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeou
       signal?.removeEventListener("abort", cancel);
       resolve({ code, stdout, stderr, timedOut, cancelled });
     });
+    // A process that exits without reading breaks the pipe: its `close` or `error` decides the result.
+    child.stdin.on("error", () => {});
     child.stdin.end(stdin ?? "");
   });
 }
@@ -134,15 +136,22 @@ export const codexEngine: Engine = {
 
 // ── Google Antigravity ───────────────────────────────────────────────────────
 
+/** Longest prompt passed as an argument: the Windows command line stops at about 32K characters. */
+const AGY_MAX_ARG_PROMPT = 30_000;
+const AGY_STDIN_INSTRUCTION = "Follow the instructions received on stdin.";
+
 export function antigravityInvocation(req: EngineRequest): Invocation {
+  const prompt = fullPrompt(req);
+  const onStdin = prompt.length > AGY_MAX_ARG_PROMPT;
   return {
     bin: "agy",
     args: [
-      "-p", fullPrompt(req),
+      "-p", onStdin ? AGY_STDIN_INSTRUCTION : prompt,
       "--output-format", "json",
       ...(req.access === "write" ? ["--dangerously-skip-permissions"] : []),
       ...(req.model ? ["--model", req.model] : []),
     ],
+    stdin: onStdin ? prompt : undefined,
   };
 }
 
