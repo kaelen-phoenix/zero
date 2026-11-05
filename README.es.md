@@ -345,6 +345,7 @@ stations:
     secrets: [HELLO_TOKEN]         # los únicos nombres que le da ctx.secrets
     everyMinutes: 1440
     timeoutMinutes: 10
+    requests: { perLinePerDay: 1 } # deja que ctx.requestJob abra trabajos; sin esto, no puede
 ```
 
 - **Agentes:** corren en todas las líneas como agentes a medida globales, después de los de tu archivo y con las mismas garantías (ver Agentes a medida). Nunca se escriben en tu archivo. Sus nombres no pueden repetir una estación fija, un agente tuyo ni el de otro paquete.
@@ -386,8 +387,11 @@ export async function pass(ctx) {
 | `ctx.lines` | Solo los nombres de las líneas |
 | `ctx.state.get(nombre)`, `ctx.state.set(nombre, valor)` | Se guarda entre pasadas, por separado para cada estación |
 | `ctx.deliveredJobs(desde)` | Línea, título, resumen y fecha de los trabajos entregados, sin identificadores de trabajo, ramas ni rutas locales |
+| `ctx.requestJob({ line, text })` | Le pide un trabajo a la fábrica. Devuelve `{ id }`, o `{ reason }` si no se puede; nunca lanza |
 
 `ctx.runAgent` registra cada llamada como `package:<paquete>/<estación>`, elige el motor de la cadena de la entrada y comparte el tope `limits.usdPerNight` en el pago por uso. Sin motor o sin tope restante devuelve `ok: false` sin llamar a nadie.
+
+`ctx.requestJob` deja que una estación detecte algo y mande el cambio por la línea normal (especificación, construcción, verify, revisión, integración) en vez de tocar un repositorio por su cuenta. Solo funciona si el manifiesto de la estación declara `requests: { perLinePerDay: N }`, con N entero mayor que cero. Recibís `{ reason }` y ningún trabajo cuando la estación no declara `requests`, la línea no es una de `ctx.lines`, el texto está vacío o no es texto, el andon está activo, se agotó el presupuesto, la pasada terminó o la estación ya abrió N trabajos en esa línea hoy (cada estación y línea cuenta aparte, por día local, y un pedido rechazado no gasta nada). El texto se recorta a 4000 caracteres, sin los secretos de la estación, tokens reconocibles ni rutas locales, y los agentes lo reciben como datos de un tercero, con su origen. Estos trabajos siguen el nivel y la integración de su línea como cualquier pedido tuyo: en L2 o L3 se integran sin preguntarte. La fábrica los arranca después de tu trabajo, de a uno y solo sin nada más en cola o en marcha. El estado, el panel, el briefing y el informe mensual los muestran como `pedido por paquete <paquete>/<estación>`.
 
 **Cómo instalar uno:**
 

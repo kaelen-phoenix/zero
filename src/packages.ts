@@ -41,6 +41,8 @@ const ManifestStationSchema = z
     everyMinutes: z.number().positive().default(1440),
     timeoutMinutes: z.number().positive().default(10),
     maxTurns: z.number().int().positive().default(40),
+    /** Permission to ask the factory for jobs; absent: it cannot. */
+    requests: z.object({ perLinePerDay: z.number().int().positive() }).strict().optional(),
   })
   .strict();
 
@@ -186,6 +188,7 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       everyMinutes: s.everyMinutes,
       timeoutMinutes: s.timeoutMinutes,
       maxTurns: s.maxTurns,
+      ...(s.requests && { requests: s.requests }),
       entry,
     };
   });

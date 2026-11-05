@@ -171,7 +171,7 @@ describe("agent packages", () => {
   it("documents the format in the same place of both", () => {
     for (const [text, heading] of HEADINGS) {
       const body = section(text, heading);
-      for (const piece of ["zero-package.yaml", "interface: 1", "allowCode", "zero package add", "export async function pass", "ctx.runAgent", "ctx.deliveredJobs"]) expect(body, piece).toContain(piece);
+      for (const piece of ["zero-package.yaml", "interface: 1", "allowCode", "zero package add", "export async function pass", "ctx.runAgent", "ctx.deliveredJobs", "ctx.requestJob", "perLinePerDay"]) expect(body, piece).toContain(piece);
     }
     const order = (text: string, a: string, b: string) => expect(text.indexOf(a)).toBeLessThan(text.indexOf(b));
     order(en, "## Agent packages", "## Night shift");

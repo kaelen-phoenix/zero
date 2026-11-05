@@ -45,6 +45,9 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
+/** Who asked for a job, only when a package's station did. */
+export const jobOrigin = (j: Job) => (j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : undefined);
+
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
   return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""})` : ""}`;
@@ -89,6 +92,8 @@ export function formatJob(job: Job, opts: { subscription?: boolean } = {}): stri
     `Estado: ${describeJobStatus(job)}`,
     `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
   ];
+  const origin = jobOrigin(job);
+  if (origin) lines.push(`Origen: ${origin}`);
   if (job.question) {
     lines.push("", "Pregunta para vos:", job.question.text, "", `Respondé con "aprobar" o "rechazar" (vence ${job.question.expiresAt}; si nadie responde: ${job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}).`);
   }
@@ -182,17 +187,18 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   out.push(budgetLine(s.budget, now));
   out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
+  const origin = (j: Job) => (jobOrigin(j) ? ` · ${jobOrigin(j)}` : "");
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;
     out.push("", `${title}:`);
-    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}`);
+    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}`);
   };
   list("Esperando tu respuesta", s.waiting);
   list("Trabajando", s.running);
   list("En cola", s.queued);
   if (s.recent.length) {
     out.push("", "Últimos terminados:");
-    for (const j of s.recent) out.push(`- ${j.id} · ${STATUS_TEXT[j.status]} · ${jobName(j)}${j.delivery ? ` · ${describeDelivery(j.delivery)}` : ""}`);
+    for (const j of s.recent) out.push(`- ${j.id} · ${STATUS_TEXT[j.status]} · ${jobName(j)}${origin(j)}${j.delivery ? ` · ${describeDelivery(j.delivery)}` : ""}`);
   }
   return out.join("\n");
 }

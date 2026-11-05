@@ -21,7 +21,7 @@ import { intakeProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey } from "./line/packages.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { formatEgressSites, jobName } from "./format.js";
+import { formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
@@ -200,6 +200,7 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
       ...(input.source?.kind === "github-issue" && { "zero.source": input.source.url }),
       ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
       ...(input.source?.kind === "research" && { "zero.research_note": input.source.note }),
+      ...(input.source?.kind === "package" && { "zero.package": `${input.source.package}/${input.source.station}` }),
     },
   });
   const integration = { merge: "lo integra en la rama base", branch: "deja una rama lista", "pull-request": "abre una solicitud de cambio" }[line.integrate];
@@ -371,7 +372,11 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     jobs: finished.filter((j) => !(autonomous(j) && j.status === "delivered")),
   };
   const research = ctx.store.listResearchNotes({ since: from }).filter((n) => n.createdAt <= to.toISOString());
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research);
+  const packages = ctx.store
+    .listJobs({ limit: 10_000 })
+    .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
+    .reverse();
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -596,6 +601,8 @@ export interface LineRow {
   id: string;
   line: string;
   title: string;
+  /** Who asked for it, when that is worth saying. */
+  origin?: string;
   status: JobStatus;
   /** Where the piece is: the station working or waiting, or the one that failed. */
   at?: LineStation;
@@ -686,6 +693,7 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
     id: job.id,
     line: job.line,
     title: jobName(job),
+    origin: jobOrigin(job),
     status: job.status,
     at: stations.find((st) => st.state === "active" || st.state === "waiting" || st.state === "error")?.name ?? here,
     attempt: job.attempt,
