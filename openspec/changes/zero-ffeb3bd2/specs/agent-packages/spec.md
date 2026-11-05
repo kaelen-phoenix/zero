@@ -108,6 +108,29 @@ Tras la confirmación, si el paquete tiene `package-lock.json`, zero MUST ejecut
 - **WHEN** el lock solo tiene tarballs https de un registro, enlaces locales, dependencias incluidas en otro paquete o alias npm
 - **THEN** no hay motivo de rechazo
 
+### Requirement: Lo que npm ci vaciaría a través de un enlace
+`npm ci` vacía `node_modules` del paquete y de cada workspace antes de instalar, siguiendo enlaces, con `--ignore-scripts` o sin él. Antes de lanzar npm sobre un paquete con lock, zero MUST rechazar el agregado o la actualización si una entrada llamada `node_modules`, en cualquier nivel y sin distinguir mayúsculas, no es una carpeta de verdad; si un enlace sale de la carpeta del paquete; si `workspaces` en `package.json` tiene un patrón que pueda salir de ella; o si el lock ubica un paquete o un enlace fuera de ella. En una actualización git MUST leerlo del commit nuevo con `git ls-tree -r`, antes de confirmar y de apagar la fábrica.
+
+#### Scenario: agregado con node_modules enlazado
+- **WHEN** el repositorio versiona `node_modules` como enlace a una carpeta
+- **THEN** `packageAdd` lanza el motivo, `confirm` y el instalador no se llaman, `packages/git` queda sin carpetas, el archivo de fábrica no cambia y la carpeta apuntada sigue intacta
+
+#### Scenario: actualización con el enlace en un workspace
+- **WHEN** un commit nuevo agrega `packages/a/node_modules` como enlace
+- **THEN** el resultado marca fallo, `confirm`, `shutdown`, el instalador y `start` no se llaman, y HEAD y `commit` siguen en el commit anterior
+
+#### Scenario: carpeta con enlace
+- **WHEN** una carpeta con lock tiene `node_modules` o un workspace como enlace a otra carpeta
+- **THEN** `realDependencies` lanza el motivo, npm no se lanza y lo apuntado sigue intacto
+
+#### Scenario: workspaces y rutas del lock que salen
+- **WHEN** `workspaces` tiene un patrón con `..` o llaves, o el lock tiene una ruta o un enlace con `..` o absoluto
+- **THEN** se rechaza
+
+#### Scenario: lo que sigue valiendo
+- **WHEN** un enlace queda dentro del paquete, los workspaces son carpetas del paquete, o el repositorio no tiene lock
+- **THEN** no hay motivo de rechazo
+
 ### Requirement: Entrada git en el archivo de fábrica
 Un paquete instalado desde git MUST quedar en el archivo de fábrica como `git: <fuente>` con `path` (su carpeta) y `commit` (el SHA instalado), conservando los comentarios del archivo y con `allowCode` según `--permitir-codigo` como hasta ahora; el esquema MUST exigir `path` y `commit` junto a `git` y no aceptarlo junto a `npm`.
 

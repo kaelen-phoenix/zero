@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
@@ -130,7 +130,7 @@ function lockEntryProblem(entry: unknown): string | undefined {
 function legacyLockProblem(dependencies: unknown): string | undefined {
   if (typeof dependencies !== "object" || dependencies === null) return undefined;
   for (const [name, entry] of Object.entries(dependencies)) {
-    const problem = lockEntryProblem(entry);
+    const problem = LOCK_NAME.test(name) ? lockEntryProblem(entry) : "tiene un nombre que no es de un paquete";
     if (problem) return `${cleanText(name)} ${problem}`;
     const nested = legacyLockProblem((entry as { dependencies?: unknown }).dependencies);
     if (nested) return nested;
@@ -169,28 +169,121 @@ export function lockProblem(text: string, file = PACKAGE_LOCK): string | undefin
 
 const notAFile = (file: string) => `${file} no es un archivo común`;
 
-/** `lockProblem` for the locks a folder has on disk. */
-export function folderLockProblem(dir: string): string | undefined {
-  for (const file of LOCK_FILES) {
-    const path = join(dir, file);
-    let regular: boolean;
-    try {
-      regular = lstatSync(path).isFile();
-    } catch {
-      continue;
-    }
-    const problem = regular ? lockProblem(readFileSync(path, "utf8"), file) : notAFile(file);
+const leavesPackage = (path: string) => /^([\\/]|[a-z]:)/i.test(path) || path.split(/[\\/]/).includes("..");
+
+/** Where a clone's lock would have npm write: it places a package at the path it is listed under, and a link where its `resolved` says. Only what npm itself wrote for a real local dependency has any business outside the package, and that never comes in a clone. */
+function lockReachProblem(text: string, file: string): string | undefined {
+  const { packages } = JSON.parse(text) as { packages?: unknown };
+  if (typeof packages !== "object" || packages === null) return undefined;
+  for (const [path, entry] of Object.entries(packages)) {
+    const { link, resolved } = entry as { link?: unknown; resolved?: unknown };
+    if (leavesPackage(path) || (link === true && typeof resolved === "string" && leavesPackage(resolved))) return `${file}: ${cleanText(path)} apunta fuera de la carpeta del paquete`;
+  }
+  return undefined;
+}
+
+const NODE_MODULES = /^node_modules[. ]*$/i;
+// After the optional `./` or `/` npm strips and a negation: no braces or the like that could expand to a path out of the package.
+const WORKSPACE = /^!*(\.?\/+)?[\w@.*/-]+$/;
+
+/**
+ * `npm ci` empties `node_modules` of the package and of each workspace before installing,
+ * and that goes through links, whatever `--ignore-scripts` says. So a link must not stand
+ * for one of those folders and no workspace may be elsewhere, which a pattern with `..` or
+ * a link that leaves the package would allow.
+ */
+function workspacesProblem(text: string): string | undefined {
+  let pkg: { workspaces?: unknown } | null;
+  try {
+    pkg = JSON.parse(text.replace(/^\uFEFF/, "")) as { workspaces?: unknown } | null;
+  } catch {
+    return "package.json no se puede leer";
+  }
+  const declared = pkg?.workspaces;
+  const patterns = Array.isArray(declared) ? (declared as unknown[]) : (declared as { packages?: unknown } | undefined)?.packages;
+  if (!Array.isArray(patterns)) return undefined;
+  const fine = (pattern: unknown) => typeof pattern === "string" && WORKSPACE.test(pattern) && !pattern.includes("..");
+  return (patterns as unknown[]).every(fine) ? undefined : "package.json declara un workspace que puede estar fuera de la carpeta del paquete, y npm ci vaciaría su node_modules";
+}
+
+/** Whether a link at `path` (relative to the package, with `/`) ends up outside the package. Climbing only at the start of its target keeps the answer true through other links, which by the same rule stay inside too. */
+function linkLeaves(path: string, target: string): boolean {
+  if (/^([\\/]|[a-z]:)/i.test(target)) return true;
+  const parts = target.split(/[\\/]+/).filter((part) => part && part !== ".");
+  const climbs = parts.findIndex((part) => part !== "..");
+  const up = climbs === -1 ? parts.length : climbs;
+  return up > path.split("/").length - 1 || parts.slice(up).includes("..");
+}
+
+/** What is wrong with something that is not a folder at `path`, given where it points when it is a link. */
+function treeEntryProblem(path: string, link: string | undefined): string | undefined {
+  if (NODE_MODULES.test(path.slice(path.lastIndexOf("/") + 1))) return `${cleanText(path)} no es una carpeta común, y npm ci vaciaría lo que hay donde apunta`;
+  return link !== undefined && linkLeaves(path, link) ? `${cleanText(path)} es un enlace que sale de la carpeta del paquete, y npm ci podría vaciar lo que hay donde apunta` : undefined;
+}
+
+/** `treeEntryProblem` for all a folder has; what is inside a real `node_modules` goes with it when npm empties it, without following any link. */
+function folderTreeProblem(dir: string, relative = ""): string | undefined {
+  for (const entry of readdirSync(join(dir, relative), { withFileTypes: true })) {
+    if (entry.name === ".git") continue;
+    const path = relative ? `${relative}/${entry.name}` : entry.name;
+    const problem = !entry.isDirectory()
+      ? treeEntryProblem(path, entry.isSymbolicLink() ? readlinkSync(join(dir, path)) : undefined)
+      : NODE_MODULES.test(entry.name)
+        ? undefined
+        : folderTreeProblem(dir, path);
     if (problem) return problem;
   }
   return undefined;
 }
 
-/** `lockProblem` for the locks a commit has, without checking it out. */
+function isRegularFile(path: string): boolean | undefined {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why `npm ci` must not start in a folder, judged only when it has a lock to start from. */
+export function folderLockProblem(dir: string): string | undefined {
+  let locked = false;
+  for (const file of LOCK_FILES) {
+    const regular = isRegularFile(join(dir, file));
+    if (regular === undefined) continue;
+    locked = true;
+    const text = regular ? readFileSync(join(dir, file), "utf8") : undefined;
+    const problem = text === undefined ? notAFile(file) : lockProblem(text, file) ?? lockReachProblem(text, file);
+    if (problem) return problem;
+  }
+  if (!locked) return undefined;
+  const pkg = join(dir, "package.json");
+  const regular = isRegularFile(pkg);
+  if (regular === false) return notAFile("package.json");
+  return (regular && workspacesProblem(readFileSync(pkg, "utf8"))) || folderTreeProblem(dir);
+}
+
+/** `folderLockProblem` for what a commit has, without checking it out. */
 export async function lockProblemAt(git: GitRunner, dir: string, sha: string): Promise<string | undefined> {
+  let locked = false;
   for (const file of LOCK_FILES) {
     const tree = await git(["ls-tree", sha, "--", file], { cwd: dir });
     if (!tree) continue;
-    const problem = REGULAR_FILE.test(tree) ? lockProblem(await git(["show", `${sha}:${file}`], { cwd: dir }), file) : notAFile(file);
+    locked = true;
+    const text = REGULAR_FILE.test(tree) ? await git(["show", `${sha}:${file}`], { cwd: dir }) : undefined;
+    const problem = text === undefined ? notAFile(file) : lockProblem(text, file) ?? lockReachProblem(text, file);
+    if (problem) return problem;
+  }
+  if (!locked) return undefined;
+  const pkg = await git(["ls-tree", sha, "--", "package.json"], { cwd: dir });
+  if (pkg) {
+    const problem = REGULAR_FILE.test(pkg) ? workspacesProblem(await git(["show", `${sha}:package.json`], { cwd: dir })) : notAFile("package.json");
+    if (problem) return problem;
+  }
+  // -r lists only what is not a folder, and -z leaves unusual paths as they are.
+  for (const entry of (await git(["ls-tree", "-r", "-z", sha], { cwd: dir })).split("\0").filter(Boolean)) {
+    const tab = entry.indexOf("\t");
+    const [mode, , object] = entry.slice(0, tab).split(" ");
+    const problem = treeEntryProblem(entry.slice(tab + 1), mode === "120000" ? await git(["cat-file", "blob", object!], { cwd: dir }) : undefined);
     if (problem) return problem;
   }
   return undefined;
@@ -205,7 +298,8 @@ export async function npmSpecProblem(spec: string): Promise<string | undefined> 
   const dir = await mkdtemp(join(tmpdir(), "zero-npm-"));
   try {
     await runNpm(["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", dir, spec], NPM_TIMEOUT_MS);
-    return folderLockProblem(dir);
+    const lock = join(dir, PACKAGE_LOCK);
+    return existsSync(lock) ? lockProblem(readFileSync(lock, "utf8")) : undefined;
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   }

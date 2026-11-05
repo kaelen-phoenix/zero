@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -140,6 +140,157 @@ describe("locks with dependencies npm would have to build", () => {
     gitIn(repo, "commit", "-q", "-m", "enlace");
     expect(await lockProblemAt(realGit, repo, "HEAD")).toMatch(/npm-shrinkwrap\.json no es un archivo común/);
     expect(folderLockProblem(tempDir())).toBeUndefined();
+  });
+});
+
+/** Commits a link git really records as one, whatever this machine does with links on checkout. */
+function commitLink(repo: string, path: string, target: string): string {
+  const file = join(tempDir(), "target");
+  writeFileSync(file, target);
+  const blob = gitIn(repo, "hash-object", "-w", "--no-filters", file);
+  gitIn(repo, "update-index", "--add", "--cacheinfo", `120000,${blob},${path}`);
+  gitIn(repo, "commit", "-q", "-m", `enlace ${path}`);
+  return gitIn(repo, "rev-parse", "HEAD");
+}
+
+function victimFolder() {
+  const victim = tempDir();
+  writeTree(victim, { "guardado.txt": "x", "node_modules/y/index.js": "x" });
+  return victim;
+}
+
+const LOCKED = { "zero-package.yaml": MANIFEST, "package.json": JSON.stringify({ name: "p", version: "1.0.0" }), "package-lock.json": "{}\n" };
+
+describe("what npm ci would empty through a link", () => {
+  it.each([
+    ["node_modules at the root", "node_modules", "../../.."],
+    ["node_modules, another case", "NODE_Modules", "elsewhere"],
+    ["node_modules of a workspace", "packages/a/node_modules", "inside"],
+    ["a link that climbs out", "packages/a", "../../.."],
+    ["a link to an absolute folder", "packages/a", "/home/alguien"],
+    ["a link to a Windows folder", "packages/a", "C:\\Users\\alguien"],
+    ["a link that climbs after going down", "a/b/c", "d/../../../.."],
+  ])("a commit is refused for %s", async (_name, path, target) => {
+    const repo = gitRepo(LOCKED);
+    commitLink(repo, path, target);
+    expect(await lockProblemAt(realGit, repo, "HEAD")).toContain(path);
+  });
+
+  it.each([
+    ["inside the package", "packages/a/CLAUDE.md", "../../README.md"],
+    ["next to it", "uno", "dos"],
+  ])("a commit is accepted with a link %s", async (_name, path, target) => {
+    const repo = gitRepo(LOCKED);
+    commitLink(repo, path, target);
+    expect(await lockProblemAt(realGit, repo, "HEAD")).toBeUndefined();
+  });
+
+  it("a commit with no lock starts no npm, so nothing is judged", async () => {
+    const repo = gitRepo({ "zero-package.yaml": MANIFEST });
+    commitLink(repo, "node_modules", "../../..");
+    expect(await lockProblemAt(realGit, repo, "HEAD")).toBeUndefined();
+  });
+
+  it.each([
+    ["out of the package", ["../../../victima"]],
+    ["through a brace", ["{..,a}/victima"]],
+    ["absolute through a brace", ["{/home/alguien,a}"]],
+    ["in the long form", { packages: ["../x"] }],
+    ["something that is no pattern", [1]],
+  ])("workspaces are refused when %s", async (_name, workspaces) => {
+    const text = JSON.stringify({ name: "p", version: "1.0.0", workspaces });
+    const repo = gitRepo({ ...LOCKED, "package.json": text });
+    expect(await lockProblemAt(realGit, repo, "HEAD")).toMatch(/workspace/);
+    const dir = tempDir();
+    writeTree(dir, { ...LOCKED, "package.json": text });
+    expect(folderLockProblem(dir)).toMatch(/workspace/);
+  });
+
+  it("workspaces inside the package pass", () => {
+    const dir = tempDir();
+    writeTree(dir, { ...LOCKED, "package.json": JSON.stringify({ name: "p", workspaces: ["packages/*", "./otro", "!packages/viejo"] }) });
+    expect(folderLockProblem(dir)).toBeUndefined();
+  });
+
+  it.each([
+    ["a package out of the folder", { "../../victima/node_modules/x": { version: "1.0.0", resolved: REGISTRY } }],
+    ["one under an absolute path", { "/home/alguien/node_modules/x": { version: "1.0.0", resolved: REGISTRY } }],
+    ["a link out of the folder", { "node_modules/x": { resolved: "../../victima", link: true } }],
+  ])("a clone's lock is refused for %s, on disk and in a commit", async (_name, packages) => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages });
+    const dir = tempDir();
+    writeTree(dir, { ...LOCKED, "package-lock.json": lock });
+    expect(folderLockProblem(dir)).toMatch(/fuera de la carpeta/);
+    expect(await lockProblemAt(realGit, gitRepo({ ...LOCKED, "package-lock.json": lock }), "HEAD")).toMatch(/fuera de la carpeta/);
+  });
+
+  it("a name that is a path is refused in the old format", () => {
+    expect(lockProblem(JSON.stringify({ lockfileVersion: 1, dependencies: { "../../x": { version: "1.0.0", resolved: REGISTRY } } }))).toMatch(/nombre/);
+  });
+
+  it("npm does not start on a folder whose node_modules is a link, and what it points to stays", async () => {
+    const victim = victimFolder();
+    const dir = tempDir();
+    writeTree(dir, LOCKED);
+    symlinkSync(victim, join(dir, "node_modules"), "junction");
+    vi.mocked(spawn).mockClear();
+    await expect(realDependencies(dir)).rejects.toThrow(/node_modules no es una carpeta común/);
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(readdirSync(victim).sort()).toEqual(["guardado.txt", "node_modules"]);
+  });
+
+  it("npm does not start on a workspace that is a link to another folder", async () => {
+    const victim = victimFolder();
+    const dir = tempDir();
+    writeTree(dir, { ...LOCKED, "package.json": JSON.stringify({ name: "p", workspaces: ["packages/*"] }), "packages/a.txt": "x" });
+    symlinkSync(victim, join(dir, "packages", "a"), "junction");
+    vi.mocked(spawn).mockClear();
+    await expect(realDependencies(dir)).rejects.toThrow(/packages\/a es un enlace que sale/);
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(existsSync(join(victim, "node_modules", "y", "index.js"))).toBe(true);
+  });
+
+  it("a real node_modules is not read, whatever it has inside", () => {
+    const dir = tempDir();
+    writeTree(dir, { ...LOCKED, "node_modules/x/index.js": "x" });
+    symlinkSync(victimFolder(), join(dir, "node_modules", "enlace"), "junction");
+    expect(folderLockProblem(dir)).toBeUndefined();
+  });
+
+  it("add refuses a repository that tracks node_modules as a link, before asking and without a trace", async () => {
+    const victim = victimFolder();
+    const ctx = await factory();
+    const before = readFileSync(ctx.home.config, "utf8");
+    const repo = gitRepo(LOCKED);
+    commitLink(repo, "node_modules", victim.replace(/\\/g, "/"));
+    const { deps, confirm } = fakes(gitTo(repo));
+    await expect(packageAdd(ctx, { source: SOURCE, git: gitTo(repo), confirm, deps })).rejects.toThrow(/node_modules no es una carpeta común/);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(deps).not.toHaveBeenCalled();
+    expect(readdirSync(join(ctx.home.packages, "git"))).toEqual([]);
+    expect(readFileSync(ctx.home.config, "utf8")).toBe(before);
+    expect(readdirSync(victim).sort()).toEqual(["guardado.txt", "node_modules"]);
+    expect(existsSync(join(victim, "node_modules", "y", "index.js"))).toBe(true);
+  });
+
+  it("an update that brings the link stops before asking or the factory going down", async () => {
+    const victim = victimFolder();
+    const repo = gitRepo(LOCKED);
+    const ctx = await factory();
+    const git = gitTo(repo);
+    await packageAdd(ctx, { source: SOURCE, git, confirm: async () => true, deps: async () => undefined });
+    const dir = join(ctx.home.packages, "git", "hello");
+    const from = gitIn(dir, "rev-parse", "HEAD");
+    const to = commitLink(repo, "packages/a/node_modules", victim.replace(/\\/g, "/"));
+    const { shutdown, start, deps, confirm, input } = fakes(git);
+    const result = await packageUpdate(ctx, input);
+    expect(result.failed).toBe(true);
+    expect(result.text).toContain(`no se aplicó ${to.slice(0, 7)}`);
+    expect(result.text).toContain("packages/a/node_modules no es una carpeta común");
+    for (const fake of [shutdown, start, deps, confirm]) expect(fake).not.toHaveBeenCalled();
+    expect(gitIn(dir, "rev-parse", "HEAD")).toBe(from);
+    expect(parseFactory(readFileSync(ctx.home.config, "utf8")).packages[0]!.commit).toBe(from);
+    expect(existsSync(join(victim, "node_modules", "y", "index.js"))).toBe(true);
   });
 });
 
