@@ -16,6 +16,7 @@ import { factoryConfig } from "./packages.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
+import { packageUpdatesPass } from "./line/package-updates.js";
 import { packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
@@ -51,6 +52,8 @@ export interface DaemonOptions {
   research?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
   packages?: boolean;
+  /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
+  packageUpdates?: boolean;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -202,6 +205,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     exporting = exportPass(ctx).finally(() => (exporting = undefined));
   };
 
+  // What the packages' remotes have now, for `zero package list`; the pass itself keeps it to once a day, and a slow remote never holds up the loop.
+  let lookedAt = 0;
+  let looking: Promise<void> | undefined;
+  const lookForPackageUpdates = () => {
+    if (looking || !(opts.packageUpdates ?? !opts.once) || Date.now() - lookedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    lookedAt = Date.now();
+    looking = packageUpdatesPass(ctx, now())
+      .catch((err) => log.warn("package update check failed", { error: String(err) }))
+      .finally(() => (looking = undefined));
+  };
+
   // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
@@ -260,6 +274,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       findReverts();
       exportTraces();
       runSchedules();
+      lookForPackageUpdates();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -316,6 +331,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await checkingReverts;
     await exporting;
     await scheduling;
+    await looking;
     await idle;
     tunnel.stop();
     panel?.close();

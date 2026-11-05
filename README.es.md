@@ -407,12 +407,28 @@ export async function scheduled(ctx, { at }) {
 zero package add ./hello                     # una carpeta local
 zero package add hello-zero                  # de npm, en ~/.zero/packages, con --ignore-scripts
 zero package add ./hello --permitir-codigo   # allowCode: true, para que corran sus estaciones
+zero package add github:acme/hello-zero#v1   # de git, en ~/.zero/packages/git/hello, en ese tag o rama
+zero package add https://example.com/acme/hello-zero.git
+zero package add git@example.com:acme/hello-zero.git#main
 zero secret set HELLO_TOKEN
 zero package list
+zero package update hello                    # muestra el cambio y lo aplica; sin nombre, todos los paquetes
 zero package remove hello                    # lo saca del archivo; sus archivos quedan
 ```
 
 `zero package add` revisa el manifiesto antes de tocar tu archivo y conserva sus comentarios. De npm instala en `~/.zero/packages` con `--ignore-scripts`, así que un paquete que necesite scripts de instalación no va a quedar completo.
+
+**Desde git.** Una fuente puede ser `github:cuenta/repo` o una URL https o ssh, cada una con `#tag-o-rama` opcional. zero usa las credenciales de git que ya tenés: nunca pide un token y rechaza una URL que lleve uno. Clona, revisa el manifiesto y te muestra qué trae el paquete (agentes, skills, estaciones, los secretos que declara y si pide permiso para correr código). Después te pregunta antes de instalar nada; `--yes` responde por vos, y sin terminal ni `--yes` la respuesta es no. Si el repositorio tiene `package-lock.json`, corre `npm ci --omit=dev --ignore-scripts` en la carpeta del paquete. Como npm arma una dependencia git corriendo su código, diga lo que diga esa opción, zero rechaza antes de lanzar npm todo agregado o actualización cuyo lock tenga una dependencia que no sea un tarball https de un registro o una carpeta local. Lo mismo vale para lo que trae un paquete de npm. Y como `npm ci` vacía `node_modules` del paquete y de cada workspace, siguiendo enlaces, también rechaza antes de lanzar npm un paquete con lock donde un `node_modules` no es una carpeta de verdad, un enlace sale del paquete, o `workspaces` o las rutas del lock apuntan fuera de él. Tu archivo recibe la entrada con `git`, `path` y el `commit` instalado. Los submódulos no se traen.
+
+**Actualizar.** `zero package update [nombre]` depende de dónde vino el paquete:
+
+- **git:** hace fetch y muestra los commits nuevos y cualquier cambio en los secretos y permisos declarados. Te vuelve a preguntar solo cuando el paquete pide más: un secreto nuevo, una estación nueva, un `requests` nuevo o mayor, o un agente que pasa a ser `build`. El código nuevo de una estación que ya permitiste no cuenta, así que leé los commits. Se niega si la carpeta no es su propio clon dentro de `~/.zero/packages/git` o si tiene cambios locales en archivos versionados.
+- **Una carpeta:** reinstala dependencias solo si `package-lock.json` cambió desde el último registro. `npm ci` reemplaza el `node_modules` de esa carpeta y deja afuera sus dependencias de desarrollo, tenelo en cuenta en una carpeta donde desarrollás.
+- **npm:** instala la última versión dentro de `~/.zero/packages`. Si esa versión resulta no ser válida, zero te dice por qué y el paquete queda afuera, sin volver a la versión anterior.
+
+Con algo para aplicar, zero apaga la fábrica y espera a que termine su proceso, porque en Windows los módulos nativos quedan tomados mientras corre. Después actualiza y reinstala dependencias, y si un paquete git falla (dependencias, manifiesto, nombre o encaje con los demás) vuelve al commit anterior. Al final enciende una sola fábrica, solo si había una en marcha. Si la fábrica no se apaga a tiempo, no se toca ningún paquete: el pedido de apagado queda vigente, así que la fábrica se apaga más tarde y nadie la vuelve a encender.
+
+Mientras está en marcha, la fábrica mira una vez por día qué tienen los remotos de los paquetes git y npm, sin tocar sus carpetas. `zero package list` muestra la fuente, el commit o la versión instalada y si hay una actualización disponible, según lo último que se vio y sin usar la red.
 
 **Un paquete roto nunca frena la fábrica.** Queda afuera entero, los demás paquetes siguen y el motivo se ve en `zero status`, en `zero package list` y una vez en el registro. Eso vale también para los revisores bloqueantes de un paquete: si queda afuera, los trabajos siguen sin esa revisión, así que mirá `zero status` después de actualizar uno.
 

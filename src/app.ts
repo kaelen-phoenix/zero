@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, openSync, realpathSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
@@ -12,7 +13,9 @@ import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
-import { factoryConfig, loadPackages, packageFolder, readManifest, withPackages } from "./packages.js";
+import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
+import { isGitSource, parseGitSource } from "./package-source.js";
+import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
@@ -1047,7 +1050,15 @@ export interface PackageStationView {
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
-  source: "path" | "npm";
+  source: "path" | "npm" | "git";
+  /** Where it comes from, as the factory file says it. */
+  origin: string;
+  /** The commit or npm version installed; a folder has none. */
+  installed?: string;
+  /** What was last seen on the remote, when it differs from `installed`. */
+  update?: { seen: string; at: string };
+  /** The last look at the remote failed. */
+  lookFailed?: { at: string; error: string };
   allowCode: boolean;
   stations: PackageStationView[];
 }
@@ -1057,58 +1068,197 @@ export interface PackageList {
   problems: PackageProblem[];
 }
 
-/** What is installed, what each package brings and what keeps part of it from working; never a secret's value. */
+/** What is installed, what each package brings and what keeps part of it from working; never a secret's value. It only reads what is on record: no network, no git, no npm. */
 export function packageList(ctx: FactoryContext): PackageList {
   const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
   return {
     problems: loaded.problems,
-    packages: loaded.packages.map((p) => ({
-      name: p.name,
-      version: p.version,
-      dir: p.dir,
-      agents: p.agents,
-      skills: p.skills,
-      source: p.entry.npm ? "npm" : "path",
-      allowCode: p.entry.allowCode,
-      stations: p.stations.map((name) => {
-        const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
-        return {
-          name,
-          allowed: Boolean(station),
-          missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
-          lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
-        };
-      }),
-    })),
+    packages: loaded.packages.map((p) => {
+      const installed = p.entry.git ? p.entry.commit : p.entry.npm ? (npmInstalledVersion(p.dir) ?? p.version) : undefined;
+      const seen = installed ? readSeen(ctx.store, p.name) : undefined;
+      return {
+        name: p.name,
+        version: p.version,
+        dir: p.dir,
+        agents: p.agents,
+        skills: p.skills,
+        source: p.entry.git ? "git" : p.entry.npm ? "npm" : "path",
+        origin: p.entry.git ?? p.entry.npm ?? p.entry.path!,
+        ...(installed && { installed }),
+        ...(seen?.seen && seen.seen !== installed && { update: { seen: seen.seen, at: seen.at } }),
+        ...(seen?.error && { lookFailed: { at: seen.at, error: seen.error } }),
+        allowCode: p.entry.allowCode,
+        stations: p.stations.map((name) => {
+          const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
+          return {
+            name,
+            allowed: Boolean(station),
+            missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
+            lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
+          };
+        }),
+      };
+    }),
   };
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */
 export type PackageInstaller = (dir: string, name: string) => Promise<void>;
 
-/** Install scripts never run: installing a package does not run its code. */
+/** Install scripts never run; what `--ignore-scripts` does not reach, a git dependency, `npmInstall` refuses first. */
 export function npmInstallArgs(dir: string, name: string): string[] {
   return ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", dir, name];
 }
 
 const npmInstall: PackageInstaller = async (dir, name) => {
-  const windows = process.platform === "win32";
-  // On Windows npm is a .cmd, which only a shell can start. The name was validated, and the folder is the only other free text.
-  const args = npmInstallArgs(dir, name).map((a) => (windows && a === dir ? `"${a}"` : a));
-  const r = spawnSync("npm", args, { encoding: "utf8", shell: windows, windowsHide: true, timeout: 600_000 });
-  if (r.status !== 0) throw new Error(`npm no pudo instalar ${name}: ${(r.stderr || String(r.error ?? "")).trim().slice(0, 500)}`);
+  try {
+    const problem = await npmSpecProblem(name);
+    if (problem) throw new Error(problem);
+    await runNpm(npmInstallArgs(dir, name), 600_000);
+  } catch (err) {
+    throw new Error(`npm no pudo instalar ${name}: ${errorText(err)}`);
+  }
 };
 
 const looksLikePath = (source: string) => /^[.~/\\]|^[a-z]:/i.test(source) || /[\\]/.test(source) || (source.includes("/") && !source.startsWith("@"));
+
+/** Yes/no for the owner. Without one nobody can consent, so the answer is no. */
+type Confirm = (question: string) => Promise<boolean>;
+const nobodyConsents: Confirm = async () => false;
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const shortSha = (sha: string) => sha.slice(0, 7);
+
+/** Why a package does not load next to the others, reading `packages` from the disk as they are now: it stays out, or it pushes out one that was in. Undefined when all is well. */
+function fitProblem(ctx: FactoryContext, packages: PackageEntry[], index: number, name: string): string | undefined {
+  const fit = loadPackages({ ...ctx.config, packages }, ctx.home);
+  const left = (i: number) => !fit.packages.some((p) => p.index === i);
+  if (left(index)) return fit.problems.find((p) => p.package === name)?.reason ?? "no carga junto a los demás paquetes";
+  const pushedOut = ctx.config.loadedPackages?.packages.find((p) => left(p.index));
+  if (!pushedOut) return undefined;
+  const reason = fit.problems.find((p) => p.package === pushedOut.name)?.reason ?? "ya no carga";
+  return `deja afuera al paquete ${pushedOut.name}: ${reason}`;
+}
+
+/** What a package brings, for the owner to read before it comes in. */
+function packageSummary(manifest: PackageManifest, source: string, commit: string, dir: string): string {
+  const names = (items: { name: string }[]) => items.map((i) => cleanText(i.name)).join(", ");
+  const secrets = declaredSecrets(manifest);
+  return [
+    `${cleanText(manifest.name)} ${cleanText(manifest.version)}, de ${source} (commit ${shortSha(commit)}), en ${dir}:`,
+    `- agentes: ${names(manifest.agents) || "ninguno"}`,
+    `- skills: ${manifest.skills.map(cleanText).join(", ") || "ninguna"}`,
+    `- estaciones: ${names(manifest.stations) || "ninguna"}`,
+    `- secretos que declara: ${secrets.join(", ") || "ninguno"}`,
+    manifest.stations.length ? "- pide permiso de código: sí, sus estaciones corren con los permisos de tu usuario si lo das con --permitir-codigo" : "- pide permiso de código: no",
+  ].join("\n");
+}
+
+/** The closing message of an add: what is there now and what it still needs. */
+function addedText(ctx: FactoryContext, name: string, source: string, already: boolean, allowCode: boolean): string {
+  const added = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
+  const stations = added?.stations ?? [];
+  const lines = [`Paquete ${name}${added ? ` ${cleanText(added.version)}` : ""} ${already ? "ya estaba declarado" : "agregado"}.`];
+  if (added?.agents.length) lines.push(`Agentes: ${added.agents.join(", ")}.`);
+  if (added?.skills.length) lines.push(`Skills: ${added.skills.join(", ")}.`);
+  if (stations.length && !allowCode && !added?.entry.allowCode) lines.push(`Sus estaciones (${stations.join(", ")}) no corren hasta que des el permiso: \`zero package add ${source} --permitir-codigo\`. Ese código corre con los permisos de tu usuario, así que dalo solo si confiás en el paquete.`);
+  else if (stations.length) lines.push(`Sus estaciones (${stations.join(", ")}) corren con los permisos de tu usuario cuando la fábrica está libre.`);
+  for (const p of ctx.config.loadedPackages?.problems ?? []) if (p.package === name && added?.entry.allowCode) lines.push(`Ojo: ${p.reason}.`);
+  return lines.join("\n");
+}
+
+/** A rename right after git and npm wrote in the folder; on Windows something may still hold it for a moment. */
+async function renameFolder(from: string, to: string): Promise<void> {
+  for (let tries = 5; ; tries--) {
+    try {
+      return await rename(from, to);
+    } catch (err) {
+      if (tries <= 1) throw err;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
+
+const removeFolder = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 3 });
+
+/**
+ * Installs from a git source: a temporary clone inside `packages/git`, the manifest
+ * and the fit checked there, the owner's word, and only then its folder, its
+ * dependencies and the file. Every way out leaves nothing behind.
+ */
+async function packageAddGit(ctx: FactoryContext, source: string, input: PackageAddInput): Promise<string> {
+  const parsed = parseGitSource(source);
+  if ("error" in parsed) throw new Error(`No se puede agregar esa fuente git: ${parsed.error}.`);
+  const allowCode = input.allowCode ?? false;
+  const declared = ctx.config.packages.findIndex((p) => p.git === source);
+  if (declared >= 0) {
+    const name = entryName(ctx.config.packages[declared]!, ctx.home);
+    ctx.config = await editConfig(ctx, (doc) => {
+      if (allowCode) doc.setIn(["packages", declared, "allowCode"], true);
+    });
+    return addedText(ctx, name, source, true, allowCode);
+  }
+  const git = input.git ?? realGit;
+  const root = join(ctx.home.packages, "git");
+  await mkdir(root, { recursive: true });
+  const temp = await mkdtemp(join(root, ".tmp-"));
+  let target: string | undefined;
+  try {
+    await git(["clone", "--no-checkout", "--", parsed.url, temp], { cwd: root });
+    const commit = await resolveAndCheckout(git, temp, parsed.ref);
+    if (await manifestNotAFile(git, temp, commit)) throw new Error(`No se puede agregar ${source}: ${MANIFEST_NOT_A_FILE}.`);
+    let manifest: PackageManifest;
+    try {
+      manifest = readManifest(temp);
+    } catch (err) {
+      throw new Error(`No se puede agregar ${source}: ${errorText(err)}`);
+    }
+    const lock = folderLockProblem(temp);
+    if (lock) throw new Error(`No se puede agregar ${source}: ${lock}.`);
+    const dir = join(root, manifest.name);
+    if (existsSync(dir)) throw new Error(`No se puede agregar ${source}: ya existe la carpeta ${dir} y ningún paquete la declara con esa fuente. Quitala o movela si ya no la usás.`);
+    const others = ctx.config.packages;
+    const problem = fitProblem(ctx, [...others, { git: source, path: temp, commit, allowCode }], others.length, manifest.name);
+    if (problem) throw new Error(`No se puede agregar ${manifest.name}: ${problem}`);
+    input.say?.(packageSummary(manifest, source, commit, dir));
+    if (!(await (input.confirm ?? nobodyConsents)(`¿Instalo ${manifest.name}?`))) return "No instalé nada.";
+    await renameFolder(temp, dir);
+    target = dir;
+    if (existsSync(join(dir, PACKAGE_LOCK))) await (input.deps ?? realDependencies)(dir);
+    ctx.config = await editConfig(ctx, (doc) => {
+      const node = { git: source, path: dir, commit, ...(allowCode && { allowCode }) };
+      if (doc.hasIn(["packages"])) doc.addIn(["packages"], doc.createNode(node));
+      else doc.setIn(["packages"], doc.createNode([node]));
+    });
+    target = undefined;
+    ctx.store.deleteKv(updateKey(manifest.name));
+    return addedText(ctx, manifest.name, source, false, allowCode);
+  } finally {
+    await removeFolder(temp);
+    if (target) await removeFolder(target);
+  }
+}
+
+export interface PackageAddInput {
+  source: string;
+  allowCode?: boolean;
+  install?: PackageInstaller;
+  git?: GitRunner;
+  deps?: DependencyInstaller;
+  confirm?: Confirm;
+  /** What the owner reads before answering. */
+  say?: (text: string) => void;
+}
 
 /**
  * Adds a package to the factory file, keeping its comments. The manifest, and
  * whether it fits among the others, is checked before touching the file. Adding
  * one already declared only updates its permission.
  */
-export async function packageAdd(ctx: FactoryContext, input: { source: string; allowCode?: boolean; install?: PackageInstaller }): Promise<string> {
+export async function packageAdd(ctx: FactoryContext, input: PackageAddInput): Promise<string> {
   const source = input.source.trim();
-  if (!source) throw new Error("Indicá la carpeta o el paquete: zero package add <carpeta|paquete-npm>");
+  if (!source) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
+  if (isGitSource(source)) return packageAddGit(ctx, source, { ...input, source });
   const folder = looksLikePath(source) || (existsSync(source) && statSync(source).isDirectory());
   if (!folder && !NPM_NAME.test(source)) throw new Error(`"${source}" no es una carpeta ni un nombre válido de paquete npm.`);
   if (!folder) {
@@ -1139,31 +1289,259 @@ export async function packageAdd(ctx: FactoryContext, input: { source: string; a
     if (doc.hasIn(["packages"])) doc.addIn(["packages"], doc.createNode(node));
     else doc.setIn(["packages"], doc.createNode([node]));
   });
-  const added = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
-  const stations = added?.stations ?? [];
-  const lines = [`Paquete ${name}${added ? ` ${added.version}` : ""} ${declared >= 0 ? "ya estaba declarado" : "agregado"}.`];
-  if (added?.agents.length) lines.push(`Agentes: ${added.agents.join(", ")}.`);
-  if (added?.skills.length) lines.push(`Skills: ${added.skills.join(", ")}.`);
-  if (stations.length && !allowCode && !added?.entry.allowCode) lines.push(`Sus estaciones (${stations.join(", ")}) no corren hasta que des el permiso: \`zero package add ${source} --permitir-codigo\`. Ese código corre con los permisos de tu usuario, así que dalo solo si confiás en el paquete.`);
-  else if (stations.length) lines.push(`Sus estaciones (${stations.join(", ")}) corren con los permisos de tu usuario cuando la fábrica está libre.`);
-  for (const p of ctx.config.loadedPackages?.problems ?? []) if (p.package === name && added?.entry.allowCode) lines.push(`Ojo: ${p.reason}.`);
-  return lines.join("\n");
+  if (declared < 0 && folder) {
+    const print = lockPrint(entry.path!);
+    if (print) ctx.store.setKv(lockKey(entry.path!), print);
+  }
+  return addedText(ctx, name, source, declared >= 0, allowCode);
 }
 
 /** Takes a package out of the factory file; its files stay. */
 export async function packageRemove(ctx: FactoryContext, input: { name: string }): Promise<string> {
   const loaded = ctx.config.loadedPackages?.packages.find((p) => p.name === input.name);
   // A package left out by a problem is still named by its manifest, when that can be read.
-  const manifestName = (p: PackageEntry) => {
-    try {
-      return readManifest(packageFolder(p, ctx.home)).name;
-    } catch {
-      return undefined;
-    }
-  };
-  const index = loaded?.index ?? ctx.config.packages.findIndex((p) => p.npm === input.name || p.path === input.name || manifestName(p) === input.name);
+  const index = loaded?.index ?? ctx.config.packages.findIndex((p) => p.npm === input.name || p.path === input.name || p.git === input.name || entryName(p, ctx.home) === input.name);
   if (index < 0) return `La fábrica no tiene un paquete ${input.name}.`;
   const dir = loaded?.dir ?? packageFolder(ctx.config.packages[index]!, ctx.home);
   ctx.config = await editConfig(ctx, (doc) => doc.deleteIn(["packages", index]));
   return `Paquete ${input.name} quitado de la fábrica. Sus archivos siguen en ${dir}.`;
+}
+
+export interface PackageUpdateInput {
+  /** Absent: every package. */
+  name?: string;
+  git?: GitRunner;
+  deps?: DependencyInstaller;
+  install?: PackageInstaller;
+  latest?: NpmLatest;
+  confirm?: Confirm;
+  /** Each line of the outcome as it happens; `text` has them all too. */
+  say?: (text: string) => void;
+  /** Tests inject these: the real start launches `process.argv[1]`. */
+  daemon?: { shutdown: () => Promise<ShutdownResult>; start: () => Promise<unknown> };
+}
+
+interface UpdateSteps extends PackageUpdateInput {
+  git: GitRunner;
+  deps: DependencyInstaller;
+  say: (text: string) => void;
+}
+
+/** What is left to do with the factory off; it throws to report a package that could not be updated. */
+type ApplyUpdate = () => Promise<void>;
+
+/** Why zero must not touch this entry's folder; only a clone of its own, clean, inside `packages/git`. */
+async function gitFolderProblem(ctx: FactoryContext, git: GitRunner, dir: string): Promise<string | undefined> {
+  const root = join(ctx.home.packages, "git");
+  let real: string;
+  try {
+    real = realpathSync(dir);
+    if (real === realpathSync(root) || !isInside(real, realpathSync(root))) return `su carpeta ${dir} no está dentro de ${root}, donde zero guarda sus clones`;
+  } catch {
+    return `su carpeta ${dir} no está dentro de ${root}, donde zero guarda sus clones`;
+  }
+  const own = join(real, ".git");
+  if (!existsSync(own) || !statSync(own).isDirectory() || (await git(["rev-parse", "--show-cdup"], { cwd: real }))) return `su carpeta ${dir} no es la raíz de su propio repositorio git`;
+  if (await git(["status", "--porcelain", "--untracked-files=no"], { cwd: real })) return `su carpeta ${dir} tiene cambios locales en archivos versionados; guardalos o descartalos antes de actualizar`;
+  return undefined;
+}
+
+async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number, name: string): Promise<ApplyUpdate | undefined> {
+  const { git, deps, say } = steps;
+  const entry = ctx.config.packages[index]!;
+  const dir = packageFolder(entry, ctx.home);
+  const problem = await gitFolderProblem(ctx, git, dir);
+  if (problem) throw new Error(`no se actualiza: ${problem}.`);
+  const source = parseGitSource(entry.git!);
+  if ("error" in source) throw new Error(source.error);
+  const run = (args: string[]) => git(args, { cwd: dir });
+  const now = (ctx.now ?? (() => new Date()))();
+  let to: string;
+  try {
+    to = await fetchRef(git, dir, source.ref);
+  } catch (err) {
+    recordLookFailed(ctx.store, name, errorText(err), now);
+    throw err;
+  }
+  recordSeen(ctx.store, name, to, now);
+  const from = entry.commit!;
+  if (to === from && (await run(["rev-parse", "HEAD"])) === from) {
+    say(`${name}: está al día (${shortSha(from)}).`);
+    return undefined;
+  }
+  say(`${name}: de ${shortSha(from)} a ${shortSha(to)}.`);
+  const shown = 20;
+  const commits = (await run(["log", "--format=%H%x09%s", "-n", String(shown + 1), `${from}..${to}`])).split("\n").filter(Boolean);
+  for (const commit of commits.slice(0, shown)) {
+    const [sha, ...subject] = commit.split("\t");
+    say(`- ${shortSha(sha!)} ${cleanText(subject.join(" "))}`);
+  }
+  if (commits.length > shown) say(`- y más commits`);
+  const ancestor = await run(["merge-base", "--is-ancestor", from, to]).then(() => true, () => false);
+  if (!ancestor) say(`Ojo: la historia cambió, ${shortSha(from)} ya no es parte de lo que trae el remoto.`);
+  // What it asks for can only be judged on a manifest that can be read: anything else stops here, before asking or touching anything.
+  if (await manifestNotAFile(git, dir, to)) throw new Error(`no se aplicó ${shortSha(to)}: ${MANIFEST_NOT_A_FILE}.`);
+  const before = await manifestAt(git, dir, from);
+  const after = await manifestAt(git, dir, to);
+  if (!after) throw new Error(`no se aplicó ${shortSha(to)}: su ${MANIFEST} falta, no es válido o no se pudo leer, así que no se sabe qué pide.`);
+  const lock = await lockProblemAt(git, dir, to);
+  if (lock) throw new Error(`no se aplicó ${shortSha(to)}: ${lock}.`);
+  const wider = widening(before, after);
+  const lost = declaredSecrets(before ?? { stations: [] }).filter((s) => !declaredSecrets(after).includes(s));
+  if (wider.secrets.length) say(`Secreto nuevo: ${wider.secrets.join(", ")}`);
+  if (lost.length) say(`Secreto que ya no declara: ${lost.join(", ")}`);
+  if (wider.stations.length) say(`Estación nueva: ${wider.stations.join(", ")}`);
+  if (wider.requests.length) say(`Puede pedir más trabajos: ${wider.requests.join(", ")}`);
+  if (wider.buildAgents.length) say(`Agente que escribe: ${wider.buildAgents.join(", ")}`);
+  if (widens(wider) && !(await (steps.confirm ?? nobodyConsents)(`${name} pide más que antes. ¿Aplico la actualización?`))) {
+    say(`${name}: no se aplicó; sigue en ${shortSha(from)}.`);
+    return undefined;
+  }
+  return async () => {
+    const hasLock = () => existsSync(join(dir, PACKAGE_LOCK));
+    try {
+      await run(["checkout", "--detach", to]);
+      const manifest = readManifest(dir);
+      // The owner's word was about what the commit says; what loads is what is on disk.
+      if (!isDeepStrictEqual(manifest, after)) throw new Error(`${MANIFEST} en la carpeta no es el que se mostró`);
+      if (before && manifest.name !== before.name) throw new Error(`el commit nuevo le cambia el nombre de "${before.name}" a "${cleanText(manifest.name)}", y eso se hace quitándolo y volviéndolo a agregar`);
+      if (hasLock()) await deps(dir);
+      const reason = fitProblem(ctx, ctx.config.packages, index, manifest.name);
+      if (reason) throw new Error(reason);
+      ctx.config = await editConfig(ctx, (doc) => doc.setIn(["packages", index, "commit"], to));
+      say(`${name}: actualizado a ${shortSha(to)}.`);
+    } catch (err) {
+      let back = `volvió a ${shortSha(from)}`;
+      try {
+        await run(["checkout", "--force", "--detach", from]);
+        if (hasLock()) await deps(dir);
+      } catch (undo) {
+        back = `no pudo terminar de volver a ${shortSha(from)} (${errorText(undo)})`;
+      }
+      throw new Error(`no se aplicó ${shortSha(to)} y ${back}: ${errorText(err)}`);
+    }
+  };
+}
+
+function planFolderUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number, name: string): ApplyUpdate | undefined {
+  const dir = packageFolder(ctx.config.packages[index]!, ctx.home);
+  const print = lockPrint(dir);
+  if (!print) {
+    steps.say(`${name}: está al día (carpeta sin ${PACKAGE_LOCK}).`);
+    return undefined;
+  }
+  if (ctx.store.getKv(lockKey(dir)) === print) {
+    steps.say(`${name}: está al día.`);
+    return undefined;
+  }
+  const lock = folderLockProblem(dir);
+  if (lock) throw new Error(`no se reinstalan sus dependencias: ${lock}.`);
+  steps.say(`${name}: cambió ${PACKAGE_LOCK}, hay que reinstalar sus dependencias.`);
+  return async () => {
+    await steps.deps(dir);
+    ctx.store.setKv(lockKey(dir), print);
+    steps.say(`${name}: dependencias reinstaladas.`);
+  };
+}
+
+async function planNpmUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number, name: string): Promise<ApplyUpdate | undefined> {
+  const entry = ctx.config.packages[index]!;
+  const npm = entry.npm!;
+  const dir = packageFolder(entry, ctx.home);
+  const now = (ctx.now ?? (() => new Date()))();
+  let version: string;
+  try {
+    version = await (steps.latest ?? realNpmLatest)(npm);
+    if (!validVersion(version)) throw new Error("npm respondió una versión que no se entiende");
+  } catch (err) {
+    recordLookFailed(ctx.store, name, errorText(err), now);
+    throw err;
+  }
+  recordSeen(ctx.store, name, version, now);
+  const installed = npmInstalledVersion(dir) ?? entryVersion(entry, ctx.home);
+  if (installed === version) {
+    steps.say(`${name}: está al día (${version}).`);
+    return undefined;
+  }
+  steps.say(`${name}: de ${installed ?? "(desconocida)"} a ${version}.`);
+  return async () => {
+    await (steps.install ?? npmInstall)(ctx.home.packages, `${npm}@${version}`);
+    try {
+      const reason = fitProblem(ctx, ctx.config.packages, index, readManifest(dir).name);
+      if (reason) throw new Error(reason);
+      steps.say(`${name}: actualizado a ${version}.`);
+    } finally {
+      ctx.config = withPackages(ctx.config, ctx.home);
+    }
+  };
+}
+
+const entryVersion = (entry: PackageEntry, home: FactoryHome) => {
+  try {
+    return readManifest(packageFolder(entry, home)).version;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Brings packages up to date. First it only looks: guards, fetch, what changed and
+ * the owner's word when a package asks for more than before. With something to
+ * apply it turns the factory off once and waits for its process to end (on Windows
+ * native modules stay held), applies each package with its own way back, and turns
+ * one factory on again only if it was running.
+ */
+export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInput = {}): Promise<{ text: string; failed: boolean }> {
+  const out: string[] = [];
+  let failed = false;
+  const say = (line: string) => {
+    out.push(line);
+    input.say?.(line);
+  };
+  const fail = (line: string) => {
+    failed = true;
+    say(line);
+  };
+  const steps: UpdateSteps = { ...input, git: input.git ?? realGit, deps: input.deps ?? realDependencies, say };
+  const entries = ctx.config.packages.map((entry, index) => ({ entry, index, name: entryName(entry, ctx.home) }));
+  const chosen = input.name === undefined ? entries : entries.filter((e) => [e.name, e.entry.npm, e.entry.git, e.entry.path].includes(input.name));
+  if (input.name !== undefined && !chosen.length) fail(`No existe un paquete ${input.name} en la fábrica.`);
+  else if (!chosen.length) say("No hay paquetes instalados.");
+
+  const plans: { name: string; apply: ApplyUpdate }[] = [];
+  for (const { entry, index, name } of chosen) {
+    try {
+      const apply = entry.git ? await planGitUpdate(ctx, steps, index, name) : entry.npm ? await planNpmUpdate(ctx, steps, index, name) : planFolderUpdate(ctx, steps, index, name);
+      if (apply) plans.push({ name, apply });
+    } catch (err) {
+      fail(`${name}: ${errorText(err)}`);
+    }
+  }
+  if (!plans.length) return { text: out.join("\n"), failed };
+
+  const daemon = input.daemon ?? { shutdown: () => shutdownFactory(ctx), start: () => ensureDaemon(ctx) };
+  const stopped = await daemon.shutdown();
+  if (stopped.status === "timeout") {
+    fail(`La fábrica sigue en marcha (proceso ${stopped.pid ?? "desconocido"}) y no toqué ningún paquete. El pedido de apagado queda vigente: se va a apagar cuando termine, sin volver a encenderse. Entonces corré \`zero package update\` de nuevo y \`zero start\`.`);
+    return { text: out.join("\n"), failed };
+  }
+  try {
+    for (const { name, apply } of plans) {
+      try {
+        await apply();
+      } catch (err) {
+        fail(`${name}: ${errorText(err)}`);
+      }
+    }
+  } finally {
+    if (stopped.status === "stopped") {
+      try {
+        await daemon.start();
+        say("La fábrica estaba en marcha: la volví a encender.");
+      } catch (err) {
+        fail(`No pude volver a encender la fábrica: ${errorText(err)}. Encendela con \`zero start\`.`);
+      }
+    }
+  }
+  return { text: out.join("\n"), failed };
 }

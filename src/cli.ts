@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -65,9 +65,12 @@ Fábrica:
                                  solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
                                  cuando el cambio toca --archivos
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
-  zero package list              Paquetes de agentes instalados: qué traen y qué problema tienen
-  zero package add <carpeta|paquete-npm> [--permitir-codigo]
-                                 Instala un paquete; sus estaciones solo corren con --permitir-codigo (con los permisos de tu usuario)
+  zero package list              Paquetes de agentes instalados: fuente, versión, qué traen, si hay novedades y qué problema tienen
+  zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--yes]
+                                 Instala un paquete; sus estaciones solo corren con --permitir-codigo (con los permisos de tu usuario).
+                                 git: github:cuenta/repo[#tag-o-rama] o una URL https o ssh; muestra qué trae y pide confirmación
+  zero package update [nombre] [--yes]
+                                 Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
@@ -305,9 +308,23 @@ async function main(argv: string[]): Promise<number> {
           console.log(formatPackages(packageList(ctx)));
           return 0;
         }
-        if (action !== "add" && action !== "remove") break;
-        if (!name) throw new Error(action === "add" ? "Indicá la carpeta o el paquete: zero package add <carpeta|paquete-npm>" : "Indicá el paquete: zero package remove <nombre>");
-        console.log(action === "add" ? await packageAdd(ctx, { source: name, allowCode: values["permitir-codigo"] }) : await packageRemove(ctx, { name }));
+        if (action === "add" || action === "update") {
+          if (action === "add" && !name) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
+          const ask = interactiveConfirm();
+          const confirm = values.yes ? async () => true : ask.confirm;
+          try {
+            if (action === "add") {
+              console.log(await packageAdd(ctx, { source: name!, allowCode: values["permitir-codigo"], confirm, say: (text) => console.log(text) }));
+              return 0;
+            }
+            return (await packageUpdate(ctx, { name, confirm, say: (text) => console.log(text) })).failed ? 1 : 0;
+          } finally {
+            ask.close();
+          }
+        }
+        if (action !== "remove") break;
+        if (!name) throw new Error("Indicá el paquete: zero package remove <nombre>");
+        console.log(await packageRemove(ctx, { name }));
         return 0;
       }
       case "agent": {

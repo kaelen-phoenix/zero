@@ -407,12 +407,28 @@ export async function scheduled(ctx, { at }) {
 zero package add ./hello                     # a local folder
 zero package add hello-zero                  # from npm, into ~/.zero/packages, with --ignore-scripts
 zero package add ./hello --permitir-codigo   # allowCode: true, so its stations can run
+zero package add github:acme/hello-zero#v1   # from git, into ~/.zero/packages/git/hello, at that tag or branch
+zero package add https://example.com/acme/hello-zero.git
+zero package add git@example.com:acme/hello-zero.git#main
 zero secret set HELLO_TOKEN
 zero package list
+zero package update hello                    # shows the change and applies it; without a name, every package
 zero package remove hello                    # takes it out of the file; its files stay
 ```
 
 `zero package add` checks the manifest before touching your file and keeps its comments. From npm it installs in `~/.zero/packages` with `--ignore-scripts`, so a package that needs install scripts will not be complete.
+
+**From git.** A source can be `github:account/repo`, an https or ssh URL, each with an optional `#tag-or-branch`. zero uses the git credentials you already have: it never asks for a token, and it refuses a URL carrying one. It clones, checks the manifest and shows what the package brings (agents, skills, stations, the secrets it declares and whether it asks for permission to run code). Then it asks you before installing anything; `--yes` answers for you, and with no terminal and no `--yes` the answer is no. If the repository has a `package-lock.json`, it runs `npm ci --omit=dev --ignore-scripts` in the package's folder. Since npm builds a git dependency by running its code whatever that flag says, zero refuses any add or update whose lock has a dependency other than an https registry tarball or a local folder, before starting npm. The same goes for what a package from npm brings. And since `npm ci` empties `node_modules` of the package and of each workspace, following links, it also refuses, before starting npm, a package with a lock where a `node_modules` is not a real folder, a link leaves the package, or `workspaces` or the lock's paths point outside it. Your file gets the entry with `git`, `path` and the installed `commit`. Submodules are not fetched.
+
+**Updating.** `zero package update [name]` depends on where the package came from:
+
+- **git:** it fetches and shows the new commits and any change in declared secrets and permissions. It asks you again only when the package asks for more: a new secret, a new station, a new or larger `requests`, or an agent that becomes `build`. New code in a station you already allowed does not count, so read the commits. It refuses a folder that is not its own clone inside `~/.zero/packages/git` or that has local changes in tracked files.
+- **A folder:** it reinstalls dependencies only if `package-lock.json` changed since the last record. `npm ci` replaces that folder's `node_modules` and leaves out its development dependencies, so keep that in mind on a folder you develop in.
+- **npm:** it installs the latest version inside `~/.zero/packages`. If that version turns out not to be valid, zero tells you why and the package stays out, without going back to the previous version.
+
+With something to apply, zero shuts the factory down and waits for its process to end, because on Windows native modules stay held while it runs. Then it updates and reinstalls dependencies, and if a git package fails (dependencies, manifest, name or fit with the others) it returns to the previous commit. At the end it starts a single factory, only if one was running. If the factory does not stop in time, no package is touched: the shutdown request stays in place, so the factory stops later and nothing starts it again.
+
+While it runs, the factory looks once a day at what the remotes of git and npm packages have, without touching their folders. `zero package list` shows the source, the installed commit or version and whether an update is available, from what was last seen and without using the network.
 
 **A broken package never stops the factory.** It stays out whole, the other packages go on and the reason shows in `zero status`, in `zero package list` and once in the log. That also applies to a package's blocking reviewers: if it stays out, jobs go on without that review, so check `zero status` after updating one.
 

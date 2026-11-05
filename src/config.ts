@@ -6,6 +6,7 @@ import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
+import { parseGitSource } from "./package-source.js";
 import { findSecret } from "./secrets.js";
 import type { Skill } from "./skills.js";
 
@@ -210,6 +211,12 @@ export const PackageEntrySchema = z
     path: z.string().min(1).optional(),
     /** A package installed in `<ZERO_HOME>/packages/node_modules`. */
     npm: z.string().regex(NPM_NAME, "usá un nombre de paquete npm válido").optional(),
+    /** The git source it came from; `path` is its clone and `commit` what is checked out there. */
+    git: z
+      .string()
+      .refine((s) => !("error" in parseGitSource(s)), "usá una fuente git válida, https o ssh y sin credenciales en la URL")
+      .optional(),
+    commit: z.string().regex(/^[0-9a-f]{40,64}$/, "va el SHA completo del commit instalado").optional(),
     /** True: zero may import the package's stations, which run with the owner's permissions. */
     allowCode: z.boolean().default(false),
     /** What its stations receive as `ctx.config`. */
@@ -218,7 +225,8 @@ export const PackageEntrySchema = z
     model: z.string().min(1).optional(),
   })
   .strict()
-  .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm");
+  .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm")
+  .refine((p) => (p.git === undefined ? p.commit === undefined : p.path !== undefined && p.commit !== undefined && p.npm === undefined), "git va junto a path y commit, y sin npm");
 export type PackageEntry = z.output<typeof PackageEntrySchema>;
 
 /** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
