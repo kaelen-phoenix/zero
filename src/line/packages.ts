@@ -16,6 +16,8 @@ import { PACKAGE_AGENT_PREFIX, periodStart, scoutSpent } from "./scout.js";
 
 const CHARS_PER_TEXT = 600;
 const CHARS_PER_REQUEST = 4000;
+/** How late a time of a station's `schedule` may still run. */
+const SCHEDULE_REACH_MS = 2 * 60 * 60_000;
 
 /** What a station's agent call gives back. */
 export interface StationAgentRun<T> {
@@ -44,7 +46,7 @@ export interface StationContext {
   config: unknown;
   /** Only the names the station declared in its manifest. */
   secrets: { get(name: string): string | undefined };
-  /** A read-only agent, in an empty folder, with the station's instructions and skills. */
+  /** A read-only agent, in an empty folder, with the station's instructions and skills. In a scheduled pass it throws. */
   runAgent<T = unknown>(req: { prompt: string; schema?: z.ZodType<T> }): Promise<StationAgentRun<T>>;
   /** zero's own zod, for `runAgent` schemas. */
   z: typeof z;
@@ -64,13 +66,23 @@ export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
   pass?: unknown;
+  scheduled?: unknown;
   parseConfig?: unknown;
 }
+
+/** A module's `pass` or `scheduled`. */
+type StationHook = (ctx: StationContext, slot?: { at: string }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
 /** Where the time of a station's last pass is kept. */
 export const stationLastKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:last`;
+
+/** The last local day (`YYYY-MM-DD`) a time of a station's `schedule` ran; out of reach of `ctx.state`. */
+export const stationScheduleKey = (pkg: string, name: string, at: string) => `${stationKey({ package: pkg, name })}:schedule:${at}`;
+
+const two = (n: number) => String(n).padStart(2, "0");
+const localDay = (d: Date) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 
 /** Text out of a station without the values of what it declared. */
 function withoutSecrets(text: string, ctx: FactoryContext, station: PackageStation): string {
@@ -209,7 +221,7 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
   };
 }
 
-function stationContext(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
+function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
   const key = stationKey(station);
   const stateKey = (name: string) => `${key}:state:${name}`;
   const clean = (fields?: Record<string, unknown>) => (fields ? (JSON.parse(JSON.stringify(fields, (_k, v: unknown) => (typeof v === "string" ? withoutSecrets(v, ctx, station) : v))) as Record<string, unknown>) : undefined);
@@ -220,7 +232,7 @@ function stationContext(ctx: FactoryContext, runAgent: AgentRunner, station: Pac
     signal,
     config,
     secrets: { get: (name) => (station.secrets.includes(name) ? ctx.secrets.get(name) : undefined) },
-    runAgent: stationAgent(ctx, runAgent, station, now, signal),
+    runAgent,
     z,
     log: {
       info: (message, fields) => log.info(`${key}: ${withoutSecrets(message, ctx, station)}`, clean(fields)),
@@ -239,12 +251,22 @@ function stationContext(ctx: FactoryContext, runAgent: AgentRunner, station: Pac
   };
 }
 
+/** What sets a station's `pass` and a scheduled pass apart. */
+interface StationTurn {
+  /** The module's export it runs. */
+  hook: "pass" | "scheduled";
+  /** How the log names this turn. */
+  label: string;
+  /** Records that the turn was used; it runs right before the call, and again when time ran out. */
+  mark(): void;
+  /** Whether a module without the export is normal for this station. */
+  optional: boolean;
+  call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
+}
+
 /** One station's turn; it never throws, and an end by time leaves its signal aborted and the pass behind. */
-async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
+async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, turn: StationTurn, outer?: AbortSignal): Promise<void> {
   const key = stationKey(station);
-  const lastKey = stationLastKey(station.package, station.name);
-  const last = ctx.store.getKv(lastKey);
-  if (last && now.getTime() - Date.parse(last) < station.everyMinutes * 60_000) return;
   const missing = station.secrets.filter((s) => !ctx.secrets.has(s));
   if (missing.length) {
     warnOnce(`${key}: no corre porque faltan los secretos ${missing.join(", ")}`);
@@ -262,8 +284,9 @@ async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: P
       warnOnce(`${key}: no corre porque su módulo no se pudo importar: ${withoutSecrets(errorText(err), ctx, station)}`);
       return;
     }
-    if (typeof mod.pass !== "function") {
-      warnOnce(`${key}: no corre porque su módulo no exporta una función pass`);
+    const hook = mod[turn.hook];
+    if (typeof hook !== "function") {
+      if (!turn.optional) warnOnce(`${key}: no corre porque su módulo no exporta una función ${turn.hook}`);
       return;
     }
     let config: unknown = station.entry.config;
@@ -276,10 +299,10 @@ async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: P
       }
     }
     // Before running, so a pass that crashes the process or hangs waits for its next period like any other.
-    ctx.store.setKv(lastKey, now.toISOString());
-    log.info(`${key} start`);
-    await mod.pass(stationContext(ctx, runAgent, station, config, now, controller.signal));
-    log.info(`${key} done`);
+    turn.mark();
+    log.info(`${turn.label} start`);
+    await turn.call(hook as StationHook, config, controller.signal);
+    log.info(`${turn.label} done`);
   })();
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<"timeout">((done) => {
@@ -293,17 +316,93 @@ async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: P
     const end = await Promise.race([work.then(() => "done" as const), expired, shutdown]);
     if (end === "timeout") {
       // A module that hangs while importing would otherwise be retried on every idle pass.
-      ctx.store.setKv(lastKey, now.toISOString());
-      log.warn(`${key}: superó su tiempo de ${station.timeoutMinutes} minutos`);
+      turn.mark();
+      log.warn(`${turn.label}: superó su tiempo de ${station.timeoutMinutes} minutos`);
     }
   } catch (err) {
-    log.warn(`${key}: falló`, { error: withoutSecrets(errorText(err), ctx, station) });
+    log.warn(`${turn.label}: falló`, { error: withoutSecrets(errorText(err), ctx, station) });
   } finally {
     clearTimeout(timer);
     outer?.removeEventListener("abort", abort);
     // Whatever it left running is told to stop; it runs in this process, so nothing else can stop it.
     controller.abort();
     work.catch(() => undefined);
+  }
+}
+
+/** A station's `pass`, once its `everyMinutes` are over. */
+async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
+  const lastKey = stationLastKey(station.package, station.name);
+  const last = ctx.store.getKv(lastKey);
+  if (last && now.getTime() - Date.parse(last) < station.everyMinutes * 60_000) return;
+  await runTurn(
+    ctx,
+    station,
+    now,
+    {
+      hook: "pass",
+      label: stationKey(station),
+      mark: () => ctx.store.setKv(lastKey, now.toISOString()),
+      optional: station.schedule.length > 0,
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal)),
+    },
+    outer,
+  );
+}
+
+/** A time of a station's `schedule` on a given local day. */
+interface ScheduleSlot {
+  at: string;
+  day: string;
+  time: Date;
+}
+
+/** The times not yet run that are still within reach, oldest first; yesterday's count, for a time before midnight. */
+function dueSlots(ctx: FactoryContext, station: PackageStation, now: Date): ScheduleSlot[] {
+  const today = startOfDay(now);
+  const days = [new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1), today];
+  return station.schedule
+    .flatMap((at) => {
+      const [hours, minutes] = at.split(":").map(Number) as [number, number];
+      const done = ctx.store.getKv(stationScheduleKey(station.package, station.name, at));
+      return days.map((d): ScheduleSlot => ({ at, day: localDay(d), time: new Date(d.getFullYear(), d.getMonth(), d.getDate(), hours, minutes) })).filter((slot) => {
+        const late = now.getTime() - slot.time.getTime();
+        return late >= 0 && late <= SCHEDULE_REACH_MS && !(done && done >= slot.day);
+      });
+    })
+    .sort((a, b) => a.time.getTime() - b.time.getTime());
+}
+
+/** `ctx.runAgent` in a scheduled pass: these passes never reach a model, whatever the station does. */
+const noAgent: StationContext["runAgent"] = () => {
+  throw new Error("ctx.runAgent no está disponible en una pasada con horario: scheduled no puede llamar a un modelo; hacelo en pass");
+};
+
+/**
+ * The stations' `schedule`, with the factory busy or not: these passes call no
+ * model, so neither jobs nor the budget hold them back, only the andon. Each time
+ * runs at most once per local day, marked before the call, and only within 2 hours
+ * of it. One at a time; a failure or a hang stays in the log and the next one still runs.
+ */
+export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
+  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+    for (const { at, day } of dueSlots(ctx, station, now)) {
+      if (opts.signal?.aborted) return;
+      if (ctx.store.getKv(ANDON_KEY) === "on") return;
+      await runTurn(
+        ctx,
+        station,
+        now,
+        {
+          hook: "scheduled",
+          label: `${stationKey(station)} ${at}`,
+          mark: () => ctx.store.setKv(stationScheduleKey(station.package, station.name, at), day),
+          optional: false,
+          call: (hook, config, signal) => hook(stationContext(ctx, noAgent, station, config, now, signal), { at }),
+        },
+        opts.signal,
+      );
+    }
   }
 }
 

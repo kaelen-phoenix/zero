@@ -14,6 +14,7 @@ export const MANIFEST = "zero-package.yaml";
 
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 const NAME_RULE = "usá minúsculas, dígitos y guiones";
+const SCHEDULE_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 /** No `engine` or `model` here: which engine runs a third party's agent is up to the package's entry, so they are refused as unknown keys. */
 const ManifestAgentSchema = z
@@ -32,13 +33,18 @@ const ManifestAgentSchema = z
 const ManifestStationSchema = z
   .object({
     name: z.string().regex(NAME, NAME_RULE),
-    /** The code, an ES module exporting `pass`. */
+    /** The code, an ES module exporting `pass`, `scheduled` or both. */
     module: z.string().min(1),
     /** Its agent's instructions; a station that calls no agent needs none. */
     instructions: z.string().min(1).optional(),
     skills: z.array(z.string().min(1)).default([]),
     secrets: z.array(z.string().regex(SECRET_NAME, "va el nombre de un secreto, en mayúsculas, dígitos y _")).default([]),
     everyMinutes: z.number().positive().default(1440),
+    /** Local times at which `scheduled` runs, even with the factory busy. */
+    schedule: z
+      .array(z.string().regex(SCHEDULE_TIME, "va una hora local HH:MM, entre 00:00 y 23:59"))
+      .refine((times) => new Set(times).size === times.length, "no puede repetir una hora")
+      .default([]),
     timeoutMinutes: z.number().positive().default(10),
     maxTurns: z.number().int().positive().default(40),
     /** Permission to ask the factory for jobs; absent: it cannot. */
@@ -186,6 +192,7 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       skills: ownSkills(s.skills, skills, who),
       secrets: s.secrets,
       everyMinutes: s.everyMinutes,
+      schedule: s.schedule,
       timeoutMinutes: s.timeoutMinutes,
       maxTurns: s.maxTurns,
       ...(s.requests && { requests: s.requests }),

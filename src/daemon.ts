@@ -16,7 +16,7 @@ import { factoryConfig } from "./packages.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
-import { packagesPass } from "./line/packages.js";
+import { packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -49,7 +49,7 @@ export interface DaemonOptions {
   scout?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
-  /** Run the stations of the installed packages while the factory is idle. Defaults to on, except in `once` runs. */
+  /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
   packages?: boolean;
 }
 
@@ -225,6 +225,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     })().finally(() => (idle = undefined));
   };
 
+  // The stations' scheduled passes call no model, so they run in the background whatever the line is doing; scheduledPass itself respects the andon.
+  let schedulesAt = 0;
+  let scheduling: Promise<void> | undefined;
+  const runSchedules = () => {
+    if (scheduling || !(opts.packages ?? !opts.once) || !ctx.config.loadedPackages?.stations.some((s) => s.schedule.length) || Date.now() - schedulesAt < (opts.once ? 0 : INTAKE_MS)) return;
+    schedulesAt = Date.now();
+    scheduling = scheduledPass(ctx, now(), { signal: researchStop.signal })
+      .catch((err) => log.warn("scheduled stations failed", { error: String(err) }))
+      .finally(() => (scheduling = undefined));
+  };
+
   try {
     while (!stopping) {
       beat();
@@ -248,6 +259,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       mergeReady();
       findReverts();
       exportTraces();
+      runSchedules();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -295,7 +307,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
   } finally {
-    // A shutdown cuts research and the packages' stations short; a `once` run lets them finish.
+    // A shutdown cuts research and the packages' stations short, scheduled passes included; a `once` run lets them finish.
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
@@ -303,6 +315,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await merging;
     await checkingReverts;
     await exporting;
+    await scheduling;
     await idle;
     tunnel.stop();
     panel?.close();
