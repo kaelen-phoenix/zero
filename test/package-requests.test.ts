@@ -323,6 +323,24 @@ describe("where the origin shows", () => {
     expect(linePage(productionLine(ctx), "nonce")).toContain(ORIGIN);
   });
 
+  it("shows on the overview's waiting card of a job parked on L1", async () => {
+    const ctx = await factory(stationPackage("").dir, { level: "L1" });
+    const { job } = requestWork(ctx, { text: "arreglar algo", line: "web", source: SOURCE });
+    const done = await runJob(job.id, { ...ctx, runAgent: fakeAgents({}).runner });
+    expect(done.status).toBe("waiting");
+    const status = factoryStatus(ctx);
+    expect(status.waiting.map((j) => j.id)).toEqual([job.id]);
+    expect(status.queued).toEqual([]);
+    expect(overviewPage(status, ["web"], "nonce")).toContain(ORIGIN);
+  });
+
+  it("stays off the waiting card of other jobs", async () => {
+    const ctx = await factory(stationPackage("").dir, { level: "L1" });
+    const { job } = requestWork(ctx, { text: "arreglar algo", line: "web" });
+    await runJob(job.id, { ...ctx, runAgent: fakeAgents({}).runner });
+    expect(overviewPage(factoryStatus(ctx), ["web"], "nonce")).not.toContain("pedido por paquete");
+  });
+
   it("stays off the panel for other jobs", async () => {
     const ctx = await factory(stationPackage("").dir);
     const { job } = requestWork(ctx, { text: "arreglar algo", line: "web" });

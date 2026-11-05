@@ -169,7 +169,7 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
         ? `Caja lista (${esc(s.box.status?.runtime)}).`
         : "Sin caja: los trabajos corren en copias locales.";
   const waiting = s.waiting
-    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3><pre>${esc(j.question?.text)}</pre>
+    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
 <p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
     .join("");
   const list = (title: string, jobs: Job[]) => (jobs.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${jobs.map(jobLine).join("")}</ul></div>` : "");
