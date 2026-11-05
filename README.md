@@ -248,7 +248,7 @@ egress:                   # the box's internet egress (all of it goes through ze
 engine: claude            # default engine: claude · codex · antigravity · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
-limits:                   # with a subscription (claude.ai) the limit is the plan's real quota: 5 hours and weekly
+limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
   usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
   usdPerJob: 3            # only for pay-per-use
@@ -290,6 +290,10 @@ The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
 - `bin/`, with the tools zero downloads with your permission (cloudflared);
 - `gate/`, shared with the egress gate: its rules, the passes of the running boxes and their records;
 - `daemon.log`.
+
+### How Codex is billed
+
+With a ChatGPT session (`codex login`), Codex is limited by your plan's quota: zero reads its usage windows from each call and pauses the engine at `limits.reservePercent` or when a window runs out, until it renews. With `CODEX_API_KEY` or `OPENAI_API_KEY` it is pay-per-use, and the dollar caps apply. `limits.usdPerNight` only counts what is really charged, so calls on a plan do not use it up.
 
 ### Fallback engines (`fallback`)
 
@@ -503,7 +507,7 @@ While it runs, the factory looks once a day at what the remotes of git and npm p
 
 ## Night shift
 
-When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap.
+When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap, which only counts what is really charged: what calls on a plan would have cost does not use it up.
 
 ```yaml
 nightShift:               # or `nightShift: off` to turn it off
@@ -511,7 +515,7 @@ nightShift:               # or `nightShift: off` to turn it off
   autonomy: propose       # propose · build · auto, for lines without their own autonomy
   maxAutoJobsPerDay: 3    # jobs the shift opens on its own per day, across all lines
 limits:
-  usdPerNight: 1          # only for pay-per-use
+  usdPerNight: 1          # only for pay-per-use: plan calls do not count
 research:
   autonomy: propose       # cap for what adds something third-party (see below)
 lines:

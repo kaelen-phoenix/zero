@@ -35,6 +35,12 @@ function markdownFiles(dir: string): string[] {
 }
 
 describe("README in English and Spanish", () => {
+  it("explain how Codex is billed in both languages", () => {
+    for (const readme of [en, es]) {
+      for (const word of ["ChatGPT", "CODEX_API_KEY", "OPENAI_API_KEY", "usdPerNight", "reservePercent"]) expect(readme).toContain(word);
+    }
+  });
+
   it("links the other language at the top", () => {
     const enTop = en.split("\n").slice(0, 3).join("\n");
     const esTop = es.split("\n").slice(0, 3).join("\n");

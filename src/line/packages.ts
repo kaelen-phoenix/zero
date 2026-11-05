@@ -138,7 +138,7 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
     if (!choice.available) return refused("no hay ningún motor disponible");
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now));
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
       if (left <= 0) return refused("ya se gastó el tope de limits.usdPerNight");
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }

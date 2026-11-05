@@ -109,15 +109,17 @@ function billedToday(store: Store, all: Map<string, Reading>, now: Date, engine?
 }
 
 /**
- * What a job's calls cost that is really charged, for its `usdPerJob` cap.
- * Subscription calls cost nothing extra; calls whose billing is still unknown count.
+ * What these calls cost that is really charged. Subscription calls cost
+ * nothing extra; calls whose billing is still unknown count.
  */
-export function jobBilledUsd(store: Store, jobId: string, now = new Date()): number {
+export function billedUsd(store: Store, spans: SpanRow[], now = new Date()): number {
   const all = readings(store, now);
-  return store
-    .spansForJob(jobId)
-    .filter((s) => s.name === AGENT_SPAN && billingOf(s, all) !== "subscription")
-    .reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
+  return spans.filter((s) => billingOf(s, all) !== "subscription").reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
+}
+
+/** What a job's calls really cost, for its `usdPerJob` cap. */
+export function jobBilledUsd(store: Store, jobId: string, now = new Date()): number {
+  return billedUsd(store, store.spansForJob(jobId).filter((s) => s.name === AGENT_SPAN), now);
 }
 
 type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback"> & {
