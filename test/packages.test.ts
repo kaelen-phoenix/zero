@@ -473,12 +473,13 @@ describe("a station's pass in the daemon", () => {
       name: "uno",
       station: { timeoutMinutes: 0.001 },
       top: `import { writeFileSync } from "node:fs";`,
-      body: `ctx.signal.addEventListener("abort", () => writeFileSync(${JSON.stringify(seen)}, "aborted")); await new Promise(() => {});`,
+      // On a busy machine its time can run out while the module is still being imported: the signal is already aborted by the time pass gets it.
+      body: `const told = () => writeFileSync(${JSON.stringify(seen)}, "aborted"); if (ctx.signal.aborted) told(); else ctx.signal.addEventListener("abort", told); await new Promise(() => {});`,
     });
     const good = stationPkg({ name: "dos" });
     const ctx = await factory([{ path: hung.dir, allowCode: true }, { path: good.dir, allowCode: true }]);
     await pass(ctx);
-    expect(existsSync(seen)).toBe(true);
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true), { timeout: 10_000 });
     expect(calls(good.marker)).toBe(1);
   });
 
