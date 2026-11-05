@@ -187,6 +187,8 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     const e = s.today.egress;
     out.push(`Salidas a internet hoy: ${e.connections} conexiones · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas: \`zero egress\`)` : ""} · modo ${s.egressMode}`);
   }
+  if (s.codexUnsandboxed === "machine") out.push("AVISO: Codex corre sin su sandbox (codex.sandbox: off). zero solo comprueba la carpeta de trabajo y su repositorio en las estaciones de lectura; no cubre los archivos ignorados por git, el resto de la máquina ni la salida a internet.");
+  if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));

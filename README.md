@@ -295,6 +295,18 @@ The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
 
 With a ChatGPT session (`codex login`), Codex is limited by your plan's quota: zero reads its usage windows from each call and pauses the engine at `limits.reservePercent` or when a window runs out, until it renews. With `CODEX_API_KEY` or `OPENAI_API_KEY` it is pay-per-use, and the dollar caps apply. `limits.usdPerNight` only counts what is really charged, so calls on a plan do not use it up.
 
+### Codex without its sandbox (`codex.sandbox`)
+
+Use this only on a machine where Codex's own sandbox does not work, such as some Windows setups. You decide it in the factory file; the chat cannot change it. By default nothing changes.
+
+```yaml
+codex: { sandbox: off }
+```
+
+Outside the box, zero then starts Codex with `--sandbox danger-full-access` and no approval prompts, and keeps read-only stations read-only itself: around each such call it compares the working folder and its repository (tracked and untracked files, index, HEAD, branches and tags, the repository's `config` and `hooks`). If anything changed, zero puts back only what differs, without touching work you had not saved, and fails the call with a notice naming the files. It also undoes anything else that changes the folder or its checked-out branch during the call, such as your own edits or commits in that same checkout (`git reflog` still finds them); what it discarded stays in a temporary folder named in the log. The factory stays out of the way: a job does not start in a repository under such a call, and a background call waits for the job running in its repository. Other refs are not rewound when the call cannot be blamed for them: in a job's work copy everything except that copy's own branch, and everywhere the factory's `zero/*` branches, branches checked out in another worktree and new tags (any fetch brings them). Those are only logged. When the isolation box is ready (`isolation: container`), Codex runs inside it with its usual flags, background passes included, and `zero status` says so; otherwise `zero status` warns that it runs without its sandbox.
+
+What this does not cover outside the box: files ignored by git and not tracked, the refs just mentioned, the rest of the machine (Codex can read and write anywhere you can, including the factory's own folder) and access to the internet.
+
 ### Fallback engines (`fallback`)
 
 When a station's engine cannot work (its plan's quota ran out, or its dollar cap for pay-per-use), zero moves to the fallback engines, in order, instead of stopping the factory. The factory pauses only when a station of the line has all its engines paused.
