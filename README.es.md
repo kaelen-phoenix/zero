@@ -295,6 +295,18 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 
 Con una sesión de ChatGPT (`codex login`), a Codex lo limita el cupo de tu plan: zero lee sus ventanas de uso en cada llamada y pausa el motor al llegar a `limits.reservePercent` o cuando se agota una ventana, hasta que renueva. Con `CODEX_API_KEY` u `OPENAI_API_KEY` es pago por uso y valen los topes en dólares. `limits.usdPerNight` solo cuenta lo que realmente se cobra, así que las llamadas por plan no lo consumen.
 
+### Codex sin su sandbox (`codex.sandbox`)
+
+Usalo solo en una máquina donde el sandbox de Codex no anda, como algunas instalaciones de Windows. Lo decidís en el archivo de la fábrica; el chat no puede cambiarlo. Por defecto no cambia nada.
+
+```yaml
+codex: { sandbox: off }
+```
+
+Fuera de la caja, zero lanza entonces Codex con `--sandbox danger-full-access` y sin pedir aprobaciones, y se encarga él de que las estaciones de lectura no escriban: en cada una de esas llamadas compara la carpeta de trabajo y su repositorio antes y después (archivos versionados y sin seguimiento, índice, HEAD, ramas y etiquetas, `config` y `hooks` del repositorio). Si algo cambió, zero vuelve atrás solo lo que difiere, sin tocar el trabajo que no habías guardado, y marca la llamada como fallida con un aviso que nombra los archivos. También deshace cualquier otra cosa que cambie la carpeta durante la llamada, como tus propias ediciones o una integración en ese repositorio; lo descartado queda en una carpeta temporal que figura en el log. Cuando la caja de aislamiento está lista (`isolation: container`), Codex corre dentro de ella con sus banderas de siempre, también en las pasadas de fondo, y `zero status` lo dice; si no, `zero status` avisa que corre sin su sandbox.
+
+Lo que esto no cubre fuera de la caja: los archivos ignorados por git, el resto de la máquina (Codex puede leer y escribir donde vos podés, incluida la carpeta de la fábrica) y la salida a internet.
+
 ### Motores de reemplazo (`fallback`)
 
 Cuando el motor de una estación no puede trabajar (se agotó el cupo de su plan, o su tope en dólares si se paga por uso), zero pasa a los motores de reemplazo, en orden, en lugar de frenar la fábrica. La fábrica se pausa solo cuando una estación de la línea tiene todos sus motores pausados.

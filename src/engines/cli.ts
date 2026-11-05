@@ -229,7 +229,7 @@ async function codexSession(req: EngineRequest, cwd: string): Promise<QuotaRepor
   }
 }
 
-export function codexInvocation(req: EngineRequest, files: { lastMessage: string; schema?: string }): Invocation {
+export function codexInvocation(req: EngineRequest, files: { lastMessage: string; schema?: string }, sandbox: "on" | "off" = "on"): Invocation {
   return {
     bin: "codex",
     args: [
@@ -237,7 +237,7 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
       "--json",
       "--skip-git-repo-check",
       "--ephemeral",
-      "--sandbox", req.access === "write" ? "workspace-write" : "read-only",
+      ...(sandbox === "off" ? ["--sandbox", "danger-full-access", "-c", "approval_policy=\"never\""] : ["--sandbox", req.access === "write" ? "workspace-write" : "read-only"]),
       "--output-last-message", files.lastMessage,
       ...(files.schema ? ["--output-schema", files.schema] : []),
       ...(req.model ? ["--model", req.model] : []),
@@ -247,29 +247,34 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
   };
 }
 
+async function runCodex(req: EngineRequest, sandbox: "on" | "off"): Promise<EngineResult> {
+  const dir = await mkdtemp(join(tmpdir(), "zero-codex-"));
+  try {
+    const files = { lastMessage: join(dir, "last.txt"), schema: req.schema && join(dir, "schema.json") };
+    if (files.schema) await writeFile(files.schema, JSON.stringify(req.schema));
+    return await execute("codex", codexInvocation(req, files, sandbox), req, {
+      // The answer is the last message; stdout is only the fallback when that file cannot be read.
+      output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
+      failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
+      quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok),
+    });
+  } finally {
+    // A leftover temporary folder never changes the call's result.
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** `codex exec`, on a ChatGPT sign-in or with CODEX_API_KEY or OPENAI_API_KEY. Sandboxing and schema are enforced by Codex. */
 export const codexEngine: Engine = {
   name: "codex",
   nativeSchema: true,
   // API keys use api.openai.com; a ChatGPT sign-in uses chatgpt.com.
   hosts: ["api.openai.com", "chatgpt.com"],
-  async run(req) {
-    const dir = await mkdtemp(join(tmpdir(), "zero-codex-"));
-    try {
-      const files = { lastMessage: join(dir, "last.txt"), schema: req.schema && join(dir, "schema.json") };
-      if (files.schema) await writeFile(files.schema, JSON.stringify(req.schema));
-      return await execute("codex", codexInvocation(req, files), req, {
-        // The answer is the last message; stdout is only the fallback when that file cannot be read.
-        output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
-        failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
-        quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok),
-      });
-    } finally {
-      // A leftover temporary folder never changes the call's result.
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
-    }
-  },
+  run: (req) => runCodex(req, "on"),
 };
+
+/** Codex without its own sandbox (`codex.sandbox: off`). Only the host starts it this way: the box resolves plain `codexEngine`. */
+export const unsandboxedCodexEngine: Engine = { ...codexEngine, unsandboxed: true, run: (req) => runCodex(req, "off") };
 
 // ── Google Antigravity ───────────────────────────────────────────────────────
 

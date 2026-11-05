@@ -8,6 +8,7 @@ import { resolveEngine, type Access, type Engine, type EngineRequest, type Engin
 import { inContainer } from "./home.js";
 import type { SecretStore } from "./keychain.js";
 import { log } from "./log.js";
+import { runGuarded } from "./readonly-guard.js";
 import { assignedSkills, availableSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
 import type { Tracer } from "./telemetry/tracer.js";
@@ -79,7 +80,8 @@ export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
 /** Where an engine actually runs: on this machine by default, or inside the isolation box. */
 export type EngineExecute = (engine: Engine, req: EngineRequest, trace: AgentTrace | undefined, station: string) => Promise<EngineResult>;
 
-const runHere: EngineExecute = (engine, req) => engine.run(req);
+/** On this machine; zero checks the read-only calls of an engine with no sandbox of its own. */
+export const runHere: EngineExecute = (engine, req) => (engine.unsandboxed && req.access !== "write" ? runGuarded(engine, req) : engine.run(req));
 
 /** Only the build station may change the work copy; research also searches the web, read-only. */
 export const AGENT_ACCESS: Readonly<Record<AgentStation, Access>> = { spec: "read", build: "write", review: "read", security: "read", reply: "read", scout: "read", research: "web" };

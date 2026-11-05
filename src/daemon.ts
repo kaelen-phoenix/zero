@@ -1,4 +1,4 @@
-import { createAgentRunner, type AgentRunner } from "./agent.js";
+import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
 import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
@@ -127,6 +127,13 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     }
     return gate;
   };
+  const readyBox = (config: FactoryConfig): BoxExecutor | undefined => {
+    const { status, availability } = currentBox(ctx);
+    return config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(config, status) : undefined;
+  };
+  // Background passes run on this machine, except an engine with no sandbox of its own whenever the box is ready at the time of the call.
+  const passExecute = (config: FactoryConfig): EngineExecute => (engine, req, trace, station) => ((engine.unsandboxed && readyBox(config)?.execute) || runHere)(engine, req, trace, station);
+  const passRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets, execute: passExecute(config) }));
   let stopping = false;
   let boxCheckedAt = 0;
   let boxWaitLogged = false;
@@ -160,7 +167,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const takeIssues = () => {
     if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
     intakeAt = Date.now();
-    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx), { runAgent: agentRunner(ctx.config) })
+    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx), { runAgent: passRunner(ctx.config) })
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
       .finally(() => (intake = undefined));
   };
@@ -233,11 +240,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
-      if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
+      if (scouts) await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
       if (researches && !researchStop.signal.aborted)
-        await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+        await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)
-        await packagesPass(ctx, agentRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
+        await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
   };
 
@@ -312,8 +319,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           }
           startable = true;
           const controller = new AbortController();
-          const { status, availability } = currentBox(ctx);
-          const box = ctx.config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(ctx.config, status) : undefined;
+          const { availability } = currentBox(ctx);
+          const box = readyBox(ctx.config);
           const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
           const done = runJob(job.id, deps, controller.signal)
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))

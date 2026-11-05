@@ -141,6 +141,7 @@ export function simulatedBox(agentRunner: AgentRunner) {
       calls.push({ command, mount: o.mount, cwd: o.cwd });
       return sh(command, o.cwd, { timeoutMs: o.timeoutMs ?? 60_000, signal: o.signal });
     },
+    execute: (engine, req) => engine.run(req),
     agentRunner: () => agentRunner,
   };
   return { box, calls };

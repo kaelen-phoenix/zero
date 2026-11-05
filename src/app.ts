@@ -249,6 +249,8 @@ export interface FactoryStatus {
   level: EffectiveLevel;
   isolation: FactoryConfig["isolation"];
   egressMode: FactoryConfig["egress"]["mode"];
+  /** Where Codex runs with `codex.sandbox: off`; absent with the option on or a custom engine named codex. */
+  codexUnsandboxed?: "machine" | "box";
   /** Lines taking GitHub issues, and the last problem reaching GitHub. */
   intake: { line: string; label: string; problem?: string }[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
@@ -280,6 +282,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
     egressMode: ctx.config.egress.mode,
+    ...(ctx.config.codex.sandbox === "off" && !ctx.config.engines.codex && { codexUnsandboxed: ctx.config.isolation === "container" && box.availability.ready ? ("box" as const) : ("machine" as const) }),
     intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
     merges: watchedJobs(ctx).map((job) => {
       const raw = ctx.store.getKv(mergeKey(job.id));
