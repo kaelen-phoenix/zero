@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CustomEngine } from "../config.js";
+import { toStrictSchema, withoutOptionalNulls } from "./codex-schema.js";
 import type { Engine, EngineRequest, EngineResult } from "./types.js";
 
 export interface Invocation {
@@ -113,21 +114,39 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
   };
 }
 
-/** `codex exec` (needs CODEX_API_KEY or OPENAI_API_KEY). Sandboxing and schema are enforced by Codex. */
+/** An answer that is not JSON stays as text, for the runner's validation to judge. */
+function withStructuredOutput(schema: Record<string, unknown>, result: EngineResult): EngineResult {
+  let answer: unknown;
+  try {
+    answer = JSON.parse(result.text);
+  } catch {
+    return result;
+  }
+  return { ...result, output: withoutOptionalNulls(schema, answer) };
+}
+
+/** `codex exec` (needs CODEX_API_KEY or OPENAI_API_KEY). Sandboxing and schema are enforced by Codex, which only takes strict schemas. */
 export const codexEngine: Engine = {
   name: "codex",
   nativeSchema: true,
   // API keys use api.openai.com; a ChatGPT sign-in uses chatgpt.com.
   hosts: ["api.openai.com", "chatgpt.com"],
   async run(req) {
+    let strict: Record<string, unknown> | undefined;
+    try {
+      strict = req.schema && toStrictSchema(req.schema);
+    } catch (err) {
+      return { ok: false, text: (err as Error).message };
+    }
     const dir = await mkdtemp(join(tmpdir(), "zero-codex-"));
     try {
-      const files = { lastMessage: join(dir, "last.txt"), schema: req.schema && join(dir, "schema.json") };
-      if (files.schema) await writeFile(files.schema, JSON.stringify(req.schema));
+      const files = { lastMessage: join(dir, "last.txt"), schema: strict && join(dir, "schema.json") };
+      if (files.schema) await writeFile(files.schema, JSON.stringify(strict));
       // The answer is the last message; stdout is only the fallback when that file cannot be read.
-      return await execute("codex", codexInvocation(req, files), req, async (r) =>
+      const result = await execute("codex", codexInvocation(req, files), req, async (r) =>
         (await readFile(files.lastMessage, "utf8").catch(() => finalText(r.stdout))).trim(),
       );
+      return req.schema && result.ok ? withStructuredOutput(req.schema, result) : result;
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
