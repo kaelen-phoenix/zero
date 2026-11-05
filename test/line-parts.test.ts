@@ -7,7 +7,8 @@ import { mergeIntoBase, githubRepository, integrate } from "../src/line/integrat
 import { decide } from "../src/line/policy.js";
 import { blockingFindings, checkCitations, citationValid, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "../src/line/review.js";
 import { changeName, plainSpec, renderOpenSpecChange, specProblems, writeFiles } from "../src/line/spec.js";
-import { protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
+import { filterProposals, type ScoutOutput } from "../src/line/scout.js";
+import { ALWAYS_PROTECTED, protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
 import { Store } from "../src/state/store.js";
 import { Tracer } from "../src/telemetry/tracer.js";
 import { checkedOutAt, openWorkCopy } from "../src/workspace.js";
@@ -100,6 +101,54 @@ describe("verification", () => {
     const files = [{ status: "A", path: ".agents/skills/x/SKILL.md" }, { status: "A", path: "src/x.ts" }];
     expect(protectedTouched(files, defaults)).toEqual([".agents/skills/x/SKILL.md"]);
     expect(protectedTouched([{ status: "A", path: ".agents/skills/x/SKILL.md" }], defaults, [".agents/skills/x/SKILL.md"])).toEqual([]);
+  });
+
+  describe("protected paths in any case", () => {
+    const defaults = parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths;
+
+    it("flags other spellings of the default patterns and keeps the path as written", () => {
+      expect(protectedTouched([{ status: "M", path: ".Claude/settings.json" }], defaults)).toEqual([".Claude/settings.json"]);
+      expect(protectedTouched([{ status: "A", path: ".MCP.json" }], defaults)).toEqual([".MCP.json"]);
+      expect(protectedTouched([{ status: "M", path: ".Github/workflows/ci.yml" }], defaults)).toEqual([".Github/workflows/ci.yml"]);
+    });
+
+    it("lower-cases the patterns too", () => {
+      expect(protectedTouched([{ status: "A", path: "secrets/a.txt" }], ["Secrets/**"])).toEqual(["secrets/a.txt"]);
+    });
+
+    it("does not flag unrelated paths", () => {
+      const files = [{ status: "M", path: "src/Claude/settings.json" }, { status: "A", path: "SRC/mcp.JSON" }];
+      expect(protectedTouched(files, defaults)).toEqual([]);
+    });
+
+    it("keeps approvals exact", () => {
+      const files = [{ status: "M", path: ".Claude/settings.json" }];
+      expect(protectedTouched(files, defaults, [".Claude/settings.json"])).toEqual([]);
+      expect(protectedTouched(files, defaults, [".claude/settings.json"])).toEqual([".Claude/settings.json"]);
+    });
+
+    it("drops night-shift proposals on another spelling and keeps unrelated ones", () => {
+      const idea = (title: string, path: string): ScoutOutput["proposals"][number] => ({
+        title,
+        why: "w",
+        change: "c",
+        estimatedUsd: 0,
+        paths: [path],
+        needsNewCredentials: false,
+        researchNote: null,
+        thirdParty: false,
+        commercial: false,
+        issue: null,
+      });
+      const kept = idea("keep", "src/x.ts");
+      expect(filterProposals([idea("drop", ".Claude/settings.json"), kept], [], [".claude/**"])).toEqual([kept]);
+    });
+
+    it("leaves the owner's list in charge: the fixed list does not grow", () => {
+      expect(ALWAYS_PROTECTED).toEqual([".zero/**"]);
+      expect(protectedTouched([{ status: "M", path: ".Claude/settings.json" }], ["docs/**"])).toEqual([]);
+      expect(protectedTouched([{ status: "A", path: ".Zero/agents/a11y.md" }], [])).toEqual([".Zero/agents/a11y.md"]);
+    });
   });
 
   it("stops a diff that adds .claude/settings.json", async () => {
