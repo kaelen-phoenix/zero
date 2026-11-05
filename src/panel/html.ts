@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { budgetLine, bytes, describeJobStatus, jobCost, jobName, planSummary, resetTime } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { reportSection, type MonthlyReport } from "../report.js";
@@ -140,7 +140,7 @@ export function loginPage(nonce: string, failed = false): string {
 }
 
 const jobLine = (j: Job) =>
-  `<li><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a><br><span class="muted">${esc(j.id)} · ${esc(j.line)} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
+  `<li><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a><br><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
 
 const answerForms = (j: Job) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
@@ -169,7 +169,7 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
         ? `Caja lista (${esc(s.box.status?.runtime)}).`
         : "Sin caja: los trabajos corren en copias locales.";
   const waiting = s.waiting
-    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3><pre>${esc(j.question?.text)}</pre>
+    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
 <p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
     .join("");
   const list = (title: string, jobs: Job[]) => (jobs.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${jobs.map(jobLine).join("")}</ul></div>` : "");
@@ -203,7 +203,7 @@ export function jobPage(job: Job, traceText: string, nonce: string, flash?: stri
   return page(
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
-<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · ${esc(jobCost(job, subscription))}</p>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}</p>
 <p><b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
@@ -460,7 +460,7 @@ function lineRow(r: LineRow): string {
         ? `<p class="out bad"><b>${r.status === "failed" ? "fallido" : "detenido"}</b>${r.reason ? ` · ${esc(r.reason)}` : ""}</p>`
         : "";
   const retry = r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "";
-  const inner = `<h3 data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a> <span class="muted">${esc(r.id)} · ${esc(r.line)}</span></h3>
+  const inner = `<h3 data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a> <span class="muted">${esc(r.id)} · ${esc(r.line)}${r.origin ? ` · ${esc(r.origin)}` : ""}</span></h3>
 <div data-part="retry">${retry}</div>${belt(r.stations, pos, piece, flow)}<div data-part="out">${out}</div>`;
   // Lets the page's script skip rows that did not change, so finished rows stay still.
   const sig = createHash("sha256").update(inner).digest("hex").slice(0, 16);

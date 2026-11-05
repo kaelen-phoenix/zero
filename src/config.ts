@@ -402,6 +402,8 @@ export interface PackageStation {
   everyMinutes: number;
   timeoutMinutes: number;
   maxTurns: number;
+  /** Absent: `ctx.requestJob` refuses every request. */
+  requests?: { perLinePerDay: number };
   entry: PackageEntry;
 }
 

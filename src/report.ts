@@ -113,6 +113,8 @@ function originLabel(job: Job): string {
       return job.source.autonomy ? "Propuesta que el turno nocturno tomó por su cuenta" : "Propuesta del turno nocturno aprobada por la persona responsable";
     case "research":
       return "Investigación";
+    case "package":
+      return `Pedido por paquete ${job.source.package}/${job.source.station}`;
     default:
       return "Pedido de la persona responsable";
   }

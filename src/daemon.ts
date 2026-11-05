@@ -263,8 +263,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
-          // The night shift's own jobs never go ahead of other work: one at a time, and only while no other job is queued or running.
-          if (autonomous(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !autonomous(j)))) continue;
+          // The night shift's own jobs and the packages' never go ahead of other work: one at a time, and only while no other job is queued or running.
+          if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           if (!ctx.config.lines.some((l) => l.name === job.line)) {
@@ -315,12 +315,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   }
 }
 
-/** A job the night shift opened on its own, under the line's `build` or `auto` autonomy. */
-const autonomous = (job: Job) => job.source?.kind === "night-shift" && Boolean(job.source.autonomy);
+/** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
+const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";
 
-/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own after. */
+/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own and the packages' after. */
 export function ownerFirst(jobs: Job[]): Job[] {
-  return [...jobs.filter((j) => !autonomous(j)), ...jobs.filter(autonomous)];
+  return [...jobs.filter((j) => !lowPriority(j)), ...jobs.filter(lowPriority)];
 }
 
 /** Questions nobody answered in time get their default answer. */

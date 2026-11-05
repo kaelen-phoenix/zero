@@ -69,7 +69,9 @@ export type JobSource =
    */
   | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto" }
   /** A research note the owner turned into work. */
-  | { kind: "research"; note: string };
+  | { kind: "research"; note: string }
+  /** A package's station asked for it with `ctx.requestJob`. */
+  | { kind: "package"; package: string; station: string };
 
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";

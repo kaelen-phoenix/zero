@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
-import { ANDON_KEY, type FactoryContext } from "../app.js";
+import { ANDON_KEY, requestWork, type FactoryContext } from "../app.js";
 import { budgetState, pickAgentEngine } from "../budget.js";
 import type { PackageStation } from "../config.js";
 import { log } from "../log.js";
@@ -11,9 +11,11 @@ import { warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
+import { startOfDay } from "../telemetry/metrics.js";
 import { PACKAGE_AGENT_PREFIX, periodStart, scoutSpent } from "./scout.js";
 
 const CHARS_PER_TEXT = 600;
+const CHARS_PER_REQUEST = 4000;
 
 /** What a station's agent call gives back. */
 export interface StationAgentRun<T> {
@@ -53,7 +55,12 @@ export interface StationContext {
   state: { get<T = unknown>(name: string): T | undefined; set(name: string, value: unknown): void };
   /** No job ids, branches or local paths. */
   deliveredJobs(since: Date): DeliveredJob[];
+  /** Opens a normal job on one of `lines`, if the manifest's `requests` allows it; never throws. */
+  requestJob(req: { line: string; text: string }): JobRequestResult;
 }
+
+/** The new job, or why there is none. */
+export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
   pass?: unknown;
@@ -152,6 +159,56 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
   };
 }
 
+/** A station's request as it came; reading it runs the station's code when it is not a plain object. */
+function readRequest(req: unknown): { line?: unknown; text?: unknown } {
+  try {
+    const { line, text } = req as { line?: unknown; text?: unknown };
+    return { line, text };
+  } catch {
+    return {};
+  }
+}
+
+/** How many jobs the station opened on a line that day; one key per line and station, out of reach of `ctx.state`. */
+function requestsUsed(raw: string | undefined, day: string): number {
+  if (raw === undefined) return 0;
+  const used = JSON.parse(raw) as { day: string; count: number };
+  return used.day === day ? used.count : 0;
+}
+
+/** `ctx.requestJob`: a third party's way into the line. What it refuses leaves no job and spends no quota. */
+function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date, signal: AbortSignal): StationContext["requestJob"] {
+  const key = stationKey(station);
+  return (req) => {
+    try {
+      if (signal.aborted) return { reason: "la pasada ya terminó" };
+      if (!station.requests) return { reason: "la estación no declara requests en su manifiesto" };
+      const { line, text } = readRequest(req);
+      if (typeof line !== "string" || typeof text !== "string") return { reason: "el pedido necesita line y text, como texto" };
+      if (!ctx.config.lines.some((l) => l.name === line)) return { reason: `no existe la línea "${withoutSecrets(line, ctx, station)}"` };
+      if (ctx.store.getKv(ANDON_KEY) === "on") return { reason: "la fábrica está detenida" };
+      if (budgetState(ctx.store, ctx.config, now).reached) return { reason: "se alcanzó el presupuesto" };
+      const quotaKey = `${key}:requests:${line}`;
+      const day = startOfDay(now).toISOString();
+      const used = requestsUsed(ctx.store.getKv(quotaKey), day);
+      if (used >= station.requests.perLinePerDay) return { reason: `ya pidió ${used} de ${station.requests.perLinePerDay} trabajos de hoy en la línea "${line}"` };
+      const repos = ctx.config.lines.map((l) => l.repo);
+      const clean = publicText(withoutSecrets(text, ctx, station), repos).text.trim().slice(0, CHARS_PER_REQUEST);
+      if (!clean) return { reason: "el pedido está vacío" };
+      const { job } = requestWork(ctx, { text: clean, line, source: { kind: "package", package: station.package, station: station.name } });
+      ctx.store.setKv(quotaKey, JSON.stringify({ day, count: used + 1 }));
+      log.info(`${key} requested a job`, { job: job.id, line });
+      return { id: job.id };
+    } catch (err) {
+      try {
+        return { reason: `no se pudo abrir el trabajo: ${publicText(withoutSecrets(errorText(err), ctx, station), ctx.config.lines.map((l) => l.repo)).text}` };
+      } catch {
+        return { reason: "no se pudo abrir el trabajo" };
+      }
+    }
+  };
+}
+
 function stationContext(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
   const key = stationKey(station);
   const stateKey = (name: string) => `${key}:state:${name}`;
@@ -178,6 +235,7 @@ function stationContext(ctx: FactoryContext, runAgent: AgentRunner, station: Pac
       set: (name, value) => ctx.store.setKv(stateKey(name), JSON.stringify(value)),
     },
     deliveredJobs: (since) => deliveredJobs(ctx, since),
+    requestJob: stationRequest(ctx, station, now, signal),
   };
 }
 
