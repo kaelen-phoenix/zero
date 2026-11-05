@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractJson } from "../src/agent.js";
 import { FactorySchema } from "../src/config.js";
-import { antigravityInvocation, codexInvocation, customEngine, customInvocation, finalText } from "../src/engines/cli.js";
+import { antigravityEngine, antigravityInvocation, codexInvocation, customEngine, customInvocation, finalText, fullPrompt } from "../src/engines/cli.js";
 import { resolveEngine, type EngineRequest } from "../src/engines/index.js";
 
 const req = (over: Partial<EngineRequest> = {}): EngineRequest => ({
@@ -29,6 +29,47 @@ describe("antigravity", () => {
     expect(antigravityInvocation(req()).args).toContain("--dangerously-skip-permissions");
     expect(antigravityInvocation(req({ access: "read" })).args).not.toContain("--dangerously-skip-permissions");
   });
+
+  const STDIN_INSTRUCTION = "Follow the instructions received on stdin.";
+
+  /** A request whose fullPrompt measures exactly `length` characters. */
+  const sized = (length: number, over: Partial<EngineRequest> = {}) => {
+    const base = fullPrompt(req({ prompt: "" })).length;
+    return req({ prompt: "x".repeat(length - base), ...over });
+  };
+
+  it("sends a prompt one character over the threshold on stdin", () => {
+    const r = sized(30_001);
+    expect(fullPrompt(r)).toHaveLength(30_001);
+    const inv = antigravityInvocation(r);
+    expect(inv.stdin).toBe(fullPrompt(r));
+    expect(inv.args[inv.args.indexOf("-p") + 1]).toBe(STDIN_INSTRUCTION);
+    expect(inv.args.some((a) => a.includes("xxx") || a.includes("You are the coder."))).toBe(false);
+  });
+
+  it("keeps a prompt of exactly the threshold in -p", () => {
+    const r = sized(30_000);
+    expect(fullPrompt(r)).toHaveLength(30_000);
+    const inv = antigravityInvocation(r);
+    expect(inv.args[inv.args.indexOf("-p") + 1]).toBe(fullPrompt(r));
+    expect(inv.stdin).toBeUndefined();
+  });
+
+  it("does not change a short prompt", () => {
+    const r = req({ model: "m" });
+    const inv = antigravityInvocation(r);
+    expect(inv.args).toEqual(["-p", fullPrompt(r), "--output-format", "json", "--dangerously-skip-permissions", "--model", "m"]);
+    expect(inv.stdin).toBeUndefined();
+  });
+
+  it("keeps the other flags with a long prompt", () => {
+    expect(antigravityInvocation(sized(30_001, { model: "m" })).args).toEqual(["-p", STDIN_INSTRUCTION, "--output-format", "json", "--dangerously-skip-permissions", "--model", "m"]);
+    expect(antigravityInvocation(sized(30_001, { access: "read" })).args).toEqual(["-p", STDIN_INSTRUCTION, "--output-format", "json"]);
+  });
+
+  it("has no native schema", () => {
+    expect(antigravityEngine.nativeSchema).toBe(false);
+  });
 });
 
 describe("custom engine", () => {
@@ -45,6 +86,13 @@ describe("custom engine", () => {
     const inv = customInvocation({ ...def, command: ["aider", "--message-file", "/dev/stdin"] }, req({ access: "read" }));
     expect(inv.stdin).toContain("Fix bug");
     expect(inv.args).toEqual(["--message-file", "/dev/stdin"]);
+  });
+
+  it("keeps a long prompt in its {prompt} argument", () => {
+    const long = req({ prompt: "x".repeat(30_001) });
+    const inv = customInvocation(def, long);
+    expect(inv.args).toContain(fullPrompt(long));
+    expect(inv.stdin).toBeUndefined();
   });
 
   it("overrides built-ins when declared in config", () => {
