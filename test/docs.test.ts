@@ -180,6 +180,14 @@ describe("agent packages", () => {
     expect(section(es, "## Paquetes de agentes")).toMatch(/permisos de tu usuario/);
   });
 
+  it("documents git sources and updates in the code blocks of both", () => {
+    for (const [text, heading] of HEADINGS) {
+      const code = blocks(section(text, heading)).map((b) => b.body).join("\n");
+      expect(code).toContain("zero package add github:");
+      expect(code).toContain("zero package update");
+    }
+  });
+
   it("presents packages only as a way to extend zero", () => {
     for (const [text, heading] of HEADINGS) {
       const body = section(text, heading);

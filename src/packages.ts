@@ -75,7 +75,7 @@ function pathProblem(path: string): string | undefined {
 const sameCase = (path: string) => (process.platform === "win32" || process.platform === "darwin" ? path.toLowerCase() : path);
 
 /** Whether `path` is `root` or below it; both already real paths. */
-function isInside(path: string, root: string): boolean {
+export function isInside(path: string, root: string): boolean {
   const rel = relative(sameCase(root), sameCase(path));
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
@@ -208,6 +208,15 @@ export function packageFolder(entry: PackageEntry, home: Pick<FactoryHome, "conf
 
 /** How a package is called before its manifest could be read. */
 const entryLabel = (entry: PackageEntry) => entry.npm ?? entry.path!;
+
+/** An entry's package name: its manifest's when that can be read, whether or not the package loads. */
+export function entryName(entry: PackageEntry, home: Pick<FactoryHome, "config" | "packages">): string {
+  try {
+    return readManifest(packageFolder(entry, home)).name;
+  } catch {
+    return entryLabel(entry);
+  }
+}
 
 /** Why code from this real folder must not be imported: the jobs' agents can write there. */
 function codeRefusal(config: Pick<FactoryConfig, "lines">, home: Pick<FactoryHome, "worktrees" | "jobs">, dir: string): string | undefined {

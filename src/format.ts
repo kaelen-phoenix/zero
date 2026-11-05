@@ -125,10 +125,14 @@ export function formatAgents(lists: LineAgentList[]): string {
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
 export function formatPackages(l: PackageList): string {
-  if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm>`.";
+  if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
+  const short = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
   for (const p of l.packages) {
-    out.push(`${p.name} ${p.version} (${p.source === "npm" ? "npm" : "carpeta"}): ${p.dir}`);
+    out.push(`${p.name} ${p.version} (${p.source === "path" ? "carpeta" : p.source}): ${p.dir}`);
+    if (p.source !== "path") out.push(`- fuente: ${p.origin}${p.installed ? `, instalado ${short(p.installed)}` : ""}`);
+    if (p.update) out.push(`- hay una actualización: ${short(p.update.seen)} (revisado ${p.update.at.slice(0, 10)}); aplicala con \`zero package update ${p.name}\``);
+    if (p.lookFailed) out.push(`- no se pudo revisar si hay novedades (${p.lookFailed.at.slice(0, 10)}): ${p.lookFailed.error}`);
     if (p.agents.length) out.push(`- agentes: ${p.agents.join(", ")}`);
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
