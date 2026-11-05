@@ -1,6 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { ANDON_KEY, DAEMON_KEY, daemonInfo, requestWork } from "../src/app.js";
+import { createServer as createNetServer, Server as NetServer, type AddressInfo } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ANDON_KEY, DAEMON_KEY, daemonInfo, egressReport, factoryStatus, requestWork, SHUTDOWN_KEY } from "../src/app.js";
+import { saveBoxStatus, type BoxStatus } from "../src/box/status.js";
 import { runDaemon } from "../src/daemon.js";
+import { formatStatus } from "../src/format.js";
+import { overviewPage } from "../src/panel/html.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, simulatedBox, testFactory, writeTree } from "./helpers.js";
 
@@ -13,6 +17,106 @@ function factory(over: Record<string, unknown> = {}) {
 }
 
 const builder = () => fakeAgents({ build: (req) => void writeTree(req.cwd, { [`src/${Math.random().toString(36).slice(2)}.ts`]: "ok" }) });
+
+describe("box not ready", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const boxed = () => factory({ isolation: "container" });
+  const noBox: BoxStatus = { ready: false, image: "zero-box:test", problems: ["no hay Podman ni Docker instalados: corré `zero box setup`"], checkedAt: "2026-11-05T00:00:00Z" };
+
+  it("in a container: the job stays queued, no agent is called and no idle pass runs", async () => {
+    vi.stubEnv("ZERO_CONTAINER", "1");
+    const ctx = boxed();
+    const job = requestWork(ctx, { text: "espera" }).job;
+    const agents = builder();
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => agents.runner, inspectBox: () => noBox, scout: true, research: true });
+    expect(ctx.store.getJob(job.id)!.status).toBe("queued");
+    expect(agents.calls).toEqual([]);
+  });
+
+  it("in a container: a stop still ends a queued job", async () => {
+    vi.stubEnv("ZERO_CONTAINER", "1");
+    const ctx = boxed();
+    const job = requestWork(ctx, { text: "ya no" }).job;
+    ctx.store.updateJob(job.id, { stopRequested: true });
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => builder().runner, inspectBox: () => noBox });
+    expect(ctx.store.getJob(job.id)!.status).toBe("stopped");
+  });
+
+  it("in a container: `zero status` says the jobs wait and what to run", async () => {
+    vi.stubEnv("ZERO_CONTAINER", "1");
+    const ctx = boxed();
+    saveBoxStatus(ctx.store, noBox);
+    const text = formatStatus(factoryStatus(ctx));
+    expect(text).toContain("los trabajos esperan la caja");
+    expect(text).toContain("zero box setup");
+    expect(text).toContain("zero setup");
+    expect(text).not.toContain("copias locales");
+    const html = overviewPage(factoryStatus(ctx), [], "n");
+    expect(html).toContain("esperan en la cola");
+    expect(html).not.toContain("copias locales");
+    expect(egressReport(ctx, {}).note).not.toContain("copias locales");
+  });
+
+  it("in a container with `isolation: worktree`: the owner chose, so the job runs", async () => {
+    vi.stubEnv("ZERO_CONTAINER", "1");
+    const ctx = factory();
+    const job = requestWork(ctx, { text: "sin caja" }).job;
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => builder().runner });
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+  });
+
+  it("in a container with the box ready: the job runs in the box", async () => {
+    vi.stubEnv("ZERO_CONTAINER", "1");
+    const ctx = boxed();
+    ctx.secrets.set("CLAUDE_CODE_OAUTH_TOKEN", "token-de-prueba");
+    const job = requestWork(ctx, { text: "con caja" }).job;
+    const agents = builder();
+    const { box } = simulatedBox(agents.runner);
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => agents.runner, inspectBox: () => ({ ...noBox, ready: true, runtime: "docker", problems: [] }), boxExecutor: () => box });
+    expect(ctx.store.getJob(job.id)!.isolation).toBe("container");
+  });
+
+  it("outside a container: the job starts as it always did, in a local copy", async () => {
+    const ctx = boxed();
+    const job = requestWork(ctx, { text: "copia local" }).job;
+    const agents = builder();
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => agents.runner, inspectBox: () => noBox });
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+    expect(agents.calls.length).toBeGreaterThan(0);
+    expect(formatStatus(factoryStatus(ctx))).toContain("copias locales");
+  });
+});
+
+describe("panel.host", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("listens on the address of the file and still asks for the key", async () => {
+    const port = await new Promise<number>((resolve) => {
+      const probe = createNetServer().listen(0, "127.0.0.1", () => {
+        const { port } = probe.address() as AddressInfo;
+        probe.close(() => resolve(port));
+      });
+    });
+    const ctx = factory({ panel: { port, host: "0.0.0.0" }, lines: [] });
+    const listen = vi.spyOn(NetServer.prototype, "listen");
+    const daemon = runDaemon(ctx, { pollMs: 10, panel: true, scout: false, research: false, packages: false, packageUpdates: false, agentRunner: () => builder().runner });
+    let address: AddressInfo | undefined;
+    for (let i = 0; i < 200 && !address; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const server = listen.mock.contexts.find((s) => (s as NetServer).listening && ((s as NetServer).address() as AddressInfo)?.port === port) as NetServer | undefined;
+      address = server?.address() as AddressInfo | undefined;
+    }
+    try {
+      expect(address?.address).toBe("0.0.0.0");
+      const r = await fetch(`http://127.0.0.1:${port}/`, { redirect: "manual" });
+      expect(r.status).toBe(401);
+    } finally {
+      ctx.store.setKv(SHUTDOWN_KEY, "1");
+      await daemon;
+    }
+  });
+});
 
 describe("daemon", () => {
   it("runs queued jobs one at a time per line", async () => {

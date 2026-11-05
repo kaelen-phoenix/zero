@@ -12,7 +12,7 @@ import { budgetState, type BudgetState } from "./budget.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
-import { factoryHome, type FactoryHome } from "./home.js";
+import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
@@ -57,6 +57,11 @@ export async function openFactory(home: FactoryHome = factoryHome(), now?: () =>
 export function currentBox(ctx: FactoryContext): { status?: BoxStatus; availability: BoxAvailability } {
   const status = readBoxStatus(ctx.store);
   return { status, availability: boxAvailability(ctx.config, status, ctx.secrets) };
+}
+
+/** In a container, with the box configured and not ready, work waits in the queue instead of moving to local copies next to the secrets. */
+export function waitsForBox(ctx: FactoryContext): boolean {
+  return inContainer() && ctx.config.isolation === "container" && !currentBox(ctx).availability.ready;
 }
 
 export function currentLevel(ctx: FactoryContext): EffectiveLevel {
@@ -249,6 +254,8 @@ export interface FactoryStatus {
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   box: { status?: BoxStatus; availability: BoxAvailability };
+  /** Jobs wait for the box instead of running in local copies (see waitsForBox). */
+  boxWait?: boolean;
   /** Assigned skills that do not resolve; agents run without them. */
   skills: SkillProblem[];
   /** Packages left out, whole or only their stations; the factory works without them. */
@@ -280,6 +287,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
     }),
     box,
+    boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
     packages: ctx.config.loadedPackages?.problems ?? [],
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
@@ -313,6 +321,7 @@ export interface FactoryGuide {
   approvals: FactoryConfig["approvals"];
   isolation: FactoryConfig["isolation"];
   box: BoxAvailability;
+  boxWait?: boolean;
   /** What each policy event does at the effective level. */
   policy: { event: PolicyEvent; decision: PolicyDecision }[];
   agents: AgentGuide[];
@@ -336,6 +345,7 @@ export async function factoryGuide(ctx: FactoryContext): Promise<FactoryGuide> {
     approvals: cfg.approvals,
     isolation: cfg.isolation,
     box,
+    boxWait: waitsForBox(ctx),
     policy: POLICY_EVENTS.map((event) => ({ event, decision: decide(level.level, event) })),
     agents: await Promise.all(
       AGENT_STATIONS.map(async (station) => {
@@ -745,7 +755,7 @@ export function egressReport(ctx: FactoryContext, opts: { job?: string; days?: n
       : job && job.isolation === "worktree"
         ? "Este trabajo corrió fuera de la caja: sus salidas no pasaron por la puerta."
         : !box.availability.ready
-          ? `La caja no está lista, así que los trabajos corren en copias locales y sus salidas no se ven: ${box.availability.problems.join("; ")}`
+          ? `${waitsForBox(ctx) ? "La caja no está lista, así que los trabajos esperan en la cola" : "La caja no está lista, así que los trabajos corren en copias locales y sus salidas no se ven"}: ${box.availability.problems.join("; ")}`
           : undefined;
   const summary = summarizeEgress(ctx.store, job ? { job: job.id, from } : { from, to });
   return { mode: ctx.config.egress.mode, from: from.toISOString(), to: to.toISOString(), job: job?.id, summary, note };

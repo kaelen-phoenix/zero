@@ -1,13 +1,15 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
+import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
 import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
-import { githubToken } from "./line/integrate.js";
+import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
 import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
@@ -17,12 +19,16 @@ import { log } from "./log.js";
 import { serveStdio } from "./mcp/server.js";
 import { downloadCloudflared, downloadPlan, findCloudflared } from "./panel/tunnel.js";
 import { monthlyMarkdown, reportHtml } from "./report.js";
+import { runSetup } from "./setup.js";
+import { onPath } from "./shell.js";
 
 const USAGE = `zero: tu fábrica de software, en tu máquina
 
 Primeros pasos:
   zero init                      Crea la fábrica (y agrega el repo actual como línea)
   zero install                   Registra zero en tus clientes de chat (Claude Code, …)
+  zero setup                     Asistente: con qué motores trabajar (suscripción, API key o ambas), límites, caja, panel y GitHub.
+                                 Se puede volver a correr; con Docker: docker compose run --rm zero setup
 
 Uso diario (también desde el chat):
   zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec]
@@ -42,7 +48,7 @@ Uso diario (también desde el chat):
 Caja de aislamiento y credenciales:
   zero box status                Revisa la caja (contenedores) donde trabajan los agentes
   zero box setup [--yes]         Prepara la caja: pide permiso antes de instalar nada
-  zero secret set <NOMBRE>       Guarda una credencial en el llavero del sistema (se escribe sin mostrarse)
+  zero secret set <NOMBRE>       Guarda una credencial en el llavero del sistema o, en Docker, cifrada en el volumen (se escribe sin mostrarse)
   zero secret list | remove <NOMBRE>
 
 Salidas a internet de la caja (todas pasan por la puerta de zero):
@@ -146,10 +152,37 @@ async function main(argv: string[]): Promise<number> {
       if (action === "set" && name) {
         if (extra !== undefined) throw new Error("No pases el valor como argumento (quedaría en el historial). Corré `zero secret set NOMBRE` y escribilo cuando lo pida, o pasalo por la entrada estándar.");
         secrets.set(name, await readSecretValue(name));
-        console.log(`Credencial ${name} guardada en el llavero del sistema.`);
+        console.log(`Credencial ${name} guardada en ${secrets.place}.`);
         return 0;
       }
       break;
+    }
+    case "setup": {
+      await runSetup(home, {
+        interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+        ask: askLine,
+        askSecret: readSecretValue,
+        confirm: async (q) => YES.test((await askLine(`${q} [s/N] `)).trim()),
+        say: (t) => console.log(t),
+        runInteractive: (bin, args) => new Promise((resolve) => {
+          const child = spawn(bin, args, { stdio: "inherit" });
+          child.on("error", () => resolve(127));
+          child.on("close", (code) => resolve(code ?? 1));
+        }),
+        isAvailable: onPath,
+        boxResponds: () => installedRuntimes("auto").some((rt) => responds(rt)),
+        secrets: new SecretStore(home),
+        cwd: process.cwd(),
+      });
+      return 0;
+    }
+    case "git-credential": {
+      // git also says `store` and `erase`; there is nothing to keep.
+      if (rest[0] !== "get") return 0;
+      let input = "";
+      for await (const chunk of process.stdin) input += chunk;
+      process.stdout.write(gitCredential(input, () => githubToken()));
+      return 0;
     }
     case "mcp":
       await serveStdio(home);
@@ -417,12 +450,24 @@ async function readSecretValue(name: string): Promise<string> {
   });
 }
 
+const YES = /^(s|si|sí|y|yes)$/i;
+
+/** One question at a time and closed after it: a secret's raw read or a CLI's login may use the terminal next. */
+async function askLine(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await rl.question(question);
+  } finally {
+    rl.close();
+  }
+}
+
 /** Yes/no questions on a terminal; without one, nobody can consent, so the answer is no. */
 function interactiveConfirm() {
   if (!process.stdin.isTTY) return { confirm: async () => false, close: () => {} };
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
-    confirm: async (q: string) => /^(s|si|sí|y|yes)$/i.test((await rl.question(`${q} [s/N] `)).trim()),
+    confirm: async (q: string) => YES.test((await rl.question(`${q} [s/N] `)).trim()),
     close: () => rl.close(),
   };
 }

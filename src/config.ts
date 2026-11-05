@@ -340,8 +340,8 @@ export const FactorySchema = z
     /** Absent: traces stay only in state.db. */
     telemetry: TelemetrySchema.optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
-    /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
-    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
+    /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
+    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
     /** Installed agent packages; what they bring is loaded by `src/packages.ts`, never written here. */

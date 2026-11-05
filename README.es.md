@@ -76,6 +76,73 @@ zero start [--detach] · zero shutdown
 
 Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), y `zero_egress` y `zero_egress_block` (salidas a internet).
 
+## Instalar con Docker
+
+La imagen se construye desde este repositorio, con zero, Node 22, git, `gh`, el cliente de Docker y solo los CLI de IA que nombres. Después no se instala nada: para sumar un CLI hay que reconstruir.
+
+```sh
+git clone https://github.com/kaelen-phoenix/zero && cd zero
+mkdir -p secrets && openssl rand -hex 32 > secrets/zero_master_key   # cifra los secretos que quedan en el volumen; guardá una copia fuera de él
+ZERO_CLIS=claude,codex docker compose build                          # claude, codex o los dos
+docker compose run --rm zero setup                                   # pregunta cómo vas a trabajar; volvé a correrlo para cambiar algo
+docker compose up -d
+docker compose exec zero zero panel                                  # el link del panel, con tu clave
+```
+
+`zero setup` pregunta:
+
+- **Cómo vas a trabajar:** suscripción, API key o ambas. Cada motor se elige entre `claude` y `codex`; el primero va a `engine` y los demás a `fallback`. Con ambas elegís un motor para cada lado, y tienen que ser distintos. Gemini todavía no es un motor de zero.
+- **Límites:** `usdPerDay` y `usdPerJob` cuando algún motor se paga por uso, `reservePercent` cuando alguno va por plan. Los otros no los toca.
+- **Aislamiento:** ver más abajo.
+- **Puerto del panel y GitHub:** `gh auth login`, un token guardado como `GH_TOKEN`, o nada.
+
+Las API keys y los tokens se escriben sin mostrarse; nunca van en argumentos, en el archivo ni en el registro. Los login corren con tu consentimiento en tu terminal. `claude setup-token` da un token que el asistente guarda. `codex login --device-auth` y `gh auth login` dejan su sesión en el volumen, **sin cifrar**, porque la administra cada CLI: usá una clave o un token si preferís evitarlo. Al elegir un método se borra la credencial guardada del otro para ese motor, y te avisa si hay una en una variable de entorno o en un Docker secret, que no puede borrar.
+
+**Volúmenes.** `zero-data` guarda `ZERO_HOME` (`state.db`, `zero.factory.yaml`, trabajos, `secrets.enc`) y `HOME` (las sesiones de los CLI). `zero-repos`, en `/repos`, guarda los repositorios de las líneas. Recrear o actualizar el contenedor no los pierde.
+
+```sh
+docker compose exec zero git clone https://github.com/you/shop /repos/shop
+docker compose exec zero zero line add /repos/shop
+docker compose build && docker compose up -d                         # actualizar
+```
+
+Solo funcionan los remotos por `https`: para publicar se usa el token de GitHub de zero mediante `zero git-credential`, y el contenedor no tiene llave ssh.
+
+**Secretos.** En un contenedor no hay llavero. Una credencial se busca primero en una variable de entorno, después en el Docker secret `/run/secrets/<NOMBRE>` y por último en `secrets.enc` (AES-256-GCM, permisos 600), cuya llave es el secret `zero_master_key`, fuera del volumen. Sin esa llave no se escribe nada, y si la perdés los secretos guardados no se pueden leer. Evitá las variables de entorno: `docker inspect` las muestra. Los Docker secrets van en tu propio archivo de compose:
+
+```yaml
+services:
+  zero:
+    secrets: [zero_master_key, OPENAI_API_KEY]
+secrets:
+  OPENAI_API_KEY:
+    file: ./secrets/openai_api_key
+```
+
+**Panel.** Se publica en `ZERO_PANEL_PORT` (4848 por defecto), atado a `127.0.0.1` en tu máquina. Sigue pidiendo la clave. Definí los dos en `.env`, junto a `compose.yaml`, y respondé el mismo puerto en `zero setup`:
+
+```sh
+ZERO_PANEL_PORT=8080
+ZERO_PANEL_BIND=0.0.0.0              # lo abre a tu red: usalo solo si hace falta
+```
+
+**Aislamiento.** `compose.yaml` no le da al contenedor acceso a Docker, y elegís en `zero setup`; zero nunca baja la garantía por su cuenta. Hasta que elijas, o mientras la caja no esté lista, los trabajos **esperan en la cola** y `zero status` dice por qué. Docker-in-Docker no se ofrece porque exige `--privileged`.
+
+- **Caja por el socket del anfitrión.** Los trabajos corren en la caja y salen por la puerta, como en una máquina. `docker/compose.box.yaml` monta `/var/run/docker.sock`. **El socket da a todo lo que corre en el contenedor de zero control sobre tu máquina**: los agentes dentro de la caja no lo ven, pero sí zero, las estaciones de paquetes con `allowCode` y las estaciones que corren fuera de la caja (como el turno nocturno). La carpeta de datos tiene la misma ruta adentro y afuera, porque el Docker del anfitrión resuelve las rutas que monta zero. Dentro de la caja, Codex necesita una API key: su sesión de suscripción queda en `HOME`. Mientras corre un trabajo, `docker inspect` de la caja muestra las credenciales que recibió.
+
+```sh
+export ZERO_DATA=/srv/zero                                           # ruta absoluta en tu máquina
+mkdir -p "$ZERO_DATA/home" "$ZERO_DATA/user" "$ZERO_DATA/tmp"
+export ZERO_DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+docker compose -f compose.yaml -f docker/compose.box.yaml run --rm zero setup
+docker compose -f compose.yaml -f docker/compose.box.yaml run --rm zero box setup
+docker compose -f compose.yaml -f docker/compose.box.yaml up -d
+```
+
+- **Sin caja.** `isolation: worktree`, solo después de una advertencia y de una confirmación cuya respuesta por defecto es no. **Los agentes corren en el mismo contenedor que la llave y los secretos**, pueden leerlos y salen a internet sin pasar por la puerta. La fábrica queda por debajo de L3.
+
+Las pruebas de zero no ejercitan esta instalación de punta a punta, solo revisan estos archivos: no corrieron la imagen, los login de los CLI ni la caja por el socket. Ver [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
+
 ## Issues de GitHub
 
 Una línea puede tomar como pedidos los issues de su repositorio de GitHub que tengan una etiqueta:
@@ -143,9 +210,9 @@ zero panel remote off          # lo cierra
 zero panel rotate              # clave nueva: los links anteriores dejan de servir
 ```
 
-- El panel escucha solo en tu PC (`127.0.0.1:4848`).
+- El panel escucha solo en tu PC (`127.0.0.1:4848`), salvo que cambies `panel.host`.
 - La clave viaja en el link después de `#`, así que el navegador no la envía en la dirección. Se canjea por una cookie de sesión.
-- La clave vive en el llavero del sistema.
+- La clave vive en el llavero del sistema (en Docker, en `secrets.enc`).
 - El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
 - Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
 
@@ -173,7 +240,7 @@ zero informe tienda --mes 2026-10 --html    # un documento HTML autónomo (neces
 level: L3                 # L0 · L1 · L2 · L3
 isolation: container      # caja de aislamiento (worktree = copias locales, sin caja)
 box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, luego Docker
-panel: { port: 4848 }     # 0 = sin panel
+panel: { port: 4848, host: 127.0.0.1 }     # puerto 0 = sin panel · host 0.0.0.0 para publicarlo desde un contenedor
 egress:                   # salidas a internet de la caja (todas pasan por la puerta de zero)
   mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
   allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)

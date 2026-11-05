@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { CommitAuthor, LineConfig, Signature } from "../config.js";
+import { factoryHome, inContainer } from "../home.js";
+import { SecretStore } from "../keychain.js";
 import { git, tryGit } from "../shell.js";
 import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
@@ -61,11 +63,28 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
   return { ok: true, delivery: { mode: "merge", branch: copy.branch, commit: git(["rev-parse", line.baseBranch], line.repo) } };
 }
 
-export function githubToken(): string | undefined {
-  const fromEnv = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+export function githubToken(env: NodeJS.ProcessEnv = process.env, secrets?: Pick<SecretStore, "get">): string | undefined {
+  const fromEnv = env.GH_TOKEN ?? env.GITHUB_TOKEN;
   if (fromEnv) return fromEnv;
+  if (inContainer(env)) {
+    const stored = (secrets ?? new SecretStore(factoryHome(env.ZERO_HOME), undefined, env)).get("GH_TOKEN");
+    if (stored) return stored;
+  }
   const r = spawnSync("gh", ["auth", "token"], { encoding: "utf8", windowsHide: true });
   return r.status === 0 ? r.stdout.trim() || undefined : undefined;
+}
+
+/**
+ * git's credential helper protocol (`zero git-credential get`): the token only
+ * for https://github.com, nothing for any other host, so git goes on to ask elsewhere.
+ */
+export function gitCredential(input: string, token: () => string | undefined): string {
+  const fields = new Map(input.split(/\r?\n/).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  if (fields.get("host") !== "github.com") return "";
+  const protocol = fields.get("protocol");
+  if (protocol && protocol !== "https") return "";
+  const value = token();
+  return value ? `username=x-access-token\npassword=${value}\n` : "";
 }
 
 /** owner/repo from a GitHub remote URL (https or ssh). */

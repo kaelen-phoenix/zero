@@ -2,8 +2,11 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { engineCredentials } from "./box/credentials.js";
 import { customAgentChain, stationChain, type FactoryConfig } from "./config.js";
 import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult, type QuotaReport } from "./engines/index.js";
+import { inContainer } from "./home.js";
+import type { SecretStore } from "./keychain.js";
 import { log } from "./log.js";
 import { assignedSkills, availableSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
@@ -176,7 +179,18 @@ function resolvedSkills(config: FactoryConfig, station: AgentStation, line: stri
   return { skills, missing };
 }
 
-export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute; claudeHome?: string } = {}): AgentRunner {
+/**
+ * In a container there is no keychain to fall back on and nothing in the
+ * process's environment: an engine outside the box gets its credential from the
+ * store, in its own process only, so `setup` and `verify` never see it.
+ */
+function localCredentials(engine: string, config: FactoryConfig, secrets: SecretStore | undefined): Record<string, string> | undefined {
+  if (!secrets || !inContainer()) return undefined;
+  const { names } = engineCredentials(engine, config, secrets);
+  return names.length ? Object.fromEntries(names.map((n) => [n, secrets.get(n)!])) : undefined;
+}
+
+export function createAgentRunner(config: FactoryConfig, opts: { execute?: EngineExecute; claudeHome?: string; secrets?: SecretStore } = {}): AgentRunner {
   const execute = opts.execute ?? runHere;
   return async function runAgent<T>({ station, prompt, cwd, schema, maxBudgetUsd, signal, trace, line, engine: choice, custom }: AgentRequest<T>): Promise<AgentRun<T>> {
     const stationCfg = custom ?? config.stations[station];
@@ -217,6 +231,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       });
       if (wanted.length) skills = await stageSkills(wanted);
       const instructions = custom ? custom.instructions : await lineInstructions(config, station, line);
+      const env = localCredentials(engine.name, config, opts.secrets);
       result = await execute(engine, {
         instructions: engine.nativeSkills ? instructions : withSkillText(instructions, skills?.skills ?? []),
         prompt: fullPrompt,
@@ -230,6 +245,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
         timeoutMs: stationCfg.timeoutMinutes * 60_000,
         signal,
         ...(skills && { skills }),
+        ...(env && { env }),
       }, span && trace && { tracer: trace.tracer, jobId: trace.jobId, parentId: span.id }, name);
     } finally {
       await unstageSkills(skills);

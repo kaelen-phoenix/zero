@@ -176,6 +176,33 @@ describe("documentation up to date", () => {
   });
 });
 
+describe("install with Docker", () => {
+  it("documents it right after Getting started, with the same pieces in the code blocks of both", () => {
+    for (const [text, heading, previous] of [[en, "## Install with Docker", "## Getting started"], [es, "## Instalar con Docker", "## Empezar"]] as const) {
+      const titles = text.split("\n").filter((l) => /^## /.test(l));
+      expect(titles.indexOf(heading)).toBe(titles.indexOf(previous) + 1);
+      const body = section(text, heading);
+      const code = blocks(body).map((b) => b.body).join("\n");
+      for (const piece of ["docker compose run --rm zero setup", "ZERO_CLIS", "zero_master_key", "compose.box.yaml", "ZERO_PANEL_PORT"]) expect(code, piece).toContain(piece);
+      expect(body).toContain("socket");
+      expect(body).toContain("--privileged");
+      expect(body).toContain("worktree");
+    }
+  });
+
+  it("warns about both ways of working in each language", () => {
+    expect(section(en, "## Install with Docker")).toContain("control over your machine");
+    expect(section(en, "## Install with Docker")).toContain("same container as the key and the secrets");
+    expect(section(es, "## Instalar con Docker")).toContain("control sobre tu máquina");
+    expect(section(es, "## Instalar con Docker")).toContain("mismo contenedor que la llave y los secretos");
+  });
+
+  it("describes it in AGENTS.md", () => {
+    const guide = read("AGENTS.md");
+    for (const piece of ["src/setup.ts", "encryptedFileKeyring", "ZERO_CONTAINER", "panel.host"]) expect(guide, piece).toContain(piece);
+  });
+});
+
 describe("agent packages", () => {
   afterEach(cleanup);
   const HEADINGS = [[en, "## Agent packages"], [es, "## Paquetes de agentes"]] as const;

@@ -46,7 +46,7 @@ export function claudeOptions(req: EngineRequest, abort: AbortController): Optio
     // Never run hooks (a build may have written them into the repo) nor load the host's memory or claude.ai connectors.
     settings: { disableAllHooks: true, autoMemoryEnabled: false },
     strictMcpConfig: true,
-    env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+    env: { ...process.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     allowedTools: TOOLS[req.access],
     ...(DENIED_TOOLS[req.access] && { disallowedTools: DENIED_TOOLS[req.access] }),
     permissionMode: "dontAsk",

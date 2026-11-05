@@ -1,5 +1,5 @@
 import { createAgentRunner, type AgentRunner } from "./agent.js";
-import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
@@ -100,7 +100,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
 async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<void> {
   const { store } = ctx;
   const pollMs = opts.pollMs ?? 2_000;
-  const agentRunner = opts.agentRunner ?? createAgentRunner;
+  const agentRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets }));
   const now = () => (ctx.now ?? (() => new Date()))();
 
   // A daemon of an earlier version holds no lock: only its heartbeat tells it is there.
@@ -129,6 +129,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   };
   let stopping = false;
   let boxCheckedAt = 0;
+  let boxWaitLogged = false;
   const refreshBox = () => {
     if (ctx.config.isolation !== "container") return;
     try {
@@ -150,7 +151,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const port = (opts.panel ?? !opts.once) ? ctx.config.panel.port : 0;
   const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets) }) : undefined;
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
-  panel?.listen(port, "127.0.0.1", () => log.info("control panel listening", { url: `http://127.0.0.1:${port}` }));
+  const host = ctx.config.panel.host;
+  panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
   const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
   // GitHub issues are read in the background: a slow GitHub never holds up the loop, and passes never overlap.
   let intakeAt = 0;
@@ -283,6 +285,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         else if (store.getJob(id)?.stopRequested) r.controller.abort("stop" satisfies StopReason);
       }
 
+      // In a container nobody can have meant local copies by accident: without the box, work waits and `zero status` says why.
+      const boxWait = waitsForBox(ctx);
+      if (boxWait && !boxWaitLogged) log.warn("waiting for the box: not starting jobs", { problems: currentBox(ctx).availability.problems.join("; ") });
+      boxWaitLogged = boxWait;
+
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
         for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
@@ -298,6 +305,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
+          if (boxWait) continue;
           if (running.size >= ctx.config.concurrency) {
             startable = true;
             break;
@@ -314,7 +322,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         }
       }
 
-      if (!andon && !startable) {
+      if (!andon && !startable && !boxWait) {
         idlePasses();
       }
 

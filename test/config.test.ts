@@ -248,3 +248,10 @@ describe("a file with retired keys", () => {
     expect(FIXED_STATIONS).not.toContain("community");
   });
 });
+
+describe("panel.host", () => {
+  it("defaults to 127.0.0.1 and takes the file's value", () => {
+    expect(parseFactory("lines: []\n").panel).toEqual({ port: 4848, host: "127.0.0.1" });
+    expect(parseFactory("panel: { host: 0.0.0.0 }\nlines: []\n").panel.host).toBe("0.0.0.0");
+  });
+});

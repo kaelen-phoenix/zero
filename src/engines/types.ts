@@ -20,6 +20,8 @@ export interface EngineRequest {
   signal?: AbortSignal;
   /** Skills zero staged for this run (a local plugin directory); only engines with `nativeSkills` read it. */
   skills?: StagedSkills;
+  /** Credentials for this engine's process alone, on top of the factory's environment. */
+  env?: Record<string, string>;
 }
 
 export interface EngineResult {
