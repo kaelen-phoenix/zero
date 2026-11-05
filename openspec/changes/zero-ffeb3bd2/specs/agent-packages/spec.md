@@ -81,6 +81,33 @@ Tras la confirmación, si el paquete tiene `package-lock.json`, zero MUST ejecut
 - **WHEN** el instalador lanza un error durante un agregado
 - **THEN** `packageAdd` falla, el clon se borra y el archivo de fábrica no cambia
 
+### Requirement: Dependencias que npm tendría que armar
+`--ignore-scripts` no alcanza a una dependencia git, porque npm la arma corriendo su `prepare`. Antes de lanzar npm sobre un paquete, zero MUST leer `package-lock.json` y `npm-shrinkwrap.json` y rechazar el agregado o la actualización, sin lanzar npm, si alguna dependencia no es un tarball https de un registro o un enlace local, o si el archivo es un enlace o no se puede leer. En una actualización git MUST leerlos del commit nuevo mientras planifica, antes de confirmar y de apagar la fábrica. Para un paquete npm MUST armar antes el lock en una carpeta descartable y rechazarlo igual, y toda ejecución de npm MUST llevar `allow-git=none` para las versiones que lo conocen.
+
+#### Scenario: agregado con dependencia git
+- **WHEN** el lock del repositorio resuelve una dependencia a `git+https://`
+- **THEN** `packageAdd` lanza el motivo, `confirm` y el instalador no se llaman, `packages/git` queda sin carpetas y el archivo de fábrica no cambia
+
+#### Scenario: actualización que solo cambia el lock
+- **WHEN** un commit nuevo solo agrega al lock una dependencia git
+- **THEN** el resultado marca fallo, `confirm`, `shutdown`, el instalador y `start` no se llaman, HEAD y `commit` siguen en el commit anterior y la lista avisa la actualización
+
+#### Scenario: carpeta con dependencia git
+- **WHEN** el lock de un paquete de carpeta cambia y ahora tiene una dependencia git
+- **THEN** el resultado marca fallo y ni `shutdown` ni el instalador se llaman
+
+#### Scenario: shrinkwrap junto a un lock limpio
+- **WHEN** la carpeta tiene un `package-lock.json` limpio y un `npm-shrinkwrap.json` con una dependencia git
+- **THEN** npm no se lanza
+
+#### Scenario: npm real con un script de preparación
+- **WHEN** contra npm real, una dependencia git con `prepare` llega por un lock o por un paquete npm que la declara
+- **THEN** se rechaza y el script no corre
+
+#### Scenario: lo que sí se instala
+- **WHEN** el lock solo tiene tarballs https de un registro, enlaces locales, dependencias incluidas en otro paquete o alias npm
+- **THEN** no hay motivo de rechazo
+
 ### Requirement: Entrada git en el archivo de fábrica
 Un paquete instalado desde git MUST quedar en el archivo de fábrica como `git: <fuente>` con `path` (su carpeta) y `commit` (el SHA instalado), conservando los comentarios del archivo y con `allowCode` según `--permitir-codigo` como hasta ahora; el esquema MUST exigir `path` y `commit` junto a `git` y no aceptarlo junto a `npm`.
 

@@ -13,7 +13,7 @@ import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, type FactoryHome } from "./home.js";
-import { cleanText, declaredSecrets, fetchRef, lockKey, lockPrint, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
+import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
@@ -1105,13 +1105,15 @@ export function packageList(ctx: FactoryContext): PackageList {
 /** Installs a package from npm into `dir`; tests inject a fake. */
 export type PackageInstaller = (dir: string, name: string) => Promise<void>;
 
-/** Install scripts never run: installing a package does not run its code. */
+/** Install scripts never run; what `--ignore-scripts` does not reach, a git dependency, `npmInstall` refuses first. */
 export function npmInstallArgs(dir: string, name: string): string[] {
   return ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", dir, name];
 }
 
 const npmInstall: PackageInstaller = async (dir, name) => {
   try {
+    const problem = await npmSpecProblem(name);
+    if (problem) throw new Error(problem);
     await runNpm(npmInstallArgs(dir, name), 600_000);
   } catch (err) {
     throw new Error(`npm no pudo instalar ${name}: ${errorText(err)}`);
@@ -1211,6 +1213,8 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
     } catch (err) {
       throw new Error(`No se puede agregar ${source}: ${errorText(err)}`);
     }
+    const lock = folderLockProblem(temp);
+    if (lock) throw new Error(`No se puede agregar ${source}: ${lock}.`);
     const dir = join(root, manifest.name);
     if (existsSync(dir)) throw new Error(`No se puede agregar ${source}: ya existe la carpeta ${dir} y ningún paquete la declara con esa fuente. Quitala o movela si ya no la usás.`);
     const others = ctx.config.packages;
@@ -1380,6 +1384,8 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
   const before = await manifestAt(git, dir, from);
   const after = await manifestAt(git, dir, to);
   if (!after) throw new Error(`no se aplicó ${shortSha(to)}: su ${MANIFEST} falta, no es válido o no se pudo leer, así que no se sabe qué pide.`);
+  const lock = await lockProblemAt(git, dir, to);
+  if (lock) throw new Error(`no se aplicó ${shortSha(to)}: ${lock}.`);
   const wider = widening(before, after);
   const lost = declaredSecrets(before ?? { stations: [] }).filter((s) => !declaredSecrets(after).includes(s));
   if (wider.secrets.length) say(`Secreto nuevo: ${wider.secrets.join(", ")}`);
@@ -1428,6 +1434,8 @@ function planFolderUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number
     steps.say(`${name}: está al día.`);
     return undefined;
   }
+  const lock = folderLockProblem(dir);
+  if (lock) throw new Error(`no se reinstalan sus dependencias: ${lock}.`);
   steps.say(`${name}: cambió ${PACKAGE_LOCK}, hay que reinstalar sus dependencias.`);
   return async () => {
     await steps.deps(dir);

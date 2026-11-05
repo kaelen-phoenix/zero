@@ -8,7 +8,7 @@ import { ConfigError, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { formatPackages } from "../src/format.js";
 import { packageUpdatesPass, remoteCommit } from "../src/line/package-updates.js";
-import { findOnPath, gitEnv, manifestAt, manifestNotAFile, npmCiArgs, npmCommand, readSeen, realDependencies, realGit, runNpm, widening, type GitRunner } from "../src/package-install.js";
+import { findOnPath, folderLockProblem, gitEnv, lockProblem, lockProblemAt, manifestAt, manifestNotAFile, npmCiArgs, npmCommand, npmSpecProblem, readSeen, realDependencies, realGit, runNpm, widening, type GitRunner } from "../src/package-install.js";
 import { isGitSource, parseGitSource } from "../src/package-source.js";
 import { factoryConfig, ManifestSchema } from "../src/packages.js";
 import { cleanup, gitIn, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
@@ -248,6 +248,7 @@ describe("programs planted in a package's folder", () => {
     expect(opts.shell).toBe(false);
     expect(opts.env?.NoDefaultCurrentDirectoryInExePath).toBe("1");
     expect(isAbsolute(String(opts.env?.npm_config_git))).toBe(true);
+    expect(opts.env?.npm_config_allow_git).toBe("none");
   }, 120_000);
 
   it("the rest of npm goes the same way", async () => {

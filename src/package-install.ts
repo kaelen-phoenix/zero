@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { parse } from "yaml";
 import { NPM_NAME } from "./config.js";
@@ -9,6 +11,8 @@ import { redact } from "./secrets.js";
 import type { Store } from "./state/store.js";
 
 export const PACKAGE_LOCK = "package-lock.json";
+/** What `npm ci` reads; the shrinkwrap wins when a folder has both, so neither can be left unread. */
+const LOCK_FILES = [PACKAGE_LOCK, "npm-shrinkwrap.json"];
 
 /** Runs git and gives its output, trimmed, or throws with a clean reason; tests wrap real git to reach temporary repositories. */
 export type GitRunner = (args: string[], opts?: { cwd?: string }) => Promise<string>;
@@ -86,16 +90,130 @@ export const realGit: GitRunner = async (args, opts = {}) => {
   return runProcess(`git ${args[0]}`, git, [...(opts.cwd ? ["-C", opts.cwd] : []), ...args], { env: gitEnv(), timeout: GIT_TIMEOUT_MS });
 };
 
-/** npm from a trusted folder; `npm_config_git` outranks a package's .npmrc, which could otherwise name its own git for git dependencies. */
+/** npm from a trusted folder; `npm_config_git` outranks a package's .npmrc, which could otherwise name its own git for git dependencies, and `npm_config_allow_git` refuses those dependencies on the npm versions that know the setting (the others ignore it, hence `lockProblem`). */
 export async function runNpm(args: string[], timeout: number): Promise<string> {
   const [command, ...before] = npmCommand();
-  return runProcess(`npm ${args[0]}`, command!, [...before, ...args], { env: { ...noCurrentFolder(), npm_config_git: findGit() ?? "git" }, timeout });
+  return runProcess(`npm ${args[0]}`, command!, [...before, ...args], { env: { ...noCurrentFolder(), npm_config_git: findGit() ?? "git", npm_config_allow_git: "none" }, timeout });
 }
 
-/** Install scripts never run, and only what the package needs at run time goes in. */
+/** Install scripts of what comes from a registry never run, and only what the package needs at run time goes in. `--ignore-scripts` does not reach a git dependency, which is why `realDependencies` reads the lock first. */
 export const npmCiArgs = (): string[] => ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"];
 
+// The hosts npm reads as a git repository even in a plain https URL (hosted-git-info).
+const GIT_HOSTS = new Set(["github.com", "gist.github.com", "gitlab.com", "bitbucket.org", "git.sr.ht"]);
+const LOCK_NAME = /^(@[\w.~-]+\/)?[\w.~-]+$/;
+const LOCK_ALIAS = /^npm:(@[\w.~-]+\/)?[\w.~-]+@[0-9A-Za-z][0-9A-Za-z.+-]*$/;
+
+function isTarballUrl(resolved: string): boolean {
+  try {
+    const url = new URL(resolved);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash && !url.pathname.endsWith(".git") && !GIT_HOSTS.has(url.hostname.replace(/^www\./, ""));
+  } catch {
+    return false;
+  }
+}
+
+/** What is wrong with one dependency of a lock, in the words that follow its name; undefined when npm would only unpack it. */
+function lockEntryProblem(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return "no se entiende";
+  const { name, version, resolved, link, hasShrinkwrap } = entry as Record<string, unknown>;
+  // Its own shrinkwrap only shows once it is unpacked, too late to read it.
+  if (hasShrinkwrap) return "trae su propio npm-shrinkwrap.json";
+  if (name !== undefined && (typeof name !== "string" || !LOCK_NAME.test(name))) return "tiene un nombre que no es de un paquete";
+  if (version !== undefined && (typeof version !== "string" || !(VERSION.test(version) || LOCK_ALIAS.test(version)))) return `viene de ${typeof version === "string" ? cleanError(version).slice(0, 120) : "un origen que no se entiende"}`;
+  if (resolved === undefined) return undefined;
+  if (typeof resolved !== "string") return "viene de un origen que no se entiende";
+  const fine = link === true ? !/^[a-z][a-z0-9+.-]*:/i.test(resolved) : isTarballUrl(resolved);
+  return fine ? undefined : `viene de ${cleanError(resolved).slice(0, 120)}`;
+}
+
+function legacyLockProblem(dependencies: unknown): string | undefined {
+  if (typeof dependencies !== "object" || dependencies === null) return undefined;
+  for (const [name, entry] of Object.entries(dependencies)) {
+    const problem = lockEntryProblem(entry);
+    if (problem) return `${cleanText(name)} ${problem}`;
+    const nested = legacyLockProblem((entry as { dependencies?: unknown }).dependencies);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function packagesProblem(packages: unknown): string | undefined {
+  if (typeof packages !== "object" || packages === null) return undefined;
+  for (const [path, entry] of Object.entries(packages)) {
+    // The empty path is the package itself, which npm does not fetch.
+    const problem = path === "" ? undefined : lockEntryProblem(entry);
+    if (problem) return `${cleanText(path.replace(/^.*node_modules\//, ""))} ${problem}`;
+  }
+  return undefined;
+}
+
+/**
+ * Why npm must not install from this lock. A git dependency is built on the way in:
+ * npm runs its `prepare` and an install of its own, `--ignore-scripts` or not, so the
+ * only safe answer is not to start npm. A lock may hold registry tarballs and local
+ * links; anything else, or one that cannot be read, is refused.
+ */
+export function lockProblem(text: string, file = PACKAGE_LOCK): string | undefined {
+  let lock: unknown;
+  try {
+    lock = JSON.parse(text);
+  } catch {
+    return `${file} no se puede leer`;
+  }
+  if (typeof lock !== "object" || lock === null) return `${file} no se puede leer`;
+  const { packages, dependencies } = lock as { packages?: unknown; dependencies?: unknown };
+  const problem = packagesProblem(packages) ?? legacyLockProblem(dependencies);
+  return problem && `${file}: la dependencia ${problem}, y zero solo instala paquetes de un registro por https o carpetas locales, porque npm correría el código de las demás aunque se le pida --ignore-scripts`;
+}
+
+const notAFile = (file: string) => `${file} no es un archivo común`;
+
+/** `lockProblem` for the locks a folder has on disk. */
+export function folderLockProblem(dir: string): string | undefined {
+  for (const file of LOCK_FILES) {
+    const path = join(dir, file);
+    let regular: boolean;
+    try {
+      regular = lstatSync(path).isFile();
+    } catch {
+      continue;
+    }
+    const problem = regular ? lockProblem(readFileSync(path, "utf8"), file) : notAFile(file);
+    if (problem) return problem;
+  }
+  return undefined;
+}
+
+/** `lockProblem` for the locks a commit has, without checking it out. */
+export async function lockProblemAt(git: GitRunner, dir: string, sha: string): Promise<string | undefined> {
+  for (const file of LOCK_FILES) {
+    const tree = await git(["ls-tree", sha, "--", file], { cwd: dir });
+    if (!tree) continue;
+    const problem = REGULAR_FILE.test(tree) ? lockProblem(await git(["show", `${sha}:${file}`], { cwd: dir }), file) : notAFile(file);
+    if (problem) return problem;
+  }
+  return undefined;
+}
+
+/**
+ * What `npm install <spec>` would bring, judged in a throwaway folder: building a lock
+ * only reads manifests, so a git dependency gets cloned but never built. Throws when
+ * npm itself refuses.
+ */
+export async function npmSpecProblem(spec: string): Promise<string | undefined> {
+  const dir = await mkdtemp(join(tmpdir(), "zero-npm-"));
+  try {
+    await runNpm(["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", dir, spec], NPM_TIMEOUT_MS);
+    return folderLockProblem(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
 export const realDependencies: DependencyInstaller = async (dir) => {
+  const problem = folderLockProblem(dir);
+  if (problem) throw new Error(problem);
   await runNpm([...npmCiArgs(), "--prefix", dir], NPM_TIMEOUT_MS);
 };
 
@@ -129,13 +247,15 @@ export async function manifestAt(git: GitRunner, dir: string, sha: string): Prom
   }
 }
 
+const REGULAR_FILE = /^100\d{3} blob /;
+
 /** A manifest that is a link or a folder reads one way in a commit and another on disk, so nothing said about it would hold. */
 export const MANIFEST_NOT_A_FILE = `${MANIFEST} no es un archivo común, y zero no acepta un manifiesto que apunta a otra parte`;
 
 /** Whether a commit has something at the manifest's place other than a regular file; having nothing there is not this. */
 export async function manifestNotAFile(git: GitRunner, dir: string, sha: string): Promise<boolean> {
   const tree = await git(["ls-tree", sha, "--", MANIFEST], { cwd: dir });
-  return tree !== "" && !/^100\d{3} blob /.test(tree);
+  return tree !== "" && !REGULAR_FILE.test(tree);
 }
 
 export const declaredSecrets = (m: Pick<PackageManifest, "stations">) => [...new Set(m.stations.flatMap((s) => s.secrets))];
