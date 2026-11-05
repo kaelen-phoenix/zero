@@ -17,7 +17,7 @@ El pie del sitio (`<footer class="foot">` en `site/index.html`) MUST contener, j
 - **WHEN** se recorre el contenido del footer en orden
 - **THEN** el enlace de WhatsApp viene después del enlace de GitHub (y del de Instagram, si el pie ya lo tiene) y antes de la versión y del selector de tema
 
-### Requirement: Ícono monocromo
+### Requirement: Ícono monocromo de WhatsApp
 El enlace de WhatsApp del pie MUST mostrar solo un ícono SVG en línea, decorativo y de un solo color que hereda el color del texto (`currentColor`), sin colores fijos, sin recursos externos y sin texto visible adicional.
 
 #### Scenario: El ícono sigue el tema del sitio
@@ -32,7 +32,7 @@ El enlace de WhatsApp del pie MUST mostrar solo un ícono SVG en línea, decorat
 - **WHEN** se quita el marcado del enlace de WhatsApp del pie
 - **THEN** no queda texto
 
-### Requirement: Texto accesible en los dos idiomas
+### Requirement: Texto accesible de WhatsApp en los dos idiomas
 El enlace de WhatsApp del pie MUST tener el nombre accesible "WhatsApp de zero in the loop" en español y "zero in the loop on WhatsApp" en inglés, usando el mecanismo `data-i18n-label` del sitio.
 
 #### Scenario: Español por defecto
