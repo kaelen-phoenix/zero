@@ -1,7 +1,7 @@
 {
   "name": "@kaelen/zero",
   "version": "0.1.0",
-  "description": "Kaelen Global Defence: autonomous agent network. Continuous execution. Zero human intervention required.",
+  "description": "An open source software factory that runs on your machine: it turns requests into delivered changes, and you decide where to step back in.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
