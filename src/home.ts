@@ -20,6 +20,9 @@ export interface FactoryHome {
   packages: string;
 }
 
+/** The official image sets ZERO_CONTAINER=1: no system keychain, and no falling back to local copies without the owner's say. */
+export const inContainer = (env: NodeJS.ProcessEnv = process.env): boolean => env.ZERO_CONTAINER === "1";
+
 export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".zero")): FactoryHome {
   const abs = resolve(root);
   return {

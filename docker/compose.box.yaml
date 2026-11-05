@@ -1,0 +1,21 @@
+# The isolation box through the host's Docker. On top of compose.yaml:
+#   docker compose -f compose.yaml -f docker/compose.box.yaml up -d
+#
+# WARNING: the socket gives whatever runs in zero's container control over the
+# host machine. Agents inside the box do not see it; zero, package stations with
+# allowCode and stations that run outside the box do.
+#
+# The host's daemon resolves `-v` paths on the host, so the data folder has the
+# same path inside and out, with everything zero mounts (TMPDIR included) under it.
+services:
+  zero:
+    group_add:
+      - "${ZERO_DOCKER_GID:-0}"
+    environment:
+      ZERO_DATA: ${ZERO_DATA:?Definí ZERO_DATA con una ruta absoluta de tu máquina}
+      ZERO_HOME: ${ZERO_DATA}/home
+      HOME: ${ZERO_DATA}/user
+      TMPDIR: ${ZERO_DATA}/tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ZERO_DATA}:${ZERO_DATA}

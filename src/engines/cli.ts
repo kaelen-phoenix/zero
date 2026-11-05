@@ -20,9 +20,9 @@ interface ProcessResult {
   cancelled: boolean;
 }
 
-export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<ProcessResult> {
+export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number, signal?: AbortSignal, env?: Record<string, string>): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env && { env: { ...process.env, ...env } }) });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -85,7 +85,7 @@ async function execute(
   req: EngineRequest,
   output: (r: ProcessResult) => string | Promise<string> = (r) => finalText(r.stdout),
 ): Promise<EngineResult> {
-  const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal);
+  const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal, req.env);
   if (r.cancelled) return { ok: false, text: `${name} cancelled` };
   if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min` };
   if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${(r.stderr || r.stdout).slice(-2000)}` };

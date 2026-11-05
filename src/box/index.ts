@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { FactoryConfig } from "../config.js";
+import { inContainer } from "../home.js";
 import { buildImage, imageTag } from "./image.js";
 import { exec, imageExists, installedRuntimes, responds } from "./runtime.js";
 import { probe, runBoxSetup, type SetupIO, type SetupOutcome } from "./setup.js";
@@ -41,5 +42,10 @@ export function machineSetupIO(config: Pick<FactoryConfig, "box">, confirm: Setu
 }
 
 export async function setupBox(config: Pick<FactoryConfig, "box">, io: Pick<SetupIO, "confirm" | "say">, yes: boolean): Promise<SetupOutcome> {
+  // Inside the official image the runtime is the host's: installing one here would not help.
+  if (inContainer() && !installedRuntimes(config.box.runtime, exec).some((rt) => responds(rt, exec))) {
+    io.say("Este contenedor no llega a Docker. Para usar la caja, levantalo con docker/compose.box.yaml, que conecta el socket de tu máquina; o corré `zero setup` y elegí trabajar sin caja.");
+    return "manual";
+  }
   return runBoxSetup(machineSetupIO(config, io.confirm, io.say), { yes });
 }

@@ -176,7 +176,9 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     out.push(
       s.box.availability.ready && st
         ? `Caja de aislamiento: lista (${st.runtime} · ${st.image})`
-        : `Caja de aislamiento: no lista; los trabajos corren en copias locales.${s.level.reason ? "" : ` ${s.box.availability.problems.join("; ")}`}`,
+        : s.boxWait
+          ? `Caja de aislamiento: no lista; los trabajos esperan la caja en la cola. Corré \`zero box setup\` o elegí otra cosa con \`zero setup\`. ${s.box.availability.problems.join("; ")}`
+          : `Caja de aislamiento: no lista; los trabajos corren en copias locales.${s.level.reason ? "" : ` ${s.box.availability.problems.join("; ")}`}`,
     );
   } else {
     out.push("Caja de aislamiento: desactivada (isolation: worktree)");

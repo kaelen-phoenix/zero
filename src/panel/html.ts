@@ -167,7 +167,9 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
       ? "Caja de aislamiento desactivada: los trabajos corren en copias locales."
       : s.box.availability.ready
         ? `Caja lista (${esc(s.box.status?.runtime)}).`
-        : "Sin caja: los trabajos corren en copias locales.";
+        : s.boxWait
+          ? "Sin caja: los trabajos esperan en la cola. Corré <code>zero box setup</code> o elegí otra cosa con <code>zero setup</code>."
+          : "Sin caja: los trabajos corren en copias locales.";
   const waiting = s.waiting
     .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
 <p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
@@ -592,6 +594,8 @@ export function aboutPage(g: FactoryGuide, nonce: string): string {
   const box =
     g.isolation === "container" && g.box.ready
       ? "activa: los agentes trabajan dentro de una caja aislada."
+      : g.boxWait
+        ? "no está activa: está configurada pero no está lista, así que los trabajos esperan en la cola."
       : g.isolation === "container"
         ? "no está activa: está configurada pero no está lista, así que los trabajos corren en copias locales."
         : "no está activa: los trabajos corren en copias locales.";
