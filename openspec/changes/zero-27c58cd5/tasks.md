@@ -1,0 +1,16 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Antes de cambiar el motor, actualizar el mock de `test/engines-empty-output.test.ts` para que los `codex` con args `login status` usen un script aparte (`fake.login`, por defecto `process.exitCode = 1`). Los scripts de `codexScript` calculan `last` con `indexOf("--output-last-message") + 1`: sin ese argumento, `last` es `process.argv[0]`, es decir el ejecutable de node, y `writeFileSync` apuntaría a ese archivo.
+- [ ] 1.2 En `src/engines/cli.ts`, agregar `--json` a `codexInvocation` y corregir el comentario `needs CODEX_API_KEY or OPENAI_API_KEY`, que ya no es cierto. Mantener el último argumento `-`.
+- [ ] 1.3 En `src/engines/cli.ts`, agregar funciones puras y exportadas: lectura de eventos JSONL tolerante a líneas no JSON y CRLF; último `rate_limits` válido en cualquier nivel; último mensaje de agente; último mensaje de error; billing a partir de claves y texto de login; y `codexQuota`, que arma el `QuotaReport`. Etiquetas: 300 minutos `5 horas`, 10080 `semana`, múltiplos de 60 `<n> horas` (1: `1 hora`), otro valor `<n> minutos`, sin dato el nombre de la ventana.
+- [ ] 1.4 En `codexEngine.run`, adjuntar `quota` al resultado, también en fallos y salvo cancelación. Si no hay clave, lanzar `codex login status` con `runProcess` después de `codex exec`, con 10 s de tiempo máximo, `req.signal` y `req.env`, y con cwd en la carpeta temporal del motor, no en la copia de trabajo. Atrapar cualquier rechazo. Omitir la clave `quota` cuando no haya dato, para que los `toEqual` existentes sigan valiendo. Extender `execute` con lo mínimo para codex, sin cambiar a antigravity ni a los motores propios.
+- [ ] 1.5 Ajustar el fallback de stdout y el texto de salida con error de codex según los requisitos, usando los helpers de eventos.
+- [ ] 1.6 En `src/budget.ts`, extraer el filtro de `jobBilledUsd` a una función exportada que reciba spans y `now`, con `billingOf !== "subscription"`, y reutilizarla en `jobBilledUsd`.
+- [ ] 1.7 En `src/line/scout.ts`, hacer que `scoutSpent(store, since, now = new Date())` use esa función, y actualizar su comentario. Pasar `now` desde `scoutPass`, `researchPass` (`src/line/research.ts`) y `src/line/packages.ts`.
+- [ ] 1.8 Agregar pruebas en `test/engines.test.ts` y `test/engines-empty-output.test.ts`: `--json`, billing, fallas de login, ventanas, fallback, errores, `limited`, cancelación. Limpiar con `vi.stubEnv` `CODEX_API_KEY` y `OPENAI_API_KEY` para que el resultado no dependa de la máquina. No correr nunca un `codex` real.
+- [ ] 1.9 Agregar pruebas en `test/budget.test.ts`, `test/scout.test.ts`, `test/research.test.ts` y `test/packages.test.ts`: lectura de codex a través de `quotaAttrs` y `budgetState`, y todos los escenarios de `scoutSpent` y de los topes.
+- [ ] 1.10 Actualizar `README.md` y `README.es.md` (comentario de `limits` cerca de la línea 251, comentario de `usdPerNight` y párrafo del turno de noche), con la misma estructura en los dos, usando `vos`/`you`. Agregar la prueba de documentación en `test/docs.test.ts`.
+- [ ] 1.11 Actualizar `AGENTS.md`: `src/agent.ts + src/engines/` (cuota de codex, `--json`) y la nota de `scoutSpent` en `src/line/research.ts`.
+- [ ] 1.12 Correr `npm run typecheck`, `npm test`, `npm run build` y `npx openspec validate --all`.
