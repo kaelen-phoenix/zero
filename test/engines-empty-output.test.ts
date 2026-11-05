@@ -10,8 +10,9 @@ vi.mock("node:child_process", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:child_process")>();
   return {
     ...real,
+    // By their name alone: where those programs are installed, zero starts them by their full path.
     spawn: (bin: string, args: string[], options: object) =>
-      bin === "agy" || bin === "codex"
+      /(^|[\\/])(agy|codex)(\.(com|exe))?$/i.test(bin)
         ? real.spawn(process.execPath, ["-e", fake.script, "--", ...args], options)
         : real.spawn(bin, args, options),
   };

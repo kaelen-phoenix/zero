@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
@@ -9,7 +8,7 @@ import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, 
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { signText, withTrailer } from "../signature.js";
-import { git, sh, type ShellResult } from "../shell.js";
+import { git, sh, spawnGit, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
@@ -359,7 +358,7 @@ export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getPropo
  */
 function startingBase(line: LineConfig, jobId: string): string {
   if (line.integrate !== "pull-request") return line.baseBranch;
-  const fetched = spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+  const fetched = spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 120_000 });
   if (fetched.status === 0) return `${line.remote}/${line.baseBranch}`;
   log.warn("cannot fetch the base branch; starting from the local one", { job: jobId, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
   return line.baseBranch;

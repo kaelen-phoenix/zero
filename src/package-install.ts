@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse } from "yaml";
 import { NPM_NAME } from "./config.js";
 import { MANIFEST, ManifestSchema, type PackageManifest } from "./packages.js";
 import { redact } from "./secrets.js";
+import { findOnPath, TRUSTED_CWD } from "./shell.js";
 import type { Store } from "./state/store.js";
 
 export const PACKAGE_LOCK = "package-lock.json";
@@ -31,26 +32,7 @@ export const cleanText = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u
 /** Git's own words without anything that looks like a credential. */
 const cleanError = (text: string) => cleanText(redact(text).replace(/:\/\/[^/\s@]+@/g, "://[REDACTED]@")).slice(0, 500);
 
-/** A folder with nothing of a third party's: where git and npm start, so that neither Windows nor what they start can pick up a program or a library from a package's folder. */
-const TRUSTED_CWD = dirname(process.execPath);
-
-/** Where the first absolute entry of PATH that has a program keeps it. Relative entries mean whatever folder a process stands in, so they do not count. */
-export function findOnPath(name: string, extensions: string[], path = process.env.PATH ?? ""): string | undefined {
-  for (const entry of path.split(delimiter).map((e) => e.replace(/^"|"$/g, ""))) {
-    if (!isAbsolute(entry)) continue;
-    for (const extension of extensions) {
-      const file = join(entry, name + extension);
-      try {
-        if (!statSync(file).isFile()) continue;
-        accessSync(file, constants.X_OK);
-        return file;
-      } catch {
-        // Not here.
-      }
-    }
-  }
-  return undefined;
-}
+export { findOnPath };
 
 const findGit = () => findOnPath("git", process.platform === "win32" ? [".com", ".exe"] : [""]);
 
