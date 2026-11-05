@@ -91,6 +91,18 @@ describe("motto", () => {
       expect(text, file).not.toContain("Zero human intervention required");
     }
   });
+
+  it("describes the package in package.json without Kaelen nor the old motto", () => {
+    const hasForbidden = (text: string) => /kaelen/i.test(text) || text.includes("Zero human intervention required");
+    const pkg = JSON.parse(read("package.json")) as { name: string; description: string };
+    expect(pkg.description).toBe("An open source software factory that runs on your machine: it turns requests into delivered changes, and you decide where to step back in.");
+    expect(hasForbidden(pkg.description)).toBe(false);
+    // The package name is an identifier, not prose.
+    expect(pkg.name).toBe("@kaelen/zero");
+    expect(hasForbidden("Kaelen Global Defence: autonomous agent network. Continuous execution. Zero human intervention required.")).toBe(true);
+    expect(hasForbidden("Zero human intervention required")).toBe(true);
+    expect(hasForbidden("KAELEN")).toBe(true);
+  });
 });
 
 describe("documentation up to date", () => {
