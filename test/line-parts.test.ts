@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseFactory } from "../src/config.js";
 import { mergeIntoBase, githubRepository, integrate } from "../src/line/integrate.js";
 import { decide } from "../src/line/policy.js";
 import { blockingFindings, checkCitations, citationValid, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "../src/line/review.js";
-import { changeName, plainSpec, renderOpenSpecChange, specProblems, writeFiles } from "../src/line/spec.js";
+import { changeName, existingRequirementNames, foldRequirementName, plainSpec, renderOpenSpecChange, specProblems, uniqueRequirementNames, writeFiles } from "../src/line/spec.js";
 import { filterProposals, type ScoutOutput } from "../src/line/scout.js";
 import { ALWAYS_PROTECTED, protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
 import { Store } from "../src/state/store.js";
@@ -75,6 +75,134 @@ describe("spec station output", () => {
   it("explains the spec in plain words for the owner", () => {
     expect(plainSpec(validSpec())).toContain("Qué va a funcionar:\n- Health check");
   });
+});
+
+const delta = (...names: string[]) => `## ADDED Requirements\n\n${names.map((n) => `### Requirement: ${n}\nIt MUST work.\n`).join("\n")}`;
+const named = (...names: string[]) => validSpec({ requirements: names.map((name) => ({ ...validSpec().requirements[0]!, name })) });
+const namesOf = (spec: ReturnType<typeof validSpec>) => spec.requirements.map((r) => r.name);
+
+describe("existing requirement names", () => {
+  it("come from the main spec and other changes' deltas of the capability", () => {
+    const root = tempDir("zero-names-");
+    writeTree(root, {
+      "openspec/specs/cap/spec.md": `# cap\n\n## Requirements\n\n${delta("A").replace("## ADDED Requirements\n\n", "")}`,
+      "openspec/changes/otro/specs/cap/spec.md": delta("B").replace(/\n/g, "\r\n"),
+    });
+    expect(existingRequirementNames(root, "cap", "zero-j1").sort()).toEqual(["A", "B"]);
+  });
+
+  it("leave out the archive, the job's own change and other capabilities", () => {
+    const root = tempDir("zero-names-");
+    writeTree(root, {
+      "openspec/changes/archive/x/specs/cap/spec.md": delta("Archivado"),
+      "openspec/changes/archive/specs/cap/spec.md": delta("Archivado"),
+      "openspec/changes/zero-j1/specs/cap/spec.md": delta("Propio"),
+      "openspec/changes/otro/specs/otra/spec.md": delta("Otra"),
+      "openspec/specs/otra/spec.md": delta("Otra"),
+    });
+    expect(existingRequirementNames(root, "cap", "zero-j1")).toEqual([]);
+  });
+
+  it("use the same folder as the rendered change", () => {
+    const root = tempDir("zero-names-");
+    const capability = "Salud Óptima";
+    const folder = Object.keys(renderOpenSpecChange(validSpec({ capability }), { jobId: "j1", newCapability: false })).find((p) => p.startsWith("specs/"))!;
+    writeTree(root, { [`openspec/changes/otro/${folder}`]: delta("A") });
+    expect(existingRequirementNames(root, capability, "zero-j1")).toEqual(["A"]);
+  });
+
+  it("are empty without OpenSpec", () => {
+    expect(existingRequirementNames(tempDir("zero-names-"), "cap", "zero-j1")).toEqual([]);
+  });
+
+  it("skip what cannot be read and keep the rest", () => {
+    const root = tempDir("zero-names-");
+    writeTree(root, { "openspec/changes/suelto.md": "x", "openspec/changes/bien/specs/cap/spec.md": delta("A") });
+    mkdirSync(join(root, "openspec", "changes", "carpeta", "specs", "cap", "spec.md"), { recursive: true });
+    expect(existingRequirementNames(root, "cap", "zero-j1")).toEqual(["A"]);
+  });
+});
+
+describe("unique requirement names", () => {
+  it("compare like openspec's fold", () => {
+    for (const name of ["ÍCONO monocromo", "ícono   monocromo", "  Ícono monocromo\t", "Ícono monocromo ##"]) {
+      expect(foldRequirementName(name)).toBe("ícono monocromo");
+    }
+    expect(foldRequirementName("C#")).toBe("c#");
+    expect(namesOf(uniqueRequirementNames(named("ÍCONO monocromo"), "abc123", ["Ícono monocromo"]))).toEqual(["ÍCONO monocromo (abc123)"]);
+  });
+
+  it("match a delta's heading with a closing run of #", () => {
+    const root = tempDir("zero-names-");
+    writeTree(root, { "openspec/changes/otro/specs/cap/spec.md": delta("Foo ###") });
+    expect(namesOf(uniqueRequirementNames(named("foo"), "abc123", existingRequirementNames(root, "cap", "zero-abc123")))).toEqual(["foo (abc123)"]);
+  });
+
+  it("add the suffix to a name the capability has", () => {
+    expect(namesOf(uniqueRequirementNames(named("A", "B"), "abc123", ["A"]))).toEqual(["A (abc123)", "B"]);
+  });
+
+  it("keep the first of a name repeated within the request", () => {
+    expect(namesOf(uniqueRequirementNames(named("A", "a"), "abc123", []))).toEqual(["A", "a (abc123)"]);
+  });
+
+  it("break ties with a number when the suffix is taken", () => {
+    expect(namesOf(uniqueRequirementNames(named("A", "A", "A"), "abc123", ["A"]))).toEqual(["A (abc123)", "A (abc123-2)", "A (abc123-3)"]);
+    expect(namesOf(uniqueRequirementNames(named("A"), "abc123", ["A", "a (ABC123)"]))).toEqual(["A (abc123-2)"]);
+    const crowded = namesOf(uniqueRequirementNames(named("A", "A (abc123)", "A", "A (abc123)"), "abc123", []));
+    expect(new Set(crowded.map(foldRequirementName)).size).toBe(4);
+  });
+
+  it("leave the closing # out of a suffixed name, so openspec reads a whole name", () => {
+    expect(namesOf(uniqueRequirementNames(named("Foo ###"), "abc123", ["foo"]))).toEqual(["Foo (abc123)"]);
+  });
+
+  it("change nothing when no names repeat", () => {
+    const spec = named("A", "B");
+    expect(uniqueRequirementNames(spec, "abc123", ["C"])).toEqual(spec);
+    expect(namesOf(uniqueRequirementNames(spec, "abc123", ["A"]))).toEqual(["A (abc123)", "B"]);
+    expect(namesOf(spec)).toEqual(["A", "B"]);
+  });
+});
+
+describe("openspec archive with repeated requirement names", () => {
+  const bin = join(process.cwd(), "node_modules", "@fission-ai", "openspec", "bin", "openspec.js");
+  const archive = (root: string, change: string) => spawnSync(process.execPath, [bin, "archive", change, "--yes"], { cwd: root, encoding: "utf8" });
+  const requirement = (text: string) => validSpec({ capability: "cap", requirements: [{ name: "Ícono monocromo", text: `It MUST ${text}.`, scenarios: validSpec().requirements[0]!.scenarios }] });
+  // The runner renders both as new: the capability is not in openspec/specs until the first one is archived.
+  const write = (root: string, spec: ReturnType<typeof validSpec>, jobId: string) => writeFiles(join(root, "openspec", "changes", changeName(jobId)), renderOpenSpecChange(spec, { jobId, newCapability: true }));
+
+  function repo() {
+    const root = tempDir("zero-archive-");
+    writeTree(root, { "openspec/config.yaml": "schema: spec-driven\n" });
+    return root;
+  }
+
+  it("fails on the second change without unique names", async () => {
+    const root = repo();
+    await write(root, requirement("use one color"), "aaa111");
+    await write(root, requirement("use two colors"), "bbb222");
+    expect(archive(root, changeName("aaa111")).status).toBe(0);
+    const second = archive(root, changeName("bbb222"));
+    expect(`${second.stdout}${second.stderr}`).toContain("already exists");
+    expect(readFileSync(join(root, "openspec", "specs", "cap", "spec.md"), "utf8")).not.toContain("two colors");
+  }, 60_000);
+
+  it("archives both once the second has gone through unique names", async () => {
+    const root = repo();
+    await write(root, requirement("use one color"), "aaa111");
+    await write(root, uniqueRequirementNames(requirement("use two colors"), "bbb222", existingRequirementNames(root, "cap", changeName("bbb222"))), "bbb222");
+    for (const change of ["aaa111", "bbb222"]) {
+      const r = archive(root, changeName(change));
+      expect(`${r.stdout}${r.stderr}`).not.toContain("already exists");
+      expect(r.status).toBe(0);
+    }
+    const main = readFileSync(join(root, "openspec", "specs", "cap", "spec.md"), "utf8");
+    expect(main).toContain("### Requirement: Ícono monocromo\n");
+    expect(main).toContain("### Requirement: Ícono monocromo (bbb222)\n");
+    expect(main).toContain("use one color");
+    expect(main).toContain("use two colors");
+  }, 60_000);
 });
 
 describe("verification", () => {
