@@ -30,11 +30,11 @@ export function isTestFile(path: string): boolean {
 export const ALWAYS_PROTECTED = [".zero/**"];
 
 export function protectedTouched(files: ChangedFile[], patterns: string[], allowed: string[] = []): string[] {
-  // Lower-cased for the fixed list: on case-insensitive disks `.Zero/agents` is the same folder.
-  const always = (p: string) => ALWAYS_PROTECTED.some((g) => posix.matchesGlob(p.toLowerCase(), g));
+  // Paths and the whole list lower-cased: on case-insensitive disks `.Zero/agents` or `.Claude` is the same folder. Approvals stay exact.
+  const globs = [...ALWAYS_PROTECTED, ...patterns].map((g) => g.toLowerCase());
   return files
     .map((f) => f.path)
-    .filter((p) => !allowed.includes(p) && (always(p) || patterns.some((g) => posix.matchesGlob(p, g))));
+    .filter((p) => !allowed.includes(p) && globs.some((g) => posix.matchesGlob(p.toLowerCase(), g)));
 }
 
 /** Ways the change could make tests pass by switching them off. */
