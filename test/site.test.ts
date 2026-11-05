@@ -33,6 +33,7 @@ function hrefs(source: string): { key: string; href: string; tag: string }[] {
 
 const README_ES = "https://github.com/kaelen-phoenix/zero/blob/main/README.es.md";
 const README_EN = "https://github.com/kaelen-phoenix/zero#readme";
+const GENERIC_ES = "Hola, quiero saber más sobre zero in the loop";
 
 function labels(source: string): { key: string; label: string }[] {
   return [...source.matchAll(/<[^>]*\bdata-i18n-label="([^"]+)"[^>]*>/g)].map((m) => ({ key: m[1]!, label: /aria-label="([^"]*)"/.exec(m[0])?.[1] ?? "" }));
@@ -61,8 +62,9 @@ class FakeElement {
   innerHTML = "";
   textContent = "";
   private attrs = new Map<string, string>();
-  listeners: Record<string, () => void> = {};
+  listeners: Record<string, (event?: { preventDefault(): void }) => void> = {};
   parent: FakeElement | null = null;
+  children: FakeElement[] = [];
   constructor(attrs: Record<string, string> = {}, inner = "") {
     for (const [k, v] of Object.entries(attrs)) this.attrs.set(k, v);
     this.innerHTML = inner;
@@ -73,6 +75,11 @@ class FakeElement {
   removeAttribute(name: string) { this.attrs.delete(name); }
   hasAttribute(name: string) { return this.attrs.has(name); }
   addEventListener(type: string, fn: () => void) { this.listeners[type] = fn; }
+  /** Only single '[attr]' selectors, like querySelectorAll. */
+  querySelector(selector: string): FakeElement | null {
+    const attr = /^\[([\w-]+)\]$/.exec(selector)![1]!;
+    return this.children.find((e) => e.hasAttribute(attr)) ?? null;
+  }
   /** Only single '[attr]' selectors, like querySelectorAll. */
   closest(selector: string): FakeElement | null {
     const attr = /^\[([\w-]+)\]$/.exec(selector)![1]!;
@@ -104,11 +111,25 @@ function scoped(source: string): FakeElement[] {
   return out;
 }
 
+/** The training cards with their channel links and notices; each of those has its card as parent. */
+function trainingCards(): FakeElement[] {
+  return section("training").split("<li>").slice(1).flatMap((card) => {
+    const container = new FakeElement({ "data-training": /\bdata-training="([^"]+)"/.exec(card)![1]! });
+    const links = [...card.matchAll(/<a\b[^>]*\bdata-training-channel="([^"]+)"[^>]*>/g)]
+      .map((m) => new FakeElement({ "data-training-channel": m[1]!, href: /\shref="([^"]*)"/.exec(m[0])![1]! }));
+    const notice = new FakeElement({ "data-training-notice": "" });
+    for (const child of [...links, notice]) child.parent = container;
+    container.children = [...links, notice];
+    return [container, ...links, notice];
+  });
+}
+
 function fakeDocument() {
   const elements: FakeElement[] = [
     ...translatable(html).map((t) => new FakeElement({ "data-i18n": t.key }, t.inner)),
     ...labels(html).map((l) => new FakeElement({ "data-i18n-label": l.key, "aria-label": l.label })),
     ...hrefs(html).map((h) => new FakeElement({ "data-i18n-href": h.key, href: h.href })),
+    ...trainingCards(),
     new FakeElement({ "data-lang": "es" }), new FakeElement({ "data-lang": "en" }),
     ...["auto", "light", "dark"].map((t) => new FakeElement({ "data-theme-choice": t })),
     ...scoped(html),
@@ -382,12 +403,73 @@ describe("sitio del proyecto: instalación y flujo", () => {
 describe("sitio del proyecto: capacitaciones", () => {
   const FORMATS = ["talk", "workshop", "mentoring"];
   const INSTAGRAM_CHAT = "https://ig.me/m/zerointheloop";
+  const WHATSAPP_CHAT = "https://wa.me/5491159813335";
+  const MESSAGES: Record<string, Record<string, string>> = {
+    es: {
+      talk: "Hola, quiero la Charla abierta de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+      workshop: "Hola, quiero el Taller grupal de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+      mentoring: "Hola, quiero la Mentoría individual de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+    },
+    en: {
+      talk: "Hi, I want the Open talk from zero in the loop. We are [number] people, we are interested in [approximate date].",
+      workshop: "Hi, I want the Group workshop from zero in the loop. We are [number] people, we are interested in [approximate date].",
+      mentoring: "Hi, I want the One-on-one mentoring from zero in the loop. We are [number] people, we are interested in [approximate date].",
+    },
+  };
+  const COPIED_ES = "Copiamos el mensaje: pegalo en el chat";
+  const COPIED_EN = "We copied the message: paste it in the chat";
+  const FAILED_ES = "No pudimos copiar. Copiá este mensaje y pegalo en el chat:";
 
-  /** The call-to-action links of the section: opening tag, format, i18n key and visible text. */
-  function ctaLinks(): { tag: string; format: string; key: string; text: string }[] {
-    return [...section("training").matchAll(/(<a\b[^>]*\bdata-training="([^"]+)"[^>]*\bdata-i18n="([^"]+)"[^>]*>)([^<]*)<\/a>/g)]
-      .map((m) => ({ tag: m[1]!, format: m[2]!, key: m[3]!, text: m[4]! }));
+  /** Each card's markup, in order: its format and the opening tag and inner markup of its two links. */
+  function cards() {
+    return section("training").split("<li>").slice(1).map((card) => ({
+      card,
+      format: /\bdata-training="([^"]+)"/.exec(card)![1]!,
+      links: [...card.matchAll(/(<a\b[^>]*>)([\s\S]*?)<\/a>/g)].map((m) => ({ tag: m[1]!, inner: m[2]! })),
+    }));
   }
+
+  const hrefOf = (tag: string) => /\shref="([^"]*)"/.exec(tag)![1]!;
+  const svgOf = (markup: string) => squash(/<svg\b[\s\S]*?<\/svg>/.exec(markup)![0]);
+
+  /** The element of a card's channel link in a fake document. */
+  function channel(doc: ReturnType<typeof fakeDocument>, format: string, name: string): FakeElement {
+    return doc.elements.find((e) => e.getAttribute("data-training-channel") === name && e.closest("[data-training]")?.getAttribute("data-training") === format)!;
+  }
+
+  function notice(doc: ReturnType<typeof fakeDocument>, format: string): FakeElement {
+    return doc.elements.find((e) => e.hasAttribute("data-training-notice") && e.closest("[data-training]")?.getAttribute("data-training") === format)!;
+  }
+
+  /** The decoded message of a card's WhatsApp link, after checking where it goes. */
+  function whatsappText(doc: ReturnType<typeof fakeDocument>, format: string): string | null {
+    const url = new URL(channel(doc, format, "whatsapp").getAttribute("href")!);
+    expect(url.origin + url.pathname).toBe(WHATSAPP_CHAT);
+    return url.searchParams.get("text");
+  }
+
+  /** Runs main.js with a document, as a browser does on load. */
+  function loadPage(navigator: unknown) {
+    const doc = fakeDocument();
+    const context: { zeroSite?: Site; document: unknown; navigator: unknown } = { document: doc, navigator };
+    runInNewContext(js, context);
+    return { doc, site: context.zeroSite! };
+  }
+
+  /** Fires a link's click; the result says whether the handler canceled the navigation. */
+  function click(link: FakeElement): { prevented: boolean } {
+    const result = { prevented: false };
+    link.listeners.click!({ preventDefault: () => { result.prevented = true; } });
+    return result;
+  }
+
+  /** A clipboard that records what it is asked to write. */
+  function clipboard(writeText: () => Promise<void> = () => Promise.resolve()) {
+    const written: string[] = [];
+    return { written, nav: { clipboard: { writeText: (text: string) => { written.push(text); return writeText(); } } } };
+  }
+
+  const settled = () => new Promise((resolve) => setTimeout(resolve));
 
   it("el menú enlaza la sección, marcada solo para español", () => {
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)![1]!;
@@ -424,14 +506,18 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(loadSite().EN[topics!.key]!.trim()).not.toBe("");
   });
 
-  it("cada formato tiene un enlace con estilo de botón al chat de Instagram", () => {
-    const links = ctaLinks();
-    expect(links.map((l) => l.format)).toEqual(FORMATS);
-    for (const { tag } of links) {
-      expect(tag, tag).toMatch(/\sclass="button"/);
-      expect(tag, tag).toContain(` href="${INSTAGRAM_CHAT}"`);
-      expect(tag, tag).toContain(' target="_blank"');
-      expect(tag, tag).toMatch(/\srel="[^"]*\bnoopener\b[^"]*"/);
+  it("cada tarjeta dice «La quiero» como texto y sigue con dos enlaces: WhatsApp e Instagram", () => {
+    const all = cards();
+    expect(all.map((c) => c.format)).toEqual(FORMATS);
+    for (const { card, links } of all) {
+      const cta = /<([a-z]+)\b[^>]*\bdata-i18n="training\.cta"[^>]*>([^<]*)<\/\1>/.exec(card);
+      expect(cta).not.toBeNull();
+      expect(cta![1]).not.toBe("a");
+      expect(cta![2]).toBe("La quiero");
+      expect(links).toHaveLength(2);
+      expect(links.map((l) => squash(l.inner.replace(/<svg\b[\s\S]*?<\/svg>/, "")))).toEqual(["WhatsApp", "Instagram"]);
+      for (const { tag } of links) expect(tag, tag).toMatch(/\sclass="button"/);
+      expect(cta!.index).toBeLessThan(card.indexOf("<a "));
     }
   });
 
@@ -439,34 +525,183 @@ describe("sitio del proyecto: capacitaciones", () => {
     expect(section("training")).not.toMatch(/<button/);
   });
 
-  it("el texto del enlace se traduce: La quiero / I want this", () => {
-    const EN = loadSite().EN;
-    const links = ctaLinks();
-    expect(links).toHaveLength(3);
-    for (const { key, text } of links) {
-      expect(text).toBe("La quiero");
-      expect(key).toBe("training.cta");
-      expect(EN[key]).toBe("I want this");
+  it("«La quiero» se traduce: I want this", () => {
+    const site = loadSite();
+    expect(site.EN["training.cta"]).toBe("I want this");
+    const doc = fakeDocument();
+    const ctas = doc.elements.filter((e) => e.getAttribute("data-i18n") === "training.cta");
+    expect(ctas).toHaveLength(3);
+    site.applyLanguage(doc, "en", fakeStorage());
+    for (const cta of ctas) expect(cta.innerHTML).toBe("I want this");
+  });
+
+  it("cada ícono es el mismo que el del enlace de esa red en el pie", () => {
+    const footer = /<footer class="foot">([\s\S]*?)<\/footer>/.exec(html)![1]!;
+    const footerIcon = (href: RegExp) => svgOf([...footer.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/g)].find((m) => href.test(/^<a\b[^>]*>/.exec(m[0])![0]))![0]);
+    for (const { links } of cards()) {
+      expect(svgOf(links[0]!.inner)).toBe(footerIcon(/wa\.me/));
+      expect(svgOf(links[1]!.inner)).toBe(footerIcon(/instagram\.com/));
+      for (const { inner } of links) expect(svgOf(inner)).toMatch(/^<svg\b[^>]*\saria-hidden="true"/);
     }
   });
 
-  it("el destino del enlace es el mismo en los dos idiomas", () => {
-    const links = ctaLinks();
-    expect(links).toHaveLength(3);
-    for (const { tag } of links) {
+  it("los íconos tienen ancho y alto en styles.css", () => {
+    const rule = /\.training \.button svg\s*\{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/(^|[\s;])width:\s*[\d.]+[a-z]+/);
+    expect(rule).toMatch(/(^|[\s;])height:\s*[\d.]+[a-z]+/);
+  });
+
+  it("sin JavaScript, WhatsApp lleva el mensaje genérico y abre en otra pestaña", () => {
+    for (const { links } of cards()) {
+      const { tag } = links[0]!;
+      const url = new URL(hrefOf(tag));
+      expect(url.origin + url.pathname).toBe(WHATSAPP_CHAT);
+      expect(url.searchParams.get("text")).toBe(GENERIC_ES);
+      expect(tag, tag).toContain(' target="_blank"');
+      expect(tag, tag).toMatch(/\srel="[^"]*\bnoopener\b[^"]*"/);
       expect(tag, tag).not.toContain("data-i18n-href");
-      expect(tag, tag).toContain(` href="${INSTAGRAM_CHAT}"`);
     }
   });
 
-  it("el enlace funciona sin JavaScript: main.js no arma ni intercepta nada", () => {
-    expect((loadSite() as unknown as Record<string, unknown>).trainingMailto).toBeUndefined();
-    for (const code of ["trainingMailto", "MAIL_PARTS", "mailto:", "data-training"]) expect(js, code).not.toContain(code);
+  it("sin JavaScript, Instagram abre el chat en otra pestaña", () => {
+    for (const { links } of cards()) {
+      const { tag } = links[1]!;
+      expect(hrefOf(tag)).toBe(INSTAGRAM_CHAT);
+      expect(tag, tag).toContain(' target="_blank"');
+      expect(tag, tag).toMatch(/\srel="[^"]*\bnoopener\b[^"]*"/);
+      expect(tag, tag).not.toContain("data-i18n-href");
+    }
   });
 
-  it("sin aviso de noscript sobre el correo", () => {
+  it("sin aviso de noscript ni dirección de correo", () => {
     expect(section("training")).not.toMatch(/<noscript/);
+    expect(section("training")).not.toMatch(/mailto:|@[a-z0-9-]+\.[a-z]/i);
+    expect(js).not.toContain("mailto:");
     expect(loadSite().EN).not.toHaveProperty(["training.noscript"]);
+  });
+
+  it("al cargar en español, WhatsApp lleva el mensaje de cada formato", () => {
+    const { doc } = loadPage({});
+    for (const format of FORMATS) expect(whatsappText(doc, format)).toBe(MESSAGES.es![format]);
+  });
+
+  it("al cargar con inglés guardado, WhatsApp lleva el mensaje en inglés", () => {
+    const doc = fakeDocument();
+    const localStorage = fakeStorage();
+    localStorage.setItem("zero-site-lang", "en");
+    runInNewContext(js, { document: doc, navigator: {}, localStorage });
+    for (const format of FORMATS) expect(whatsappText(doc, format)).toBe(MESSAGES.en![format]);
+  });
+
+  it("el mensaje de WhatsApp sigue el idioma, ida y vuelta", () => {
+    const { doc, site } = loadPage({});
+    site.applyLanguage(doc, "en", fakeStorage());
+    for (const format of FORMATS) expect(whatsappText(doc, format)).toBe(MESSAGES.en![format]);
+    site.applyLanguage(doc, "es", fakeStorage());
+    for (const format of FORMATS) expect(whatsappText(doc, format)).toBe(MESSAGES.es![format]);
+  });
+
+  it("el enlace de WhatsApp del pie conserva su mensaje genérico", () => {
+    const { doc, site } = loadPage({});
+    const footer = doc.elements.find((e) => e.getAttribute("data-i18n-href") === "href.whatsapp")!;
+    const text = () => new URL(footer.getAttribute("href")!).searchParams.get("text");
+    expect(text()).toBe(GENERIC_ES);
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(text()).toBe("Hi, I want to know more about zero in the loop");
+    site.applyLanguage(doc, "es", fakeStorage());
+    expect(text()).toBe(GENERIC_ES);
+  });
+
+  it("Instagram copia durante el clic, no cancela el enlace y avisa solo en su tarjeta", async () => {
+    const { written, nav } = clipboard();
+    const { doc } = loadPage(nav);
+    const { prevented } = click(channel(doc, "workshop", "instagram"));
+    expect(written).toEqual([MESSAGES.es!.workshop]);
+    expect(prevented).toBe(false);
+    await settled();
+    expect(notice(doc, "workshop").textContent).toBe(COPIED_ES);
+    expect(notice(doc, "talk").textContent).toBe("");
+    expect(notice(doc, "mentoring").textContent).toBe("");
+  });
+
+  it("en inglés copia el mensaje en inglés y avisa en inglés", async () => {
+    const { written, nav } = clipboard();
+    const { doc, site } = loadPage(nav);
+    site.applyLanguage(doc, "en", fakeStorage());
+    click(channel(doc, "talk", "instagram"));
+    await settled();
+    expect(written).toEqual([MESSAGES.en!.talk]);
+    expect(notice(doc, "talk").textContent).toBe(COPIED_EN);
+  });
+
+  it("cada tarjeta tiene su aviso accesible, vacío, después de los enlaces", () => {
+    for (const { card } of cards()) {
+      const region = /<([a-z]+)\b[^>]*\baria-live="polite"[^>]*>([^<]*)<\/\1>/.exec(card);
+      expect(region).not.toBeNull();
+      expect(region![2]).toBe("");
+      expect(region!.index).toBeGreaterThan(card.lastIndexOf("</a>"));
+    }
+    const rules = [...css.matchAll(/\.training \.notice[^{]*\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/display:\s*none|visibility:\s*hidden/);
+  });
+
+  it("si el portapapeles rechaza, abre igual y deja el mensaje a la vista", async () => {
+    const { nav } = clipboard(() => Promise.reject(new Error("denegado")));
+    const { doc } = loadPage(nav);
+    const { prevented } = click(channel(doc, "talk", "instagram"));
+    expect(prevented).toBe(false);
+    await settled();
+    expect(notice(doc, "talk").textContent).toContain(FAILED_ES);
+    expect(notice(doc, "talk").textContent).toContain(MESSAGES.es!.talk);
+  });
+
+  it("si falla en inglés, la indicación está en inglés", async () => {
+    const { nav } = clipboard(() => Promise.reject(new Error("denied")));
+    const { doc, site } = loadPage(nav);
+    site.applyLanguage(doc, "en", fakeStorage());
+    click(channel(doc, "talk", "instagram"));
+    await settled();
+    expect(notice(doc, "talk").textContent).toContain("We could not copy it. Copy this message and paste it in the chat:");
+    expect(notice(doc, "talk").textContent).toContain(MESSAGES.en!.talk);
+  });
+
+  it("sin portapapeles, abre igual y deja el mensaje a la vista", () => {
+    const { doc } = loadPage({});
+    const { prevented } = click(channel(doc, "mentoring", "instagram"));
+    expect(prevented).toBe(false);
+    expect(notice(doc, "mentoring").textContent).toContain(MESSAGES.es!.mentoring);
+  });
+
+  it("si writeText lanza, el error no se propaga y deja el mensaje a la vista", () => {
+    const { nav } = clipboard(() => { throw new Error("roto"); });
+    const { doc } = loadPage(nav);
+    let result = { prevented: true };
+    expect(() => { result = click(channel(doc, "talk", "instagram")); }).not.toThrow();
+    expect(result.prevented).toBe(false);
+    expect(notice(doc, "talk").textContent).toContain(MESSAGES.es!.talk);
+  });
+
+  it("cambiar de idioma vacía el aviso, también si la copia termina después", async () => {
+    const { nav } = clipboard();
+    const { doc, site } = loadPage(nav);
+    click(channel(doc, "talk", "instagram"));
+    await settled();
+    expect(notice(doc, "talk").textContent).toBe(COPIED_ES);
+    site.applyLanguage(doc, "en", fakeStorage());
+    expect(notice(doc, "talk").textContent).toBe("");
+    click(channel(doc, "talk", "instagram"));
+    site.applyLanguage(doc, "es", fakeStorage());
+    await settled();
+    expect(notice(doc, "talk").textContent).toBe("");
+  });
+
+  it("los enlaces entran en fila o pasan a otra, y el aviso se parte dentro de la tarjeta", () => {
+    const channels = /\.training \.channels \{([^}]*)\}/.exec(css)![1]!;
+    expect(channels).toMatch(/display:\s*flex/);
+    expect(channels).toMatch(/flex-wrap:\s*wrap/);
+    expect(/\.training \.notice \{([^}]*)\}/.exec(css)![1]).toMatch(/overflow-wrap:\s*anywhere/);
+    for (const { card } of cards()) expect(card).toContain('class="channels"');
   });
 
   it("el enlace conserva el aspecto del botón: texto centrado y monoespaciada de peso 500", () => {
@@ -629,7 +864,7 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
 
 describe("sitio del proyecto: WhatsApp", () => {
   const WHATSAPP = "https://wa.me/5491159813335";
-  const MESSAGE_ES = "Hola, quiero saber más sobre zero in the loop";
+  const MESSAGE_ES = GENERIC_ES;
   const MESSAGE_EN = "Hi, I want to know more about zero in the loop";
   const NUMBER = "+54 9 11 5981-3335";
   const footer = /<footer class="foot">([\s\S]*?)<\/footer>/.exec(html)![1]!;
@@ -643,13 +878,6 @@ describe("sitio del proyecto: WhatsApp", () => {
     expect(url.searchParams.get("text")).toBe(message);
     expect(tag).toMatch(/\starget="_blank"/);
     expect(/\srel="([^"]*)"/.exec(tag)![1]!.split(/\s+/)).toContain("noopener");
-  }
-
-  /** The opening tag of the only anchor in some markup. */
-  function onlyAnchor(markup: string): string {
-    const anchors = markup.match(/<a\b[^>]*>/g) ?? [];
-    expect(anchors).toHaveLength(1);
-    return anchors[0]!;
   }
 
   it("el pie enlaza a WhatsApp con el mensaje en español, en otra pestaña", () => {
@@ -713,16 +941,12 @@ describe("sitio del proyecto: WhatsApp", () => {
     expect(message()).toBe(MESSAGE_ES);
   });
 
-  it("Capacitaciones ofrece WhatsApp con el número, en español", () => {
-    const line = translatable(section("training")).find((t) => t.key === "training.whatsapp")!;
-    expect(line.inner).toContain(NUMBER);
-    expectLink(onlyAnchor(line.inner), MESSAGE_ES);
-  });
-
-  it("la línea de Capacitaciones tiene su versión en inglés", () => {
-    const line = loadSite().EN["training.whatsapp"]!;
-    expect(line).toContain(NUMBER);
-    expectLink(onlyAnchor(line), MESSAGE_EN);
+  it("Capacitaciones ya no tiene la nota de WhatsApp con el número", () => {
+    const training = section("training");
+    expect(training).not.toContain('data-i18n="training.whatsapp"');
+    expect(training).not.toContain('class="note"');
+    expect(training).not.toContain(NUMBER);
+    expect(loadSite().EN).not.toHaveProperty(["training.whatsapp"]);
   });
 
   it("los tres formatos de Capacitaciones siguen igual", () => {
@@ -773,7 +997,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });
@@ -912,9 +1136,12 @@ describe("README", () => {
     expect(paragraph).toContain(word);
   });
 
-  it.each([["README.md", "email"], ["README.es.md", "correo"]])("%s dice que los botones abren el chat de Instagram, no un correo", (file, mail) => {
+  it.each([["README.md", "email"], ["README.es.md", "correo"]])("%s dice que cada formato ofrece WhatsApp e Instagram, no un correo", (file, mail) => {
     const paragraph = read(file).split(/\n\s*\n/).find((p) => p.includes("zerointheloop.com"));
+    expect(paragraph).toContain("WhatsApp");
     expect(paragraph).toContain("Instagram");
+    expect(paragraph).not.toContain("cada botón abre");
+    expect(paragraph).not.toContain("each button opens");
     expect(paragraph).not.toContain(mail);
   });
 });
