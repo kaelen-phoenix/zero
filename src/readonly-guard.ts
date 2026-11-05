@@ -15,7 +15,10 @@ import { log } from "./log.js";
  * directory, with no filters, so nothing is written in the folder or in a
  * repository containing it. It sees what `git status` sees: ignored files are
  * not compared, and a new `.gitignore` that ignores itself hides what it covers.
- * Anything else changing the folder during the call looks like the call's doing.
+ * Anything else changing the folder or its branch during the call looks like the
+ * call's doing. Refs are the whole repository's, so `refChanges` holds the call
+ * only to those it can be blamed for; the daemon starts no job in a repository
+ * under a call, nor a call in a repository with a running job (`beingGuarded`).
  */
 
 const GIT_TIMEOUT_MS = 10 * 60_000;
@@ -87,6 +90,12 @@ interface RepoFiles {
   /** What the index holds: its bytes change on any `git status`, so they do not tell. */
   stage: string;
   refs: Map<string, string>;
+  /** The branch of this checkout, which the call answers for wherever it runs. */
+  branch?: string;
+  /** A linked worktree: the rest of the repository's refs belong to other checkouts. */
+  linked: boolean;
+  /** Files tracked although an ignore rule matches them, which `git add` would otherwise skip. */
+  trackedIgnored: string[];
   /** The objects git already has, so an unchanged file takes no room in the snapshot. */
   objects: string;
   /** The ignores outside the worktree that `git status` honours in this repository. */
@@ -129,6 +138,10 @@ function snapshotGit(s: Pick<Snapshot, "cwd" | "dir" | "repo">, args: string[], 
 }
 
 async function treeOf(s: Pick<Snapshot, "cwd" | "dir" | "repo">): Promise<string> {
+  // A deleted one leaves the snapshot's index in `add -A`, and once back it would look ignored; a folder in its place is `add -A`'s to handle.
+  const seeds = [];
+  for (const path of s.repo?.trackedIgnored ?? []) if (!(await lstat(join(s.cwd, path)).catch(() => undefined))?.isDirectory()) seeds.push(path);
+  if (seeds.length) await snapshotGit(s, ["update-index", "--add", "--remove", "-z", "--stdin"], { input: `${seeds.join("\0")}\0` });
   await snapshotGit(s, ["add", "-A", "."]);
   return (await snapshotGit(s, ["write-tree"])).trim();
 }
@@ -142,12 +155,31 @@ const readRefs = async (s: { cwd: string; dir: string }): Promise<Map<string, st
 
 const readStage = (s: { cwd: string; dir: string }) => realGit(s, ["ls-files", "--stage", "-z"]);
 
+const headBranch = (head: Buffer | undefined) => head?.toString().match(/^ref: (\S+)/)?.[1];
+
+/**
+ * The refs that differ from the snapshot, split by who answers for them. The call
+ * answers for its checkout's branch and, outside a linked worktree, for the rest,
+ * except what the factory or another checkout moves on its own: the factory's job
+ * branches, branches checked out elsewhere and new tags, which any fetch brings.
+ */
+async function refChanges(s: { cwd: string; dir: string }, repo: RepoFiles): Promise<{ call: string[]; elsewhere: string[] }> {
+  const refs = await readRefs(s);
+  const changed = [...new Set([...refs.keys(), ...repo.refs.keys()])].filter((name) => refs.get(name) !== repo.refs.get(name));
+  if (!changed.length) return { call: [], elsewhere: [] };
+  const own = new Set([repo.branch, headBranch(await readFile(repo.raw[0]!.path).catch(() => undefined))]);
+  const worktrees = await realGit(s, ["worktree", "list", "--porcelain"]);
+  const checkedOut = new Set(worktrees.split(/\r?\n/).filter((l) => l.startsWith("branch ")).map((l) => l.slice("branch ".length)));
+  const elsewhere = (name: string) => !own.has(name) && (repo.linked || name.startsWith("refs/heads/zero/") || checkedOut.has(name) || (name.startsWith("refs/tags/") && !repo.refs.has(name)));
+  return { call: changed.filter((name) => !elsewhere(name)), elsewhere: changed.filter(elsewhere) };
+}
+
 /** The repository whose root is the folder; undefined when the folder is not the root of one, even inside another. */
 async function repoFiles(cwd: string, dir: string): Promise<RepoFiles | undefined> {
   if (!existsSync(join(cwd, ".git"))) return undefined;
   const at = { cwd, dir };
-  const [top, common, index, head, worktreeConfig] = (await realGit(at, ["rev-parse", "--show-toplevel", "--git-common-dir", "--git-path", "index", "--git-path", "HEAD", "--git-path", "config.worktree"])).split(/\r?\n/);
-  if (!top || !common || !index || !head || !worktreeConfig) throw new Error("git no dijo dónde está el repositorio");
+  const [top, gitDir, common, index, head, worktreeConfig] = (await realGit(at, ["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir", "--git-path", "index", "--git-path", "HEAD", "--git-path", "config.worktree"])).split(/\r?\n/);
+  if (!top || !gitDir || !common || !index || !head || !worktreeConfig) throw new Error("git no dijo dónde está el repositorio");
   if ((await realpath(top)) !== (await realpath(cwd))) throw new Error(`la carpeta no es la raíz de su repositorio (${top})`);
   const commonDir = resolve(cwd, common);
   const raw = [
@@ -162,14 +194,18 @@ async function repoFiles(cwd: string, dir: string): Promise<RepoFiles | undefine
   const savedIndex = existsSync(indexPath) ? join(dir, "index.saved") : undefined;
   if (savedIndex) await copyFile(indexPath, savedIndex);
   const hooksDir = join(commonDir, "hooks");
+  const kept = await Promise.all(raw.map(async (f) => ({ ...f, data: await readFile(f.path).catch(() => undefined) })));
   return {
-    raw: await Promise.all(raw.map(async (f) => ({ ...f, data: await readFile(f.path).catch(() => undefined) }))),
+    raw: kept,
     hooksDir,
     hooks: await keepFiles(hooksDir),
     index: indexPath,
     savedIndex,
     stage: await readStage(at),
     refs: await readRefs(at),
+    branch: headBranch(kept[0]!.data),
+    linked: resolve(cwd, gitDir) !== commonDir,
+    trackedIgnored: (await realGit(at, ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"])).split("\0").filter(Boolean),
     objects: join(commonDir, "objects"),
     ...(excludes && { excludes }),
   };
@@ -220,8 +256,7 @@ export async function differences(s: Snapshot): Promise<string[]> {
     const hooks = await keepFiles(repo.hooksDir);
     for (const name of new Set([...hooks.keys(), ...repo.hooks.keys()])) if (!sameKept(hooks.get(name), repo.hooks.get(name))) found.push(`.git/hooks/${name}`);
     if ((await readStage(s)) !== repo.stage) found.push("índice de git");
-    const refs = await readRefs(s);
-    for (const name of new Set([...refs.keys(), ...repo.refs.keys()])) if (refs.get(name) !== repo.refs.get(name)) found.push(name);
+    found.push(...(await refChanges(s, repo)).call);
   } else if (existsSync(join(s.cwd, ".git"))) {
     found.push(".git");
   }
@@ -234,6 +269,8 @@ export async function differences(s: Snapshot): Promise<string[]> {
 }
 
 async function restoreRepo(s: Snapshot, repo: RepoFiles): Promise<void> {
+  // Asked before HEAD goes back: a branch the call left checked out is the call's.
+  const { call } = await refChanges(s, repo);
   for (const f of repo.raw) {
     if (f.data) await writeFile(f.path, f.data);
     else await rm(f.path, { force: true });
@@ -254,9 +291,11 @@ async function restoreRepo(s: Snapshot, repo: RepoFiles): Promise<void> {
   if (repo.savedIndex) await copyFile(repo.savedIndex, repo.index);
   else await rm(repo.index, { force: true });
   // Deletions first, since a new branch can stand where a kept one needs to be.
-  const refs = await readRefs(s);
-  for (const name of refs.keys()) if (!repo.refs.has(name)) await realGit(s, ["update-ref", "-d", "--no-deref", name]);
-  for (const [name, sha] of repo.refs) if (refs.get(name) !== sha) await realGit(s, ["update-ref", "--no-deref", name, sha]);
+  for (const name of call) if (!repo.refs.has(name)) await realGit(s, ["update-ref", "-d", "--no-deref", name]);
+  for (const name of call) {
+    const sha = repo.refs.get(name);
+    if (sha) await realGit(s, ["update-ref", "--no-deref", name, sha]);
+  }
 }
 
 /** Puts back what differs, and only that; never `reset --hard` or `clean`. Throws when the folder does not end up as it was. */
@@ -283,12 +322,34 @@ const nameList = (names: string[]) => {
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
+const guarded = new Map<string, number>();
+
+/** Whether a call is being checked in this folder right now: the factory stays out of its repository meanwhile. */
+export const beingGuarded = (folder: string) => guarded.has(resolve(folder));
+
+interface GuardOptions {
+  restore?: (s: Snapshot) => Promise<void>;
+}
+
 /**
  * A read-only call of an engine without its own sandbox. It is not started when
  * the folder cannot be checked; if it changed the folder, what it did is put
  * back and the call fails, keeping what the engine reported on cost and plan.
  */
-export async function runGuarded(engine: Engine, req: EngineRequest, opts: { restore?: (s: Snapshot) => Promise<void> } = {}): Promise<EngineResult> {
+export async function runGuarded(engine: Engine, req: EngineRequest, opts: GuardOptions = {}): Promise<EngineResult> {
+  // Taken before anything is awaited, so the daemon sees it the moment it hands the call over.
+  const folder = resolve(req.cwd);
+  guarded.set(folder, (guarded.get(folder) ?? 0) + 1);
+  try {
+    return await checkedCall(engine, req, opts);
+  } finally {
+    const left = guarded.get(folder)! - 1;
+    if (left) guarded.set(folder, left);
+    else guarded.delete(folder);
+  }
+}
+
+async function checkedCall(engine: Engine, req: EngineRequest, opts: GuardOptions): Promise<EngineResult> {
   let snapshot: Snapshot;
   try {
     snapshot = await takeSnapshot(req.cwd);
@@ -306,6 +367,8 @@ export async function runGuarded(engine: Engine, req: EngineRequest, opts: { res
     }
     let warning: string | undefined;
     try {
+      const elsewhere = snapshot.repo ? (await refChanges(snapshot, snapshot.repo)).elsewhere : [];
+      if (elsewhere.length) log.warn("refs changed during a read-only call, left as they are", { engine: engine.name, cwd: req.cwd, refs: nameList(elsewhere) });
       const changed = await differences(snapshot);
       if (changed.length) {
         const prefix = `${engine.name} cambió la carpeta de trabajo en una estación de solo lectura`;

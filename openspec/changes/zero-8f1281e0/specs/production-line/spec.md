@@ -84,6 +84,28 @@ Al descartar lo que escribió la llamada, zero MUST restaurar la foto previa a l
 - **WHEN** el codex falso sobrescribe un archivo que ya tenía cambios sin guardar
 - **THEN** el archivo vuelve al contenido que tenía antes de la llamada, no al de HEAD
 
+### Requirement: La comprobación no reescribe referencias ajenas
+La comprobación MUST NOT volver atrás referencias que no se le pueden atribuir a la llamada: en una copia de trabajo enlazada, todas menos la rama de esa copia y la que la llamada dejó abierta; en cualquier carpeta, `refs/heads/zero/*` ajenas, ramas abiertas en otro worktree y etiquetas nuevas. Esos cambios SHALL quedar en el log sin hacer fallar la llamada. El daemon MUST NOT arrancar un trabajo en un repositorio con una llamada comprobada en curso, y una llamada comprobada de una pasada de fondo SHALL esperar a los trabajos que corren en su carpeta.
+
+#### Scenario: Copia de trabajo mientras la persona a cargo trabaja
+- **WHEN** durante una llamada en una copia enlazada se agrega un worktree y se hace un commit en la copia principal
+- **THEN** la rama principal, el índice principal y la rama nueva no cambian y la llamada termina `ok`
+
+#### Scenario: Etiqueta traída por un fetch
+- **WHEN** aparece una etiqueta nueva durante la llamada
+- **THEN** la etiqueta queda y la llamada no falla; una etiqueta movida o borrada vuelve atrás y la llamada falla
+
+#### Scenario: Trabajo en cola
+- **WHEN** hay una llamada comprobada en curso en el repositorio de la línea y un trabajo de esa línea en cola
+- **THEN** el trabajo sigue en cola hasta que la llamada termina
+
+### Requirement: Archivos versionados bajo una regla de ignorar
+La comprobación SHALL comparar y restaurar los archivos versionados aunque coincidan con una regla de ignorar.
+
+#### Scenario: Archivo forzado
+- **WHEN** el codex falso sobrescribe o borra un `keep.log` versionado con `git add -f` bajo una regla `*.log`
+- **THEN** el archivo vuelve a su contenido y la llamada queda como fallida
+
 ### Requirement: Aviso de llamada fallida por escribir
 Cuando la comprobación encuentra cambios, el resultado de la llamada MUST quedar con `ok: false`, sin salida estructurada y conservando `quota` y costo, y su texto SHALL decir en español que codex cambió la carpeta en una estación de solo lectura, que zero descartó los cambios, y SHALL nombrar los archivos cambiados.
 

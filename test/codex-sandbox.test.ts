@@ -3,16 +3,17 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { factoryStatus } from "../src/app.js";
+import { factoryStatus, requestWork } from "../src/app.js";
 import { createBoxExecutor } from "../src/box/executor.js";
 import type { GateHost } from "../src/box/network.js";
 import { saveBoxStatus, type BoxStatus } from "../src/box/status.js";
 import { parseFactory } from "../src/config.js";
-import { runDaemon } from "../src/daemon.js";
+import { passExecute, runDaemon } from "../src/daemon.js";
 import { codexEngine, codexInvocation } from "../src/engines/cli.js";
-import { resolveEngine, type Access, type EngineRequest } from "../src/engines/index.js";
+import { resolveEngine, type Access, type Engine, type EngineRequest, type EngineResult } from "../src/engines/index.js";
 import { formatStatus } from "../src/format.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
+import { runGuarded } from "../src/readonly-guard.js";
 import { cleanup, gitRepo, simulatedBox, tempDir, testFactory } from "./helpers.js";
 
 const fake = vi.hoisted(() => ({ runs: [] as string[][], box: [] as { spec: { copy: string; mount: string }; input: string }[] }));
@@ -190,6 +191,57 @@ describe("background passes", () => {
     const { execute } = await scoutRun({ isolation: "worktree" });
     expect(execute).not.toHaveBeenCalled();
     expect(pairAt(fake.runs[0]!, "--sandbox")).toBe("danger-full-access");
+  });
+});
+
+describe("a repository under a read-only check", () => {
+  const blocked = (run: () => Promise<EngineResult>): Engine => ({ name: "codex", nativeSchema: false, unsandboxed: true, run });
+
+  it("a job of its line waits for the call and starts once it ends", async () => {
+    const repo = gitRepo();
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo }] });
+    const { job } = requestWork(ctx, { line: "demo", text: "algo" });
+    let call: Promise<EngineResult> = Promise.resolve({ ok: true, text: "" });
+    let release = () => {};
+    const started = new Promise<void>((up) => {
+      void (call = runGuarded(blocked(() => new Promise((done) => ((release = () => done({ ok: true, text: "ok" })), up()))), req("read", repo)));
+    });
+    await started;
+    const agents = vi.fn(async () => ({ ok: false, text: "fin" }));
+    const daemon = runDaemon(ctx, { once: true, pollMs: 5, agentRunner: (() => agents) as never, scout: false, research: false, packages: false, packageUpdates: false });
+    await new Promise((done) => setTimeout(done, 150));
+    expect(agents).not.toHaveBeenCalled();
+    expect(ctx.store.getJob(job.id)?.status).toBe("queued");
+    release();
+    await call;
+    await daemon;
+    expect(agents).toHaveBeenCalled();
+    expect(ctx.store.getJob(job.id)?.status).not.toBe("queued");
+  });
+
+  it("a background call on this machine waits for the jobs running in its folder", async () => {
+    const repo = gitRepo();
+    let finish = () => {};
+    const job = new Promise<void>((done) => (finish = done));
+    let busy: Promise<unknown>[] = [job];
+    const run = vi.fn(async () => ({ ok: true, text: "ok" }));
+    const waiting = passExecute(() => undefined, () => busy)(blocked(run), req("read", repo), undefined, "scout");
+    await new Promise((done) => setTimeout(done, 30));
+    expect(run).not.toHaveBeenCalled();
+    busy = [];
+    finish();
+    expect((await waiting).ok).toBe(true);
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("in the box, or for another engine, nothing waits", async () => {
+    const never = [new Promise<void>(() => {})];
+    const execute = vi.fn(async () => ({ ok: true, text: "caja" }));
+    const { box } = simulatedBox(async () => { throw new Error("no job here"); });
+    const run = passExecute(() => ({ ...box, execute }), () => never);
+    expect((await run(blocked(async () => ({ ok: true, text: "aquí" })), req("read"), undefined, "scout")).text).toBe("caja");
+    const other: Engine = { name: "otro", nativeSchema: false, run: async () => ({ ok: true, text: "aquí" }) };
+    expect((await run(other, req("read"), undefined, "scout")).text).toBe("aquí");
   });
 });
 

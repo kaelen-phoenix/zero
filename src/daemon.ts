@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
 import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
@@ -13,6 +14,7 @@ import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
 import { factoryConfig } from "./packages.js";
+import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
@@ -131,9 +133,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     const { status, availability } = currentBox(ctx);
     return config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(config, status) : undefined;
   };
-  // Background passes run on this machine, except an engine with no sandbox of its own whenever the box is ready at the time of the call.
-  const passExecute = (config: FactoryConfig): EngineExecute => (engine, req, trace, station) => ((engine.unsandboxed && readyBox(config)?.execute) || runHere)(engine, req, trace, station);
-  const passRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets, execute: passExecute(config) }));
+  const jobsIn = (folder: string) => [...running.values()].filter((r) => ctx.config.lines.some((l) => l.name === r.line && resolve(l.repo) === resolve(folder))).map((r) => r.done);
+  const passRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets, execute: passExecute(() => readyBox(config), jobsIn) }));
   let stopping = false;
   let boxCheckedAt = 0;
   let boxWaitLogged = false;
@@ -308,11 +309,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
-          if (!ctx.config.lines.some((l) => l.name === job.line)) {
+          const line = ctx.config.lines.find((l) => l.name === job.line);
+          if (!line) {
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
           if (boxWait) continue;
+          // The read-only check there would take the job's branch and integration for the call's doing.
+          if (beingGuarded(line.repo)) {
+            startable = true;
+            continue;
+          }
           if (running.size >= ctx.config.concurrency) {
             startable = true;
             break;
@@ -358,6 +365,19 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     log.info("factory stopped", { pid: process.pid });
   }
 }
+
+/**
+ * Where a background pass runs an engine: on this machine, except one with no sandbox of its own
+ * whenever the box is ready at the time of the call. Checked on this machine, it waits for the jobs
+ * running in its folder, since the check would take what they do to the repository for the call's doing.
+ */
+export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder: string) => Promise<unknown>[]): EngineExecute => async (engine, req, trace, station) => {
+  if (!engine.unsandboxed) return runHere(engine, req, trace, station);
+  const boxed = box()?.execute;
+  if (boxed) return boxed(engine, req, trace, station);
+  for (let busy = jobsIn(req.cwd); busy.length; busy = jobsIn(req.cwd)) await Promise.all(busy);
+  return runHere(engine, req, trace, station);
+};
 
 /** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
 const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";

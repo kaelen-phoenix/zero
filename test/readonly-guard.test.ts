@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createAgentRunner, runHere } from "../src/agent.js";
 import { parseFactory } from "../src/config.js";
 import { resolveEngine, type Engine, type EngineRequest } from "../src/engines/index.js";
-import { runGuarded } from "../src/readonly-guard.js";
+import { beingGuarded, runGuarded } from "../src/readonly-guard.js";
 import { cleanup, gitIn, gitRepo, tempDir, writeTree } from "./helpers.js";
 
 // spawn runs without a shell, so a fake `.cmd` on PATH would not start on Windows: `codex` is redirected to a node process.
@@ -137,14 +137,51 @@ describe("read-only check", () => {
     expect(readFileSync(join(repo, ".git", "config"), "utf8")).toBe(config);
   });
 
-  it("a work copy's shared repository is covered too", async () => {
+  it("a work copy gets its own branch back; the shared repository's hooks too", async () => {
     const repo = gitRepo();
     const copy = join(tempDir(), "copia");
     gitIn(repo, "worktree", "add", "-q", "-b", "zero/x", copy);
-    const r = await call(copy, `git("branch", "intrusa"); fs.writeFileSync("n.txt", "x");`);
+    const head = gitIn(copy, "rev-parse", "HEAD");
+    mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+    const hook = join(repo, ".git", "hooks", "pre-push");
+    const r = await call(copy, `fs.writeFileSync("n.txt", "x"); git("add", "-A"); git("commit", "-q", "-m", "intruso"); fs.writeFileSync(${JSON.stringify(hook)}, "#!/bin/sh");`);
     expect(r.ok).toBe(false);
-    expect(gitIn(repo, "branch", "--list", "intrusa")).toBe("");
+    expect(gitIn(copy, "rev-parse", "HEAD")).toBe(head);
+    expect(gitIn(repo, "rev-parse", "zero/x")).toBe(head);
     expect(existsSync(join(copy, "n.txt"))).toBe(false);
+    expect(existsSync(hook)).toBe(false);
+  });
+
+  it("a branch a work copy's call leaves checked out is the call's", async () => {
+    const repo = gitRepo();
+    const copy = join(tempDir(), "copia");
+    gitIn(repo, "worktree", "add", "-q", "-b", "zero/x", copy);
+    expect((await call(copy, `git("checkout", "-q", "-b", "otra");`)).ok).toBe(false);
+    expect(gitIn(copy, "branch", "--show-current")).toBe("zero/x");
+    expect(gitIn(repo, "branch", "--list", "otra")).toBe("");
+  });
+
+  it("files tracked under an ignore rule are compared and come back", async () => {
+    const repo = gitRepo({ ".gitignore": "*.log\n" });
+    writeTree(repo, { "keep.log": "guardado\n", "borrado.log": "guardado\n", "suelto.log": "ignorado\n" });
+    gitIn(repo, "add", "-f", "keep.log", "borrado.log");
+    gitIn(repo, "commit", "-q", "-m", "con ignorados");
+    const r = await call(repo, `fs.writeFileSync("keep.log", "pisado"); fs.rmSync("borrado.log"); fs.writeFileSync("suelto.log", "cambiado");`);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("keep.log");
+    expect(r.text).toContain("descart");
+    expect(r.text).not.toContain("suelto.log");
+    expect(readFileSync(join(repo, "keep.log"), "utf8")).toBe("guardado\n");
+    expect(readFileSync(join(repo, "borrado.log"), "utf8")).toBe("guardado\n");
+    expect(status(repo)).toBe("");
+  });
+
+  it("a tracked ignored file left alone keeps the call ok", async () => {
+    const repo = gitRepo({ ".gitignore": "*.log\n" });
+    writeTree(repo, { "keep.log": "guardado\n" });
+    gitIn(repo, "add", "-f", "keep.log");
+    gitIn(repo, "commit", "-q", "-m", "con ignorados");
+    expect((await call(repo, "")).ok).toBe(true);
   });
 
   it("does not compare ignored files, as `git status` does not", async () => {
@@ -172,6 +209,88 @@ describe("read-only check", () => {
     // A folder that does not exist would fail any snapshot.
     expect(await runHere(other, req(join(tempDir(), "no-existe")), undefined, "review")).toEqual({ ok: true, text: "hola" });
     expect(seen).toHaveBeenCalledOnce();
+  });
+});
+
+describe("refs the call cannot be blamed for", () => {
+  const during = (work: () => void): Engine => ({ name: "codex", nativeSchema: false, unsandboxed: true, run: async () => (work(), { ok: true, text: "ok" }) });
+  const commitIn = (dir: string, file: string) => {
+    writeTree(dir, { [file]: "x\n" });
+    gitIn(dir, "add", file);
+    gitIn(dir, "commit", "-q", "-m", file);
+    return gitIn(dir, "rev-parse", "HEAD");
+  };
+
+  it("in a work copy: a worktree added and a commit in the main checkout stay", async () => {
+    const repo = gitRepo();
+    const copy = join(tempDir(), "copia");
+    gitIn(repo, "worktree", "add", "-q", "-b", "zero/x", copy);
+    const other = join(tempDir(), "otra");
+    let moved = "";
+    const r = await runGuarded(during(() => {
+      gitIn(repo, "worktree", "add", "-q", "-b", "zero/y", other);
+      gitIn(repo, "branch", "suelta");
+      moved = commitIn(repo, "del-dueno.txt");
+    }), req(copy));
+    expect(r).toMatchObject({ ok: true, text: "ok" });
+    expect(gitIn(repo, "rev-parse", "main")).toBe(moved);
+    expect(gitIn(other, "branch", "--show-current")).toBe("zero/y");
+    expect(gitIn(repo, "branch", "--list", "suelta")).not.toBe("");
+    expect(status(repo)).toBe("");
+  });
+
+  it("in the main checkout: a job's worktree added and committed to during the call stays", async () => {
+    const repo = gitRepo();
+    const other = join(tempDir(), "otra");
+    let moved = "";
+    const r = await runGuarded(during(() => {
+      gitIn(repo, "worktree", "add", "-q", "-b", "zero/y", other);
+      moved = commitIn(other, "del-trabajo.txt");
+    }), req(repo));
+    expect(r.ok).toBe(true);
+    expect(gitIn(other, "branch", "--show-current")).toBe("zero/y");
+    expect(gitIn(other, "rev-parse", "HEAD")).toBe(moved);
+  });
+
+  it("in the main checkout: a branch checked out elsewhere and a job's branch with no worktree stay", async () => {
+    const repo = gitRepo();
+    const other = join(tempDir(), "otra");
+    gitIn(repo, "worktree", "add", "-q", "-b", "feature", other);
+    let moved = "";
+    const r = await runGuarded(during(() => {
+      moved = commitIn(other, "del-dueno.txt");
+      gitIn(repo, "branch", "zero/publicada", moved);
+    }), req(repo));
+    expect(r.ok).toBe(true);
+    expect(gitIn(repo, "rev-parse", "feature")).toBe(moved);
+    expect(gitIn(repo, "rev-parse", "zero/publicada")).toBe(moved);
+  });
+
+  it("a new tag, as a fetch brings, stays; a moved or deleted one comes back", async () => {
+    const repo = gitRepo();
+    const first = gitIn(repo, "rev-parse", "HEAD");
+    gitIn(repo, "tag", "movida");
+    gitIn(repo, "tag", "borrada");
+    expect((await runGuarded(during(() => gitIn(repo, "tag", "nueva")), req(repo))).ok).toBe(true);
+    expect(gitIn(repo, "tag", "--list", "nueva")).toBe("nueva");
+    const second = commitIn(repo, "b.txt");
+    const r = await runGuarded(during(() => {
+      gitIn(repo, "tag", "-f", "movida", second);
+      gitIn(repo, "tag", "-d", "borrada");
+    }), req(repo));
+    expect(r.ok).toBe(false);
+    expect(gitIn(repo, "rev-parse", "movida")).toBe(first);
+    expect(gitIn(repo, "rev-parse", "borrada")).toBe(first);
+  });
+
+  it("tells the daemon the folder is being checked, only during the call", async () => {
+    const repo = gitRepo();
+    let seen = false;
+    const running = runGuarded(during(() => (seen = beingGuarded(repo))), req(repo));
+    expect(beingGuarded(repo)).toBe(true);
+    await running;
+    expect(seen).toBe(true);
+    expect(beingGuarded(repo)).toBe(false);
   });
 });
 
