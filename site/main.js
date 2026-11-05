@@ -134,7 +134,6 @@
     "training.mentoring": "For a person or a team, in their own repos.",
     "training.onrequest": "on request",
     "training.cta": "I want this",
-    "training.whatsapp": 'You can also write on <a href="https://wa.me/5491159813335?text=Hi%2C%20I%20want%20to%20know%20more%20about%20zero%20in%20the%20loop" target="_blank" rel="noopener">WhatsApp</a> at +54 9 11 5981-3335.',
     "links.label": "Links",
     "links.title": "Keep reading.",
     "links.readme": "Documentation (README)",
@@ -157,10 +156,31 @@
   };
 
   const MESSAGES = {
-    es: { copied: "Comando copiado.", failed: "No se pudo copiar; seleccioná el texto." },
-    en: { copied: "Command copied.", failed: "Could not copy; select the text." },
+    es: {
+      copied: "Comando copiado.",
+      failed: "No se pudo copiar; seleccioná el texto.",
+      training: {
+        talk: "Hola, quiero la Charla abierta de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+        workshop: "Hola, quiero el Taller grupal de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+        mentoring: "Hola, quiero la Mentoría individual de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
+      },
+      trainingCopied: "Copiamos el mensaje: pegalo en el chat",
+      trainingFailed: "No pudimos copiar. Copiá este mensaje y pegalo en el chat:",
+    },
+    en: {
+      copied: "Command copied.",
+      failed: "Could not copy; select the text.",
+      training: {
+        talk: "Hi, I want the Open talk from zero in the loop. We are [number] people, we are interested in [approximate date].",
+        workshop: "Hi, I want the Group workshop from zero in the loop. We are [number] people, we are interested in [approximate date].",
+        mentoring: "Hi, I want the One-on-one mentoring from zero in the loop. We are [number] people, we are interested in [approximate date].",
+      },
+      trainingCopied: "We copied the message: paste it in the chat",
+      trainingFailed: "We could not copy it. Copy this message and paste it in the chat:",
+    },
   };
 
+  const WHATSAPP_CHAT = "https://wa.me/5491159813335";
   const LANGS = ["es", "en"];
   const THEMES = ["auto", "light", "dark"];
   const LANG_KEY = "zero-site-lang";
@@ -222,6 +242,8 @@
       if (only && only.getAttribute("data-lang-only") !== lang) continue;
       marker.textContent = String(++n).padStart(2, "0");
     }
+    setTrainingLinks(doc);
+    for (const notice of doc.querySelectorAll("[data-training-notice]")) notice.textContent = "";
     write(storage, LANG_KEY, lang);
     return lang;
   }
@@ -236,6 +258,39 @@
     return theme;
   }
 
+  function pageMessages(doc) {
+    return MESSAGES[doc.documentElement.getAttribute("lang")] || MESSAGES.es;
+  }
+
+  /** Loads each training card's WhatsApp link with its format's message; the markup only has the generic one. */
+  function setTrainingLinks(doc) {
+    const messages = pageMessages(doc);
+    for (const link of doc.querySelectorAll("[data-training-channel]")) {
+      if (link.getAttribute("data-training-channel") !== "whatsapp") continue;
+      const format = link.closest("[data-training]").getAttribute("data-training");
+      link.setAttribute("href", `${WHATSAPP_CHAT}?text=${encodeURIComponent(messages.training[format])}`);
+    }
+  }
+
+  /** Copies the card's message during the click, since Instagram cannot preload it, and tells the card's notice. The link opens either way. */
+  function copyTrainingMessage(doc, link, nav) {
+    const card = link.closest("[data-training]");
+    const notice = card.querySelector("[data-training-notice]");
+    const messages = pageMessages(doc);
+    const message = messages.training[card.getAttribute("data-training")];
+    const lang = doc.documentElement.getAttribute("lang");
+    // A copy that ends after a language switch stays silent: the switch emptied the notice.
+    const show = (text) => { if (doc.documentElement.getAttribute("lang") === lang) notice.textContent = text; };
+    const copied = () => { show(messages.trainingCopied); return true; };
+    const failed = () => { show(`${messages.trainingFailed} ${message}`); return false; };
+    notice.textContent = "";
+    try {
+      return nav.clipboard.writeText(message).then(copied, failed);
+    } catch {
+      return Promise.resolve(failed());
+    }
+  }
+
   function announce(doc, message) {
     const region = doc.getElementById("announce");
     if (!region) return;
@@ -246,7 +301,7 @@
   /** Copies the text of the element named by the button's data-copy and announces the result. */
   function copyCode(doc, button, nav) {
     const target = doc.getElementById(button.getAttribute("data-copy"));
-    const messages = MESSAGES[doc.documentElement.getAttribute("lang")] || MESSAGES.es;
+    const messages = pageMessages(doc);
     const text = target ? target.textContent : "";
     const clipboard = nav && nav.clipboard;
     if (!clipboard || !text) {
@@ -263,6 +318,11 @@
     setTheme(doc, read(storage, THEME_KEY) || "auto", storage);
     const lang = read(storage, LANG_KEY);
     if (lang && lang !== "es") applyLanguage(doc, lang, storage);
+    else setTrainingLinks(doc);
+    for (const link of doc.querySelectorAll("[data-training-channel]")) {
+      if (link.getAttribute("data-training-channel") !== "instagram") continue;
+      link.addEventListener("click", () => { copyTrainingMessage(doc, link, win.navigator); });
+    }
     for (const button of doc.querySelectorAll("[data-lang]")) {
       button.addEventListener("click", () => applyLanguage(doc, button.getAttribute("data-lang"), storage));
     }
@@ -274,7 +334,7 @@
     }
   }
 
-  root.zeroSite = { EN, applyLanguage, setTheme, copyCode };
+  root.zeroSite = { EN, applyLanguage, setTheme, copyCode, setTrainingLinks, copyTrainingMessage };
 
   if (root.document) {
     const doc = root.document;
