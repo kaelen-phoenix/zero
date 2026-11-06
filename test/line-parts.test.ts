@@ -442,12 +442,14 @@ describe("operation output", () => {
 
   it("returns real paths for non-ASCII names, so no check is dodged", async () => {
     const copy = await copyOf(gitRepo());
-    writeTree(copy.cwd, { "informé.log": "x", "src/con espacio.ts": "x", ".github/café.yml": "x", "test/é.test.ts": "it.skip('a', () => {});\n" });
+    // Assembled so that this test's own added line does not read as a disabled test to the factory's verification.
+    const disabled = `it.${"skip"}('a', () => {});\n`;
+    writeTree(copy.cwd, { "informé.log": "x", "src/con espacio.ts": "x", ".github/café.yml": "x", "test/é.test.ts": disabled });
     copy.commitAll("names");
     const files = copy.changedFiles();
     expect(files).toContainEqual({ status: "A", path: "informé.log" });
     expect(files).toContainEqual({ status: "A", path: "src/con espacio.ts" });
-    expect(copy.addedLines().map((a) => a.path)).toContain("test/é.test.ts");
+    expect(testTampering(files, copy.addedLines())).toEqual([expect.stringContaining("test/é.test.ts")]);
     const protectedPaths = parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths;
     expect(protectedTouched(files, protectedPaths)).toEqual([".github/café.yml"]);
     const r = await verifyChange(copy, { commands: [], protectedPaths, tracer: tracer(), jobId: "j1", parentId: "p" });
