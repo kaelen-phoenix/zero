@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { approveProposal, proposalRequest, requestWork, type FactoryContext } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
+import { GithubHalted } from "../src/github-quota.js";
 import type { Issue, IssueApi } from "../src/intake/github.js";
 import { proposalIssueBody } from "../src/intake/proposals.js";
 import { pollMerges, type MergeApi, type PullRequestState } from "../src/line/automerge.js";
@@ -240,7 +241,7 @@ describe("merge commit of pull requests", () => {
  * pull request #7 and the owner pulled main: a merge (or squash) commit on
  * main, and the job delivered as a pull request with no commit recorded.
  */
-function autonomousPullRequest(ctx: FactoryContext, title: string, opts: { squash?: boolean; approvals?: Record<string, boolean> } = {}): { proposal: Proposal; jobId: string; commit: string } {
+function autonomousPullRequest(ctx: FactoryContext, title: string, opts: { squash?: boolean; approvals?: Record<string, boolean>; number?: number } = {}): { proposal: Proposal; jobId: string; commit: string } {
   const line = ctx.config.lines[0]!;
   const branch = `zero/${title.replace(/\W+/g, "-").toLowerCase()}`;
   gitIn(line.repo, "checkout", "-q", "-b", branch);
@@ -256,7 +257,7 @@ function autonomousPullRequest(ctx: FactoryContext, title: string, opts: { squas
   const proposal = ctx.store.createProposal({ ...idea(title), line: line.name });
   const { job } = requestWork(ctx, { text: title, line: line.name, source: { kind: "night-shift", proposal: proposal.id, autonomy: "auto" } });
   ctx.store.updateProposal(proposal.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
-  ctx.store.finishJob(job.id, "delivered", { approvals: opts.approvals ?? {}, delivery: { mode: "pull-request", branch, url: "https://github.com/o/r/pull/7" } });
+  ctx.store.finishJob(job.id, "delivered", { approvals: opts.approvals ?? {}, delivery: { mode: "pull-request", branch, url: `https://github.com/o/r/pull/${opts.number ?? 7}` } });
   return { proposal, jobId: job.id, commit };
 }
 
@@ -358,6 +359,223 @@ describe("revert detection on pull-request lines", () => {
     gitIn(repo(ctx), "revert", "-m", "1", "--no-edit", commit);
     await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => fakeAgents({}).runner, merges: merged(commit) });
     expect(ctx.store.getProposal(proposal.id)!.status).toBe("reverted");
+  });
+});
+
+describe("waiting after a pull request closed without merging", () => {
+  const CLOSED = { open: false, merged: false };
+  const OPEN = { open: true, merged: false };
+  const FIRST = at(3);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const later = (ms: number) => new Date(FIRST.getTime() + ms);
+  const iso = (d: Date) => d.toISOString();
+  const closedKey = (jobId: string) => `reverts:closed:${jobId}`;
+
+  /** A pull request whose state can change between passes; counts the queries per number. */
+  function changingMerges(initial: Partial<PullRequestState>) {
+    const pr: { state: Partial<PullRequestState>; calls: number[]; api: () => MergeApi } = {
+      state: initial,
+      calls: [],
+      api: () => ({ ...fakeMerges(), pullRequest: (n) => (pr.calls.push(n), fakeMerges(pr.state).pullRequest(n)) }),
+    };
+    return pr;
+  }
+
+  /** Makes one store method throw for the waits only. */
+  function failFor(ctx: FactoryContext, method: "getKv" | "setKv" | "deleteKv") {
+    const real = ctx.store[method].bind(ctx.store) as (key: string, value: string) => string | undefined;
+    vi.spyOn(ctx.store, method).mockImplementation(((key: string, value: string) => {
+      if (key.startsWith("reverts:closed:")) throw new Error("kv roto");
+      return real(key, value);
+    }) as never);
+  }
+
+  it("asks once within the 24 hours", async () => {
+    const { ctx, set } = prLine();
+    const { proposal, jobId } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges(CLOSED);
+    for (const ms of [0, 60_000, 12 * 60 * 60 * 1000, DAY_MS - 60_000]) {
+      set(later(ms));
+      expect(await detectReverts(ctx, pr.api)).toBe(0);
+    }
+    expect(pr.calls).toEqual([7]);
+    expect(ctx.store.getKv(closedKey(jobId))).toBe(iso(later(DAY_MS)));
+    expect(ctx.store.getProposal(proposal.id)!.status).toBe("approved");
+  });
+
+  it("survives a restart", async () => {
+    const { ctx, set } = prLine();
+    autonomousPullRequest(ctx, "Agregar health");
+    await detectReverts(ctx, changingMerges(CLOSED).api);
+    set(later(60_000));
+    const fresh = changingMerges(CLOSED);
+    await detectReverts(ctx, fresh.api);
+    expect(fresh.calls).toEqual([]);
+  });
+
+  it("waits per job", async () => {
+    const { ctx } = prLine();
+    const first = autonomousPullRequest(ctx, "Agregar health");
+    autonomousPullRequest(ctx, "Agregar metricas", { number: 8 });
+    ctx.store.setKv(closedKey(first.jobId), iso(later(DAY_MS)));
+    const pr = changingMerges(OPEN);
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([8]);
+  });
+
+  it("asks again when the date arrives and waits 24 hours more", async () => {
+    const { ctx, set } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges(CLOSED);
+    await detectReverts(ctx, pr.api);
+    set(later(DAY_MS));
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([7, 7]);
+    expect(ctx.store.getKv(closedKey(jobId))).toBe(iso(later(2 * DAY_MS)));
+  });
+
+  it("records the commit of a pull request reopened and merged, sees its revert, and stops asking", async () => {
+    const { ctx, set } = prLine();
+    const { proposal, jobId, commit } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges(CLOSED);
+    await detectReverts(ctx, pr.api);
+    gitIn(repo(ctx), "revert", "-m", "1", "--no-edit", commit);
+    pr.state = { open: false, merged: true, mergeCommitSha: commit };
+    // Merged during the wait: not seen yet.
+    expect(await detectReverts(ctx, pr.api)).toBe(0);
+    expect(pr.calls).toHaveLength(1);
+    set(later(DAY_MS + 1));
+    expect(await detectReverts(ctx, pr.api)).toBe(1);
+    expect(ctx.store.getJob(jobId)!.delivery!.commit).toBe(commit);
+    expect(ctx.store.getProposal(proposal.id)!.status).toBe("reverted");
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+  });
+
+  it("asks no more once the commit is recorded", async () => {
+    const { ctx, set } = prLine();
+    const { proposal, jobId, commit } = autonomousPullRequest(ctx, "Agregar health");
+    ctx.store.setKv(closedKey(jobId), iso(FIRST));
+    const pr = changingMerges({ open: false, merged: true, mergeCommitSha: commit });
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toHaveLength(1);
+    expect(ctx.store.getJob(jobId)!.delivery!.commit).toBe(commit);
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+    set(later(2 * DAY_MS));
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toHaveLength(1);
+    expect(ctx.store.getProposal(proposal.id)!.status).toBe("approved");
+  });
+
+  it("does not wait on an open pull request", async () => {
+    const { ctx } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges(OPEN);
+    await detectReverts(ctx, pr.api);
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([7, 7]);
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+  });
+
+  it("does not wait on a pull request merged without a commit yet", async () => {
+    const { ctx } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges({ open: false, merged: true });
+    await detectReverts(ctx, pr.api);
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([7, 7]);
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+  });
+
+  it("drops the date of a pull request reopened and still open", async () => {
+    const { ctx, set } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    const pr = changingMerges(CLOSED);
+    await detectReverts(ctx, pr.api);
+    pr.state = OPEN;
+    set(later(DAY_MS));
+    await detectReverts(ctx, pr.api);
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([7, 7, 7]);
+  });
+
+  it("asks as usual when the date cannot be read", async () => {
+    const { ctx } = prLine();
+    autonomousPullRequest(ctx, "Agregar health");
+    failFor(ctx, "getKv");
+    const pr = changingMerges(OPEN);
+    await expect(detectReverts(ctx, pr.api)).resolves.toBe(0);
+    expect(pr.calls).toEqual([7]);
+  });
+
+  it("asks and replaces a value that is not a date", async () => {
+    const { ctx } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    ctx.store.setKv(closedKey(jobId), "no-es-fecha");
+    const pr = changingMerges(CLOSED);
+    await detectReverts(ctx, pr.api);
+    expect(pr.calls).toEqual([7]);
+    expect(ctx.store.getKv(closedKey(jobId))).toBe(iso(later(DAY_MS)));
+  });
+
+  it("asks again next pass when the date cannot be saved", async () => {
+    const { ctx } = prLine();
+    autonomousPullRequest(ctx, "Agregar health");
+    failFor(ctx, "setKv");
+    const pr = changingMerges(CLOSED);
+    await expect(detectReverts(ctx, pr.api)).resolves.toBe(0);
+    await expect(detectReverts(ctx, pr.api)).resolves.toBe(0);
+    expect(pr.calls).toEqual([7, 7]);
+  });
+
+  it("keeps the commit and sees the revert when the date cannot be deleted", async () => {
+    const { ctx } = prLine();
+    const { proposal, jobId, commit } = autonomousPullRequest(ctx, "Agregar health");
+    gitIn(repo(ctx), "revert", "-m", "1", "--no-edit", commit);
+    ctx.store.setKv(closedKey(jobId), iso(FIRST));
+    failFor(ctx, "deleteKv");
+    await expect(detectReverts(ctx, changingMerges({ open: false, merged: true, mergeCommitSha: commit }).api)).resolves.toBe(1);
+    expect(ctx.store.getJob(jobId)!.delivery!.commit).toBe(commit);
+    expect(ctx.store.getProposal(proposal.id)!.status).toBe("reverted");
+  });
+
+  it.each([
+    ["a failure", new Error("GitHub no responde")],
+    ["a pause", new GithubHalted("2026-10-29T04:00:00.000Z")],
+  ])("opens no wait on %s from GitHub", async (_, error) => {
+    const { ctx } = prLine();
+    const { jobId } = autonomousPullRequest(ctx, "Agregar health");
+    let calls = 0;
+    const api = () => ({ ...fakeMerges(), pullRequest: async () => (calls++, Promise.reject(error)) });
+    await expect(detectReverts(ctx, api)).resolves.toBe(0);
+    await expect(detectReverts(ctx, api)).resolves.toBe(0);
+    expect(calls).toBe(2);
+    expect(ctx.store.getKv(closedKey(jobId))).toBeUndefined();
+  });
+
+  it("still sees a merge delivery's revert next to a waiting pull request", async () => {
+    const { ctx } = prLine();
+    const waiting = autonomousPullRequest(ctx, "Agregar health");
+    ctx.store.setKv(closedKey(waiting.jobId), iso(later(DAY_MS)));
+    const line = ctx.config.lines[0]!;
+    gitIn(line.repo, "checkout", "-q", "-b", "zero/local");
+    writeTree(line.repo, { "src/local.ts": "ok\n" });
+    gitIn(line.repo, "add", "-A");
+    gitIn(line.repo, "commit", "-q", "-m", "local");
+    gitIn(line.repo, "checkout", "-q", "main");
+    gitIn(line.repo, "merge", "--no-ff", "-q", "-m", "zero: local", "zero/local");
+    const commit = gitIn(line.repo, "rev-parse", "main");
+    const local = ctx.store.createProposal({ ...idea("Local"), line: line.name });
+    const { job } = requestWork(ctx, { text: "local", line: line.name, source: { kind: "night-shift", proposal: local.id, autonomy: "auto" } });
+    ctx.store.updateProposal(local.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
+    ctx.store.finishJob(job.id, "delivered", { approvals: {}, delivery: { mode: "merge", branch: "zero/local", commit } });
+    gitIn(line.repo, "revert", "-m", "1", "--no-edit", commit);
+
+    const pr = changingMerges(CLOSED);
+    expect(await detectReverts(ctx, pr.api)).toBe(1);
+    expect(ctx.store.getProposal(local.id)!.status).toBe("reverted");
+    expect(ctx.store.getProposal(waiting.proposal.id)!.status).toBe("approved");
+    expect(pr.calls).toEqual([]);
   });
 });
 
