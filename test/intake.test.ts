@@ -6,7 +6,8 @@ import { DEFAULT_SIGNATURE_TEXT, lineSignature, parseFactory } from "../src/conf
 import { formatStatus } from "../src/format.js";
 import { pollIssues, type Issue, type IssueApi, type IssueComment } from "../src/intake/github.js";
 import { whereIsTheChange, type Reply } from "../src/intake/comments.js";
-import { FACTORY_MARK } from "../src/intake/keys.js";
+import { GithubHalted } from "../src/github-quota.js";
+import { FACTORY_MARK, issueKey } from "../src/intake/keys.js";
 import { askOwner, finalizeJob } from "../src/line/finish.js";
 import { deliveryBody, runJob } from "../src/line/runner.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, simulatedBox, tempDir, testFactory, validSpec, writeTree } from "./helpers.js";
@@ -150,6 +151,25 @@ describe("GitHub issues as requests", () => {
     await pollIssues(ctx, () => gh.api);
     expect(ctx.store.listJobs().filter((j) => j.source?.kind === "github-issue")).toEqual([]);
     expect(gh.comments).toEqual([]);
+  });
+
+  it("does not turn an issue down when GitHub's limit cuts the permission check, and takes it on a later pass", async () => {
+    const ctx = issueFactory();
+    const gh = fakeGitHub();
+    gh.open(7);
+    const permission = gh.api.permission;
+    gh.api.permission = async () => {
+      throw new GithubHalted(new Date(Date.now() + 60_000).toISOString());
+    };
+    await pollIssues(ctx, () => gh.api);
+    expect(ctx.store.getKv(issueKey("kaelen/demo", 7))).toBeUndefined();
+    expect(gh.comments).toEqual([]);
+    expect(ctx.store.listJobs()).toEqual([]);
+
+    gh.api.permission = permission;
+    await pollIssues(ctx, () => gh.api);
+    expect(ctx.store.listJobs()).toHaveLength(1);
+    expect(gh.comments).toEqual([{ number: 7, body: expect.stringContaining("tomó este issue") }]);
   });
 
   it("closes the issue from the pull request", () => {
