@@ -69,8 +69,8 @@ const ResearchSchema = z.union([
       /** Notes each line keeps per local day; 0 turns research off. */
       perLinePerDay: z.number().int().min(0).default(1),
       /**
-       * How far research-born proposals that add something third party (a dependency, a skill, an MCP server or code) go on
-       * their own: the stricter of this and the line's autonomy. Other research-born proposals follow the line.
+       * How far every research-born proposal goes on its own, whatever scout declares about it: the stricter of this and
+       * the line's autonomy.
        */
       autonomy: AutonomySchema.default("propose"),
     })

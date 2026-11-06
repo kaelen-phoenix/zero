@@ -192,6 +192,23 @@ describe("promotion of pending proposals", () => {
     }
   });
 
+  it("keeps a research-born proposal pending under the default research autonomy, even without third party or manifest", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" } });
+    const p = ctx.store.createProposal({ ...idea("Bajar un script"), line: "tienda", researchNote: "n1", thirdParty: false });
+    raise(ctx, "auto");
+    await scoutPass(ctx, scouting([]).runner, at(3));
+    expect(ctx.store.getProposal(p.id)!.status).toBe("pending");
+    expect(ctx.store.listJobs()).toHaveLength(0);
+  });
+
+  it("promotes a research-born proposal once research.autonomy allows it", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" }, research: { autonomy: "auto" } });
+    const p = ctx.store.createProposal({ ...idea("Bajar un script"), line: "tienda", researchNote: "n1", thirdParty: false });
+    raise(ctx, "auto");
+    await scoutPass(ctx, scouting([]).runner, at(3));
+    expect(ctx.store.getProposal(p.id)).toMatchObject({ status: "approved", decidedBy: "night-shift" });
+  });
+
   it("never promotes third-party proposals", async () => {
     const { ctx } = factory({ nightShift: { autonomy: "propose" }, research: { autonomy: "auto" } });
     const flagged = ctx.store.createProposal({ ...idea("Agregar librería"), line: "tienda", thirdParty: true });

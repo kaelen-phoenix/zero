@@ -345,7 +345,7 @@ export function proposalsPage(data: { research: Autonomy | "off"; lines: Proposa
   return page(
     "Propuestas",
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
-<p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una investigación que agregan algo de terceros las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
+<p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
 ${data.lines.map(proposalLine).join("")}`,
     { nonce, flash, refresh: true },
   );
