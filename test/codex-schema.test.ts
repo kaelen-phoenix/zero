@@ -334,6 +334,9 @@ describe("the stations' real schemas", () => {
   });
 });
 
+/** What the fake codex's `login status` makes the engine report. */
+const SUBSCRIPTION = { billing: "subscription", windows: [] };
+
 describe("codexEngine.run", () => {
   const dir = mkdtempSync(join(tmpdir(), "zero-codex-test-"));
   const seen = join(dir, "seen.json").replaceAll("\\", "/");
@@ -343,6 +346,8 @@ describe("codexEngine.run", () => {
   const answers = (message: string) => `
     const fs = require("node:fs");
     const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
+    // After the call the engine asks \`codex login status\`; only the exec call is recorded.
+    if (!process.argv.includes("exec")) { console.log("Logged in using ChatGPT"); process.exit(0); }
     fs.writeFileSync(${JSON.stringify(ran)}, "x");
     const args = process.argv.slice(2);
     fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, schema: args.includes("--output-schema") ? JSON.parse(fs.readFileSync(arg("--output-schema"), "utf8")) : null }));
@@ -366,7 +371,7 @@ describe("codexEngine.run", () => {
     const result = await codexEngine.run(req({ schema }));
     expect(received().schema).toEqual(toStrictSchema(schema));
     expect(strictProblems(received().schema!)).toEqual([]);
-    expect(result).toEqual({ ok: true, text: message, output: { drafts: [{ text: "a" }] } });
+    expect(result).toEqual({ ok: true, text: message, output: { drafts: [{ text: "a" }] }, quota: SUBSCRIPTION });
     expect(Drafts.safeParse(result.output).success).toBe(true);
     expect(schema).toEqual(copy);
   });
@@ -389,13 +394,13 @@ describe("codexEngine.run", () => {
 
   it("returns an answer that is not JSON as text, without output", async () => {
     fake.script = answers("no pude");
-    expect(await codexEngine.run(req({ schema: toEngineSchema(Drafts) }))).toEqual({ ok: true, text: "no pude" });
+    expect(await codexEngine.run(req({ schema: toEngineSchema(Drafts) }))).toEqual({ ok: true, text: "no pude", quota: SUBSCRIPTION });
   });
 
   it("leaves the text alone without a schema", async () => {
     const message = '{"image":null}';
     fake.script = answers(message);
-    expect(await codexEngine.run(req())).toEqual({ ok: true, text: message });
+    expect(await codexEngine.run(req())).toEqual({ ok: true, text: message, quota: SUBSCRIPTION });
     expect(received().args).not.toContain("--output-schema");
     expect(received().schema).toBeNull();
   });

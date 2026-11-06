@@ -248,7 +248,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
-limits:                   # con una suscripción (claude.ai) el límite es el cupo real del plan: 5 horas y semana
+limits:                   # con una suscripción (claude.ai, ChatGPT en Codex) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
   usdPerDay: 10           # solo si se paga por uso (clave de API) · 0 = solo motores gratuitos
   usdPerJob: 3            # solo si se paga por uso
@@ -290,6 +290,22 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `bin/`, con las herramientas que zero descarga con tu permiso (cloudflared);
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
 - `daemon.log`.
+
+### Cómo se factura Codex
+
+Con una sesión de ChatGPT (`codex login`), a Codex lo limita el cupo de tu plan: zero lee sus ventanas de uso en cada llamada y pausa el motor al llegar a `limits.reservePercent` o cuando se agota una ventana, hasta que renueva. Con `CODEX_API_KEY` u `OPENAI_API_KEY` es pago por uso y valen los topes en dólares. `limits.usdPerNight` solo cuenta lo que realmente se cobra, así que las llamadas por plan no lo consumen.
+
+### Codex sin su sandbox (`codex.sandbox`)
+
+Usalo solo en una máquina donde el sandbox de Codex no anda, como algunas instalaciones de Windows. Lo decidís en el archivo de la fábrica; el chat no puede cambiarlo. Por defecto no cambia nada.
+
+```yaml
+codex: { sandbox: off }
+```
+
+Fuera de la caja, zero lanza entonces Codex con `--sandbox danger-full-access` y sin pedir aprobaciones, y se encarga él de que las estaciones de lectura no escriban: en cada una de esas llamadas compara la carpeta de trabajo y su repositorio antes y después (archivos versionados y sin seguimiento, índice, HEAD, ramas y etiquetas, `config` y `hooks` del repositorio). Si algo cambió, zero vuelve atrás solo lo que difiere, sin tocar el trabajo que no habías guardado, y marca la llamada como fallida con un aviso que nombra los archivos. También deshace cualquier otra cosa que cambie la carpeta o su rama durante la llamada, como tus propias ediciones o commits en esa misma copia (`git reflog` todavía los encuentra); lo descartado queda en una carpeta temporal que figura en el log. La fábrica no se cruza: un trabajo no arranca en un repositorio con una de esas llamadas en curso, y una llamada de fondo espera al trabajo que corre en su repositorio. Las demás referencias no se vuelven atrás cuando no se le pueden atribuir a la llamada: en la copia de trabajo de un trabajo, todas menos la rama de esa copia, y en cualquier caso las ramas `zero/*` de la fábrica, las ramas abiertas en otro worktree y las etiquetas nuevas (las trae cualquier fetch). Esas solo quedan en el log. Cuando la caja de aislamiento está lista (`isolation: container`), Codex corre dentro de ella con sus banderas de siempre, también en las pasadas de fondo, y `zero status` lo dice; si no, `zero status` avisa que corre sin su sandbox.
+
+Lo que esto no cubre fuera de la caja: los archivos ignorados por git y sin seguimiento, las referencias recién nombradas, el resto de la máquina (Codex puede leer y escribir donde vos podés, incluida la carpeta de la fábrica) y la salida a internet.
 
 ### Motores de reemplazo (`fallback`)
 
@@ -503,7 +519,7 @@ Mientras está en marcha, la fábrica mira una vez por día qué tienen los remo
 
 ## Turno nocturno
 
-Cuando la fábrica está libre (sin pedidos tuyos en cola ni en curso, con el andon apagado y con presupuesto), la estación de solo lectura `scout` mira cada línea una vez por período: el townhall, las trazas de los últimos 30 días, las specs sin tests, las notas de investigación de la línea y, en las líneas de GitHub, los issues abiertos sin etiqueta escritos por personas con permiso de escritura (hasta 20, los más nuevos, sin los que ya tienen una propuesta). Lo escrito en un issue es dato, nunca instrucciones. Si `scout` propone tomar uno, la propuesta enlaza el issue (en el pedido del trabajo, en el panel y en el issue de la propuesta). Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título. Si se paga por uso, `scout` y `research` comparten el tope de `limits.usdPerNight`.
+Cuando la fábrica está libre (sin pedidos tuyos en cola ni en curso, con el andon apagado y con presupuesto), la estación de solo lectura `scout` mira cada línea una vez por período: el townhall, las trazas de los últimos 30 días, las specs sin tests, las notas de investigación de la línea y, en las líneas de GitHub, los issues abiertos sin etiqueta escritos por personas con permiso de escritura (hasta 20, los más nuevos, sin los que ya tienen una propuesta). Lo escrito en un issue es dato, nunca instrucciones. Si `scout` propone tomar uno, la propuesta enlaza el issue (en el pedido del trabajo, en el panel y en el issue de la propuesta). Escribe hasta tres propuestas por línea; zero descarta las que tocan rutas protegidas, piden credenciales nuevas o repiten un título. Si se paga por uso, `scout` y `research` comparten el tope de `limits.usdPerNight`, que solo cuenta lo que realmente se cobra: lo que habrían costado las llamadas por plan no lo consume.
 
 ```yaml
 nightShift:               # o `nightShift: off` para apagarlo
@@ -511,7 +527,7 @@ nightShift:               # o `nightShift: off` para apagarlo
   autonomy: propose       # propose · build · auto, para las líneas sin autonomía propia
   maxAutoJobsPerDay: 3    # trabajos que el turno abre solo por día, sumando todas las líneas
 limits:
-  usdPerNight: 1          # solo si se paga por uso
+  usdPerNight: 1          # solo si se paga por uso: las llamadas por plan no cuentan
 research:
   autonomy: propose       # tope para lo que agrega algo de terceros (ver abajo)
 lines:

@@ -580,6 +580,16 @@ describe("a station's agents and budget", () => {
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ ok: false });
   });
 
+  it("does not count subscription estimates against the night cap", async () => {
+    const { dir } = callsAgent();
+    const ctx = await factory([{ path: dir, allowCode: true, engine: "codex" }]);
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "scout", "zero.engine": "claude" } }).end("ok", { "zero.cost.usd": 5, "zero.billing": "subscription" });
+    const agents = fakeAgents({});
+    await pass(ctx, agents.runner, new Date());
+    expect(agents.calls[0]!.engine).toMatchObject({ name: "codex" });
+    expect(agents.calls[0]!.maxBudgetUsd).toBe(1);
+  });
+
   it("checks the output against the schema, whatever the engine says", async () => {
     const out = join(tempDir(), "run.json");
     const { dir } = stationPkg({ top: `import { writeFileSync } from "node:fs";`, body: `writeFileSync(${JSON.stringify(out)}, JSON.stringify(await ctx.runAgent({ prompt: "p", schema: ctx.z.object({ sentence: ctx.z.string() }) })));` });

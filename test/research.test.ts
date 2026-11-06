@@ -158,6 +158,15 @@ describe("when research runs", () => {
     await researchPass(ctx, agents.runner, at(3));
     expect(agents.calls[0]!.maxBudgetUsd).toBeCloseTo(0.6);
   });
+
+  it("subscription estimates leave the cap of another engine whole", async () => {
+    const { ctx } = factory({ stations: { research: { engine: "codex" } } });
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "scout", "zero.engine": "claude" } }).end("ok", { "zero.cost.usd": 5, ...quotaAttrs({ billing: "subscription", windows: [] }) });
+    const agents = researching();
+    await researchPass(ctx, agents.runner, at(3));
+    expect(agents.calls[0]!.engine?.name).toBe("codex");
+    expect(agents.calls[0]!.maxBudgetUsd).toBe(1);
+  });
 });
 
 describe("research quota", () => {
