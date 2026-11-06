@@ -8,7 +8,7 @@ import { decide } from "../src/line/policy.js";
 import { blockingFindings, checkCitations, citationValid, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "../src/line/review.js";
 import { changeName, existingRequirementNames, foldRequirementName, plainSpec, renderOpenSpecChange, specProblems, uniqueRequirementNames, writeFiles } from "../src/line/spec.js";
 import { filterProposals, type ScoutOutput } from "../src/line/scout.js";
-import { ALWAYS_PROTECTED, protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
+import { ALWAYS_PROTECTED, operationArtifacts, protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
 import { Store } from "../src/state/store.js";
 import { Tracer } from "../src/telemetry/tracer.js";
 import { checkedOutAt, openWorkCopy } from "../src/workspace.js";
@@ -321,6 +321,139 @@ describe("verification", () => {
     });
     expect(r).toMatchObject({ ok: false, kind: "failed" });
     expect(r.ok === false && r.kind === "failed" && r.feedback).toMatch(/código 3[\s\S]*boom/);
+  });
+});
+
+describe("operation output", () => {
+  const added = (...paths: string[]) => paths.map((path) => ({ status: "A", path }));
+  const flagged = (paths: string[], opts: { allowed?: string[]; ownSpecDir?: string; referenced?: boolean } = {}) =>
+    operationArtifacts(added(...paths), { allowed: opts.allowed ?? [], ownSpecDir: opts.ownSpecDir, referenced: () => opts.referenced ?? false }).map((a) => a.path);
+
+  /** verifyChange on a copy whose branch adds these files, with a command that leaves a mark if it ever runs. */
+  async function verifying(files: Record<string, string>, opts: { allowedArtifacts?: string[]; ownSpecDir?: string; base?: Record<string, string> } = {}) {
+    const copy = await copyOf(gitRepo({ "README.md": "# demo\n", ...opts.base }));
+    writeTree(copy.cwd, files);
+    copy.commitAll("change");
+    const mark = join(tempDir(), "ran");
+    const result = await verifyChange(copy, {
+      commands: [`node -e "require('fs').writeFileSync(process.argv[1],'x')" "${mark.replace(/\\/g, "/")}"`],
+      protectedPaths: [],
+      allowedArtifacts: opts.allowedArtifacts,
+      ownSpecDir: opts.ownSpecDir,
+      tracer: tracer(),
+      jobId: "j1",
+      parentId: "p",
+    });
+    return { result, ran: existsSync(mark), feedback: result.ok === false && result.kind === "failed" ? result.feedback : "" };
+  }
+
+  it("recognizes the shapes by name and folder, in any case", () => {
+    const paths = [
+      "plus-media/a.txt", "x/plus-cleanup/b.json", "reports/2026-10.html", "docs/Informes/oct.pdf", "informe-tienda-2026-10.md", ".zero/townhall/a.md", "zero.factory.yaml", "sub/App.LOG",
+      "state.db", "a/state.db-wal", "a.db-shm", "a.db-journal", "a.sqlite", "a.SQLITE3", "daemon.lock", "x/secrets.enc", ".zero/worktrees/a", ".zero/jobs/b", ".zero/gate/c", ".zero/bin/d", ".zero/packages/e", ".zero/reports/f",
+      "report/a.csv", "informe/a.xlsx", "reports/deep/a.txt", "reports/a.xml", "reports/a.htm", "reports/a.json", "reports/a.md", "briefing-2026.pdf", "x/BRIEFING-lunes.html",
+    ];
+    expect(flagged(paths)).toEqual(paths);
+  });
+
+  it("leaves code with similar names alone", () => {
+    expect(flagged(["src/reports/table.ts", "src/townhall/x.ts", "packages/a/index.ts", "jobs/run.ts", "src/report.ts", "plus-icon.tsx", ".zero/agents/a.md", "informe.md", "src/briefing.ts", "dblog.ts"])).toEqual([]);
+  });
+
+  it("looks only at added files", () => {
+    const files = [{ status: "M", path: "app.log" }, { status: "D", path: "old.db" }, { status: "A", path: "new.db" }];
+    expect(operationArtifacts(files, { allowed: [], referenced: () => false }).map((a) => a.path)).toEqual(["new.db"]);
+  });
+
+  it("flags images and videos only without a reference", () => {
+    const media = ["a.png", "a.JPG", "a.jpeg", "a.gif", "a.webp", "a.avif", "a.bmp", "a.tif", "a.tiff", "a.heic", "a.svg", "a.ico", "a.mp4", "a.m4v", "a.mov", "a.webm", "a.mkv", "a.avi"];
+    expect(flagged(media)).toEqual(media);
+    expect(flagged(media, { referenced: true })).toEqual([]);
+  });
+
+  it("excludes the line's allowed paths, in any case", () => {
+    expect(flagged(["Media/post.png", "otros/post.png", "data/state.DB"], { allowed: ["media/**", "DATA/*.db"] })).toEqual(["otros/post.png"]);
+  });
+
+  it("defaults allowedArtifacts to an empty list", () => {
+    expect(parseFactory("lines:\n  - name: api\n    repo: /work/api\n").lines[0]!.allowedArtifacts).toEqual([]);
+    expect(parseFactory("lines:\n  - name: api\n    repo: /work/api\n    allowedArtifacts: [\"media/**\"]\n").lines[0]!.allowedArtifacts).toEqual(["media/**"]);
+  });
+
+  it("spares only the Markdown of the job's own specification", () => {
+    const own = "openspec/changes/zero-x/";
+    expect(flagged([`${own}specs/reports/spec.md`, `${own}state.db`, `${own}plus-media/a.json`, "openspec/changes/zero-y/specs/reports/spec.md"], { ownSpecDir: own })).toEqual([`${own}state.db`, `${own}plus-media/a.json`, "openspec/changes/zero-y/specs/reports/spec.md"]);
+  });
+
+  it("fails an added database before running the line's commands", async () => {
+    const v = await verifying({ "data/state.db": "x" });
+    expect(v.result).toMatchObject({ ok: false, kind: "failed" });
+    expect(v.feedback).toContain("data/state.db");
+    expect(v.feedback).toContain("allowedArtifacts");
+    expect(v.ran).toBe(false);
+  });
+
+  it("does not stop on a log that was already versioned", async () => {
+    const v = await verifying({ "app.log": "changed\n" }, { base: { "app.log": "before\n" } });
+    expect(v.result).toEqual({ ok: true });
+    expect(v.ran).toBe(true);
+  });
+
+  it("runs before protected paths, so nobody is asked about a change that fails anyway", async () => {
+    const v = await verifying({ ".zero/townhall/a.md": "x" });
+    expect(v.result).toMatchObject({ ok: false, kind: "failed" });
+  });
+
+  it("rejects an image nothing mentions and names it", async () => {
+    const v = await verifying({ "media/post.png": "x" });
+    expect(v.feedback).toContain("media/post.png");
+    expect(v.ran).toBe(false);
+  });
+
+  it("accepts an image the site uses, whatever the case of the mention", async () => {
+    expect((await verifying({ "site/hero.png": "x", "site/index.html": '<img src="HERO.png">\n' })).result).toEqual({ ok: true });
+  });
+
+  it("accepts an image mentioned by a file already in the base", async () => {
+    expect((await verifying({ "site/hero.png": "x" }, { base: { "site/index.html": '<img src="hero.png">\n' } })).result).toEqual({ ok: true });
+  });
+
+  it("does not count the file itself or openspec as a mention", async () => {
+    const v = await verifying({ "a.svg": "<!-- a.svg -->\n", "openspec/changes/zero-x/proposal.md": "a.svg\n" });
+    expect(v.feedback).toContain("a.svg");
+    expect(v.result).toMatchObject({ ok: false, kind: "failed" });
+  });
+
+  it("does not count a binary file as a mention", async () => {
+    const v = await verifying({ "a.png": "x", "data.bin": "\0a.png\0" });
+    expect(v.feedback).toContain("a.png");
+  });
+
+  it("follows the line's allowed paths in verification", async () => {
+    expect((await verifying({ "media/post.png": "x" }, { allowedArtifacts: ["media/**"] })).result).toEqual({ ok: true });
+    expect((await verifying({ "otros/post.png": "x" }, { allowedArtifacts: ["media/**"] })).feedback).toContain("otros/post.png");
+  });
+
+  it("spares the own specification in verification, with a capability named like a report", async () => {
+    const spec = { "openspec/changes/zero-x/specs/reports/spec.md": "# spec\n" };
+    expect((await verifying(spec, { ownSpecDir: "openspec/changes/zero-x/" })).result).toEqual({ ok: true });
+    expect((await verifying({ "openspec/changes/zero-x/state.db": "x" }, { ownSpecDir: "openspec/changes/zero-x/" })).feedback).toContain("openspec/changes/zero-x/state.db");
+  });
+
+  it("returns real paths for non-ASCII names, so no check is dodged", async () => {
+    const copy = await copyOf(gitRepo());
+    // Assembled so that this test's own added line does not read as a disabled test to the factory's verification.
+    const disabled = `it.${"skip"}('a', () => {});\n`;
+    writeTree(copy.cwd, { "informé.log": "x", "src/con espacio.ts": "x", ".github/café.yml": "x", "test/é.test.ts": disabled });
+    copy.commitAll("names");
+    const files = copy.changedFiles();
+    expect(files).toContainEqual({ status: "A", path: "informé.log" });
+    expect(files).toContainEqual({ status: "A", path: "src/con espacio.ts" });
+    expect(testTampering(files, copy.addedLines())).toEqual([expect.stringContaining("test/é.test.ts")]);
+    const protectedPaths = parseFactory("lines:\n  - name: api\n    repo: /work/api\n").limits.protectedPaths;
+    expect(protectedTouched(files, protectedPaths)).toEqual([".github/café.yml"]);
+    const r = await verifyChange(copy, { commands: [], protectedPaths, tracer: tracer(), jobId: "j1", parentId: "p" });
+    expect(r.ok === false && r.kind === "failed" && r.feedback).toContain("informé.log");
   });
 });
 

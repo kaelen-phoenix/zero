@@ -34,7 +34,8 @@ El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en
   - las salidas estructuradas se validan;
   - se detectan tests borrados o desactivados;
   - las rutas protegidas no se tocan;
-  - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan.
+  - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan;
+  - lo que la fábrica produce trabajando no entra a un repositorio (ver [Lo que queda en tu máquina](#lo-que-queda-en-tu-máquina)).
 - **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
 - **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
@@ -225,7 +226,7 @@ Un resumen por línea y mes calendario, para vos y para compartir con el cliente
 ```sh
 zero informe                                # el mes anterior, todas las líneas (un aviso recuerda pedir una sola antes de compartir)
 zero informe tienda --mes 2026-10           # una línea, un mes, en Markdown
-zero informe tienda --mes 2026-10 --html    # un documento HTML autónomo (necesita una línea)
+zero informe tienda --mes 2026-10 --html    # guarda un documento HTML autónomo en ZERO_HOME/reports y muestra la ruta (necesita una línea)
 ```
 
 - Lista cada trabajo entregado: título, fechas de pedido y de entrega, origen (tu pedido, issue de GitHub, propuesta del turno nocturno aprobada por vos o tomada por su cuenta, investigación), qué cambió (el resumen de su spec) y el link a la solicitud de cambio o al commit.
@@ -233,8 +234,19 @@ zero informe tienda --mes 2026-10 --html    # un documento HTML autónomo (neces
 - La parte del costo que vino de una suscripción se marca como un estimado que no se cobró. El costo va también en el archivo exportado: editalo si no querés que lo vea tu cliente.
 - Un trabajo cuenta en el mes en que terminó, en hora local.
 - Lo que compartís no lleva secretos, ni rutas locales, ni nada de otras líneas. La limpieza se basa en patrones, así que leelo antes de mandarlo: un título que nombre a otra línea por su nombre queda como está.
-- La pestaña "Informe mensual" del panel deja elegir línea y mes y descargar cada línea en Markdown o HTML. En el chat, `zero_monthly_report` devuelve el mismo Markdown y solo lee.
+- La pestaña "Informe mensual" del panel deja elegir línea y mes y descargar cada línea en Markdown o HTML; cada descarga deja además una copia en `ZERO_HOME/reports`. En el chat, `zero_monthly_report` devuelve el mismo Markdown y solo lee.
 - Nada se envía solo: ninguna pasada del daemon lo genera ni lo publica. Solo existe cuando lo pedís, y vos decidís a quién se lo das.
+
+## Lo que queda en tu máquina
+
+Lo que la fábrica produce trabajando nunca se versiona: informes mensuales, briefings, propuestas, notas de investigación, trazas, reportes de estaciones de paquetes, imágenes o videos para redes, exportaciones del panel, `state.db`, logs y cualquier otro archivo de `ZERO_HOME` quedan en `ZERO_HOME`, en tu máquina. Quien instala zero no se descarga nada de eso, y los informes de un proyecto nunca terminan en el repositorio de otro. Lo único que entra a un repositorio es un desarrollo para ese repositorio.
+
+zero lo hace cumplir por su cuenta, sin confiar en el agente:
+
+- **Antes de integrar.** La verificación mira los archivos que agrega el trabajo (la especificación y cada intento) antes de correr los comandos de la línea. Si alguno tiene forma de producto de la operación, el intento falla con un mensaje que nombra cada archivo y el motivo, y el intento siguiente lo recibe como retroalimentación. El control se repite sobre el cambio completo justo antes de integrar; si algo apareció después de la verificación, el trabajo falla sin integrarse.
+- **Las formas.** Archivos terminados en `.db`, `.db-wal`, `.db-shm`, `.db-journal`, `.sqlite`, `.sqlite3` o `.log`; `zero.factory.yaml`, `daemon.lock` y `secrets.enc`; lo que esté bajo `.zero/townhall`, `worktrees`, `jobs`, `gate`, `bin`, `packages` o `reports`; lo que esté en una carpeta `plus-*`; documentos y datos bajo una carpeta `report`, `reports`, `informe` o `informes`; archivos llamados `informe-*` o `briefing-*`; e imágenes o videos cuyo nombre de archivo no menciona ningún archivo de texto del repositorio (no cuentan `openspec/` ni el propio archivo). Los archivos que ya estaban versionados y el Markdown de la especificación del propio trabajo no se tocan.
+- **`allowedArtifacts`.** Un proyecto que sí versiona estos archivos declara sus rutas en su línea, como globs (ver el archivo de la fábrica más abajo). El control va por la forma del archivo, así que puede frenar un archivo legítimo hasta que lo agregues, y un informe con un nombre y una carpeta raros pasa.
+- **Informes guardados.** `zero informe <línea> --html` y las descargas del panel guardan en `ZERO_HOME/reports`. Si esa carpeta queda dentro del repositorio de una línea o del repositorio de la carpeta actual, zero se niega a guardar y te explica por qué. La copia del navegador va adonde el navegador guarda las descargas; el Markdown por terminal no escribe ningún archivo, así que redirigirlo queda en tus manos.
 
 ## La fábrica (`~/.zero/zero.factory.yaml`)
 
@@ -278,6 +290,7 @@ lines:
     stations:                 # opcional: skills que un agente suma solo en esta línea
       build: { skills: [nextjs, shadcn] }
     signature: off            # opcional: la firma propia de esta línea, reemplaza la global
+    allowedArtifacts: ["media/**"]   # opcional: rutas que esta línea versiona aunque parezcan producto de la operación
 ```
 
 Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
@@ -291,6 +304,7 @@ El directorio de la fábrica (`ZERO_HOME`, por defecto `~/.zero`) contiene:
 - `worktrees/` y `jobs/`, con las especificaciones renderizadas;
 - `bin/`, con las herramientas que zero descarga con tu permiso (cloudflared);
 - `gate/`, compartido con la puerta de salida: sus reglas, los pases de las cajas en curso y sus registros;
+- `reports/`, con los informes que guardás;
 - `daemon.log`.
 
 ### Cómo se factura Codex

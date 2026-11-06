@@ -129,17 +129,14 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
       git(["clean", "-fdq", ...scope], cwd);
     },
     changedFiles() {
-      const out = git(["diff", "--name-status", "--no-renames", `${base}...HEAD`], cwd);
-      return out
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => {
-          const [status, ...rest] = l.split("\t");
-          return { status: status!.charAt(0), path: rest.join("\t") };
-        });
+      // NUL-separated: without -z git quotes and escapes any path with non-ASCII characters, and no rule would match it.
+      const fields = git(["diff", "--name-status", "-z", "--no-renames", `${base}...HEAD`], cwd).split("\0").filter(Boolean);
+      const files: ChangedFile[] = [];
+      for (let i = 0; i + 1 < fields.length; i += 2) files.push({ status: fields[i]!.charAt(0), path: fields[i + 1]! });
+      return files;
     },
     addedLines() {
-      const out = git(["diff", "-U0", "--no-color", `${base}...HEAD`], cwd);
+      const out = git(["-c", "core.quotePath=false", "diff", "-U0", "--no-color", `${base}...HEAD`], cwd);
       const added: { path: string; text: string }[] = [];
       let path = "";
       for (const l of out.split("\n")) {

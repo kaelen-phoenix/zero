@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
@@ -29,7 +29,8 @@ import { formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
-import { buildLineReport, parseMonth, previousMonth, type MonthlyReport } from "./report.js";
+import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
+import { tryGit } from "./shell.js";
 import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
@@ -449,6 +450,35 @@ export function monthlyReport(ctx: FactoryContext, input: { line?: string; month
       return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository });
     }),
   };
+}
+
+/** A path with its links resolved, as far as it exists: a repository's real folder may be spelled differently from ZERO_HOME's. */
+function realPath(path: string): string {
+  const parent = dirname(path);
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return parent === path ? path : join(realPath(parent), basename(path));
+  }
+}
+
+/**
+ * Saves a report in `<ZERO_HOME>/reports` and returns the file's path. What the
+ * factory produces is never versioned, so it refuses to write when that folder
+ * falls inside a line's repository or the current folder's.
+ */
+export function saveReport(ctx: FactoryContext, report: LineReport, format: "md" | "html", cwd = process.cwd()): string {
+  const reports = realPath(ctx.home.reports);
+  const refuse = (where: string) => new Error(`No guardé el informe: ${ctx.home.reports} queda dentro del ${where}, y lo que la fábrica produce no se versiona. Mové ZERO_HOME fuera de ese repositorio.`);
+  for (const line of ctx.config.lines) {
+    if (isInside(reports, realPath(line.repo))) throw refuse(`repositorio de la línea "${line.name}" (${line.repo})`);
+  }
+  const here = tryGit(["rev-parse", "--show-toplevel"], cwd);
+  if (here && isInside(reports, realPath(resolve(here)))) throw refuse(`repositorio de la carpeta actual (${here})`);
+  mkdirSync(ctx.home.reports, { recursive: true });
+  const path = join(ctx.home.reports, reportFileName(report, format));
+  writeFileSync(path, format === "md" ? reportMarkdown(report) : reportHtml(report));
+  return path;
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */
