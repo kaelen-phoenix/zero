@@ -1,0 +1,38 @@
+# The factory in Docker. See "Install with Docker" in the README.
+#   docker compose build
+#   docker compose run --rm zero setup
+#   docker compose up -d
+#
+# This file gives the container no access to Docker: the isolation box is the
+# separate docker/compose.box.yaml. Credentials are never declared here.
+services:
+  zero:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        ZERO_CLIS: ${ZERO_CLIS:-claude}
+    image: zero:local
+    init: true
+    restart: unless-stopped
+    user: "${ZERO_UID:-1000}:${ZERO_GID:-1000}"
+    environment:
+      ZERO_HOME: /data/home
+      HOME: /data/user
+      ZERO_PANEL_PORT: ${ZERO_PANEL_PORT:-4848}
+    volumes:
+      - zero-data:/data
+      - zero-repos:/repos
+    ports:
+      - "${ZERO_PANEL_BIND:-127.0.0.1}:${ZERO_PANEL_PORT:-4848}:${ZERO_PANEL_PORT:-4848}"
+    secrets:
+      - zero_master_key
+
+secrets:
+  # Encrypts the secrets kept in the volume. It lives outside the volume: lose it and they cannot be read.
+  zero_master_key:
+    file: ./secrets/zero_master_key
+
+volumes:
+  zero-data:
+  zero-repos:

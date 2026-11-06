@@ -228,6 +228,45 @@ describe("production line", () => {
     expect(existsSync(join(ctx.home.jobs, job.id, "openspec", "proposal.md"))).toBe(true);
   });
 
+  it("gives a repeated requirement name the job's id in every output, with one spec call", async () => {
+    const { repo, ctx } = factory({
+      files: {
+        "openspec/config.yaml": "schema: spec-driven\n",
+        "openspec/changes/otro/specs/health-check/spec.md": "## ADDED Requirements\n\n### Requirement: Health check\nIt MUST answer.\n",
+      },
+    });
+    const agents = fakeAgents({ build: writeHealth() });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("delivered");
+    const unique = `Health check (${job.id})`;
+    expect((done.spec as { requirements: { name: string }[] }).requirements.map((r) => r.name)).toEqual([unique]);
+    const heading = `### Requirement: ${unique}\n`;
+    expect(readFileSync(join(repo, "openspec", "changes", `zero-${job.id}`, "specs", "health-check", "spec.md"), "utf8")).toContain(heading);
+    expect(readFileSync(join(ctx.home.jobs, job.id, "openspec", "specs", "health-check", "spec.md"), "utf8")).toContain(heading);
+    expect(agents.calls.find((c) => c.station === "build")!.prompt).toContain(heading);
+    expect(agents.count.spec).toBe(1);
+  });
+
+  it("does not count a job's own change as a repeat when it runs the spec station again", async () => {
+    const { repo, ctx } = factory({ files: { "openspec/config.yaml": "schema: spec-driven\n" } });
+    const { job } = requestWork(ctx, { text: "health" });
+    writeTree(repo, { [`openspec/changes/zero-${job.id}/specs/health-check/spec.md`]: "## ADDED Requirements\n\n### Requirement: Health check\nIt MUST answer.\n" });
+    gitIn(repo, "add", ".");
+    gitIn(repo, "commit", "-q", "-m", "own change");
+    const done = await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner));
+    expect(done.status).toBe("delivered");
+    expect((done.spec as { requirements: { name: string }[] }).requirements.map((r) => r.name)).toEqual(["Health check"]);
+  });
+
+  it("keeps going on a repository without OpenSpec", async () => {
+    const { ctx } = factory();
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, fakeAgents({ build: writeHealth() }).runner));
+    expect(done.status).toBe("delivered");
+    expect((done.spec as { requirements: { name: string }[] }).requirements.map((r) => r.name)).toEqual(["Health check"]);
+  });
+
   it("asks before touching protected paths at L2 and resumes at verify after approval", async () => {
     const { repo, ctx } = factory();
     const agents = fakeAgents({ build: (req) => void writeTree(req.cwd, { ".github/workflows/ci.yml": "on: push\n", "src/health.ts": "ok" }) });

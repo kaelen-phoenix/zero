@@ -2,15 +2,30 @@ import { query, type Options, type SDKRateLimitInfo, type SDKResultMessage } fro
 import type { Access, Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
 /**
- * Tools per access level. Anything not listed is denied (`dontAsk`), so a run
- * never blocks waiting for a human.
+ * Tools auto-approved per access level. `allowedTools` only approves: it does
+ * not restrict, so a tool left out is not necessarily denied. `dontAsk` keeps a
+ * run from blocking waiting for a human; DENIED_TOOLS is what takes tools away.
  */
 const READ_TOOLS = ["Read", "Glob", "Grep", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"];
 const TOOLS: Record<Access, string[]> = {
   read: READ_TOOLS,
-  // WebSearch runs on the provider's side; WebFetch stays off so nothing leaves this machine unrecorded.
+  // WebSearch runs on the provider's side; WebFetch is denied so nothing leaves this machine unrecorded.
   web: [...READ_TOOLS, "WebSearch"],
   write: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+};
+
+/**
+ * Tools removed from a read-only session's context (`disallowedTools`): delegated
+ * work a subagent could write with and zero's single span would not see, the web
+ * fetch, and remote or scheduled work. A deny list and not the closed `tools`
+ * option, because without a model we cannot confirm how `tools` would affect
+ * `StructuredOutput` and `Skill`, and a mistake there would break every station.
+ */
+const READ_DENIED = ["Agent", "Workflow", "WebFetch", "RemoteTrigger", "CronCreate", "ScheduleWakeup", "SendMessage", "PushNotification"];
+const DENIED_TOOLS: Record<Access, string[] | undefined> = {
+  read: READ_DENIED,
+  web: READ_DENIED,
+  write: undefined,
 };
 
 /**
@@ -31,8 +46,9 @@ export function claudeOptions(req: EngineRequest, abort: AbortController): Optio
     // Never run hooks (a build may have written them into the repo) nor load the host's memory or claude.ai connectors.
     settings: { disableAllHooks: true, autoMemoryEnabled: false },
     strictMcpConfig: true,
-    env: { ...process.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+    env: { ...process.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     allowedTools: TOOLS[req.access],
+    ...(DENIED_TOOLS[req.access] && { disallowedTools: DENIED_TOOLS[req.access] }),
     permissionMode: "dontAsk",
     skills: req.skills?.skills.map((s) => s.id) ?? [],
     ...(req.skills?.skills.length && { plugins: [{ type: "local" as const, path: req.skills.dir }] }),

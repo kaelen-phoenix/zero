@@ -2,6 +2,7 @@ import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, PackageLis
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
+import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
@@ -164,6 +165,18 @@ export function shutdownOutcome(r: ShutdownResult): { text: string; code: number
 
 const daemonState = (d: DaemonInfo) => (d.alive ? "en marcha" : d.lockHeld ? `no responde${d.pid ? ` (proceso ${d.pid})` : ""}` : "apagada (arranca sola con el próximo pedido)");
 
+/** Starts with `GitHub:`, so `zero box status`, which filters by prefix, leaves it out. */
+function githubLine(g: GithubStatus, now: Date): string {
+  const parts: string[] = [];
+  if (g.remaining !== undefined) parts.push(`quedan ${g.remaining} de ${g.limit} pedidos${g.resetAt ? `, se renueva ${resetTime(g.resetAt, now)}` : ""}`);
+  if (g.haltedUntil) parts.push(`las pasadas siguen en pausa hasta ${resetTime(g.haltedUntil, now)}`);
+  const top = Object.entries(g.passes)
+    .map(([pass, counts]) => ({ pass, requests: counts.requests }))
+    .sort((a, b) => b.requests - a.requests)[0];
+  if (top?.requests) parts.push(`la pasada que más gastó esta hora: ${top.pass} (${top.requests})`);
+  return `GitHub: ${parts.join(" · ")}`;
+}
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -176,7 +189,9 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     out.push(
       s.box.availability.ready && st
         ? `Caja de aislamiento: lista (${st.runtime} · ${st.image})`
-        : `Caja de aislamiento: no lista; los trabajos corren en copias locales.${s.level.reason ? "" : ` ${s.box.availability.problems.join("; ")}`}`,
+        : s.boxWait
+          ? `Caja de aislamiento: no lista; los trabajos esperan la caja en la cola. Corré \`zero box setup\` o elegí otra cosa con \`zero setup\`. ${s.box.availability.problems.join("; ")}`
+          : `Caja de aislamiento: no lista; los trabajos corren en copias locales.${s.level.reason ? "" : ` ${s.box.availability.problems.join("; ")}`}`,
     );
   } else {
     out.push("Caja de aislamiento: desactivada (isolation: worktree)");
@@ -185,12 +200,15 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     const e = s.today.egress;
     out.push(`Salidas a internet hoy: ${e.connections} conexiones · ${e.blocked} bloqueadas${e.suspicious ? ` (${e.suspicious} sospechosas: \`zero egress\`)` : ""} · modo ${s.egressMode}`);
   }
+  if (s.codexUnsandboxed === "machine") out.push("AVISO: Codex corre sin su sandbox (codex.sandbox: off). zero solo comprueba la carpeta de trabajo y su repositorio en las estaciones de lectura; no cubre los archivos ignorados por git, el resto de la máquina ni la salida a internet.");
+  if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
+  if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
-  out.push(`Hoy: ${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
+  out.push(`Hoy:${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
   const origin = (j: Job) => (jobOrigin(j) ? ` · ${jobOrigin(j)}` : "");
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;

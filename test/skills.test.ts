@@ -189,6 +189,42 @@ describe("claude options", () => {
     expect(claudeOptions(req({ access: "write", skills: staged }), ac).allowedTools).toEqual(claudeOptions(req({ access: "write" }), ac).allowedTools);
   });
 
+  const READ_ALLOWED = ["Read", "Glob", "Grep", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"];
+  const DENIED = ["Agent", "CronCreate", "PushNotification", "RemoteTrigger", "ScheduleWakeup", "SendMessage", "WebFetch", "Workflow"];
+  const options = (over: Partial<EngineRequest> = {}) => claudeOptions(req(over), new AbortController());
+
+  it("denies delegated, web fetch and remote tools on read access", () => {
+    expect([...options({ access: "read" }).disallowedTools!].sort()).toEqual(DENIED);
+  });
+
+  it("denies the same tools on web access and keeps WebSearch", () => {
+    const o = options({ access: "web" });
+    expect(o.disallowedTools).toEqual(options({ access: "read" }).disallowedTools);
+    expect(o.disallowedTools).not.toContain("WebSearch");
+    expect(o.allowedTools).toContain("WebSearch");
+  });
+
+  it("denies nothing on write access", () => {
+    const o = options({ access: "write" });
+    expect(o.disallowedTools).toBeUndefined();
+    expect(o.allowedTools).toEqual(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
+  });
+
+  it("skills never change the denied tools", () => {
+    for (const access of ["read", "web", "write"] as const) {
+      expect(options({ access, skills: staged }).disallowedTools).toEqual(options({ access }).disallowedTools);
+    }
+  });
+
+  it("uses a deny list and keeps the rest of the read options", () => {
+    for (const access of ["read", "web", "write"] as const) {
+      expect(options({ access }).tools).toBeUndefined();
+      expect(options({ access }).permissionMode).toBe("dontAsk");
+    }
+    expect(options({ access: "read" }).allowedTools).toEqual(READ_ALLOWED);
+    expect(options({ access: "web" }).allowedTools).toEqual([...READ_ALLOWED, "WebSearch"]);
+  });
+
   it("isolates every run from hooks, host memory and outside MCP servers", () => {
     process.env.ZERO_TEST_VAR = "x";
     try {

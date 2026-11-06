@@ -76,6 +76,73 @@ zero start [--detach] · zero shutdown
 
 The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), and `zero_egress` and `zero_egress_block` (internet egress).
 
+## Install with Docker
+
+The image is built from this repository, with zero, Node 22, git, `gh`, the Docker client and only the AI CLIs you name. Nothing gets installed later: to add a CLI you rebuild.
+
+```sh
+git clone https://github.com/kaelen-phoenix/zero && cd zero
+mkdir -p secrets && openssl rand -hex 32 > secrets/zero_master_key   # encrypts the secrets kept in the volume; keep a copy outside it
+ZERO_CLIS=claude,codex docker compose build                          # claude, codex or both
+docker compose run --rm zero setup                                   # asks how you will work; run it again to change anything
+docker compose up -d
+docker compose exec zero zero panel                                  # the panel link, with your key
+```
+
+`zero setup` asks:
+
+- **How you will work:** subscription, API key or both. Each engine is chosen from `claude` and `codex`; the first goes to `engine` and the rest to `fallback`. With both, you pick one engine for each side, and they have to be different. Gemini is not an engine of zero yet.
+- **Limits:** `usdPerDay` and `usdPerJob` when an engine is paid per use, `reservePercent` when one is on a plan. It leaves the others alone.
+- **Isolation:** see below.
+- **Panel port and GitHub:** `gh auth login`, a token stored as `GH_TOKEN`, or nothing.
+
+API keys and tokens are typed without being shown; they never go in arguments, in the file or in the log. Logins run with your consent on your terminal. `claude setup-token` gives a token that the wizard stores. `codex login --device-auth` and `gh auth login` leave their session in the volume, **not encrypted**, because each CLI manages it on its own: use a key or a token if you would rather avoid that. Choosing a method deletes the stored credential of the other one for that engine, and warns you about one in an environment variable or Docker secret, which it cannot delete.
+
+**Volumes.** `zero-data` holds `ZERO_HOME` (`state.db`, `zero.factory.yaml`, jobs, `secrets.enc`) and `HOME` (the CLIs' sessions). `zero-repos`, at `/repos`, holds the lines' repositories. Recreating or updating the container loses neither.
+
+```sh
+docker compose exec zero git clone https://github.com/you/shop /repos/shop
+docker compose exec zero zero line add /repos/shop
+docker compose build && docker compose up -d                         # update
+```
+
+Only `https` remotes work: pushing uses zero's GitHub token through `zero git-credential`, and the container has no ssh key.
+
+**Secrets.** There is no keychain in a container. A credential is looked up first in an environment variable, then in the Docker secret `/run/secrets/<NAME>`, and last in `secrets.enc` (AES-256-GCM, mode 600), whose key is the `zero_master_key` secret, kept outside the volume. Without that key nothing is written, and if you lose it the stored secrets cannot be read. Avoid environment variables: `docker inspect` shows them. Docker secrets go in your own compose file:
+
+```yaml
+services:
+  zero:
+    secrets: [zero_master_key, OPENAI_API_KEY]
+secrets:
+  OPENAI_API_KEY:
+    file: ./secrets/openai_api_key
+```
+
+**Panel.** It is published on `ZERO_PANEL_PORT` (4848 by default), bound to `127.0.0.1` on your machine. It still asks for the key. Set both in `.env`, next to `compose.yaml`, and answer the same port in `zero setup`:
+
+```sh
+ZERO_PANEL_PORT=8080
+ZERO_PANEL_BIND=0.0.0.0              # opens it to your network: use it only if you need it
+```
+
+**Isolation.** `compose.yaml` gives the container no access to Docker, and you choose in `zero setup`; zero never lowers the guarantee on its own. Until you choose, or while the box is not ready, jobs **wait in the queue** and `zero status` says why. Docker-in-Docker is not offered because it needs `--privileged`.
+
+- **Box through the host's socket.** Jobs run in the box and leave through the gate, as on a machine. `docker/compose.box.yaml` mounts `/var/run/docker.sock`. **The socket gives whatever runs in zero's container control over your machine**: agents inside the box do not see it, but zero, package stations with `allowCode` and stations that run outside the box (like the night shift) do. The data folder has the same path inside and out, because the host's Docker resolves the paths zero mounts. Inside the box, Codex needs an API key: its subscription session stays in `HOME`. While a job runs, `docker inspect` on the box shows the credentials it was given.
+
+```sh
+export ZERO_DATA=/srv/zero                                           # absolute path on your machine
+mkdir -p "$ZERO_DATA/home" "$ZERO_DATA/user" "$ZERO_DATA/tmp"
+export ZERO_DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+docker compose -f compose.yaml -f docker/compose.box.yaml run --rm zero setup
+docker compose -f compose.yaml -f docker/compose.box.yaml run --rm zero box setup
+docker compose -f compose.yaml -f docker/compose.box.yaml up -d
+```
+
+- **No box.** `isolation: worktree`, only after a warning and a confirmation whose default is no. **Agents run in the same container as the key and the secrets**, can read them, and go online without passing through the gate. The factory stays below L3.
+
+This installation is not exercised end to end by zero's tests, which only check these files: the image, the CLI logins and the box through the socket have not been run by them. See [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
+
 ## GitHub issues
 
 A line can take as requests the issues of its GitHub repository that carry a label:
@@ -95,7 +162,9 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 ### Auto-merge
 
-With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if that gets fixed, it merges it on the next check. `zero status` and the panel show the ones waiting.
+With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if a push fixes it, it merges it on the next check. When nothing changed, it looks at the checks again with growing waits, from 5 minutes up to 1 hour, so a check rerun on the same commit can take up to that hour to be noticed. `zero status` and the panel show the ones waiting.
+
+The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
 
 ### Commit author
 
@@ -143,9 +212,9 @@ zero panel remote off          # closes it
 zero panel rotate              # new key: previous links stop working
 ```
 
-- The panel only listens on your PC (`127.0.0.1:4848`).
+- The panel only listens on your PC (`127.0.0.1:4848`), unless you change `panel.host`.
 - The key travels in the link after `#`, so the browser does not send it in the address. It is exchanged for a session cookie.
-- The key lives in the system keychain.
+- The key lives in the system keychain (in Docker, in `secrets.enc`).
 - Remote access uses `cloudflared` (Apache-2.0). zero downloads it with your permission from its official releases and, on Windows, verifies Cloudflare's signature.
 - While the tunnel is open, Cloudflare carries the panel's traffic. Close it when you are not using it.
 
@@ -173,7 +242,7 @@ zero informe tienda --mes 2026-10 --html    # a standalone HTML document (it nee
 level: L3                 # L0 · L1 · L2 · L3
 isolation: container      # isolation box (worktree = local copies, no box)
 box: { runtime: auto, cpus: 2, memoryGb: 4, pids: 512 }   # auto = Podman, then Docker
-panel: { port: 4848 }     # 0 = no panel
+panel: { port: 4848, host: 127.0.0.1 }     # port 0 = no panel · host 0.0.0.0 to publish it from a container
 egress:                   # the box's internet egress (all of it goes through zero's gate)
   mode: blocklist         # blocklist: everything goes out except what is suspicious or blocked · allowlist: only what is allowed
   allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
@@ -181,7 +250,7 @@ egress:                   # the box's internet egress (all of it goes through ze
 engine: claude            # default engine: claude · codex · antigravity · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
-limits:                   # with a subscription (claude.ai) the limit is the plan's real quota: 5 hours and weekly
+limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
   usdPerDay: 10           # only for pay-per-use (API key) · 0 = free engines only
   usdPerJob: 3            # only for pay-per-use
@@ -223,6 +292,22 @@ The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
 - `bin/`, with the tools zero downloads with your permission (cloudflared);
 - `gate/`, shared with the egress gate: its rules, the passes of the running boxes and their records;
 - `daemon.log`.
+
+### How Codex is billed
+
+With a ChatGPT session (`codex login`), Codex is limited by your plan's quota: zero reads its usage windows from each call and pauses the engine at `limits.reservePercent` or when a window runs out, until it renews. With `CODEX_API_KEY` or `OPENAI_API_KEY` it is pay-per-use, and the dollar caps apply. `limits.usdPerNight` only counts what is really charged, so calls on a plan do not use it up.
+
+### Codex without its sandbox (`codex.sandbox`)
+
+Use this only on a machine where Codex's own sandbox does not work, such as some Windows setups. You decide it in the factory file; the chat cannot change it. By default nothing changes.
+
+```yaml
+codex: { sandbox: off }
+```
+
+Outside the box, zero then starts Codex with `--sandbox danger-full-access` and no approval prompts, and keeps read-only stations read-only itself: around each such call it compares the working folder and its repository (tracked and untracked files, index, HEAD, branches and tags, the repository's `config` and `hooks`). If anything changed, zero puts back only what differs, without touching work you had not saved, and fails the call with a notice naming the files. It also undoes anything else that changes the folder or its checked-out branch during the call, such as your own edits or commits in that same checkout (`git reflog` still finds them); what it discarded stays in a temporary folder named in the log. The factory stays out of the way: a job does not start in a repository under such a call, and a background call waits for the job running in its repository. Other refs are not rewound when the call cannot be blamed for them: in a job's work copy everything except that copy's own branch, and everywhere the factory's `zero/*` branches, branches checked out in another worktree and new tags (any fetch brings them). Those are only logged. When the isolation box is ready (`isolation: container`), Codex runs inside it with its usual flags, background passes included, and `zero status` says so; otherwise `zero status` warns that it runs without its sandbox.
+
+What this does not cover outside the box: files ignored by git and not tracked, the refs just mentioned, the rest of the machine (Codex can read and write anywhere you can, including the factory's own folder) and access to the internet.
 
 ### Fallback engines (`fallback`)
 
@@ -436,7 +521,7 @@ While it runs, the factory looks once a day at what the remotes of git and npm p
 
 ## Night shift
 
-When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap.
+When the factory is free (none of your requests queued or running, the andon off and budget left), the read-only `scout` station looks at each line once per period: the townhall, the traces of the last 30 days, the specs without tests, the line's research notes and, on GitHub lines, the open unlabeled issues written by people with write access (up to 20, the newest, leaving out those that already have a proposal). What an issue says is data, never instructions. If `scout` proposes taking one, the proposal links the issue (in the job's request, in the panel and in the proposal's issue). It writes up to three proposals per line; zero discards those that touch protected paths, ask for new credentials or repeat a title. On pay-per-use, `scout` and `research` share the `limits.usdPerNight` cap, which only counts what is really charged: what calls on a plan would have cost does not use it up.
 
 ```yaml
 nightShift:               # or `nightShift: off` to turn it off
@@ -444,7 +529,7 @@ nightShift:               # or `nightShift: off` to turn it off
   autonomy: propose       # propose · build · auto, for lines without their own autonomy
   maxAutoJobsPerDay: 3    # jobs the shift opens on its own per day, across all lines
 limits:
-  usdPerNight: 1          # only for pay-per-use
+  usdPerNight: 1          # only for pay-per-use: plan calls do not count
 research:
   autonomy: propose       # cap for what adds something third-party (see below)
 lines:

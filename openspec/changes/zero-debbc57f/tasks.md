@@ -1,0 +1,13 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 Crear `src/engines/codex-schema.ts` (puro, sin importar `src/agent.ts` ni zod) con `toStrictSchema(schema)`, que devuelve el esquema convertido sin mutar la entrada y lanza un error con la ruta cuando no hay equivalente estricto, y `withoutOptionalNulls(schema, value)`, que recorre el valor guiado por el esquema original.
+- [x] 1.2 En `toStrictSchema`, usar una lista de palabras clave permitidas: type, properties, required, additionalProperties, items, anyOf, enum, const, description, title, $ref, $defs, definitions, multipleOf, minimum, maximum, exclusiveMinimum, exclusiveMaximum, minItems, maxItems y format solo con date-time, time, date, duration, email, hostname, ipv4, ipv6, uuid. Cambiar oneOf por anyOf.
+- [x] 1.3 Hacer nullable con un único mecanismo: `anyOf: [interno, {type: "null"}]`, con la description en el envoltorio, sumando a un anyOf existente en vez de anidarlo y sin duplicar null cuando ya se acepta (incluido `type: [..., "null"]`). Envolver en anyOf todo `$ref` que tenga claves al lado.
+- [x] 1.4 En `withoutOptionalNulls`, resolver `$ref` (`#`, `#/$defs/x`, `#/definitions/x`) contra el esquema original. En anyOf/oneOf, elegir la primera rama cuya forma estricta acepte el valor (tipo, const/enum, claves), sin tocar claves desconocidas.
+- [x] 1.5 En `codexEngine.run` (`src/engines/cli.ts`), convertir el esquema antes de `writeFile`; si la conversión lanza, devolver `{ok: false, text}` en español sin iniciar el proceso. Después de `execute`, con esquema y `ok`, intentar JSON.parse del texto y agregar `output` con los null quitados; si no es JSON, devolver el resultado tal cual. No tocar `text`, `claude.ts`, `agent.ts` ni los otros motores.
+- [x] 1.6 Crear `test/codex-schema.test.ts` con un verificador estricto propio y casos de opcionales, defaults, arrays de objetos, uniones, oneOf, $defs, recursión y esquemas rechazados. Incluir ScoutOutput, ReviewSchema, ResearchOutput (y, ya que están, SpecSchema y ReplySchema) pasados por `toEngineSchema`, con ida y vuelta validada por el esquema zod original.
+- [x] 1.7 Agregar pruebas de `codexEngine.run` con el mismo mock de spawn de `test/engines-empty-output.test.ts`: el falso lee el archivo de `--output-schema`, responde con null y se comprueba `output`. Cubrir también la respuesta no JSON, la llamada sin esquema, el rechazo sin spawn (el falso deja una marca si corre) y que `req.schema` no se muta.
+- [x] 1.8 Actualizar `AGENTS.md` (la nota de `src/agent.ts` + `src/engines/`) con el nuevo módulo y sus reglas. No hace falta cambiar los README: no cambia ningún comando ni configuración.
+- [x] 1.9 Correr `npm run typecheck`, `npm test` y `npx openspec validate --all`.

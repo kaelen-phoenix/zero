@@ -35,6 +35,19 @@ function markdownFiles(dir: string): string[] {
 }
 
 describe("README in English and Spanish", () => {
+  it("explain how Codex is billed in both languages", () => {
+    for (const readme of [en, es]) {
+      for (const word of ["ChatGPT", "CODEX_API_KEY", "OPENAI_API_KEY", "usdPerNight", "reservePercent"]) expect(readme).toContain(word);
+    }
+  });
+
+  it("document Codex without its sandbox in both languages", () => {
+    for (const text of [en, es]) {
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("codex: { sandbox: off }");
+      expect(text).toContain("danger-full-access");
+    }
+  });
+
   it("links the other language at the top", () => {
     const enTop = en.split("\n").slice(0, 3).join("\n");
     const esTop = es.split("\n").slice(0, 3).join("\n");
@@ -90,6 +103,18 @@ describe("motto", () => {
       expect(text, file).not.toMatch(/kaelen/i);
       expect(text, file).not.toContain("Zero human intervention required");
     }
+  });
+
+  it("describes the package in package.json without Kaelen nor the old motto", () => {
+    const hasForbidden = (text: string) => /kaelen/i.test(text) || text.includes("Zero human intervention required");
+    const pkg = JSON.parse(read("package.json")) as { name: string; description: string };
+    expect(pkg.description).toBe("An open source software factory that runs on your machine: it turns requests into delivered changes, and you decide where to step back in.");
+    expect(hasForbidden(pkg.description)).toBe(false);
+    // The package name is an identifier, not prose.
+    expect(pkg.name).toBe("@kaelen/zero");
+    expect(hasForbidden("Kaelen Global Defence: autonomous agent network. Continuous execution. Zero human intervention required.")).toBe(true);
+    expect(hasForbidden("Zero human intervention required")).toBe(true);
+    expect(hasForbidden("KAELEN")).toBe(true);
   });
 });
 
@@ -161,6 +186,33 @@ describe("documentation up to date", () => {
       expect(first.body).toContain("git clone https://github.com/kaelen-phoenix/zero");
       expect(first.body).toContain("npm install && npm run build");
     }
+  });
+});
+
+describe("install with Docker", () => {
+  it("documents it right after Getting started, with the same pieces in the code blocks of both", () => {
+    for (const [text, heading, previous] of [[en, "## Install with Docker", "## Getting started"], [es, "## Instalar con Docker", "## Empezar"]] as const) {
+      const titles = text.split("\n").filter((l) => /^## /.test(l));
+      expect(titles.indexOf(heading)).toBe(titles.indexOf(previous) + 1);
+      const body = section(text, heading);
+      const code = blocks(body).map((b) => b.body).join("\n");
+      for (const piece of ["docker compose run --rm zero setup", "ZERO_CLIS", "zero_master_key", "compose.box.yaml", "ZERO_PANEL_PORT"]) expect(code, piece).toContain(piece);
+      expect(body).toContain("socket");
+      expect(body).toContain("--privileged");
+      expect(body).toContain("worktree");
+    }
+  });
+
+  it("warns about both ways of working in each language", () => {
+    expect(section(en, "## Install with Docker")).toContain("control over your machine");
+    expect(section(en, "## Install with Docker")).toContain("same container as the key and the secrets");
+    expect(section(es, "## Instalar con Docker")).toContain("control sobre tu máquina");
+    expect(section(es, "## Instalar con Docker")).toContain("mismo contenedor que la llave y los secretos");
+  });
+
+  it("describes it in AGENTS.md", () => {
+    const guide = read("AGENTS.md");
+    for (const piece of ["src/setup.ts", "encryptedFileKeyring", "ZERO_CONTAINER", "panel.host"]) expect(guide, piece).toContain(piece);
   });
 });
 

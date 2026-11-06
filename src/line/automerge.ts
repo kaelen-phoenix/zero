@@ -1,6 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import type { FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
+import { GithubHalted, isRateLimit } from "../github-quota.js";
 import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
 import type { Job } from "../state/store.js";
@@ -43,9 +44,9 @@ export interface MergeApi {
 const QUIET = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 const PASSED = new Set(["success", "neutral", "skipped"]);
 
-export function githubMerges(token: string, repository: string): MergeApi {
+export function githubMerges(token: string, repository: string, client?: Octokit): MergeApi {
   const [owner, repo] = repository.split("/") as [string, string];
-  const gh = new Octokit({ auth: token, log: QUIET });
+  const gh = client ?? new Octokit({ auth: token, log: QUIET });
   return {
     async pullRequest(number) {
       const { data } = await gh.pulls.get({ owner, repo, pull_number: number });
@@ -75,6 +76,9 @@ export function githubMerges(token: string, repository: string): MergeApi {
 const CHECKS_GRACE_MS = 5 * 60_000;
 /** A pull request left open this long after delivery is no longer watched. */
 const WATCH_MS = 14 * 24 * 3_600_000;
+/** How long the checks of a blocked pull request that did not change are left alone: doubles from the first to the last. */
+const FIRST_BACKOFF_MS = 5 * 60_000;
+const LAST_BACKOFF_MS = 60 * 60_000;
 
 export type MergeDecision =
   | { kind: "merge" }
@@ -99,6 +103,8 @@ export interface MergeState {
   why?: string;
   /** Last problem the pull request was told about, so each is said once. */
   reported?: string;
+  /** While blocked: what it looked like, and when its checks are worth asking for again. */
+  backoff?: { sha: string; mergeable: boolean | null; why: string; delayMs: number; nextChecksAt: string };
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -125,6 +131,8 @@ export function watchedJobs(ctx: FactoryContext): Job[] {
   });
 }
 
+const EXPIRED = "pasaron 14 días sin poder fundirlo";
+
 async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number) {
   const key = mergeKey(job.id);
   const raw = ctx.store.getKv(key);
@@ -134,16 +142,28 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   const since = now - Date.parse(job.finishedAt ?? job.updatedAt);
 
   const pr = await gh.pullRequest(number);
+  const backoff = state.backoff;
+  const unchanged = backoff && backoff.sha === pr.headSha && backoff.mergeable === pr.mergeable ? backoff : undefined;
+  if (pr.open && !pr.merged && unchanged && now < Date.parse(unchanged.nextChecksAt)) {
+    if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
+    return save({ ...state, status: "blocked", why: unchanged.why });
+  }
   const decision = mergeDecision(pr, pr.open ? await gh.checks(pr.headSha) : [], since);
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
-  if (since > WATCH_MS) return save({ status: "expired", why: "pasaron 14 días sin poder fundirlo" });
-  if (decision.kind === "wait") return save({ ...state, status: "waiting", why: decision.why });
+  if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
+  if (decision.kind === "wait") return save({ reported: state.reported, status: "waiting", why: decision.why });
   if (decision.kind === "blocked") {
     if (state.reported !== decision.key) {
       await gh.comment(number, `La fábrica no funde este pull request: ${decision.why}. Queda abierto; si se arregla, lo funde en la próxima revisión.`);
     }
-    return save({ status: "blocked", why: decision.why, reported: decision.key });
+    const delayMs = unchanged ? Math.min(unchanged.delayMs * 2, LAST_BACKOFF_MS) : FIRST_BACKOFF_MS;
+    return save({
+      status: "blocked",
+      why: decision.why,
+      reported: decision.key,
+      backoff: { sha: pr.headSha, mergeable: pr.mergeable, why: decision.why, delayMs, nextChecksAt: new Date(now + delayMs).toISOString() },
+    });
   }
 
   recordMergeCommit(ctx, job, await gh.merge(number, pr.headSha));
@@ -174,6 +194,11 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
     try {
       await watch(ctx, job, gh, pr.number);
     } catch (err) {
+      // A pause is not news about this pull request, and the ones left would only spend more or fail the same way.
+      if (err instanceof GithubHalted || isRateLimit(err)) {
+        log.warn("automatic merge cut short by the GitHub limit", { job: job.id, error: String(err) });
+        return;
+      }
       log.warn("automatic merge failed", { job: job.id, error: String(err) });
       waiting(ctx, job, `no se pudo consultar GitHub: ${err instanceof Error ? err.message : String(err)}`);
     }

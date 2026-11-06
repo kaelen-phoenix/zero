@@ -291,6 +291,8 @@ export const FactorySchema = z
       .prefault({}),
     engine: z.string().default("claude"),
     engines: z.record(z.string(), CustomEngineSchema).default({}),
+    /** `off` starts Codex without its own sandbox, where it does not work; zero then checks read-only calls itself. Only the owner decides it: in this file, never from the chat. */
+    codex: z.object({ sandbox: z.enum(["on", "off"]).default("on") }).strict().prefault({}),
     /** Replacement engines, in order, for stations whose engine is paused by its plan. Only these are ever used. */
     fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
@@ -340,8 +342,8 @@ export const FactorySchema = z
     /** Absent: traces stay only in state.db. */
     telemetry: TelemetrySchema.optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
-    /** The control panel, served by the daemon on 127.0.0.1; 0 turns it off. */
-    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848) }).prefault({}),
+    /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
+    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
     /** Installed agent packages; what they bring is loaded by `src/packages.ts`, never written here. */

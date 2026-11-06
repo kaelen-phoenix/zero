@@ -21,11 +21,13 @@ import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, Revi
 import {
   capabilityExists,
   changeName,
+  existingRequirementNames,
   plainSpec,
   renderOpenSpecChange,
   renderSpecDelta,
   SpecSchema,
   specProblems,
+  uniqueRequirementNames,
   writeFiles,
   type Spec,
 } from "./spec.js";
@@ -428,6 +430,7 @@ async function specStation(
     await learn(spec.learnings, spec.followUps.map((f) => ({ kind: "proposal" as const, line: line.name, job: job.id, source: "spec", topic: f.slice(0, 80), body: f })));
     if (!spec.feasible) return `El pedido no se puede hacer sin ayuda: ${spec.reason}`;
 
+    spec = uniqueRequirementNames(spec, job.id, existingRequirementNames(copy.cwd, spec.capability, changeName(job.id)));
     const files = renderOpenSpecChange(spec, { jobId: job.id, newCapability: !capabilityExists(copy.cwd, spec.capability) });
     await writeFiles(join(deps.home.jobs, job.id, "openspec"), files);
     if (existsSync(join(copy.cwd, "openspec"))) {

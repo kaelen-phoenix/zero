@@ -1,9 +1,11 @@
-import { createAgentRunner, type AgentRunner } from "./agent.js";
-import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, type FactoryContext } from "./app.js";
+import { resolve } from "node:path";
+import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
+import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
@@ -13,6 +15,7 @@ import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
 import { factoryConfig } from "./packages.js";
+import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
@@ -60,15 +63,15 @@ const BOX_RECHECK_MS = 10 * 60_000;
 const INTAKE_MS = 60_000;
 const EXPORT_MS = 30_000;
 
-/** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line). */
-const realIssues = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
+/** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line), and counting their requests for the pass that uses them. */
+const realIssues = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? signedIssues(githubIssues(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+  return token ? signedIssues(githubIssues(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-const realMerges = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
+const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+  return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
 interface Running {
@@ -100,7 +103,7 @@ export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): 
 async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<void> {
   const { store } = ctx;
   const pollMs = opts.pollMs ?? 2_000;
-  const agentRunner = opts.agentRunner ?? createAgentRunner;
+  const agentRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets }));
   const now = () => (ctx.now ?? (() => new Date()))();
 
   // A daemon of an earlier version holds no lock: only its heartbeat tells it is there.
@@ -127,8 +130,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     }
     return gate;
   };
+  const readyBox = (config: FactoryConfig): BoxExecutor | undefined => {
+    const { status, availability } = currentBox(ctx);
+    return config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(config, status) : undefined;
+  };
+  const jobsIn = (folder: string) => [...running.values()].filter((r) => ctx.config.lines.some((l) => l.name === r.line && resolve(l.repo) === resolve(folder))).map((r) => r.done);
+  const passRunner = opts.agentRunner ?? ((config: FactoryConfig) => createAgentRunner(config, { secrets: ctx.secrets, execute: passExecute(() => readyBox(config), jobsIn) }));
   let stopping = false;
   let boxCheckedAt = 0;
+  let boxWaitLogged = false;
   const refreshBox = () => {
     if (ctx.config.isolation !== "container") return;
     try {
@@ -150,17 +160,30 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const port = (opts.panel ?? !opts.once) ? ctx.config.panel.port : 0;
   const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets) }) : undefined;
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
-  panel?.listen(port, "127.0.0.1", () => log.info("control panel listening", { url: `http://127.0.0.1:${port}` }));
+  const host = ctx.config.panel.host;
+  panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
   const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+  // Every pass that talks to GitHub does it through this meter; while it holds a pause, none of them starts.
+  const meter = githubMeter(store, now);
+  let githubPauseLogged = false;
+  const githubPaused = () => {
+    const halt = githubHalt(store, now());
+    if (halt && !githubPauseLogged) log.warn("github passes paused", { until: halt.until, why: halt.why });
+    githubPauseLogged = Boolean(halt);
+    return githubPauseLogged;
+  };
   // GitHub issues are read in the background: a slow GitHub never holds up the loop, and passes never overlap.
   let intakeAt = 0;
   let intake: Promise<void> | undefined;
   const takeIssues = () => {
     if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
     intakeAt = Date.now();
-    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx), { runAgent: agentRunner(ctx.config) })
+    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx, meter, "issues"), { runAgent: passRunner(ctx.config) })
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
-      .finally(() => (intake = undefined));
+      .finally(() => {
+        meter.endRun("issues");
+        intake = undefined;
+      });
   };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
@@ -168,12 +191,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const syncProposals = () => {
     if (publishing || !ctx.config.lines.length || Date.now() - proposalsAt < (opts.once ? 0 : INTAKE_MS)) return;
     proposalsAt = Date.now();
-    const api = opts.issues ?? realIssues(ctx);
-    publishing = syncProposalIssues(ctx, api)
+    publishing = syncProposalIssues(ctx, opts.issues ?? realIssues(ctx, meter, "proposals"))
       .catch((err) => log.warn("proposal issues failed", { error: String(err) }))
-      .then(() => syncResearchIssues(ctx, api))
+      .then(() => meter.endRun("proposals"))
+      .then(() => syncResearchIssues(ctx, opts.issues ?? realIssues(ctx, meter, "research")))
       .catch((err) => log.warn("research issues failed", { error: String(err) }))
-      .finally(() => (publishing = undefined));
+      .finally(() => {
+        meter.endRun("research");
+        publishing = undefined;
+      });
   };
   // Pull requests to merge, polled the same way.
   let mergesAt = 0;
@@ -181,9 +207,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const mergeReady = () => {
     if (merging || !ctx.config.lines.some((l) => l.autoMerge) || Date.now() - mergesAt < (opts.once ? 0 : INTAKE_MS)) return;
     mergesAt = Date.now();
-    merging = pollMerges(ctx, opts.merges ?? realMerges(ctx))
+    merging = pollMerges(ctx, opts.merges ?? realMerges(ctx, meter, "merges"))
       .catch((err) => log.warn("automatic merge failed", { error: String(err) }))
-      .finally(() => (merging = undefined));
+      .finally(() => {
+        meter.endRun("merges");
+        merging = undefined;
+      });
   };
   // Night-shift integrations the owner reverted on the base branch, read the same way.
   let revertsAt = 0;
@@ -191,9 +220,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const findReverts = () => {
     if (checkingReverts || !ctx.config.lines.length || Date.now() - revertsAt < (opts.once ? 0 : INTAKE_MS)) return;
     revertsAt = Date.now();
-    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges(ctx))
+    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges(ctx, meter, "reverts"))
       .catch((err) => log.warn("revert detection failed", { error: String(err) }))
-      .finally(() => (checkingReverts = undefined));
+      .finally(() => {
+        meter.endRun("reverts");
+        checkingReverts = undefined;
+      });
   };
 
   // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
@@ -231,11 +263,14 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
-      if (scouts) await scoutPass(ctx, agentRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
+      if (scouts) {
+        await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
+        meter.endRun("scout");
+      }
       if (researches && !researchStop.signal.aborted)
-        await researchPass(ctx, agentRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+        await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)
-        await packagesPass(ctx, agentRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
+        await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
   };
 
@@ -268,10 +303,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
       readGate(ctx);
       tunnel.tick();
-      takeIssues();
-      syncProposals();
-      mergeReady();
-      findReverts();
+      if (!githubPaused()) {
+        takeIssues();
+        syncProposals();
+        mergeReady();
+        findReverts();
+      }
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -282,6 +319,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         if (andon) r.controller.abort("andon" satisfies StopReason);
         else if (store.getJob(id)?.stopRequested) r.controller.abort("stop" satisfies StopReason);
       }
+
+      // In a container nobody can have meant local copies by accident: without the box, work waits and `zero status` says why.
+      const boxWait = waitsForBox(ctx);
+      if (boxWait && !boxWaitLogged) log.warn("waiting for the box: not starting jobs", { problems: currentBox(ctx).availability.problems.join("; ") });
+      boxWaitLogged = boxWait;
 
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
@@ -294,8 +336,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
-          if (!ctx.config.lines.some((l) => l.name === job.line)) {
+          const line = ctx.config.lines.find((l) => l.name === job.line);
+          if (!line) {
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
+            continue;
+          }
+          if (boxWait) continue;
+          // The read-only check there would take the job's branch and integration for the call's doing.
+          if (beingGuarded(line.repo)) {
+            startable = true;
             continue;
           }
           if (running.size >= ctx.config.concurrency) {
@@ -304,8 +353,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           }
           startable = true;
           const controller = new AbortController();
-          const { status, availability } = currentBox(ctx);
-          const box = ctx.config.isolation === "container" && availability.ready && status ? (opts.boxExecutor ?? ((c, st) => createBoxExecutor(c, st, ctx.secrets, gateFor(st))))(ctx.config, status) : undefined;
+          const { availability } = currentBox(ctx);
+          const box = readyBox(ctx.config);
           const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
           const done = runJob(job.id, deps, controller.signal)
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))
@@ -314,7 +363,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         }
       }
 
-      if (!andon && !startable) {
+      if (!andon && !startable && !boxWait) {
         idlePasses();
       }
 
@@ -343,6 +392,19 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     log.info("factory stopped", { pid: process.pid });
   }
 }
+
+/**
+ * Where a background pass runs an engine: on this machine, except one with no sandbox of its own
+ * whenever the box is ready at the time of the call. Checked on this machine, it waits for the jobs
+ * running in its folder, since the check would take what they do to the repository for the call's doing.
+ */
+export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder: string) => Promise<unknown>[]): EngineExecute => async (engine, req, trace, station) => {
+  if (!engine.unsandboxed) return runHere(engine, req, trace, station);
+  const boxed = box()?.execute;
+  if (boxed) return boxed(engine, req, trace, station);
+  for (let busy = jobsIn(req.cwd); busy.length; busy = jobsIn(req.cwd)) await Promise.all(busy);
+  return runHere(engine, req, trace, station);
+};
 
 /** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
 const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";

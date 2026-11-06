@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -111,6 +111,64 @@ export async function writeFiles(dir: string, files: Record<string, string>) {
 /** Whether the repository already has a main spec for this capability. */
 export function capabilityExists(repo: string, capability: string): boolean {
   return existsSync(join(repo, "openspec", "specs", slug(capability), "spec.md"));
+}
+
+/** How openspec tells requirement names apart (`foldRequirementName`), copied since openspec is only a dev dependency. */
+export function foldRequirementName(name: string): string {
+  return name.replace(/[ \t]+#+[ \t]*$/, "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function readOrEmpty(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function folderEntries(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The requirement names a capability already has, in its main spec and in the
+ * unarchived deltas of other changes. Whatever cannot be read is left out: this
+ * must never fail a job.
+ */
+export function existingRequirementNames(repo: string, capability: string, ownChange: string): string[] {
+  const cap = slug(capability) || "change";
+  const openspec = join(repo, "openspec");
+  const changes = folderEntries(join(openspec, "changes")).filter((c) => c !== "archive" && c !== ownChange);
+  const sources = [join(openspec, "specs", cap, "spec.md"), ...changes.map((c) => join(openspec, "changes", c, "specs", cap, "spec.md"))];
+  const names: string[] = [];
+  for (const source of sources) {
+    for (const line of readOrEmpty(source).split(/\r?\n/)) {
+      const name = /^###\s*Requirement:\s*(.+)\s*$/i.exec(line)?.[1];
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
+
+/** The spec with every requirement name distinct, from `existing` and from each other. Repeats get the job's id as a suffix. */
+export function uniqueRequirementNames(spec: Spec, jobId: string, existing: string[]): Spec {
+  const taken = new Set(existing.map(foldRequirementName));
+  const requirements = spec.requirements.map((r) => {
+    let name = r.name;
+    if (taken.has(foldRequirementName(oneLine(name)))) {
+      // The closing `#`s go too, or the suffix would turn them into part of the name.
+      const base = oneLine(name).replace(/[ \t]+#+[ \t]*$/, "");
+      name = `${base} (${jobId})`;
+      for (let n = 2; taken.has(foldRequirementName(name)); n++) name = `${base} (${jobId}-${n})`;
+    }
+    taken.add(foldRequirementName(oneLine(name)));
+    return { ...r, name };
+  });
+  return { ...spec, requirements };
 }
 
 /** The owner-facing version of the spec, for approvals and the chat. */

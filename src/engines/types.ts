@@ -20,6 +20,8 @@ export interface EngineRequest {
   signal?: AbortSignal;
   /** Skills zero staged for this run (a local plugin directory); only engines with `nativeSkills` read it. */
   skills?: StagedSkills;
+  /** Credentials for this engine's process alone, on top of the factory's environment. */
+  env?: Record<string, string>;
 }
 
 export interface EngineResult {
@@ -74,5 +76,7 @@ export interface Engine {
   nativeSkills?: boolean;
   /** Sites the engine must reach to talk to its model; allowed by the egress gate in every mode. */
   hosts?: string[];
+  /** True when the engine runs without any sandbox of its own: outside the box, zero itself must keep read-only calls read-only. */
+  unsandboxed?: boolean;
   run(req: EngineRequest): Promise<EngineResult>;
 }
