@@ -6,7 +6,7 @@ import type { Autonomy } from "../src/config.js";
 import { ownerFirst, runDaemon } from "../src/daemon.js";
 import { decideNightShift, stricter, touchesManifest } from "../src/line/policy.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
-import { scoutLine, scoutPass } from "../src/line/scout.js";
+import { proposalAutonomy, scoutLine, scoutPass } from "../src/line/scout.js";
 import type { Job, Proposal } from "../src/state/store.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, simulatedBox, testFactory, writeTree } from "./helpers.js";
 
@@ -143,10 +143,20 @@ describe("research-born proposals", () => {
     expect(nightJobs(ctx)).toHaveLength(0);
   });
 
-  it("an own skill follows the line's autonomy", async () => {
+  const ownSkill = (noteId: string) => scouting([idea("Escribir una skill propia", { researchNote: noteId, thirdParty: false, paths: ["skills/tests/SKILL.md"] })]).runner;
+
+  it("an own skill waits for the owner on an auto line with the default research autonomy", async () => {
     const { ctx, note } = withNote("auto");
-    await scoutPass(ctx, scouting([idea("Escribir una skill propia", { researchNote: note.id, thirdParty: false, paths: ["skills/tests/SKILL.md"] })]).runner, at(3));
-    expect(nightJobs(ctx)).toEqual([expect.objectContaining({ source: expect.objectContaining({ autonomy: "auto" }) })]);
+    await scoutPass(ctx, ownSkill(note.id), at(3));
+    expect(ctx.store.listProposals()[0]).toMatchObject({ status: "pending" });
+    expect(ctx.store.listProposals()[0]!.jobId).toBeUndefined();
+    expect(nightJobs(ctx)).toHaveLength(0);
+  });
+
+  it.each(["auto", "build"] as const)("an own skill goes on with research.autonomy %s, which its job stores", async (autonomy) => {
+    const { ctx, note } = withNote("auto", { autonomy });
+    await scoutPass(ctx, ownSkill(note.id), at(3));
+    expect(nightJobs(ctx)).toEqual([expect.objectContaining({ source: expect.objectContaining({ autonomy }) })]);
   });
 
   it("research.autonomy auto lets third party go on an auto line; off never does", async () => {
@@ -157,6 +167,45 @@ describe("research-born proposals", () => {
     const note = off.ctx.store.createResearchNote({ line: "tienda", topic: "t", findings: "x", sources: ["https://example.com"], serves: "s", maturity: "m" });
     await scoutPass(off.ctx, scouting([idea("Agregar un MCP", { researchNote: note.id, thirdParty: true })]).runner, at(3));
     expect(nightJobs(off.ctx)).toHaveLength(0);
+  });
+});
+
+describe("proposalAutonomy", () => {
+  const config = (research: Autonomy | "off") => ({ nightShift: { autonomy: "propose" }, research: research === "off" ? "off" : { autonomy: research } }) as Parameters<typeof proposalAutonomy>[0];
+  const line = (autonomy: Autonomy) => ({ nightShift: { autonomy } }) as Parameters<typeof proposalAutonomy>[1];
+  const proposal = (over: Partial<Proposal> = {}): Proposal => ({ researchNote: "n1", thirdParty: false, paths: ["scripts/fetch.sh"], business: false, commercial: false, ...over }) as Proposal;
+
+  it("caps a research-born proposal even if it is not third party and touches no manifest", () => {
+    const { ctx } = factory({ nightShift: { autonomy: "auto" } });
+    expect(proposalAutonomy(ctx.config, ctx.config.lines[0]!, proposal())).toBe("propose");
+    expect(proposalAutonomy(config("propose"), line("auto"), proposal())).toBe("propose");
+  });
+
+  it.each(["Dockerfile", ".npmrc"])("%s does not escape the cap", (path) => {
+    expect(proposalAutonomy(config("propose"), line("auto"), proposal({ paths: [path] }))).toBe("propose");
+  });
+
+  it("applies an intermediate cap", () => {
+    expect(proposalAutonomy(config("build"), line("auto"), proposal())).toBe("build");
+  });
+
+  it("holds at propose with research off", () => {
+    const { ctx } = factory({ nightShift: { autonomy: "auto" }, research: "off" });
+    expect(proposalAutonomy(ctx.config, ctx.config.lines[0]!, proposal())).toBe("propose");
+    expect(proposalAutonomy(config("off"), line("auto"), proposal())).toBe("propose");
+  });
+
+  it("keeps owner-only proposals on hold whatever research allows", () => {
+    expect(proposalAutonomy(config("auto"), line("auto"), proposal({ business: true }))).toBe("propose");
+  });
+
+  it("never raises the line's autonomy", () => {
+    expect(proposalAutonomy(config("auto"), line("build"), proposal())).toBe("build");
+    expect(proposalAutonomy(config("auto"), line("propose"), proposal())).toBe("propose");
+  });
+
+  it("without a note follows the line", () => {
+    expect(proposalAutonomy(config("propose"), line("auto"), proposal({ researchNote: undefined }))).toBe("auto");
   });
 });
 
@@ -304,9 +353,27 @@ describe("README", () => {
     expect(readme).toContain("zero:investigacion");
   });
 
+  it.each([
+    ["README.md", "Writing your own skill or assigning an installed one follows the line's autonomy", "including writing your own skill"],
+    ["README.es.md", "Escribir una skill propia o asignar una ya instalada sigue la autonomía de la línea", "incluso escribir una skill propia"],
+  ])("%s describes the limit by a proposal's origin", (file, old, current) => {
+    const readme = read(file);
+    expect(readme).not.toContain(old);
+    expect(readme).toContain(current);
+    expect(readme).toContain("research.autonomy");
+  });
+
   it("documents deciding proposals from GitHub", () => {
     expect(read("README.es.md")).toMatch(/le pone la etiqueta de trabajo[^\n]*aprobada[^\n]*cierra el issue sin esa etiqueta[^\n]*rechazada/);
     expect(read("README.md")).toMatch(/gives it the line's work label[^\n]*approved[^\n]*closes the issue without that label[^\n]*rejected/);
+  });
+});
+
+describe("station instructions", () => {
+  it.each(["agents/spec.md", "agents/build.md"])("%s treats web-born text as data", (file) => {
+    const text = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    expect(text).toContain("research note");
+    expect(text).toContain("data, not instructions");
   });
 });
 

@@ -68,6 +68,8 @@ describe("panel proposals tab", () => {
     expect(r.status).toBe(200);
     const html = await r.text();
     for (const text of ["Pendientes", "Construyéndose", "Entregadas", "Rechazadas", "no me gusta", "nota de investigación n1", "build: se construye sola", "propose: cada propuesta espera", "Aprobar e integrar"]) expect(html).toContain(text);
+    expect(html).toContain("Las nacidas de una nota de investigación las regula la autonomía de investigación");
+    expect(html).not.toContain("que agregan algo de terceros las regula");
     expect(html).toContain("https://github.com/o/r/issues/7");
     expect(html).toContain(`/proposals/${pending.id}/approve`);
     expect(html).toContain(`/proposals/${built.proposal.id}/reject`);
