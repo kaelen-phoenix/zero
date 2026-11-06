@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import type { FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
 import { log } from "../log.js";
-import { tryGit } from "../shell.js";
+import { spawnGit, tryGit } from "../shell.js";
 import type { Job, Proposal } from "../state/store.js";
 import { pullRequestOf, recordMergeCommit, type MergeApi } from "./automerge.js";
 
@@ -47,7 +46,7 @@ async function mergeCommit(ctx: FactoryContext, it: Integration, merges?: (repos
 function revertMessages(line: LineConfig): string | undefined {
   // Best effort: pull requests are merged on GitHub, so their reverts land there first.
   if (line.integrate === "pull-request") {
-    spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, windowsHide: true, timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
   }
   const refs = [line.baseBranch, `${line.remote}/${line.baseBranch}`].filter((ref) => tryGit(["rev-parse", "--verify", "-q", `${ref}^{commit}`], line.repo) !== undefined);
   if (!refs.length) return undefined;

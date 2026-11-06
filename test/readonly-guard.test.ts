@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRunner, runHere } from "../src/agent.js";
@@ -17,13 +17,20 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...real,
     spawn: (bin: string, args: string[], options: object) => {
-      if (bin !== "codex") return real.spawn(bin, args, options);
+      // By its name alone: where codex is installed, zero starts it by its full path.
+      if (!/(^|[\\/])codex(\.(com|exe))?$/i.test(bin)) return real.spawn(bin, args, options);
       if (args[0] === "login") return real.spawn(process.execPath, ["-e", "process.exitCode = 1"], options);
       fake.runs.push(args);
       return real.spawn(process.execPath, ["-e", fake.script, "--", ...args], options);
     },
   };
 });
+
+// On Windows a codex not found on PATH would start away from the guarded folder: an empty
+// codex.exe on PATH makes zero start it by its full path, in the folder, as with a real install.
+const fakeBin = mkdtempSync(join(tmpdir(), "zero-fake-codex-"));
+writeFileSync(join(fakeBin, "codex.exe"), "");
+process.env.PATH = `${fakeBin}${delimiter}${process.env.PATH ?? ""}`;
 
 /** A fake codex body with `fs`, `cp` and `git`, answering `{"ok":true}` unless it says otherwise. */
 const codex = (body: string) => `

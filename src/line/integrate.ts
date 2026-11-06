@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CommitAuthor, LineConfig, Signature } from "../config.js";
 import { factoryHome, inContainer } from "../home.js";
 import { SecretStore } from "../keychain.js";
-import { git, tryGit } from "../shell.js";
+import { git, spawnGit, tryGit } from "../shell.js";
 import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker, type PullRequestsFactory } from "../tracker.js";
@@ -26,7 +26,7 @@ export interface IntegrateOptions {
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
-  const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], { cwd: dir, encoding: "utf8", windowsHide: true, ...(env && { env }) });
+  const r = spawnGit([...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], dir, env && { env });
   if (r.status === 0) return true;
   tryGit(["merge", "--abort"], dir);
   return false;
@@ -105,7 +105,7 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   if (!repository) return { ok: false, reason: `El remoto "${line.remote}" no es un repositorio de GitHub.` };
   const token = githubToken();
   if (!token) return { ok: false, reason: "Para abrir la solicitud de cambio hace falta GH_TOKEN o haber iniciado sesión con `gh auth login`." };
-  const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
+  const push = spawnGit(["push", "-q", "-u", line.remote, copy.branch], line.repo);
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
   let pr: string;
   try {
