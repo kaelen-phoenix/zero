@@ -24,7 +24,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...real,
     spawn: (bin: string, args: string[], options: object) => {
-      if (bin !== "codex") return real.spawn(bin, args, options);
+      // By name or, on Windows with a codex installed, by the full path `spawnTarget` finds: never the real one.
+      if (!/(^|[\\/])codex(\.(com|exe))?$/i.test(bin)) return real.spawn(bin, args, options);
       if (args[0] === "login") return real.spawn(process.execPath, ["-e", "process.exitCode = 1"], options);
       fake.runs.push(args);
       return real.spawn(process.execPath, ["-e", `require("node:fs").writeFileSync(process.argv[process.argv.indexOf("--output-last-message") + 1], '{"proposals":[]}')`, "--", ...args], options);

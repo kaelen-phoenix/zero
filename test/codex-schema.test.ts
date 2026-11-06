@@ -22,7 +22,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...real,
     spawn: (bin: string, args: string[], options: object) =>
-      bin === "codex" ? real.spawn(process.execPath, ["-e", fake.script, "--", ...args], options) : real.spawn(bin, args, options),
+      // By name or, on Windows with a codex installed, by the full path `spawnTarget` finds: never the real one.
+      /(^|[\\/])codex(\.(com|exe))?$/i.test(bin) ? real.spawn(process.execPath, ["-e", fake.script, "--", ...args], options) : real.spawn(bin, args, options),
   };
 });
 
