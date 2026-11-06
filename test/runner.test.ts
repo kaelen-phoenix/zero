@@ -282,6 +282,75 @@ describe("production line", () => {
     expect(existsSync(join(repo, ".github/workflows/ci.yml"))).toBe(true);
   });
 
+  it("retries an attempt that added operation output with the reason, without asking anyone", async () => {
+    const { ctx, repo } = factory({ level: "L3", isolation: "container" });
+    const agents = fakeAgents({
+      build: (req, n) => {
+        if (n === 1) writeTree(req.cwd, { "src/health.ts": "ok", "debug.log": "x" });
+        else rmSync(join(req.cwd, "debug.log"));
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner, { box: simulatedBox(agents.runner).box }));
+    expect(done.status).toBe("delivered");
+    expect(done.question ?? null).toBeNull();
+    expect(done.attempt).toBe(2);
+    const second = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
+    expect(second).toContain("debug.log");
+    expect(second).toContain("allowedArtifacts");
+    expect(existsSync(join(repo, "debug.log"))).toBe(false);
+  });
+
+  it("does not take a job's own spec for operation output, whatever its capability is called", async () => {
+    const repo = gitRepo({ "README.md": "# demo\n", "openspec/config.yaml": "schema: spec-driven\n" });
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, verify: [passes] }] });
+    const agents = fakeAgents({ spec: () => ({ output: validSpec({ capability: "reports" }) }), build: writeHealth() });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("delivered");
+    expect(done.attempt).toBe(1);
+    expect(existsSync(join(repo, `openspec/changes/zero-${job.id}/specs/reports/spec.md`))).toBe(true);
+  });
+
+  it("fails a job when a commit after verify adds operation output, without integrating", async () => {
+    const { ctx, repo } = factory();
+    const before = gitIn(repo, "rev-parse", "main");
+    const agents = fakeAgents({
+      build: writeHealth(),
+      review: (req) => {
+        writeTree(req.cwd, { "state.db": "x" });
+        gitIn(req.cwd, "add", "-A");
+        gitIn(req.cwd, "commit", "-q", "-m", "sneaked in");
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("failed");
+    expect(done.reason).toContain("state.db");
+    expect(done.delivery ?? null).toBeNull();
+    expect(gitIn(repo, "rev-parse", "main")).toBe(before);
+  });
+
+  it("checks before asking about the integration", async () => {
+    const { ctx, repo } = factory({ level: "L0" });
+    const before = gitIn(repo, "rev-parse", "main");
+    const agents = fakeAgents({
+      build: writeHealth(),
+      security: (req) => {
+        writeTree(req.cwd, { "reports/2026-10.html": "<html>" });
+        gitIn(req.cwd, "add", "-A");
+        gitIn(req.cwd, "commit", "-q", "-m", "sneaked in");
+      },
+    });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).question?.kind).toBe("spec-ready");
+    await answer(ctx, job.id, "approve");
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("failed");
+    expect(done.reason).toContain("reports/2026-10.html");
+    expect(gitIn(repo, "rev-parse", "main")).toBe(before);
+  });
+
   it("refuses protected paths as a hard limit at L3", async () => {
     const { ctx } = factory({ level: "L3", isolation: "container" });
     const agents = fakeAgents({

@@ -263,6 +263,8 @@ export const LineSchema = z.object({
   agents: z.array(CustomAgentSchema).default([]),
   /** Who authors this line's commits; absent: the global `commitAuthor`. */
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
+  /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
+  allowedArtifacts: z.array(z.string()).default([]),
 });
 
 export const FactorySchema = z

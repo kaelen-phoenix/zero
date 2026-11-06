@@ -34,7 +34,8 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - structured outputs are validated;
   - deleted or disabled tests are detected;
   - protected paths are not touched;
-  - review findings that cite files or lines that do not exist are discarded.
+  - review findings that cite files or lines that do not exist are discarded;
+  - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
 
@@ -223,7 +224,7 @@ A summary per line and calendar month, for you and to share with that line's cli
 ```sh
 zero informe                                # the previous month, every line (a warning reminds you to ask for one line before sharing)
 zero informe tienda --mes 2026-10           # one line, one month, in Markdown
-zero informe tienda --mes 2026-10 --html    # a standalone HTML document (it needs a line)
+zero informe tienda --mes 2026-10 --html    # saves a standalone HTML document in ZERO_HOME/reports and prints its path (it needs a line)
 ```
 
 - It lists each delivered job: title, request and delivery dates, origin (your request, GitHub issue, night-shift proposal approved by you or taken on its own, research), what changed (the summary of its spec) and the link to the pull request or commit.
@@ -231,8 +232,19 @@ zero informe tienda --mes 2026-10 --html    # a standalone HTML document (it nee
 - The part of the cost that came from a subscription is marked as an estimate that was not charged. The cost goes in the exported file too: edit it if you do not want your client to see it.
 - A job counts in the month it finished, in local time.
 - What you share carries no secrets, no local paths and nothing from other lines. It is cleaned by patterns, so read it before sending it: a title that names another line by name stays as written.
-- The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
+- The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML; each download also leaves a copy in `ZERO_HOME/reports`. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
 - Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
+
+## What stays on your machine
+
+What the factory produces while working is never versioned: monthly reports, briefings, proposals, research notes, traces, reports from package stations, images or videos for social media, panel exports, `state.db`, logs and every other file of `ZERO_HOME` stay in `ZERO_HOME`, on your machine. Whoever installs zero downloads none of it, and one project's reports never end up in another's repository. The only thing that enters a repository is development for that repository.
+
+zero enforces this itself, without trusting the agent:
+
+- **Before integrating.** Verify looks at the files the job adds (the specification and every attempt) before running the line's commands. If one is shaped like operation output, the attempt fails with a message naming each file and why, and the next attempt gets it as feedback. The check runs again over the whole change just before integrating; if something appeared after verify, the job fails without integrating.
+- **The shapes.** Files ending in `.db`, `.db-wal`, `.db-shm`, `.db-journal`, `.sqlite`, `.sqlite3` or `.log`; `zero.factory.yaml`, `daemon.lock` and `secrets.enc`; anything under `.zero/townhall`, `worktrees`, `jobs`, `gate`, `bin`, `packages` or `reports`; anything in a `plus-*` folder; documents and data under a `report`, `reports`, `informe` or `informes` folder; files named `informe-*` or `briefing-*`; and images or videos whose file name no text file in the repository mentions (`openspec/` and the file itself do not count). Files that were already versioned and the Markdown of the job's own specification are left alone.
+- **`allowedArtifacts`.** A project that does version these files lists their paths on its line, as globs (see the factory file below). The check goes by the shape of a file, so it can stop a legitimate file until you add it, and a report with an unusual name and folder gets through.
+- **Saved reports.** `zero informe <line> --html` and the panel's downloads save to `ZERO_HOME/reports`. If that folder falls inside a line's repository or the current folder's repository, zero refuses to save and tells you why. The browser's own copy goes wherever the browser saves downloads; Markdown on the terminal writes no file, so redirecting it is up to you.
 
 ## The factory (`~/.zero/zero.factory.yaml`)
 
@@ -276,6 +288,7 @@ lines:
     stations:                 # optional: skills an agent adds only on this line
       build: { skills: [nextjs, shadcn] }
     signature: off            # optional: this line's own signature, replaces the global one
+    allowedArtifacts: ["media/**"]   # optional: paths this line versions though they look like operation output
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.
@@ -289,6 +302,7 @@ The factory directory (`ZERO_HOME`, `~/.zero` by default) holds:
 - `worktrees/` and `jobs/`, with the rendered specifications;
 - `bin/`, with the tools zero downloads with your permission (cloudflared);
 - `gate/`, shared with the egress gate: its rules, the passes of the running boxes and their records;
+- `reports/`, with the reports you save;
 - `daemon.log`.
 
 ### How Codex is billed

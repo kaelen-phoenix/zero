@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
@@ -217,6 +217,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
           if (!line) throw new Error("Indicá la línea del informe que querés descargar.");
           if (format !== "md" && format !== "html") throw new Error("El formato de descarga es md o html.");
           const report = monthlyReport(ctx, { line, month: url.searchParams.get("mes") || undefined }).lines[0]!;
+          saveReport(ctx, report, format);
           res.writeHead(200, { ...headers(nonce), "Content-Type": `text/${format === "md" ? "markdown" : "html"}; charset=utf-8`, "Content-Disposition": `attachment; filename="${reportFileName(report, format)}"` });
           return void res.end(format === "md" ? reportMarkdown(report) : reportHtml(report));
         } catch (err) {

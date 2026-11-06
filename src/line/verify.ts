@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { sh, type ShellResult } from "../shell.js";
+import { sh, tryGit, type ShellResult } from "../shell.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import type { ChangedFile, WorkCopy } from "../workspace.js";
 
@@ -46,6 +46,56 @@ export function testTampering(files: ChangedFile[], added: { path: string; text:
   return problems;
 }
 
+/** Shapes of what the factory produces while working, with what the person reading the refusal is told. */
+const ARTIFACT_SHAPES: { shape: RegExp; why: string }[] = [
+  { shape: /\.(db|db-wal|db-shm|db-journal|sqlite|sqlite3)$/i, why: "base de datos" },
+  { shape: /\.log$/i, why: "log" },
+  { shape: /(^|\/)(zero\.factory\.yaml|daemon\.lock|secrets\.enc)$/i, why: "archivo de ZERO_HOME" },
+  { shape: /(^|\/)\.zero\/(townhall|worktrees|jobs|gate|bin|packages|reports)\//i, why: "carpeta de ZERO_HOME" },
+  { shape: /(^|\/)plus-[^/]+\//i, why: "carpeta plus-* de la operación" },
+  { shape: /(^|\/)(reports?|informes?)\/(.*\/)?[^/]+\.(md|html|htm|pdf|csv|json|xlsx|txt|xml)$/i, why: "informe generado" },
+  { shape: /(^|\/)(informe|briefing)-[^/]*\.(md|html|pdf)$/i, why: "informe generado" },
+];
+
+const MEDIA = /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|heic|svg|ico|mp4|m4v|mov|webm|mkv|avi)$/i;
+
+export interface OperationArtifact {
+  path: string;
+  why: string;
+}
+
+/**
+ * Files the change adds that look like the factory's operation output, which
+ * stays in ZERO_HOME: only development for a repository enters it. Files
+ * already versioned are not its doing; `allowed` is the line's say.
+ */
+export function operationArtifacts(files: ChangedFile[], opts: { allowed: string[]; ownSpecDir?: string; referenced: (path: string) => boolean }): OperationArtifact[] {
+  const globs = opts.allowed.map((g) => g.toLowerCase());
+  const found: OperationArtifact[] = [];
+  for (const { status, path } of files) {
+    if (status !== "A" || globs.some((g) => posix.matchesGlob(path.toLowerCase(), g))) continue;
+    // The job's own specification, whatever its capability is called (`specs/reports/spec.md`).
+    if (opts.ownSpecDir && path.startsWith(opts.ownSpecDir) && /\.md$/i.test(path)) continue;
+    const why = ARTIFACT_SHAPES.find((a) => a.shape.test(path))?.why ?? (MEDIA.test(path) && !opts.referenced(path) ? "imagen o video que nada del repositorio menciona" : undefined);
+    if (why) found.push({ path, why });
+  }
+  return found;
+}
+
+/** Whether a text file of HEAD names the file, not counting itself or `openspec/`. A git that does not answer counts as no reference. */
+function referencedAtHead(cwd: string, path: string): boolean {
+  return tryGit(["grep", "-F", "-i", "-I", "-l", "-e", posix.basename(path), "HEAD", "--", ".", ":(exclude)openspec/**", `:(exclude,literal)${path}`], cwd) !== undefined;
+}
+
+/** The operation output in everything the job's branch adds to its base. */
+export function changeArtifacts(copy: Pick<WorkCopy, "cwd" | "changedFiles">, allowed: string[] = [], ownSpecDir?: string): OperationArtifact[] {
+  return operationArtifacts(copy.changedFiles(), { allowed, ownSpecDir, referenced: (path) => referencedAtHead(copy.cwd, path) });
+}
+
+export function artifactFeedback(found: OperationArtifact[]): string {
+  return `El cambio agrega archivos con forma de producto de la operación de la fábrica, que queda solo en ZERO_HOME; a un repositorio solo entra desarrollo para ese repositorio:\n${found.map((a) => `- ${a.path}: ${a.why}`).join("\n")}\nQuitalos del cambio. Si esta línea los versiona a propósito, sus rutas van en \`allowedArtifacts\` de la línea, en el archivo de la fábrica.`;
+}
+
 export type VerifyResult =
   | { ok: true }
   | { ok: false; kind: "protected"; paths: string[] }
@@ -55,6 +105,10 @@ export interface VerifyOptions {
   commands: string[];
   protectedPaths: string[];
   allowedProtected?: string[];
+  /** The line's `allowedArtifacts`. */
+  allowedArtifacts?: string[];
+  /** The job's own `openspec/changes/<change>/` folder. */
+  ownSpecDir?: string;
   tracer: Tracer;
   jobId: string;
   parentId: string;
@@ -65,10 +119,14 @@ export interface VerifyOptions {
 }
 
 /**
- * The verify station is run by zero itself, never by an agent: protected
- * paths first, then test tampering, then the line's commands.
+ * The verify station is run by zero itself, never by an agent: operation
+ * output first (nobody is asked about a change that fails anyway), then
+ * protected paths, then test tampering, then the line's commands.
  */
 export async function verifyChange(copy: WorkCopy, opts: VerifyOptions): Promise<VerifyResult> {
+  const artifacts = changeArtifacts(copy, opts.allowedArtifacts, opts.ownSpecDir);
+  if (artifacts.length) return { ok: false, kind: "failed", feedback: artifactFeedback(artifacts) };
+
   const files = copy.changedFiles();
   const touched = protectedTouched(files, opts.protectedPaths, opts.allowedProtected);
   if (touched.length) return { ok: false, kind: "protected", paths: touched };

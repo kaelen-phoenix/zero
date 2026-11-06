@@ -32,7 +32,7 @@ import {
   writeFiles,
   type Spec,
 } from "./spec.js";
-import { verifyChange } from "./verify.js";
+import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
   home: FactoryHome;
@@ -83,6 +83,9 @@ export function isTransientNetworkError(err: unknown): boolean {
   }
   return false;
 }
+
+/** Where the job's own specification lives in its work copy. */
+const ownSpecDir = (jobId: string) => `openspec/changes/${changeName(jobId)}/`;
 
 const reasonOf = (signal: AbortSignal): StopReason => (signal.reason === "stop" || signal.reason === "andon" ? signal.reason : "shutdown");
 
@@ -155,6 +158,9 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 
     const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
     if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
+    // Verify ran before the reviews and may have been long ago: an approval or a restart resumes here, and an agent's commit leaves nothing uncommitted to notice.
+    const artifacts = changeArtifacts(copy, line.allowedArtifacts, ownSpecDir(jobId));
+    if (artifacts.length) return await fail(`No se integró. ${artifactFeedback(artifacts)}`);
     if (!job.approvals.integrate) {
       const held = nightShiftHold(deps, job, copy);
       if (held) {
@@ -499,7 +505,7 @@ async function buildLoop(
   const { store, tracer, config } = deps;
   const contract = renderSpecDelta(spec, false);
   const memory = memoryBlock(await deps.townhall.recall({ line: line.name, kinds: ["lesson", "finding", "blocker"], limit: config.townhall.recallLimit }));
-  const specFiles = `openspec/changes/${changeName(jobId)}/`;
+  const specFiles = ownSpecDir(jobId);
   const agents = lineAgents(config, line);
   const writers = agents.filter((a) => a.type === "build");
   const custom = agents.filter((a) => a.type === "review");
@@ -677,6 +683,8 @@ async function buildLoop(
         commands: line.verify,
         protectedPaths: config.limits.protectedPaths,
         allowedProtected: job.approvals.protectedPaths,
+        allowedArtifacts: line.allowedArtifacts,
+        ownSpecDir: specFiles,
         tracer,
         jobId,
         parentId: span.id,

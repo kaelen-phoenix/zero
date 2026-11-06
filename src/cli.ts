@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -18,7 +18,7 @@ import { install } from "./install.js";
 import { log } from "./log.js";
 import { serveStdio } from "./mcp/server.js";
 import { downloadCloudflared, downloadPlan, findCloudflared } from "./panel/tunnel.js";
-import { monthlyMarkdown, reportHtml } from "./report.js";
+import { monthlyMarkdown } from "./report.js";
 import { runSetup } from "./setup.js";
 import { onPath } from "./shell.js";
 
@@ -38,7 +38,7 @@ Uso diario (también desde el chat):
   zero resume                    Reanuda la fábrica
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
-                                 Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas)
+                                 Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
@@ -266,7 +266,7 @@ async function main(argv: string[]): Promise<number> {
         if (values.html && !line) throw new Error("Para exportar en HTML indicá la línea: zero informe <línea> --html");
         const report = monthlyReport(ctx, { line, month: values.mes });
         if (!line) console.error("Aviso: este resultado junta todas las líneas. Para compartirlo, pedí una sola: zero informe <línea>");
-        console.log(values.html ? reportHtml(report.lines[0]!) : monthlyMarkdown(report));
+        console.log(values.html ? saveReport(ctx, report.lines[0]!, "html") : monthlyMarkdown(report));
         return 0;
       }
       case "proposals": {

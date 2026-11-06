@@ -18,6 +18,8 @@ export interface FactoryHome {
   bin: string;
   /** Agent packages installed from npm, in its `node_modules`. */
   packages: string;
+  /** Saved reports: what the factory produces stays here, never in a repository. */
+  reports: string;
 }
 
 /** The official image sets ZERO_CONTAINER=1: no system keychain, and no falling back to local copies without the owner's say. */
@@ -37,5 +39,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     gate: join(abs, "gate"),
     bin: join(abs, "bin"),
     packages: join(abs, "packages"),
+    reports: join(abs, "reports"),
   };
 }

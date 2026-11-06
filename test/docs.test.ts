@@ -351,6 +351,22 @@ describe("zero, CI and quality tools", () => {
   });
 });
 
+describe("what the factory produces", () => {
+  it("is documented in a section of each README, with allowedArtifacts in the code blocks of both", () => {
+    for (const [text, heading] of [[en, "## What stays on your machine"], [es, "## Lo que queda en tu máquina"]] as const) {
+      const part = section(text, heading);
+      for (const word of ["allowedArtifacts", "ZERO_HOME", "ZERO_HOME/reports"]) expect(part).toContain(word);
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("allowedArtifacts:");
+    }
+  });
+
+  it("is a rule of AGENTS.md", () => {
+    const agents = read("AGENTS.md");
+    for (const word of ["allowedArtifacts", "operationArtifacts", "saveReport"]) expect(agents).toContain(word);
+    expect(agents.split("## Conventions")[1]).toContain("stays only in ZERO_HOME");
+  });
+});
+
 describe("AGENTS.md", () => {
   it("states the language rule for the documentation", () => {
     const conventions = read("AGENTS.md").split("## Conventions")[1]!;

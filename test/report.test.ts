@@ -1,13 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import type { Server } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { monthlyReport, requestWork, type FactoryContext } from "../src/app.js";
+import { monthlyReport, requestWork, saveReport, type FactoryContext } from "../src/app.js";
+import { factoryHome } from "../src/home.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
@@ -373,8 +376,14 @@ describe("monthly report: rendering", () => {
 
 /** Runs the real CLI on a factory whose database the test filled. */
 function cli(ctx: FactoryContext, ...args: string[]) {
-  const r = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
-    cwd: new URL("..", import.meta.url),
+  return cliIn(fileURLToPath(new URL("..", import.meta.url)), ctx, ...args);
+}
+
+/** The real CLI with the current folder somewhere else; the loader and the script go by full path. */
+function cliIn(cwd: string, ctx: FactoryContext, ...args: string[]) {
+  const loader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const r = spawnSync(process.execPath, ["--import", loader, fileURLToPath(new URL("../src/cli.ts", import.meta.url)), ...args], {
+    cwd,
     encoding: "utf8",
     env: { ...process.env, ZERO_HOME: ctx.home.root },
   });
@@ -408,15 +417,35 @@ describe("zero informe", () => {
     expect(r.out).not.toContain("junta todas las líneas");
   });
 
-  it("prints HTML for one line and refuses it without a line", async () => {
+  it("saves HTML for one line in ZERO_HOME, prints only its path and refuses it without a line", async () => {
     const f = await filled();
-    const html = cli(f.ctx, "informe", "tienda", "--mes", "2026-10", "--html");
+    const repo = gitRepo();
+    const html = cliIn(repo, f.ctx, "informe", "tienda", "--mes", "2026-10", "--html");
     expect(html.code).toBe(0);
-    expect(html.out.trim()).toBe(reportHtml(one(f)).trim());
+    const file = join(f.ctx.home.reports, "informe-tienda-2026-10.html");
+    expect(html.out.trim()).toBe(file);
+    expect(readFileSync(file, "utf8")).toBe(reportHtml(one(f)));
+    expect(gitIn(repo, "status", "--porcelain")).toBe("");
     const refused = cli(f.ctx, "informe", "--html");
     expect(refused.code).not.toBe(0);
     expect(refused.err).toContain("indicá la línea");
     expect(refused.out).toBe("");
+  });
+
+  it("writes no file for Markdown", async () => {
+    const f = await filled();
+    const r = cli(f.ctx, "informe", "tienda", "--mes", "2026-10");
+    expect(r.out.trim()).toBe(reportMarkdown(one(f)));
+    expect(existsSync(f.ctx.home.reports)).toBe(false);
+  });
+
+  it("exits with the reason when ZERO_HOME is inside the current repository", async () => {
+    const f = await filled();
+    gitIn(f.ctx.home.root, "init", "-q");
+    const r = cliIn(f.ctx.home.root, f.ctx, "informe", "tienda", "--mes", "2026-10", "--html");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("repositorio de la carpeta actual");
+    expect(existsSync(f.ctx.home.reports)).toBe(false);
   });
 
   it("fails on a bad month and is listed in the help", async () => {
@@ -490,7 +519,38 @@ describe("panel: monthly report tab", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toContain("text/markdown");
     expect(r.headers.get("content-disposition")).toBe('attachment; filename="informe-tienda-2026-10.md"');
-    expect(await r.text()).toBe(reportMarkdown(one(p)));
+    const text = await r.text();
+    expect(text).toBe(reportMarkdown(one(p)));
+    expect(readFileSync(join(p.ctx.home.reports, "informe-tienda-2026-10.md"), "utf8")).toBe(text);
+  });
+
+  it("leaves a copy of the HTML download in ZERO_HOME too", async () => {
+    const p = await panel();
+    const text = await (await p.get("/report/export?line=tienda&mes=2026-10&format=html")).text();
+    expect(readFileSync(join(p.ctx.home.reports, "informe-tienda-2026-10.html"), "utf8")).toBe(text);
+  });
+
+  it("writes nothing for an invalid request or without a session", async () => {
+    const p = await panel();
+    expect((await p.get("/report/export?line=tienda&mes=2026-10&format=pdf")).status).toBe(400);
+    expect((await fetch(`${p.base}/report/export?line=tienda&mes=2026-10&format=md`)).status).toBe(401);
+    expect(existsSync(p.ctx.home.reports)).toBe(false);
+  });
+
+  it("answers with the reason, and downloads nothing, when the copy would land in a line's repository", async () => {
+    const repo = gitRepo();
+    const f = factory([{ name: "tienda", repo }]);
+    await finished(f, { title: "Trabajo de tienda" });
+    const ctx = { ...f.ctx, home: factoryHome(join(repo, "home")), secrets: f.ctx.secrets };
+    const server = createPanelServer(ctx, { key: () => panelKey(f.ctx.secrets) });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const r = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/report/export?line=tienda&mes=2026-10&format=md`, { headers: { cookie: `zero_panel=${sessionFor(panelKey(f.ctx.secrets))}` }, redirect: "manual" });
+    expect(r.status).toBe(400);
+    const text = await r.text();
+    expect(text).toContain("tienda");
+    expect(text).not.toContain("Trabajo de tienda");
+    expect(gitIn(repo, "status", "--porcelain")).toBe("");
   });
 
   it("downloads standalone HTML, without the panel's navigation", async () => {
@@ -517,6 +577,44 @@ describe("panel: monthly report tab", () => {
       expect(r.status).not.toBe(200);
       expect(await r.text()).not.toContain("Trabajo de tienda");
     }
+  });
+});
+
+describe("saving a report", () => {
+  const away = () => tempDir("zero-away-");
+
+  it("refuses when ZERO_HOME is inside a line's repository, naming the line", async () => {
+    const repo = gitRepo();
+    const f = factory([{ name: "tienda", repo }]);
+    const ctx = { ...f.ctx, home: factoryHome(join(repo, "sub", "home")) };
+    expect(() => saveReport(ctx, one(f), "html", away())).toThrow(/línea "tienda"/);
+    expect(existsSync(ctx.home.reports)).toBe(false);
+    expect(gitIn(repo, "status", "--porcelain")).toBe("");
+  });
+
+  it("refuses when ZERO_HOME is inside the current folder's repository, which is no line", () => {
+    const f = factory();
+    const repo = gitRepo();
+    const cwd = join(repo, "deep");
+    mkdirSync(cwd);
+    const ctx = { ...f.ctx, home: factoryHome(join(repo, "home")) };
+    expect(() => saveReport(ctx, one(f), "md", cwd)).toThrow(/carpeta actual/);
+    expect(existsSync(ctx.home.reports)).toBe(false);
+  });
+
+  it("saves when the current folder is a work copy under ZERO_HOME", () => {
+    const f = factory();
+    const cwd = join(f.ctx.home.worktrees, "tienda", "j1");
+    mkdirSync(cwd, { recursive: true });
+    gitIn(cwd, "init", "-q");
+    const path = saveReport(f.ctx, one(f), "md", cwd);
+    expect(path).toBe(join(f.ctx.home.reports, "informe-tienda-2026-10.md"));
+    expect(readFileSync(path, "utf8")).toBe(reportMarkdown(one(f)));
+  });
+
+  it("saves outside any repository", () => {
+    const f = factory();
+    expect(existsSync(saveReport(f.ctx, one(f), "html", away()))).toBe(true);
   });
 });
 
