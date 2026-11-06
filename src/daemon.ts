@@ -5,6 +5,7 @@ import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
+import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
@@ -62,15 +63,15 @@ const BOX_RECHECK_MS = 10 * 60_000;
 const INTAKE_MS = 60_000;
 const EXPORT_MS = 30_000;
 
-/** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line). */
-const realIssues = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
+/** The real GitHub adapters, signed with the signature of the line they act for (the global one without a line), and counting their requests for the pass that uses them. */
+const realIssues = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? signedIssues(githubIssues(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+  return token ? signedIssues(githubIssues(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-const realMerges = (ctx: FactoryContext) => (repository: string, line?: LineConfig) => {
+const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
-  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+  return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
 interface Running {
@@ -162,15 +163,27 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const host = ctx.config.panel.host;
   panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
   const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+  // Every pass that talks to GitHub does it through this meter; while it holds a pause, none of them starts.
+  const meter = githubMeter(store, now);
+  let githubPauseLogged = false;
+  const githubPaused = () => {
+    const halt = githubHalt(store, now());
+    if (halt && !githubPauseLogged) log.warn("github passes paused", { until: halt.until, why: halt.why });
+    githubPauseLogged = Boolean(halt);
+    return githubPauseLogged;
+  };
   // GitHub issues are read in the background: a slow GitHub never holds up the loop, and passes never overlap.
   let intakeAt = 0;
   let intake: Promise<void> | undefined;
   const takeIssues = () => {
     if (intake || !ctx.config.lines.some((l) => l.issues) || Date.now() - intakeAt < (opts.once ? 0 : INTAKE_MS)) return;
     intakeAt = Date.now();
-    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx), { runAgent: passRunner(ctx.config) })
+    intake = pollIssues(ctx, opts.issues ?? realIssues(ctx, meter, "issues"), { runAgent: passRunner(ctx.config) })
       .catch((err) => log.warn("issue intake failed", { error: String(err) }))
-      .finally(() => (intake = undefined));
+      .finally(() => {
+        meter.endRun("issues");
+        intake = undefined;
+      });
   };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
@@ -178,12 +191,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const syncProposals = () => {
     if (publishing || !ctx.config.lines.length || Date.now() - proposalsAt < (opts.once ? 0 : INTAKE_MS)) return;
     proposalsAt = Date.now();
-    const api = opts.issues ?? realIssues(ctx);
-    publishing = syncProposalIssues(ctx, api)
+    publishing = syncProposalIssues(ctx, opts.issues ?? realIssues(ctx, meter, "proposals"))
       .catch((err) => log.warn("proposal issues failed", { error: String(err) }))
-      .then(() => syncResearchIssues(ctx, api))
+      .then(() => meter.endRun("proposals"))
+      .then(() => syncResearchIssues(ctx, opts.issues ?? realIssues(ctx, meter, "research")))
       .catch((err) => log.warn("research issues failed", { error: String(err) }))
-      .finally(() => (publishing = undefined));
+      .finally(() => {
+        meter.endRun("research");
+        publishing = undefined;
+      });
   };
   // Pull requests to merge, polled the same way.
   let mergesAt = 0;
@@ -191,9 +207,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const mergeReady = () => {
     if (merging || !ctx.config.lines.some((l) => l.autoMerge) || Date.now() - mergesAt < (opts.once ? 0 : INTAKE_MS)) return;
     mergesAt = Date.now();
-    merging = pollMerges(ctx, opts.merges ?? realMerges(ctx))
+    merging = pollMerges(ctx, opts.merges ?? realMerges(ctx, meter, "merges"))
       .catch((err) => log.warn("automatic merge failed", { error: String(err) }))
-      .finally(() => (merging = undefined));
+      .finally(() => {
+        meter.endRun("merges");
+        merging = undefined;
+      });
   };
   // Night-shift integrations the owner reverted on the base branch, read the same way.
   let revertsAt = 0;
@@ -201,9 +220,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const findReverts = () => {
     if (checkingReverts || !ctx.config.lines.length || Date.now() - revertsAt < (opts.once ? 0 : INTAKE_MS)) return;
     revertsAt = Date.now();
-    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges(ctx))
+    checkingReverts = detectReverts(ctx, opts.merges ?? realMerges(ctx, meter, "reverts"))
       .catch((err) => log.warn("revert detection failed", { error: String(err) }))
-      .finally(() => (checkingReverts = undefined));
+      .finally(() => {
+        meter.endRun("reverts");
+        checkingReverts = undefined;
+      });
   };
 
   // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
@@ -241,7 +263,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
-      if (scouts) await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx)).catch((err) => log.warn("night shift failed", { error: String(err) }));
+      if (scouts) {
+        await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
+        meter.endRun("scout");
+      }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)
@@ -278,10 +303,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       if (Date.now() - boxCheckedAt > BOX_RECHECK_MS) refreshBox();
       readGate(ctx);
       tunnel.tick();
-      takeIssues();
-      syncProposals();
-      mergeReady();
-      findReverts();
+      if (!githubPaused()) {
+        takeIssues();
+        syncProposals();
+        mergeReady();
+        findReverts();
+      }
       exportTraces();
       runSchedules();
       lookForPackageUpdates();

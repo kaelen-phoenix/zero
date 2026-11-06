@@ -9,6 +9,7 @@ import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
+import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
@@ -255,6 +256,8 @@ export interface FactoryStatus {
   intake: { line: string; label: string; problem?: string }[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
+  /** The GitHub quota, only while it is low or the factory's passes are paused. */
+  github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
   /** Jobs wait for the box instead of running in local copies (see waitsForBox). */
   boxWait?: boolean;
@@ -289,6 +292,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
       return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
     }),
+    github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),

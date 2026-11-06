@@ -1,6 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import { requestWork, type FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
+import { GithubHalted, isRateLimit } from "../github-quota.js";
 import { describeDelivery, reasonForOthers, STOPPED_BY_YOU } from "../line/finish.js";
 import { githubRepository } from "../line/integrate.js";
 import { tryGit } from "../shell.js";
@@ -59,10 +60,10 @@ const labelNames = (labels: (string | { name?: string })[]) => labels.map((l) =>
 type RestIssue = { number: number; title: string; body?: string | null; user: { login: string } | null; html_url: string; pull_request?: unknown; labels: (string | { name?: string })[] };
 const toIssue = (i: RestIssue): Issue => ({ number: i.number, title: i.title, body: i.body ?? "", author: i.user?.login ?? "", url: i.html_url, isPullRequest: Boolean(i.pull_request), labels: labelNames(i.labels) });
 
-export function githubIssues(token: string, repository: string): IssueApi {
+export function githubIssues(token: string, repository: string, client?: Octokit): IssueApi {
   const [owner, repo] = repository.split("/") as [string, string];
   // Missing labels and permissions are expected answers, not errors to print.
-  const gh = new Octokit({ auth: token, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } });
+  const gh = client ?? new Octokit({ auth: token, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } });
   return {
     async labeled(label) {
       const issues = await gh.paginate(gh.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
@@ -84,7 +85,9 @@ export function githubIssues(token: string, repository: string): IssueApi {
     async permission(login) {
       try {
         return (await gh.repos.getCollaboratorPermissionLevel({ owner, repo, username: login })).data.permission;
-      } catch {
+      } catch (err) {
+        // A limit says nothing about the person: turning them down for it would stick until someone labels the issue again.
+        if (err instanceof GithubHalted || isRateLimit(err)) throw err;
         return "none";
       }
     },

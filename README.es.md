@@ -162,7 +162,9 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 ### Fusión automática
 
-Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla, lo funde en la revisión siguiente. `zero status` y el panel muestran los que esperan.
+Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla con un push, lo funde en la revisión siguiente. Si nada cambió, vuelve a mirar sus checks con esperas crecientes, de 5 minutos hasta 1 hora, así que un check que se reintenta sobre el mismo commit puede tardar hasta esa hora en notarse. `zero status` y el panel muestran los que esperan.
+
+Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
 
 ### Autor de los commits
 
