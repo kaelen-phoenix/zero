@@ -25,6 +25,8 @@ export interface PrRefresh {
   /** The owner had approved integrating the code before this update. */
   approved?: boolean;
   started?: boolean;
+  /** The commit of the base being merged: a remote-tracking ref is shared and moves during the job, and this merge must not move with it. */
+  baseCommit?: string;
   /** The files that were in conflict; absent when the merge was clean. */
   paths?: string[];
   /** The merge is committed on the branch. */

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,7 @@ type Build = (req: AgentRequest<any>) => Partial<AgentRun<any>> | void;
  * delivery goes the normal way), with a job delivered as a pull request that
  * changed `shared.txt`, and a second clone standing for other people.
  */
-async function delivered(opts: { level?: string; maxAttempts?: number; verify?: string[]; isolation?: string; over?: Record<string, unknown> } = {}) {
+async function delivered(opts: { level?: string; maxAttempts?: number; verify?: string[]; isolation?: string; change?: Record<string, string>; over?: Record<string, unknown> } = {}) {
   const bare = join(tempDir("zero-remote-"), "github.com", "kaelen", "demo.git").replace(/\\/g, "/");
   mkdirSync(bare, { recursive: true });
   run("git", ["init", "-q", "--bare", "-b", "main"], bare);
@@ -39,7 +40,7 @@ async function delivered(opts: { level?: string; maxAttempts?: number; verify?: 
 
   const isolation = opts.isolation ?? "worktree";
   const ctx = testFactory({ level: opts.level ?? "L2", isolation, lines: [{ name: "demo", repo, integrate: "pull-request", autoMerge: true, maxAttempts: opts.maxAttempts ?? 3, verify: opts.verify ?? [`node -e "process.exit(0)"`] }], ...opts.over });
-  let build: Build = (req) => void writeTree(req.cwd, { "shared.txt": "job\n" });
+  let build: Build = (req) => void writeTree(req.cwd, opts.change ?? { "shared.txt": "job\n" });
   const agents = fakeAgents({ build: (req) => build(req) });
   const opened: string[] = [];
   const box = isolation === "container" ? simulatedBox(agents.runner).box : undefined;
@@ -305,6 +306,96 @@ describe("conflict markers", () => {
   });
 });
 
+describe("a base that keeps moving during the update", () => {
+  type Delivered = Awaited<ReturnType<typeof delivered>>;
+  /** A fetch by anyone else in the line's repository, like the daemon's passes: origin/main is shared with this job's worktree. */
+  const moveAndFetch = (f: Delivered, file: string, content: string) => {
+    const moved = f.moveBase(file, content);
+    gitIn(f.repo, "fetch", "-q", "origin", "main");
+    expect(gitIn(f.repo, "rev-parse", "refs/remotes/origin/main")).toBe(moved);
+    return moved;
+  };
+  const isAncestor = (f: Delivered, rev: string, tip: string) => spawnSync("git", ["merge-base", "--is-ancestor", rev, tip], { cwd: f.bare }).status === 0;
+  const twoFiles = { "shared.txt": "job\n", "second.txt": "job second\n" };
+
+  it("restarts the same merge after a failed attempt, so no conflict appears that the mark does not name", async () => {
+    const f = await delivered({ change: twoFiles });
+    const base = f.moveBase();
+    await f.pass();
+    let later = "";
+    const prompts: string[] = [];
+    f.setBuild((req) => {
+      prompts.push(req.prompt);
+      expect(unmerged(req.cwd)).toBe("shared.txt");
+      expect(readFileSync(join(req.cwd, "second.txt"), "utf8")).toBe("job second\n");
+      if (prompts.length > 1) return resolves()(req);
+      // Merged as it is now, this base would also conflict in second.txt, which no marker check looks at.
+      later = moveAndFetch(f, "second.txt", "theirs second\n");
+      return leavesMarkers(req);
+    });
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3, delivery: f.delivery });
+    expect(prompts).toHaveLength(2);
+    const tip = f.remoteTip();
+    expect(run("git", ["show", `${tip}:second.txt`], f.bare)).toBe("job second");
+    expect(run("git", ["show", `${tip}:shared.txt`], f.bare)).toBe("resolved");
+    expect(isAncestor(f, base, tip)).toBe(true);
+    expect(isAncestor(f, later, tip)).toBe(false);
+  });
+
+  it("restarts the same merge for the replacement engine when the plan cuts the build", async () => {
+    const f = await delivered({ change: twoFiles, over: { engine: "claude", fallback: ["codex"] } });
+    f.moveBase();
+    await f.pass();
+    const seen: string[] = [];
+    f.setBuild((req) => {
+      seen.push(unmerged(req.cwd));
+      if (seen.length > 1) return resolves()(req);
+      moveAndFetch(f, "second.txt", "theirs second\n");
+      return { ok: false, text: "limit", quota: usedUp };
+    });
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 2 });
+    expect(seen).toEqual(["shared.txt", "shared.txt"]);
+  });
+
+  it("keeps a good resolution when the base moved during the build, and the new tip gets its own turn", async () => {
+    const f = await delivered();
+    const base = f.moveBase();
+    await f.pass();
+    let later = "";
+    f.setBuild((req) => {
+      later = moveAndFetch(f, "other.txt", "new\n");
+      return resolves()(req);
+    });
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 2, delivery: f.delivery });
+    const tip = f.remoteTip();
+    expect(tip).not.toBe(f.head);
+    expect(isAncestor(f, base, tip)).toBe(true);
+    expect(isAncestor(f, later, tip)).toBe(false);
+    expect(f.parents(tip)).toBe(2);
+
+    f.state.pr = { ...f.state.pr, headSha: tip };
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("queued");
+    expect(f.merge().resolving).toBe(tip);
+    expect(f.did).toEqual([]);
+  });
+
+  it("still pushes when the base moved during the approval wait", async () => {
+    const f = await delivered({ level: "L0" });
+    const base = f.moveBase();
+    await f.pass();
+    f.setBuild(resolves());
+    expect(await f.again()).toMatchObject({ status: "waiting", question: { kind: "before-integrate" } });
+    const later = moveAndFetch(f, "other.txt", "new\n");
+    await answer(f.ctx, f.job.id, "approve");
+    expect(await f.again()).toMatchObject({ status: "delivered", delivery: f.delivery });
+    const tip = f.remoteTip();
+    expect(tip).not.toBe(f.head);
+    expect(isAncestor(f, base, tip)).toBe(true);
+    expect(isAncestor(f, later, tip)).toBe(false);
+  });
+});
+
 describe("what is not pushed", () => {
   it("keeps a commit that reached the remote branch during the update", async () => {
     const f = await delivered();
@@ -459,5 +550,26 @@ describe("mergeBase", () => {
     expect(copy.commitAll("done")).toBe(true);
     expect(gitIn(repo, "rev-list", "--parents", "-n", "1", "HEAD").split(" ")).toHaveLength(3);
     expect(copy.commitAll("nothing")).toBe(false);
+  });
+
+  it("merges the commit it is given, not where the base's ref is now", () => {
+    const repo = gitRepo({ "a.txt": "a\n" });
+    gitIn(repo, "checkout", "-q", "-b", "work");
+    writeTree(repo, { "b.txt": "b\n" });
+    gitIn(repo, "add", "-A");
+    gitIn(repo, "commit", "-q", "-m", "work");
+    const tip = gitIn(repo, "rev-parse", "HEAD");
+    gitIn(repo, "checkout", "-q", "main");
+    writeTree(repo, { "c.txt": "c\n" });
+    gitIn(repo, "add", "-A");
+    gitIn(repo, "commit", "-q", "-m", "pinned");
+    const pinned = gitIn(repo, "rev-parse", "HEAD");
+    writeTree(repo, { "d.txt": "d\n" });
+    gitIn(repo, "add", "-A");
+    gitIn(repo, "commit", "-q", "-m", "later");
+    gitIn(repo, "checkout", "-q", "work");
+    expect(workCopyAt(repo, "main", "work").mergeBase("m", tip, pinned)).toEqual({ outcome: "merged" });
+    expect(existsSync(join(repo, "c.txt"))).toBe(true);
+    expect(existsSync(join(repo, "d.txt"))).toBe(false);
   });
 });

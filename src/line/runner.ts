@@ -142,15 +142,16 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
 
     const taken = prRefresh(store, jobId);
     if (taken && !taken.started) {
-      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), taken.head);
+      const baseCommit = git(["rev-parse", "--verify", `${copy.base}^{commit}`], copy.cwd);
+      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), taken.head, baseCommit);
       if (merge.outcome === "up-to-date") return await fail(`La rama ya contiene ${copy.base}: no hay nada que mezclar.`);
       if (merge.outcome === "refused") return await fail(`No se pudo mezclar ${copy.base}: ${merge.reason}`);
       if (merge.outcome === "merged") {
-        saveRefresh(deps, jobId, { ...taken, started: true, resolved: true });
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, resolved: true });
         // Nothing to build: it goes back through verify and the reviews, without spending an attempt.
         job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
       } else {
-        saveRefresh(deps, jobId, { ...taken, started: true, paths: merge.paths });
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });
         job = store.updateJob(jobId, { checkpoint: "spec", station: "build", feedback: conflictFeedback(copy, merge.paths) });
       }
     }
@@ -241,14 +242,14 @@ function conflictFeedback(copy: WorkCopy, paths: string[]): string {
   return `Mezclar ${copy.base} en la rama de este trabajo dio conflictos, y la mezcla ya está en curso en la copia de trabajo. Resolvé estos archivos conservando la intención de los dos lados, sin dejar marcadores de conflicto, y sin correr \`git merge\`, abortarla ni commitear:\n${listPaths(paths)}`;
 }
 
-/** Why what is about to be pushed to a pull request cannot go: left-over markers, or a branch that lost the base or the tip it had. */
+/** Why what is about to be pushed to a pull request cannot go: left-over markers, or a branch that lost the base commit it merged or the tip it had. */
 function updateProblem(copy: WorkCopy, refresh: PrRefresh): string | undefined {
   // Only what is committed gets pushed, so that is what gets looked at.
   copy.discardChanges();
   const left = conflictMarkers(copy.cwd, refresh.paths ?? []);
   if (left.length) return `No se subió la actualización: quedaron marcadores de conflicto en:\n${listPaths(left)}`;
   const contains = (rev: string) => tryGit(["merge-base", "--is-ancestor", rev, "HEAD"], copy.cwd) !== undefined;
-  if (!contains(refresh.head) || !contains(copy.base)) return `No se subió la actualización: la rama ya no contiene a ${copy.base} y a la punta anterior del pull request.`;
+  if (!contains(refresh.head) || !refresh.baseCommit || !contains(refresh.baseCommit)) return `No se subió la actualización: la rama ya no contiene a ${copy.base} y a la punta anterior del pull request.`;
   return undefined;
 }
 
@@ -585,10 +586,11 @@ async function buildLoop(
     };
     // This attempt resolves the conflicts of merging the base. Every engine call gets the merge started again from the tip, whatever the last one left.
     const mark = prRefresh(store, jobId);
-    const conflicted = !resuming && mark?.paths && !mark.resolved ? { ...mark, paths: mark.paths } : undefined;
+    const conflicted = !resuming && mark?.paths && mark.baseCommit && !mark.resolved ? { ...mark, paths: mark.paths, baseCommit: mark.baseCommit } : undefined;
     const startMerge = () => {
       if (!conflicted) return;
-      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), conflicted.head);
+      // The same two commits, so the same conflicts: the mark's paths stay true however far the base's ref has moved.
+      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), conflicted.head, conflicted.baseCommit);
       if (merge.outcome === "conflict") return;
       attemptSpan.end("error", { "error.message": "merge did not conflict again" });
       throw new RefreshFailed(`No se pudo volver a empezar la mezcla de ${copy.base}: ${merge.outcome === "refused" ? merge.reason : merge.outcome}`);
@@ -661,7 +663,7 @@ async function buildLoop(
       copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}`, lineSignature(config, line)));
       if (conflicted) {
         // The agent may have aborted the merge or redone it its own way: without the base in, the branch gets no further.
-        if (tryGit(["merge-base", "--is-ancestor", copy.base, "HEAD"], copy.cwd) === undefined) {
+        if (tryGit(["merge-base", "--is-ancestor", conflicted.baseCommit, "HEAD"], copy.cwd) === undefined) {
           dropMerge(conflicted.head);
           failAttempt(`La mezcla no se completó: la rama no contiene a ${copy.base}. No corras \`git merge\`, no la abortes ni commitees.\n\n${conflictFeedback(copy, conflicted.paths)}`);
           continue;

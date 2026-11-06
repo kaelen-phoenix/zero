@@ -50,8 +50,8 @@ export interface WorkCopy {
   hasChanges(): boolean;
   /** Commits everything, concluding a merge in progress even when it changes nothing; returns false when there was nothing to commit. */
   commitAll(message: string): boolean;
-  /** Merges the base into the branch, never rewriting it. With `tip`, first goes back to that commit, dropping everything else. */
-  mergeBase(message: string, tip?: string): MergeOutcome;
+  /** Merges the base into the branch, never rewriting it. With `tip`, first goes back to that commit, dropping everything else. With `commit`, merges that commit of the base instead of wherever its ref is now. */
+  mergeBase(message: string, tip?: string, commit?: string): MergeOutcome;
   /** Drops uncommitted changes, including new files (ignored files such as node_modules are kept). */
   discardChanges(): void;
   /** Files changed on the branch relative to the base. */
@@ -141,14 +141,14 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
       git([...FACTORY_IDENTITY, "commit", "-q", "-m", message], cwd, identity && authorEnv(identity.author, identity.repo));
       return true;
     },
-    mergeBase(message, tip) {
+    mergeBase(message, tip, commit) {
       if (tip) {
         git(["reset", "-q", "--hard", tip], cwd);
         git(["clean", "-fdq", ...scope], cwd);
       }
       const before = git(["rev-parse", "HEAD"], cwd);
       const env = identity && authorEnv(identity.author, identity.repo);
-      const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-edit", "-m", message, base], { cwd, encoding: "utf8", windowsHide: true, ...(env && { env }) });
+      const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-edit", "-m", message, commit ?? base], { cwd, encoding: "utf8", windowsHide: true, ...(env && { env }) });
       if (r.status === 0) return { outcome: git(["rev-parse", "HEAD"], cwd) === before ? "up-to-date" : "merged" };
       const paths = (tryGit(["diff", "--name-only", "--diff-filter=U", "-z"], cwd) ?? "").split("\0").filter(Boolean);
       if (paths.length) return { outcome: "conflict", paths };
