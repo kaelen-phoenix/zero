@@ -18,6 +18,11 @@ export function decide(level: Level, event: PolicyEvent): PolicyDecision {
   return TABLE[level][event];
 }
 
+/** Asking before pushing an update of a pull request: what was approved once no longer covers it, at any level that may ask at all. */
+export function asksBeforeUpdate(level: Level, approvedBefore: boolean): boolean {
+  return decide(level, "before-integrate") === "ask" || (approvedBefore && level !== "L3");
+}
+
 const RANK: Record<Autonomy, number> = { propose: 0, build: 1, auto: 2 };
 
 /** The more restrictive of two autonomies. */
