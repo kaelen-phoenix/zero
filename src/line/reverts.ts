@@ -27,15 +27,45 @@ function autonomousIntegration(ctx: FactoryContext, proposal: Proposal): Integra
   return undefined;
 }
 
+/** How long a pull request closed without merging goes unasked: it can still be reopened and merged, so it is never dropped for good. */
+const CLOSED_WAIT_MS = 24 * 60 * 60 * 1000;
+const closedKey = (jobId: string) => `reverts:closed:${jobId}`;
+
+/** When the job's closed pull request is worth asking about again; NaN, which never holds a query back, when there is no readable date. */
+function closedUntil(ctx: FactoryContext, jobId: string): number {
+  try {
+    return Date.parse(ctx.store.getKv(closedKey(jobId)) ?? "");
+  } catch (err) {
+    log.warn("cannot read the wait of a closed pull request", { job: jobId, error: String(err) });
+    return NaN;
+  }
+}
+
+/** The wait is only a saving: a store failure must not cost the pass or the commit just obtained. */
+function updateClosedWait(ctx: FactoryContext, jobId: string, until?: Date) {
+  try {
+    if (until) ctx.store.setKv(closedKey(jobId), until.toISOString());
+    else ctx.store.deleteKv(closedKey(jobId));
+  } catch (err) {
+    log.warn("cannot update the wait of a closed pull request", { job: jobId, error: String(err) });
+  }
+}
+
 /** Fills in the commit a pull request was merged with (merge or squash), when GitHub says it was merged. */
 async function mergeCommit(ctx: FactoryContext, it: Integration, merges?: (repository: string) => MergeApi | undefined): Promise<Integration> {
   if (it.commit || !it.pr || !merges) return it;
+  const now = (ctx.now ?? (() => new Date()))().getTime();
+  if (now < closedUntil(ctx, it.job.id)) return it;
   try {
     const gh = merges(it.pr.repository);
     if (!gh) return it;
     const state = await gh.pullRequest(it.pr.number);
+    if (!state.open && !state.merged) updateClosedWait(ctx, it.job.id, new Date(now + CLOSED_WAIT_MS));
+    if (state.open) updateClosedWait(ctx, it.job.id);
     if (!state.merged || !state.mergeCommitSha) return it;
-    return { ...it, job: recordMergeCommit(ctx, it.job, state.mergeCommitSha), commit: state.mergeCommitSha };
+    const job = recordMergeCommit(ctx, it.job, state.mergeCommitSha);
+    updateClosedWait(ctx, it.job.id);
+    return { ...it, job, commit: state.mergeCommitSha };
   } catch (err) {
     log.warn("cannot read the pull request to detect reverts", { job: it.job.id, error: String(err) });
     return it;
