@@ -4,9 +4,11 @@ import { ANDON_KEY, DAEMON_KEY, daemonInfo, egressReport, factoryStatus, request
 import { saveBoxStatus, type BoxStatus } from "../src/box/status.js";
 import { runDaemon } from "../src/daemon.js";
 import { formatStatus } from "../src/format.js";
+import { HALT_KEY, QUOTA_KEY } from "../src/github-quota.js";
+import { finalizeJob } from "../src/line/finish.js";
 import { overviewPage } from "../src/panel/html.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
-import { cleanup, fakeAgents, gitRepo, simulatedBox, testFactory, writeTree } from "./helpers.js";
+import { cleanup, fakeAgents, gitIn, gitRepo, simulatedBox, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -115,6 +117,58 @@ describe("panel.host", () => {
       ctx.store.setKv(SHUTDOWN_KEY, "1");
       await daemon;
     }
+  });
+});
+
+describe("GitHub pause", () => {
+  /** A line with work for every GitHub pass, and factories that count every time a pass reaches for GitHub. */
+  async function githubWork() {
+    const repo = gitRepo();
+    gitIn(repo, "remote", "add", "origin", "https://github.com/kaelen/demo.git");
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request", autoMerge: true, issues: { label: "zero" } }] });
+    const job = ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 });
+    await finalizeJob(ctx, job, "delivered", { delivery: { mode: "pull-request", branch: `zero/${job.id}`, url: "https://github.com/kaelen/demo/pull/10", autoMerge: true } });
+    const reached = { issues: 0, merges: 0 };
+    return {
+      ctx,
+      reached,
+      opts: {
+        once: true,
+        pollMs: 10,
+        agentRunner: () => builder().runner,
+        issues: () => {
+          reached.issues++;
+          return undefined;
+        },
+        merges: () => {
+          reached.merges++;
+          return undefined;
+        },
+      },
+    };
+  }
+
+  it("starts every GitHub pass with no pause", async () => {
+    const { ctx, reached, opts } = await githubWork();
+    await runDaemon(ctx, opts);
+    expect(reached.issues).toBeGreaterThan(0);
+    expect(reached.merges).toBeGreaterThan(0);
+  });
+
+  it("starts no GitHub pass during a pause, and still runs the rest of the loop", async () => {
+    const { ctx, reached, opts } = await githubWork();
+    ctx.store.setKv(HALT_KEY, JSON.stringify({ until: new Date(Date.now() + 600_000).toISOString(), why: "límite" }));
+    const job = requestWork(ctx, { text: "owner work" }).job;
+    await runDaemon(ctx, opts);
+    expect(reached).toEqual({ issues: 0, merges: 0 });
+    expect(ctx.store.getJob(job.id)!.status).not.toBe("queued");
+  });
+
+  it("starts no GitHub pass inside the reserve either", async () => {
+    const { ctx, reached, opts } = await githubWork();
+    ctx.store.setKv(QUOTA_KEY, JSON.stringify({ limit: 5000, remaining: 1000, resetAt: new Date(Date.now() + 600_000).toISOString() }));
+    await runDaemon(ctx, opts);
+    expect(reached).toEqual({ issues: 0, merges: 0 });
   });
 });
 
