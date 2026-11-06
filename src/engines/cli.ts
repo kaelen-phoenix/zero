@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CustomEngine } from "../config.js";
+import { toStrictSchema, withoutOptionalNulls } from "./codex-schema.js";
 import type { Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
 export interface Invocation {
@@ -247,24 +248,43 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
   };
 }
 
+/** An answer that is not JSON stays as text, for the runner's validation to judge. */
+function withStructuredOutput(schema: Record<string, unknown>, result: EngineResult): EngineResult {
+  let answer: unknown;
+  try {
+    answer = JSON.parse(result.text);
+  } catch {
+    return result;
+  }
+  return { ...result, output: withoutOptionalNulls(schema, answer) };
+}
+
 async function runCodex(req: EngineRequest, sandbox: "on" | "off"): Promise<EngineResult> {
+  // Codex only takes OpenAI's strict schemas; one with no strict form fails before codex starts.
+  let strict: Record<string, unknown> | undefined;
+  try {
+    strict = req.schema && toStrictSchema(req.schema);
+  } catch (err) {
+    return { ok: false, text: (err as Error).message };
+  }
   const dir = await mkdtemp(join(tmpdir(), "zero-codex-"));
   try {
-    const files = { lastMessage: join(dir, "last.txt"), schema: req.schema && join(dir, "schema.json") };
-    if (files.schema) await writeFile(files.schema, JSON.stringify(req.schema));
-    return await execute("codex", codexInvocation(req, files, sandbox), req, {
+    const files = { lastMessage: join(dir, "last.txt"), schema: strict && join(dir, "schema.json") };
+    if (files.schema) await writeFile(files.schema, JSON.stringify(strict));
+    const result = await execute("codex", codexInvocation(req, files, sandbox), req, {
       // The answer is the last message; stdout is only the fallback when that file cannot be read.
       output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
       failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
       quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok),
     });
+    return req.schema && result.ok ? withStructuredOutput(req.schema, result) : result;
   } finally {
     // A leftover temporary folder never changes the call's result.
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-/** `codex exec`, on a ChatGPT sign-in or with CODEX_API_KEY or OPENAI_API_KEY. Sandboxing and schema are enforced by Codex. */
+/** `codex exec`, on a ChatGPT sign-in or with CODEX_API_KEY or OPENAI_API_KEY. Sandboxing is enforced by Codex; schemas go in OpenAI's strict form. */
 export const codexEngine: Engine = {
   name: "codex",
   nativeSchema: true,
