@@ -299,7 +299,7 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["soon"]).toBe("coming");
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.engines", "next.intake", "next.regen"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.engines", "next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -320,6 +320,14 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["ready"]).toBe("available");
     expect(loadSite().EN["next.linear"]).toContain("Linear");
     expect(loadSite().EN["next.intake"]).not.toContain("Linear");
+  });
+
+  it("da el simulacro de regeneración como disponible, no en camino", () => {
+    const lines = html.split("\n");
+    const regen = lines.filter((l) => l.includes('data-i18n="next.regen"'));
+    expect(regen).toHaveLength(1);
+    expect(regen[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("next.regen"))).toEqual([]);
   });
 });
 
