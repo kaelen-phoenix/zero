@@ -53,6 +53,15 @@ By default the factory is configured at **L3**. L3 requires the **isolation box*
 ## Getting started
 
 ```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh     # macOS and Linux
+irm https://zerointheloop.com/install.ps1 | iex          # Windows (PowerShell)
+```
+
+One step, on macOS, Linux or Windows. The installer checks that you have Node 22 or later, npm and git, and installs none of them: if one is missing it tells you where to get it and changes nothing. Then it shows you the folder (`~/.local/share/zero`, or `%LOCALAPPDATA%\zero` on Windows; `ZERO_INSTALL_DIR` changes it), the commands it will run and where it creates the `zero` command, and asks before changing anything (the default answer is no). It does not need administrator rights: it writes only in your user folders and, on Windows, adds the command to your user PATH. It never asks for or stores a key or token; it ends by launching `zero setup` on your terminal, which takes care of engines, credentials, limits, the box and GitHub. Running it again updates the same copy.
+
+By hand, from the repository:
+
+```sh
 git clone https://github.com/kaelen-phoenix/zero && cd zero
 npm install && npm run build
 node dist/cli.js init       # creates ~/.zero/zero.factory.yaml and adds the current repo as a line
@@ -731,4 +740,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Regeneration drill · intake from Linear and Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.

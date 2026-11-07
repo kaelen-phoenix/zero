@@ -53,6 +53,15 @@ Por defecto la fábrica se configura en **L3**. L3 exige la **caja de aislamient
 ## Empezar
 
 ```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh     # macOS y Linux
+irm https://zerointheloop.com/install.ps1 | iex          # Windows (PowerShell)
+```
+
+Un solo paso, en macOS, Linux o Windows. El instalador revisa que tengas Node 22 o posterior, npm y git, y no instala ninguno: si falta uno te dice dónde conseguirlo y no cambia nada. Después te muestra la carpeta (`~/.local/share/zero`, o `%LOCALAPPDATA%\zero` en Windows; `ZERO_INSTALL_DIR` la cambia), los comandos que va a correr y dónde crea el comando `zero`, y te pregunta antes de cambiar nada (la respuesta por defecto es no). No necesita permisos de administrador: escribe solo en tus carpetas de usuario y, en Windows, agrega el comando al PATH de tu usuario. Nunca pide ni guarda una clave o un token; termina lanzando `zero setup` en tu terminal, que se ocupa de motores, credenciales, límites, la caja y GitHub. Si lo corrés de nuevo, actualiza la misma copia.
+
+A mano, desde el repositorio:
+
+```sh
 git clone https://github.com/kaelen-phoenix/zero && cd zero
 npm install && npm run build
 node dist/cli.js init       # crea ~/.zero/zero.factory.yaml y agrega el repo actual como línea
@@ -731,4 +740,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Simulacro de regeneración · entradas desde Linear y Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.

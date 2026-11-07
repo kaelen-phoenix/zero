@@ -297,8 +297,9 @@ describe("sitio del proyecto: contenido", () => {
     expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
     expect(loadSite().EN["soon"]).toBe("coming");
-    const line = html.split("\n").find((l) => l.includes("Instalador") && l.includes('class="soon"'));
-    expect(line, "Instalador").toBeDefined();
+    const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
+    for (const item of ["next.engines", "next.intake", "next.regen"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -372,6 +373,27 @@ describe("sitio del proyecto: instalación y flujo", () => {
     }
     expect(install).toMatch(/<button type="button" class="copy" data-copy="install-code"/);
     expect(html).toMatch(/<div id="announce"[^>]*aria-live="polite"/);
+  });
+
+  it("muestra el instalador en un solo paso para cada sistema, cada bloque con su botón de copiar", () => {
+    const install = section("install");
+    const code = (id: string) => new RegExp(`<pre><code id="${id}">([\\s\\S]*?)</code></pre>`).exec(install)![1]!.replace(/&amp;/g, "&");
+    expect(code("install-unix")).toBe("curl -fsSL https://zerointheloop.com/install.sh | sh");
+    expect(code("install-windows")).toBe("irm https://zerointheloop.com/install.ps1 | iex");
+    const blocks = [...install.matchAll(/<pre><code id="([^"]+)">/g)].map((m) => m[1]!);
+    expect(blocks).toEqual(["install-unix", "install-windows", "install-code"]);
+    for (const id of blocks) expect(install).toContain(`<button type="button" class="copy" data-copy="${id}"`);
+    expect(install).not.toContain('class="soon"');
+  });
+
+  it("traduce cada texto de la sección de instalación", () => {
+    const en = loadSite().EN;
+    const keys = [...section("install").matchAll(/data-i18n="([^"]+)"/g)].map((m) => m[1]!);
+    expect(keys).toContain("install.oneStep");
+    expect(keys).toContain("install.manual");
+    for (const key of keys) expect(en[key], key).toBeTruthy();
+    expect(en["install.installer"]).toBeUndefined();
+    expect(en["next.installer"]).toBeUndefined();
   });
 
   it("el botón de copiar escribe el texto del bloque en el portapapeles y lo anuncia", async () => {
@@ -997,7 +1019,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });
