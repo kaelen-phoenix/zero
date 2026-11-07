@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
+import type { AgentGuide, PackageTabLink, PackageTabView, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import type { PolicyEvent } from "../line/policy.js";
+import { safeUrl } from "../package-tabs.js";
 import { reportSection, type MonthlyReport } from "../report.js";
 import { FINAL_STATUSES, type Job, type ResearchNote } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
@@ -94,8 +95,14 @@ const REFRESH = `setInterval(() => {
   if (document.visibilityState === "visible" && !typing && !drafted) location.reload();
 }, 15000);`;
 
+/** Where the packages' tabs go in the menu; `send` in server.ts fills it, since pages do not get the context. Escaped text can never contain it. */
+export const TABS_MARK = "<!--zero:tabs-->";
+
+/** The menu links of the packages' tabs, every title escaped. */
+export const tabLinks = (tabs: PackageTabLink[]) => tabs.map((t) => `<a href="${esc(t.href)}">${esc(t.title)}</a>`).join("");
+
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
+  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>${TABS_MARK}`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
@@ -119,14 +126,39 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce });
 }
 
-/** The only page without a session: exchanges the key in the link's fragment for a cookie, then clears it from the address bar. */
+/** A package's read-only tab: a third party's data, so every text is escaped and only http(s) links get an href. */
+export function packageTabPage(view: PackageTabView, nonce: string): string {
+  const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
+  const filter = view.categories.length
+    ? `<form method="get" action="${esc(view.href)}"><label for="t-cat">Categoría</label><select id="t-cat" name="categoria"><option value="">Todas</option>${options}</select><button>Filtrar</button></form>`
+    : "";
+  const item = (i: PackageTabView["items"][number]) => {
+    const href = safeUrl(i.url);
+    const title = href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(i.title)}</a>` : esc(i.title);
+    const meta = [i.category, i.date].filter(Boolean).map(esc).join(" · ");
+    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}</li>`;
+  };
+  const body =
+    view.state === "missing"
+      ? `<div class="card muted">Todavía no hay datos: el paquete no escribió el archivo de esta pestaña.</div>`
+      : view.state === "invalid"
+        ? `<div class="card bad">Los datos de esta pestaña no son válidos, así que no se muestran.</div>`
+        : view.items.length
+          ? `<div class="card"><ul class="jobs">${view.items.map(item).join("")}</ul></div>`
+          : `<div class="card muted">No hay elementos${view.category ? " en esa categoría" : ""}.</div>`;
+  return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
+}
+
+/** The only page without a session: exchanges the key in the link's fragment for a cookie, clears it from the address bar and goes back to the page the link pointed at. */
 export function loginPage(nonce: string, failed = false): string {
   const script = `(() => {
   const k = new URLSearchParams(location.hash.slice(1)).get("k");
   if (!k) return;
-  history.replaceState(null, "", "/");
+  const here = location.pathname + location.search;
+  const to = here.startsWith("/") && !here.startsWith("//") ? here : "/";
+  history.replaceState(null, "", to);
   fetch("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "k=" + encodeURIComponent(k) })
-    .then((r) => (r.ok ? location.replace("/") : (document.getElementById("msg").textContent = "La clave no es válida.")));
+    .then((r) => (r.ok ? location.replace(to) : (document.getElementById("msg").textContent = "La clave no es válida.")));
 })();`;
   return page(
     "Ingresar",

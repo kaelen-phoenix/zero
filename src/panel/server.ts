@@ -1,10 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, packageTabs, packageTabView, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage, reportPage, researchPage } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, packageTabPage, page, proposalsPage, reportPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -108,7 +108,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
   });
   const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}) => {
     res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers(nonce), ...extra });
-    res.end(html);
+    res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx))) : html);
   };
 
   // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
@@ -231,6 +231,11 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       // Read-only pages: they have no POST route, so a POST to them falls through to the 404 below.
       if (path === "/about") return send(res, 200, aboutPage(await factoryGuide(ctx), nonce), nonce);
       if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce), nonce);
+      const tab = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)$/.exec(path);
+      if (tab) {
+        const view = packageTabView(ctx, tab[1]!, tab[2]!, url.searchParams.get("categoria") || undefined);
+        if (view) return send(res, 200, packageTabPage(view, nonce), nonce);
+      }
       return send(res, 404, page("No existe", `<div class="card">Esa página no existe. <a href="/">Volver</a></div>`, { nonce }), nonce);
     }
 

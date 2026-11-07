@@ -18,6 +18,8 @@ export interface FactoryHome {
   bin: string;
   /** Agent packages installed from npm, in its `node_modules`. */
   packages: string;
+  /** Each package's own data, in a folder named after it; its stations get theirs as `ctx.dataDir`. */
+  packageData: string;
   /** Saved reports: what the factory produces stays here, never in a repository. */
   reports: string;
 }
@@ -39,6 +41,7 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     gate: join(abs, "gate"),
     bin: join(abs, "bin"),
     packages: join(abs, "packages"),
+    packageData: join(abs, "package-data"),
     reports: join(abs, "reports"),
   };
 }

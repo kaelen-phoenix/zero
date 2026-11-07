@@ -503,12 +503,45 @@ export async function scheduled(ctx, { at }) {
 | `ctx.state.get(nombre)`, `ctx.state.set(nombre, valor)` | Se guarda entre pasadas, por separado para cada estación |
 | `ctx.deliveredJobs(desde)` | Línea, título, resumen y fecha de los trabajos entregados, sin identificadores de trabajo, ramas ni rutas locales |
 | `ctx.requestJob({ line, text })` | Le pide un trabajo a la fábrica. Devuelve `{ id }`, o `{ reason }` si no se puede; nunca lanza |
+| `ctx.dataDir` | La carpeta de datos del paquete, `~/.zero/package-data/<paquete>`, ya creada; de acá leen sus pestañas del panel |
 
 `ctx.runAgent` registra cada llamada como `package:<paquete>/<estación>`, elige el motor de la cadena de la entrada y comparte el tope `limits.usdPerNight` en el pago por uso. Sin motor o sin tope restante devuelve `ok: false` sin llamar a nadie.
 
 `ctx.requestJob` deja que una estación detecte algo y mande el cambio por la línea normal (especificación, construcción, verify, revisión, integración) en vez de tocar un repositorio por su cuenta. Solo funciona si el manifiesto de la estación declara `requests: { perLinePerDay: N }`, con N entero mayor que cero. Recibís `{ reason }` y ningún trabajo cuando la estación no declara `requests`, la línea no es una de `ctx.lines`, el texto está vacío o no es texto, el andon está activo, se agotó el presupuesto, la pasada terminó o la estación ya abrió N trabajos en esa línea hoy (cada estación y línea cuenta aparte, por día local, y un pedido rechazado no gasta nada). El texto se recorta a 4000 caracteres, sin los secretos de la estación, tokens reconocibles ni rutas locales, y los agentes lo reciben como datos de un tercero, con su origen. Estos trabajos siguen el nivel y la integración de su línea como cualquier pedido tuyo: en L2 o L3 se integran sin preguntarte. La fábrica los arranca después de tu trabajo, de a uno y solo sin nada más en cola o en marcha. El estado, el panel, el briefing y el informe mensual los muestran como `pedido por paquete <paquete>/<estación>`.
 
 **Pasadas con horario.** Con `schedule` (una lista de horas locales `HH:MM`, sin repetir), zero llama a `scheduled(ctx, { at })` del módulo en cada una de esas horas en vez de a `pass`; `at` es la hora tal como la escribe el manifiesto y `ctx.now` la hora real de la pasada. Corren aunque haya trabajos en cola o en marcha y aunque se haya agotado el presupuesto, porque no pueden usar un modelo: `ctx.runAgent` lanza un error y no llama a ningún motor. Sí tienen `ctx.secrets`, `ctx.state` (los mismos valores que `pass`), `ctx.log` y `ctx.lines`, y el resto de `ctx` funciona igual. Cada hora corre como máximo una vez por día local y cuenta como usada antes de la llamada, así que la que falla o supera `timeoutMinutes` no se repite ese día. Una hora que no pudo correr (la fábrica estaba apagada, el andon activo o faltaba un secreto declarado) corre después solo si no pasaron más de 2 horas, de la más vieja a la más nueva, y si no espera al día siguiente; con el andon activo no arranca ninguna. `pass` sigue con su propio ritmo en el tiempo libre, así que una estación puede exportar una, la otra o las dos. Las dos pueden correr a la vez y comparten `ctx.state`: tenelo en cuenta al escribir la estación.
+
+**Pestañas del panel.** Con `tabs`, un paquete suma pestañas propias, de solo lectura, al panel del navegador. Cada una muestra un archivo JSON que las estaciones del paquete escriben en su carpeta de datos, `~/.zero/package-data/<paquete>`, que reciben ya creada como `ctx.dataDir`. En el panel no corre código del paquete, y las pestañas no necesitan `allowCode`: el panel solo lee ese archivo y lo valida con un esquema. El `name` de cada pestaña sigue la regla de los demás nombres del paquete y no se puede repetir, y `data` tiene que ser una ruta `.json` relativa que no salga de la carpeta de datos; si no, el paquete entero queda afuera.
+
+```yaml
+tabs:
+  - name: news                     # su dirección: /packages/hello/news
+    title: News                    # hasta 60 caracteres, en el menú del panel
+    data: news.json                # relativa a ~/.zero/package-data/hello
+    categories: [release, security] # opcional: las opciones del filtro
+```
+
+El archivo tiene un objeto con `items`, una lista de hasta 500 elementos. Solo `title` es obligatorio (hasta 300 caracteres); `description` admite hasta 2000, y `url`, `category` y `date` son textos opcionales:
+
+```json
+{
+  "items": [
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+  ]
+}
+```
+
+```js
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export async function scheduled(ctx) {
+  const items = [{ title: "Version 2.0", url: "https://example.com/v2", category: "release" }];
+  writeFileSync(join(ctx.dataDir, "news.json"), JSON.stringify({ items }));
+}
+```
+
+Cada pestaña aparece en el menú de todas las páginas del panel y tiene su propia dirección, `/packages/<paquete>/<pestaña>`, que pide la sesión del panel como las demás páginas. Para compartirla, sumale la clave del panel a esa dirección (`/packages/hello/news#k=…`): después de ingresar, el panel queda en esa pestaña y no en el resumen. El filtro usa el parámetro `categoria`, con las `categories` del manifiesto como opciones o, si no las declara, las que usan los elementos. Como son datos de terceros, todo su texto se escapa, y una `url` solo se vuelve link si es una dirección absoluta `http` o `https`, que se abre en una pestaña nueva; cualquier otra (`javascript:`, `data:`, relativa) muestra el elemento sin link. Un archivo que falta muestra que todavía no hay datos; uno de más de 1 MiB, que no es JSON, que no cumple el esquema o cuya ruta real sale de la carpeta de datos (por ejemplo, por un enlace) muestra un aviso y ninguno de sus elementos.
 
 **Cómo instalar uno:**
 
