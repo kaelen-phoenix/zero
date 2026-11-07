@@ -37,6 +37,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
 
 ## Autonomy levels
