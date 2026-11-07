@@ -227,6 +227,16 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["delegate", "trust"]) expect(en).toContain(word);
   });
 
+  it("la sinopsis dice, después de la delegación, que zero libera tiempo para las personas", () => {
+    const synopsis = section("synopsis");
+    const time = translatable(synopsis).find((t) => t.key === "synopsis.time");
+    expect(time?.inner.trim()).toBe("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.");
+    expect(time!.inner).toContain("las personas");
+    expect(synopsis.indexOf('data-i18n="synopsis.loop"')).toBeGreaterThanOrEqual(0);
+    expect(synopsis.indexOf('data-i18n="synopsis.time"')).toBeGreaterThan(synopsis.indexOf('data-i18n="synopsis.loop"'));
+    expect(loadSite().EN["synopsis.time"]).toBe("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.");
+  });
+
   it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
     const autonomy = section("autonomy");
     const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);

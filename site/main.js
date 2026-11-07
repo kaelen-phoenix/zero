@@ -21,6 +21,7 @@
     "synopsis.label": "Synopsis",
     "synopsis.title": "A software factory that runs on your machine and turns requests into delivered changes.",
     "synopsis.loop": "The person is not left without work: they have many tasks and, depending on what they know and how much they trust the factory, they delegate more or less to it. They still decide what gets done and where they step in; zero takes care of what they delegate.",
+    "synopsis.time": "zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.",
     "synopsis.p1": "You ask for work from your AI client's chat or from the terminal. The factory specifies it, builds it, verifies it, reviews it and integrates it on its own, in the background, even if you close the chat.",
     "synopsis.p2": "It never steps on your work: each request works in its own copy (<code>git worktree</code>) and its own branch. It is open source (Apache-2.0) and free. Everyone has their own factory: nobody connects to yours.",
     "line.label": "The production line",

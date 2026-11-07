@@ -37,6 +37,7 @@ El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en
   - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan;
   - lo que la fábrica produce trabajando no entra a un repositorio (ver [Lo que queda en tu máquina](#lo-que-queda-en-tu-máquina)).
 - **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
+- **Tiempo para las personas.** zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.
 - **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
 ## Niveles de autonomía

@@ -71,6 +71,13 @@ describe("README in English and Spanish", () => {
     expect(es).toContain("## Cómo funciona");
   });
 
+  it("state the freed-time principle in the principles of both", () => {
+    const bullets = (text: string, heading: string) =>
+      section(text, heading).split("\n").filter((line) => line.startsWith("- "));
+    expect(bullets(en, "## How it works").some((line) => line.includes("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration."))).toBe(true);
+    expect(bullets(es, "## Cómo funciona").some((line) => line.includes("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional."))).toBe(true);
+  });
+
   it("has the same heading levels in the same order", () => {
     expect(levels(en).length).toBeGreaterThan(0);
     expect(levels(en)).toEqual(levels(es));
