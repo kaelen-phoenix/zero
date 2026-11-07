@@ -180,6 +180,29 @@ Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repi
 
 Por defecto los commits de la fábrica tienen como autor a `zero`, la identidad propia de la fábrica. Algunos servicios solo aceptan commits cuyo autor es una de sus cuentas: el plan Hobby de Vercel, por ejemplo, bloquea el despliegue ("GitHub couldn't verify an account for the commit"), así que las vistas previas de los pull requests fallan su check y la fusión automática nunca arranca. Con `commitAuthor: owner` (global, o en una línea, que manda) los commits de especificación, de intento y de merge tienen como autor a vos: el `user.name` y el `user.email` que da `git config` en el repositorio de la línea, leídos al hacer el commit y nunca escritos en el archivo de la fábrica. zero sigue como committer, así se sigue viendo que los hizo la fábrica. Si el repositorio no tiene nombre o email configurados, el commit sale con autor zero y el trabajo sigue. La detección de reversiones funciona igual, porque mira los mensajes y los SHA de los commits, no sus autores.
 
+## Issues de Linear
+
+Una línea también puede tomar como pedidos los issues de un equipo de Linear que tengan una etiqueta. Agregás el bloque a la línea en el archivo de la fábrica, con la clave del equipo (el prefijo de sus issues, como `ENG-7`):
+
+```yaml
+lines:
+  - name: web
+    repo: ~/code/web
+    linear: { team: ENG, label: zero }
+```
+
+La etiqueta es `zero` si no indicás otra. La clave de la API de Linear nunca va en el archivo de la fábrica, que la rechaza; la guardás en el almacén de secretos:
+
+```sh
+zero secret set LINEAR_API_KEY
+```
+
+Sin la clave la fábrica no llama a Linear, y `zero status` y el panel muestran una línea `Issues de Linear:` con el problema.
+- **Solo toma issues creados y etiquetados por personas con permiso:** miembros activos de ese equipo que no sean invitados. Linear no tiene permisos por repositorio, así que en un espacio de trabajo grande pueden ser más personas que en GitHub. A los demás les deja un comentario explicando por qué no toma el issue.
+- **Comenta en el issue** cuando lo toma, cuando te necesita (con el trabajo, el vencimiento y cómo responder desde el panel o con `zero approve`), cuando falla o se detiene, y cuando lo entrega. Los comentarios llevan la firma de la línea y aparecen con el nombre de quien tiene la clave.
+- **Al entregar completa el issue:** lo pasa a uno de los estados de completado del equipo. En las líneas `pull-request` eso pasa cuando se abre el pull request. Si Linear falla, lo vuelve a intentar en la revisión siguiente sin repetir el comentario.
+- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta. No lee los comentarios posteriores en los issues de Linear.
+
 ## zero, tu CI y tus herramientas de calidad
 
 zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
@@ -740,4 +763,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Linear y Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Simulacro de regeneración · entradas desde Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.

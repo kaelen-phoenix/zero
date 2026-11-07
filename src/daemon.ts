@@ -7,6 +7,7 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
+import { LINEAR_SECRET, linearIssues, pollLinear, type LinearApi } from "./intake/linear.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
@@ -45,6 +46,8 @@ export interface DaemonOptions {
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
   /** GitHub for the issue intake; tests inject a fake. */
   issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
+  /** Linear for the Linear intake, per line (undefined without a key); tests inject a fake. */
+  linear?: (line: LineConfig) => LinearApi | undefined;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
@@ -72,6 +75,12 @@ const realIssues = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
 const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
   return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+/** The real Linear adapter, with the key from the secret store; pollLinear signs its comments. */
+const realLinear = (ctx: FactoryContext) => () => {
+  const key = ctx.secrets.get(LINEAR_SECRET);
+  return key ? linearIssues(key) : undefined;
 };
 
 interface Running {
@@ -184,6 +193,16 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("issues");
         intake = undefined;
       });
+  };
+  // Linear issues are read the same way, outside the GitHub meter and its pauses.
+  let linearAt = 0;
+  let linearIntake: Promise<void> | undefined;
+  const takeLinear = () => {
+    if (linearIntake || !ctx.config.lines.some((l) => l.linear) || Date.now() - linearAt < (opts.once ? 0 : INTAKE_MS)) return;
+    linearAt = Date.now();
+    linearIntake = pollLinear(ctx, opts.linear ?? realLinear(ctx))
+      .catch((err) => log.warn("linear intake failed", { error: String(err) }))
+      .finally(() => (linearIntake = undefined));
   };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
@@ -309,6 +328,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         mergeReady();
         findReverts();
       }
+      takeLinear();
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -375,6 +395,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
+    await linearIntake;
     await publishing;
     await merging;
     await checkingReverts;
