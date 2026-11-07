@@ -179,7 +179,23 @@
     <section id="install" aria-labelledby="install-h">
       <p class="label"><span class="marker" data-marker>07</span> <span data-i18n="install.label">Instalación</span></p>
       <h2 id="install-h" data-i18n="install.title">Instalación y primeros pasos.</h2>
-      <p data-i18n="install.intro">zero se instala desde el repositorio y necesita Node 22.</p>
+      <p data-i18n="install.intro">zero se instala con un solo comando y necesita Node 22, npm y git.</p>
+      <div class="code">
+        <div class="code-bar">
+          <span class="caption">macOS · Linux</span>
+          <button type="button" class="copy" data-copy="install-unix" data-i18n="install.copy">Copiar</button>
+        </div>
+        <pre><code id="install-unix">curl -fsSL https://zerointheloop.com/install.sh | sh</code></pre>
+      </div>
+      <div class="code">
+        <div class="code-bar">
+          <span class="caption">Windows · PowerShell</span>
+          <button type="button" class="copy" data-copy="install-windows" data-i18n="install.copy">Copiar</button>
+        </div>
+        <pre><code id="install-windows">irm https://zerointheloop.com/install.ps1 | iex</code></pre>
+      </div>
+      <p data-i18n="install.oneStep">Revisa que tengas Node 22, npm y git sin instalarlos, te muestra qué va a hacer y te pregunta antes de cambiar nada. No pide permisos de administrador, no toca ninguna credencial y termina abriendo <code>zero setup</code>.</p>
+      <p data-i18n="install.manual">O a mano, desde el repositorio:</p>
       <div class="code">
         <div class="code-bar">
           <span class="caption">SH</span>
@@ -198,7 +214,6 @@ node dist/cli.js box setup</code></pre>
         <li><code>box setup</code><p data-i18n="install.box">Prepara la caja de aislamiento; pide permiso antes de instalar nada.</p></li>
       </ol>
       <p data-i18n="install.then">Después, en tu chat: <em>"zero, quiero que mi tienda calcule descuentos"</em>. O desde la terminal, con los comandos de abajo.</p>
-      <p class="note"><span data-i18n="install.installer">Instalador en un solo paso</span> <span class="soon" data-i18n="soon">en camino</span></p>
     </section>
 
     <section id="workflow" aria-labelledby="workflow-h">
@@ -340,7 +355,6 @@ node dist/cli.js box setup</code></pre>
       </ul>
       <h3 data-i18n="links.next">Próximas etapas</h3>
       <ul class="points">
-        <li><span data-i18n="next.installer">Instalador</span> <span class="soon" data-i18n="soon">en camino</span></li>
         <li><span data-i18n="next.engines">Motores ACP/OpenCode</span> <span class="soon" data-i18n="soon">en camino</span></li>
         <li><span data-i18n="next.intake">Pedidos desde Linear y Jira</span> <span class="soon" data-i18n="soon">en camino</span></li>
         <li><span data-i18n="next.regen">Simulacro de regeneración desde las especificaciones</span> <span class="soon" data-i18n="soon">en camino</span></li>

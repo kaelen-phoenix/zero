@@ -180,12 +180,29 @@ describe("documentation up to date", () => {
     for (const text of [en, es]) expect(text.split("\n")).toContain(line);
   });
 
-  it("starts Getting started with the clone", () => {
+  it("starts Getting started with the one-step installer and keeps the clone as the manual way", () => {
+    const firsts: string[] = [];
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
-      const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;
-      expect(first.body).toContain("git clone https://github.com/kaelen-phoenix/zero");
-      expect(first.body).toContain("npm install && npm run build");
+      const sh = blocks(section(text, heading)).filter((b) => b.info === "sh");
+      firsts.push(normalize(sh[0]!.body));
+      expect(sh[0]!.body).toContain("curl -fsSL https://zerointheloop.com/install.sh | sh");
+      expect(sh[0]!.body).toContain("irm https://zerointheloop.com/install.ps1 | iex");
+      const manual = sh.find((b) => b.body.includes("git clone https://github.com/kaelen-phoenix/zero"));
+      expect(manual, heading).toBeDefined();
+      expect(manual!.body).toContain("npm install && npm run build");
     }
+    expect(firsts[0]).toBe(firsts[1]);
+  });
+
+  it("says what the installer does and no longer lists it as a next step", () => {
+    for (const [text, heading, words] of [
+      [en, "## Getting started", ["Node 22", "npm", "git", "asks before changing anything", "administrator", "`zero setup`"]],
+      [es, "## Empezar", ["Node 22", "npm", "git", "te pregunta antes de cambiar nada", "administrador", "`zero setup`"]],
+    ] as const) {
+      for (const word of words) expect(section(text, heading), word).toContain(word);
+    }
+    expect(section(en, "## Next steps")).not.toMatch(/installer/i);
+    expect(section(es, "## Próximas etapas")).not.toMatch(/instalador/i);
   });
 });
 
