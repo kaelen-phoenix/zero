@@ -76,6 +76,22 @@ describe("README in English and Spanish", () => {
     expect(levels(en)).toEqual(levels(es));
   });
 
+  it("document the Linear intake in both, and leave only Jira on the roadmap", () => {
+    for (const [text, heading, roadmap] of [
+      [en, "## Linear issues", "## Next steps"],
+      [es, "## Issues de Linear", "## Próximas etapas"],
+    ] as const) {
+      const linear = section(text, heading);
+      expect(linear).toContain("LINEAR_API_KEY");
+      expect(blocks(linear).some((b) => b.info === "yaml" && b.body.includes("linear: { team: ENG, label: zero }"))).toBe(true);
+      expect(blocks(linear).some((b) => b.info === "sh" && b.body.includes("zero secret set LINEAR_API_KEY"))).toBe(true);
+      expect(linear).toContain("zero approve");
+      const next = section(text, roadmap);
+      expect(next).toContain("Jira");
+      expect(next).not.toMatch(/linear/i);
+    }
+  });
+
   it("has the same code blocks, with identical commands and configuration", () => {
     const a = blocks(en);
     const b = blocks(es);

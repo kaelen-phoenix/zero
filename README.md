@@ -180,6 +180,29 @@ The factory's passes look after your account's GitHub API quota: they repeat the
 
 By default the factory's commits are authored by `zero`, the factory's own identity. Some services only accept commits whose author is one of their accounts: Vercel's Hobby plan, for example, blocks the deploy ("GitHub couldn't verify an account for the commit"), so pull request previews fail their check and auto-merge never starts. With `commitAuthor: owner` (globally, or on a line, which wins) the spec, attempt and merge commits are authored by you: the `user.name` and `user.email` that `git config` gives in the line's repository, read when committing and never written to the factory file. zero stays the committer, so it is still visible that the factory made them. If the repository has no name or email configured, the commit is authored by zero and the job goes on. Revert detection works the same, since it looks at commit messages and SHAs, not at authors.
 
+## Linear issues
+
+A line can also take as requests the issues of a Linear team that carry a label. You add the block to the line in the factory file, with the team's key (the prefix of its issues, such as `ENG-7`):
+
+```yaml
+lines:
+  - name: web
+    repo: ~/code/web
+    linear: { team: ENG, label: zero }
+```
+
+The label defaults to `zero`. The Linear API key never goes in the factory file, which refuses it; you save it in the secret store:
+
+```sh
+zero secret set LINEAR_API_KEY
+```
+
+Without the key the factory does not call Linear, and `zero status` and the panel show an `Issues de Linear:` line with the problem.
+- **It only takes issues created and labeled by people with permission:** active members of that team who are not guests. Linear has no per-repository permission, so in a large workspace this can be more people than on GitHub. To the rest it leaves one comment saying why it does not take the issue.
+- **It comments on the issue** when it takes it, when it needs you (with the job, the deadline and how to answer from the panel or with `zero approve`), when it fails or stops, and when it delivers. Comments carry the line's signature and appear under the name of whoever owns the key.
+- **On delivery it completes the issue:** it moves it to one of the team's completed states. On `pull-request` lines that happens when the pull request opens. If Linear fails, it tries again on the next check without repeating the comment.
+- **To request it again** after the job finished, remove the label and put it back. It does not read later comments on Linear issues.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -740,4 +763,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Regeneration drill · intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.

@@ -247,6 +247,11 @@ export const LineSchema = z.object({
   maxAttempts: z.number().int().min(1).default(3),
   /** Take GitHub issues carrying this label as requests (polled from the line's remote). Off when absent. */
   issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
+  /**
+   * Take issues of this Linear team (its key, e.g. `ENG`) carrying the label as requests. Off when absent.
+   * Strict: the key never goes here, only in the secret LINEAR_API_KEY.
+   */
+  linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */

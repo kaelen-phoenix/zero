@@ -309,6 +309,18 @@ describe("sitio del proyecto: contenido", () => {
     expect(/<p data-i18n="workflow\.trace">([^<]*)<\/p>/.exec(html)![1]).toContain("OTLP");
     expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
   });
+
+  it("da los pedidos desde Linear como disponibles y Jira sigue en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && /linear/i.test(l))).toEqual([]);
+    expect(lines.some((l) => l.includes('class="soon"') && l.includes("Jira"))).toBe(true);
+    const linear = lines.filter((l) => l.includes('data-i18n="next.linear"'));
+    expect(linear).toHaveLength(1);
+    expect(linear[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["ready"]).toBe("available");
+    expect(loadSite().EN["next.linear"]).toContain("Linear");
+    expect(loadSite().EN["next.intake"]).not.toContain("Linear");
+  });
 });
 
 describe("sitio del proyecto: FIG. 1", () => {
