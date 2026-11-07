@@ -265,6 +265,8 @@ export const LineSchema = z.object({
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
   /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
   allowedArtifacts: z.array(z.string()).default([]),
+  /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
+  checkDependencies: z.boolean().default(false),
 });
 
 export const FactorySchema = z

@@ -192,6 +192,15 @@ pedido
 
 Recomendación: tener CI y al menos un análisis estático en cada repositorio. Sin eso, zero solo tiene su verificación local y sus propias revisiones.
 
+### Dependencias npm nuevas (`checkDependencies`)
+
+Con `checkDependencies: true` en una línea, después de la verificación y antes de la revisión zero mira qué agrega cada intento en `package.json` y `package-lock.json` (en cualquier carpeta) contra la base, y pregunta por cada paquete nuevo, sin modelo y desde su propio proceso (las salidas de la caja no cambian). A OSV (`api.osv.dev`) le manda el nombre y la versión de cada entrada nueva del lock, y a deps.dev (`api.deps.dev`) el nombre de cada paquete nuevo. Por eso viene apagado: prenderlo les cuenta a esos servicios los nombres de tus dependencias.
+
+- **Qué falla el intento.** Un aviso de malware (un ID de OSV que empieza con `MAL-`), un paquete que deps.dev no conoce (no existe en el registro público de npm) o un nombre que no cumple las reglas de npm. El intento siguiente recibe un mensaje que nombra cada paquete y el motivo.
+- **Qué solo informa.** Una versión publicada hace menos de 7 días o un paquete sin versiones anteriores no falla: le llega como dato a la estación de seguridad, que juzga si la dependencia hace falta y es conocida.
+- **Sin red.** Si un servicio no responde en 10 segundos o responde con un error, los paquetes quedan como no verificados (en la traza, el log y el prompt de seguridad) y la línea sigue.
+- **Qué no se consulta.** Lo que el lock resuelve fuera del registro público de npm (git, archivos locales, enlaces, otros registros) y las specs de `package.json` que no son rangos del registro. Por ahora cubre solo npm.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -291,6 +300,7 @@ lines:
       build: { skills: [nextjs, shadcn] }
     signature: off            # opcional: la firma propia de esta línea, reemplaza la global
     allowedArtifacts: ["media/**"]   # opcional: rutas que esta línea versiona aunque parezcan producto de la operación
+    checkDependencies: false  # opcional: consulta a OSV y deps.dev por las dependencias npm nuevas antes de la revisión
 ```
 
 Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
