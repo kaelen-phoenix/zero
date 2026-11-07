@@ -210,7 +210,7 @@ describe("proposalAutonomy", () => {
 });
 
 describe("integrating night-shift jobs", () => {
-  function line(opts: { level?: string; onTimeout?: string } = {}) {
+  function line(opts: { level?: string; onTimeout?: string; autonomy?: Autonomy; research?: Record<string, unknown> } = {}) {
     const repo = gitRepo();
     let clock = Date.parse("2026-10-26T10:00:00Z");
     const ctx = testFactory(
@@ -218,7 +218,8 @@ describe("integrating night-shift jobs", () => {
         level: opts.level ?? "L3",
         isolation: opts.level === "L2" ? "worktree" : "container",
         approvals: { timeoutHours: 1, onTimeout: opts.onTimeout ?? "reject" },
-        lines: [{ name: "demo", repo, verify: [passes] }],
+        lines: [{ name: "demo", repo, verify: [passes], ...(opts.autonomy && { nightShift: { autonomy: opts.autonomy } }) }],
+        ...(opts.research && { research: opts.research }),
       },
       () => new Date(clock),
     );
@@ -236,6 +237,36 @@ describe("integrating night-shift jobs", () => {
     expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
     expect(head(repo)).toBe(before);
     expect(existsSync(join(repo, "src/health.ts"))).toBe(false);
+  });
+
+  it("says the line has autonomy build only when it does", async () => {
+    const { ctx } = line({ autonomy: "build" });
+    const { job } = autonomousJob(ctx, "build");
+    const waiting = await runJob(job.id, deps(ctx));
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
+    expect(waiting.question!.text).toContain("La línea tiene autonomía `build`");
+  });
+
+  it("on an auto line, names research.autonomy as the limit of a research-born job", async () => {
+    const { ctx } = line({ autonomy: "auto", research: { autonomy: "build" } });
+    const note = ctx.store.createResearchNote({ line: "demo", topic: "t", findings: "x", sources: ["https://example.com"], serves: "s", maturity: "m" });
+    const { proposal, job } = autonomousJob(ctx, "build", { researchNote: note.id, thirdParty: false });
+    const waiting = await runJob(job.id, deps(ctx));
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
+    const text = waiting.question!.text;
+    expect(text).not.toContain("La línea tiene autonomía");
+    for (const s of ["nota de investigación", "research.autonomy", "`build`", `zero proposals approve ${proposal.id}`, `zero proposals reject ${proposal.id}`]) expect(text).toContain(s);
+  });
+
+  it("without a note, names the proposal's autonomy and the line's current one", async () => {
+    const { ctx } = line({ autonomy: "auto" });
+    const { job } = autonomousJob(ctx, "build");
+    const waiting = await runJob(job.id, deps(ctx));
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
+    const text = waiting.question!.text;
+    expect(text).not.toContain("La línea tiene autonomía `build`");
+    expect(text).toContain("`build`");
+    expect(text).toContain("`auto`");
   });
 
   it("a timeout never integrates, even when approvals.onTimeout is approve", async () => {
@@ -305,7 +336,17 @@ describe("integrating night-shift jobs", () => {
     const agents = fakeAgents({ build: (req) => void writeTree(req.cwd, { "package.json": "{}\n", "src/health.ts": "ok" }) });
     const waiting = await runJob(job.id, deps(ctx, agents));
     expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
+    expect(waiting.question!.text).toContain("agrega dependencias o servidores de terceros");
     expect(head(repo)).toBe(before);
+  });
+
+  it("an auto job that changes the license waits for the owner", async () => {
+    const { ctx } = line({ autonomy: "auto" });
+    const { job } = autonomousJob(ctx, "auto");
+    const agents = fakeAgents({ build: (req) => void writeTree(req.cwd, { LICENSE: "MIT\n" }) });
+    const waiting = await runJob(job.id, deps(ctx, agents));
+    expect(waiting).toMatchObject({ status: "waiting", question: { kind: "before-integrate", onTimeout: "reject" } });
+    expect(waiting.question!.text).toMatch(/licencia o textos legales/);
   });
 });
 

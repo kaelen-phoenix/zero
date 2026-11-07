@@ -4,7 +4,7 @@ import { dirname, join, posix } from "node:path";
 import type { AgentRequest, AgentRun, AgentRunner, AgentStation, CustomAgentRun } from "../agent.js";
 import type { BoxExecutor } from "../box/executor.js";
 import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "../budget.js";
-import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
+import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineAutonomy, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { signText, withTrailer } from "../signature.js";
@@ -161,7 +161,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     const artifacts = changeArtifacts(copy, line.allowedArtifacts, ownSpecDir(jobId));
     if (artifacts.length) return await fail(`No se integró. ${artifactFeedback(artifacts)}`);
     if (!job.approvals.integrate) {
-      const held = nightShiftHold(deps, job, copy);
+      const held = nightShiftHold(deps, line, job, copy);
       if (held) {
         // The branch reaches the line's repository now, so it survives a rejection even from the box.
         copy.publish();
@@ -332,7 +332,7 @@ function quotaStop(run: AgentRun<unknown>): void {
  * `research.autonomy`, whatever scout said about it. A job whose changes touch
  * the license or legal texts always waits for the owner.
  */
-function nightShiftHold(deps: RunnerDeps, job: Job, copy: WorkCopy): string | undefined {
+function nightShiftHold(deps: RunnerDeps, line: LineConfig, job: Job, copy: WorkCopy): string | undefined {
   const source = job.source;
   if (source?.kind !== "night-shift" || !source.autonomy) return undefined;
   let autonomy: Autonomy = source.autonomy;
@@ -347,9 +347,16 @@ function nightShiftHold(deps: RunnerDeps, job: Job, copy: WorkCopy): string | un
     ? "Toca la licencia o textos legales"
     : manifest
       ? "Nace de una nota de investigación y agrega dependencias o servidores de terceros"
-      : "La línea tiene autonomía `build`";
+      : heldBy(lineAutonomy(deps.config, line), Boolean(proposal?.researchNote));
   const title = proposal?.title ?? job.title ?? job.id;
   return `El turno nocturno construyó por su cuenta la propuesta "${title}" y pasó la verificación y la revisión. ${why}: no se integra sin vos. ¿Lo integro? (\`zero proposals approve ${source.proposal}\` o \`zero proposals reject ${source.proposal}\`)`;
+}
+
+/** Why a night-shift job with autonomy `build` waits: the line's autonomy only when it is the line's. */
+function heldBy(ofLine: Autonomy, researchBorn: boolean): string {
+  if (ofLine === "build") return "La línea tiene autonomía `build`";
+  if (researchBorn) return `La propuesta nace de una nota de investigación y \`research.autonomy\` la limita a \`build\` (la línea tiene \`${ofLine}\`)`;
+  return `La propuesta tiene autonomía \`build\` y la línea ahora tiene \`${ofLine}\``;
 }
 
 /** What the pull request says:the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
