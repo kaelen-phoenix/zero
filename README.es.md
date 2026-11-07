@@ -37,7 +37,7 @@ El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en
   - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan;
   - lo que la fábrica produce trabajando no entra a un repositorio (ver [Lo que queda en tu máquina](#lo-que-queda-en-tu-máquina)).
 - **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
-- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
+- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity, OpenCode, cualquier agente que hable ACP (Agent Client Protocol) o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
 ## Niveles de autonomía
 
@@ -268,7 +268,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
   allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
   block: []
-engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
+engine: claude            # motor por defecto: claude · codex · antigravity · opencode · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai, ChatGPT en Codex) el límite es el cupo real del plan: 5 horas y semana
@@ -286,6 +286,7 @@ stations:                 # motor, modelo y tiempo límite por estación (opcion
   build: { skills: [pdf] }       # skills de tu Claude Code (personales o de plugins; `plugin:skill` si el nombre se repite)
 engines:                  # cualquier otro CLI de agentes, sin código; terminar sin imprimir nada cuenta como fallo
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+  gemini-acp: { command: ["gemini", "--experimental-acp"], protocol: acp }   # un agente que habla ACP: el pedido va por el protocolo
 lines:
   - name: tienda
     repo: ~/code/tienda
@@ -332,6 +333,21 @@ codex: { sandbox: off }
 Fuera de la caja, zero lanza entonces Codex con `--sandbox danger-full-access` y sin pedir aprobaciones, y se encarga él de que las estaciones de lectura no escriban: en cada una de esas llamadas compara la carpeta de trabajo y su repositorio antes y después (archivos versionados y sin seguimiento, índice, HEAD, ramas y etiquetas, `config` y `hooks` del repositorio). Si algo cambió, zero vuelve atrás solo lo que difiere, sin tocar el trabajo que no habías guardado, y marca la llamada como fallida con un aviso que nombra los archivos. También deshace cualquier otra cosa que cambie la carpeta o su rama durante la llamada, como tus propias ediciones o commits en esa misma copia (`git reflog` todavía los encuentra); lo descartado queda en una carpeta temporal que figura en el log. La fábrica no se cruza: un trabajo no arranca en un repositorio con una de esas llamadas en curso, y una llamada de fondo espera al trabajo que corre en su repositorio. Las demás referencias no se vuelven atrás cuando no se le pueden atribuir a la llamada: en la copia de trabajo de un trabajo, todas menos la rama de esa copia, y en cualquier caso las ramas `zero/*` de la fábrica, las ramas abiertas en otro worktree y las etiquetas nuevas (las trae cualquier fetch). Esas solo quedan en el log. Cuando la caja de aislamiento está lista (`isolation: container`), Codex corre dentro de ella con sus banderas de siempre, también en las pasadas de fondo, y `zero status` lo dice; si no, `zero status` avisa que corre sin su sandbox.
 
 Lo que esto no cubre fuera de la caja: los archivos ignorados por git y sin seguimiento, las referencias recién nombradas, el resto de la máquina (Codex puede leer y escribir donde vos podés, incluida la carpeta de la fábrica) y la salida a internet.
+
+### Motores OpenCode y ACP
+
+`engine: opencode` maneja el CLI de OpenCode (`opencode run --format json`) con el proveedor en el que hayas iniciado sesión; `model` es el `proveedor/modelo` de OpenCode. Cualquier agente que hable Agent Client Protocol (ACP) por stdio, como `gemini --experimental-acp`, `opencode acp` o un adaptador ACP para Claude o Codex, se declara en `engines` con `protocol: acp`:
+
+```yaml
+engines:
+  gemini-acp:
+    command: ["gemini", "--experimental-acp"]
+    protocol: acp
+    modelArgs: ["-m", "{model}"]
+    hosts: [generativelanguage.googleapis.com]
+```
+
+zero manda el pedido por el protocolo, nunca en la línea de comandos, así que una entrada ACP no puede usar `{prompt}`. Las estaciones de solo lectura siguen siendo de solo lectura porque zero mismo revisa la carpeta de trabajo alrededor de cada llamada y vuelve atrás lo que haya cambiado, como con Codex sin su sandbox; además, OpenCode recibe permisos que le niegan editar, correr comandos y usar la web, y zero rechaza los pedidos de permiso de un agente ACP para cualquier cosa que no sea leer, buscar o pensar. Terminar sin respuesta cuenta como fallo. Los dos informan el modelo que respondió y el costo cuando el agente lo dice, pero ninguno informa ventanas de uso de un plan, así que su gasto cuenta contra los topes en dólares (`usdPerDay`, `usdPerJob`). OpenCode todavía no puede trabajar dentro de la caja de aislamiento; un motor ACP recibe ahí sus `secrets` como cualquier motor propio.
 
 ### Motores de reemplazo (`fallback`)
 
@@ -731,4 +747,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Simulacro de regeneración · entradas desde Linear y Jira · instalador · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.

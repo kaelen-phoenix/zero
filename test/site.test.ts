@@ -301,6 +301,10 @@ describe("sitio del proyecto: contenido", () => {
     expect(line, "Instalador").toBeDefined();
   });
 
+  it("da los motores ACP y OpenCode como disponibles, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes("next.engines") && l.includes('class="soon"'))).toEqual([]);
+  });
+
   it("da la exportación OTLP como disponible, no en camino", () => {
     expect(html.split("\n").filter((l) => l.includes('class="soon"') && l.includes("OTLP"))).toEqual([]);
     expect(html).not.toContain("next.otlp");
@@ -774,7 +778,7 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
   it("lista los motores y clientes de hoy, y nada más", () => {
     const compat = section("compatibility");
     const items = [...compat.matchAll(/data-item="([^"]+)"/g)].map((m) => m[1]);
-    expect(items).toEqual(["claude", "codex", "antigravity", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
+    expect(items).toEqual(["claude", "codex", "antigravity", "opencode", "acp", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
     for (const name of ["Claude", "Codex", "Antigravity", "CLI propio", "Claude Code", "OpenCode", "Terminal"]) expect(compat).toContain(name);
     for (const other of ["Gemini", "Cursor", "Copilot", "Windsurf", "Aider", "ChatGPT"]) expect(compat).not.toContain(other);
   });
@@ -997,7 +1001,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "ACP", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });

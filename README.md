@@ -37,7 +37,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
-- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
+- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity, OpenCode, any agent that speaks ACP (Agent Client Protocol) or any CLI declared in the configuration, and a different one per station if you want.
 
 ## Autonomy levels
 
@@ -268,7 +268,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   mode: blocklist         # blocklist: everything goes out except what is suspicious or blocked · allowlist: only what is allowed
   allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
   block: []
-engine: claude            # default engine: claude · codex · antigravity · or your own
+engine: claude            # default engine: claude · codex · antigravity · opencode · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
@@ -286,6 +286,7 @@ stations:                 # engine, model and time limit per station (optional)
   build: { skills: [pdf] }       # skills from your Claude Code (personal or from plugins; `plugin:skill` if the name repeats)
 engines:                  # any other agent CLI, no code needed; ending without printing anything counts as a failure
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+  gemini-acp: { command: ["gemini", "--experimental-acp"], protocol: acp }   # an agent that speaks ACP: the prompt goes over the protocol
 lines:
   - name: tienda
     repo: ~/code/tienda
@@ -332,6 +333,21 @@ codex: { sandbox: off }
 Outside the box, zero then starts Codex with `--sandbox danger-full-access` and no approval prompts, and keeps read-only stations read-only itself: around each such call it compares the working folder and its repository (tracked and untracked files, index, HEAD, branches and tags, the repository's `config` and `hooks`). If anything changed, zero puts back only what differs, without touching work you had not saved, and fails the call with a notice naming the files. It also undoes anything else that changes the folder or its checked-out branch during the call, such as your own edits or commits in that same checkout (`git reflog` still finds them); what it discarded stays in a temporary folder named in the log. The factory stays out of the way: a job does not start in a repository under such a call, and a background call waits for the job running in its repository. Other refs are not rewound when the call cannot be blamed for them: in a job's work copy everything except that copy's own branch, and everywhere the factory's `zero/*` branches, branches checked out in another worktree and new tags (any fetch brings them). Those are only logged. When the isolation box is ready (`isolation: container`), Codex runs inside it with its usual flags, background passes included, and `zero status` says so; otherwise `zero status` warns that it runs without its sandbox.
 
 What this does not cover outside the box: files ignored by git and not tracked, the refs just mentioned, the rest of the machine (Codex can read and write anywhere you can, including the factory's own folder) and access to the internet.
+
+### OpenCode and ACP engines
+
+`engine: opencode` drives the OpenCode CLI (`opencode run --format json`) with whatever provider you signed in to; `model` is OpenCode's `provider/model`. Any agent that speaks the Agent Client Protocol (ACP) over stdio, such as `gemini --experimental-acp`, `opencode acp` or an ACP adapter for Claude or Codex, is declared in `engines` with `protocol: acp`:
+
+```yaml
+engines:
+  gemini-acp:
+    command: ["gemini", "--experimental-acp"]
+    protocol: acp
+    modelArgs: ["-m", "{model}"]
+    hosts: [generativelanguage.googleapis.com]
+```
+
+zero sends the prompt over the protocol, never on the command line, so an ACP entry cannot use `{prompt}`. Read-only stations stay read-only because zero itself checks the working folder around each call and puts back anything that changed, as for Codex without its sandbox; on top of that, OpenCode gets permissions that deny editing, commands and the web, and zero refuses an ACP agent's permission requests for anything other than reading, searching or thinking. Ending without an answer counts as a failure. Both report the model that answered and the cost when the agent says so, but neither reports plan usage windows, so their spend counts against the dollar caps (`usdPerDay`, `usdPerJob`). OpenCode cannot work inside the isolation box yet; an ACP engine gets its `secrets` there like any engine of your own.
 
 ### Fallback engines (`fallback`)
 
@@ -731,4 +747,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.
