@@ -192,6 +192,15 @@ request
 
 Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.
 
+### New npm dependencies (`checkDependencies`)
+
+With `checkDependencies: true` on a line, after verify and before review zero looks at what each attempt adds to `package.json` and `package-lock.json` (in any folder) against the base, and asks about each new package, with no model and from its own process (the box's egress stays as it is). It sends OSV (`api.osv.dev`) the name and version of each new lock entry, and deps.dev (`api.deps.dev`) the name of each new package. That is why it is off by default: turning it on tells those services the names of your dependencies.
+
+- **What fails the attempt.** A malware advisory (an OSV id starting with `MAL-`), a package deps.dev does not know (it does not exist in the public npm registry) or a name that breaks npm's rules. The next attempt gets a message naming each package and why.
+- **What only informs.** A version published less than 7 days ago or a package with no earlier versions does not fail: it reaches the security station as data, which judges whether the dependency is needed and well known.
+- **Without network.** If a service does not answer within 10 seconds or answers with an error, the packages stay as not verified (in the trace, the log and the security prompt) and the line goes on.
+- **What is not asked about.** What the lock resolves outside the public npm registry (git, local files, links, other registries) and `package.json` specs that are not registry ranges. For now it covers only npm.
+
 ## Browser panel
 
 With the factory running, the panel shows:
@@ -291,6 +300,7 @@ lines:
       build: { skills: [nextjs, shadcn] }
     signature: off            # optional: this line's own signature, replaces the global one
     allowedArtifacts: ["media/**"]   # optional: paths this line versions though they look like operation output
+    checkDependencies: false  # optional: ask OSV and deps.dev about new npm dependencies before review
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.

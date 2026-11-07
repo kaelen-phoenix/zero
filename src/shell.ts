@@ -79,7 +79,7 @@ export function spawnTarget(name: string, cwd: string, platform: NodeJS.Platform
 }
 
 /** The only way to start git in a folder an agent or a third party can write to. */
-export function spawnGit(args: string[], cwd: string, opts: { env?: NodeJS.ProcessEnv; timeout?: number } = {}): SpawnSyncReturns<string> {
+export function spawnGit(args: string[], cwd: string, opts: { env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}): SpawnSyncReturns<string> {
   const target = spawnTarget("git", cwd);
   return spawnSync(target.bin, args, { ...opts, cwd: target.cwd, encoding: "utf8", windowsHide: true });
 }

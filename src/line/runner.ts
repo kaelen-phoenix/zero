@@ -31,6 +31,7 @@ import {
   writeFiles,
   type Spec,
 } from "./spec.js";
+import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
@@ -43,6 +44,8 @@ export interface RunnerDeps extends LedgerDeps {
   boxAvailability?: BoxAvailability;
   /** GitHub's pull requests; defaults to the real adapter. */
   pullRequests?: PullRequestsFactory;
+  /** What the dependency check asks OSV and deps.dev with; defaults to the global fetch. */
+  fetch?: typeof fetch;
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
@@ -718,6 +721,30 @@ async function buildLoop(
       continue;
     }
 
+    // An objective look at the npm dependencies the change adds, from zero's process: only on lines that turned it on.
+    let dependencyData: string | undefined;
+    if (line.checkDependencies) {
+      const checked = await tracer.within("zero.dependencies", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "dependencies" } }, async (span) => {
+        const { items, unreadable } = newNpmDependencies(copy);
+        const found = items.length ? await checkDependencies({ fetch: deps.fetch ?? fetch, now: nowOf(deps), signal }, items) : { ok: true as const, checked: 0, notes: [], unverified: [] };
+        const r = { ...found, unverified: [...unreadable, ...found.unverified] };
+        span.set({
+          "zero.dependencies.count": r.checked,
+          "zero.dependencies.notes": r.notes.length,
+          "zero.dependencies.unverified": r.unverified.join(",").slice(0, 2000) || undefined,
+          "zero.dependencies.failed": !r.ok,
+        });
+        return r;
+      });
+      if (signal.aborted) throw new Interrupted(reasonOf(signal));
+      if (checked.unverified.length) log.warn("dependencies not verified: a manifest could not be read or OSV or deps.dev did not answer",{ job: jobId, packages: checked.unverified.length });
+      if (!checked.ok) {
+        failAttempt(checked.feedback);
+        continue;
+      }
+      dependencyData = dependencyBlock(checked);
+    }
+
     // Two read-only checks of the same change: the general review, then an independent security read.
     // Then the line's reviewing agents, read-only too, in order; a job stopped in one of them resumes there.
     let rejected = false;
@@ -760,7 +787,8 @@ async function buildLoop(
             engine: engineOf(choice),
             maxBudgetUsd: callCap(deps, store.getJob(jobId)!, choice),
             trace: { tracer, jobId, parentId: span.id },
-            prompt: `${requestBlock(job)}\n\n## Specification\n${contract}\n\n${ask}`,
+            // The dependency check's data goes to security alone.
+            prompt: [requestBlock(job), `## Specification\n${contract}`, station === "security" && !agent && dependencyData, ask].filter(Boolean).join("\n\n"),
           });
           addCost(run.costUsd);
           // Every check is read-only: whatever the engine wrote is discarded.
