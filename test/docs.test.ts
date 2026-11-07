@@ -149,6 +149,20 @@ describe("documentation up to date", () => {
     }
   });
 
+  it("documents Jira issues as available in both READMEs, with the same code blocks", () => {
+    const sections = [[es, "## Issues de Jira", "## Próximas etapas"], [en, "## Jira issues", "## Next steps"]] as const;
+    const found = sections.map(([text, heading, next]) => {
+      const body = section(text, heading);
+      for (const word of ["jira:", "site:", "project:", "JIRA_EMAIL", "JIRA_API_TOKEN", "zero secret set"]) expect(body, word).toContain(word);
+      const upcoming = section(text, next);
+      expect(upcoming).toContain("Linear");
+      expect(upcoming).not.toContain("Jira");
+      return blocks(body).map((b) => ({ info: b.info, body: normalize(b.body) }));
+    });
+    expect(found[0]!.length).toBeGreaterThanOrEqual(2);
+    expect(found[0]).toEqual(found[1]);
+  });
+
   it("shows a complete custom agent in both READMEs", () => {
     for (const [text, heading] of [[es, "## Agentes a medida"], [en, "## Custom agents"]] as const) {
       // The section ends at the example's own `## ` headings, so the instructions file is looked up in the whole README.

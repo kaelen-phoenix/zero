@@ -21,7 +21,7 @@ import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
-import { intakeProblemKey } from "./intake/keys.js";
+import { intakeProblemKey, jiraProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey } from "./line/packages.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
@@ -207,7 +207,7 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
       "zero.line": line.name,
       "zero.kind": job.kind,
       "zero.level": level.level,
-      ...(input.source?.kind === "github-issue" && { "zero.source": input.source.url }),
+      ...((input.source?.kind === "github-issue" || input.source?.kind === "jira-issue") && { "zero.source": input.source.url }),
       ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
       ...(input.source?.kind === "research" && { "zero.research_note": input.source.note }),
       ...(input.source?.kind === "package" && { "zero.package": `${input.source.package}/${input.source.station}` }),
@@ -255,6 +255,8 @@ export interface FactoryStatus {
   codexUnsandboxed?: "machine" | "box";
   /** Lines taking GitHub issues, and the last problem reaching GitHub. */
   intake: { line: string; label: string; problem?: string }[];
+  /** Lines taking Jira issues, and the last problem reaching Jira. */
+  jira: { line: string; site: string; project: string; label: string; problem?: string }[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
@@ -288,6 +290,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     egressMode: ctx.config.egress.mode,
     ...(ctx.config.codex.sandbox === "off" && !ctx.config.engines.codex && { codexUnsandboxed: ctx.config.isolation === "container" && box.availability.ready ? ("box" as const) : ("machine" as const) }),
     intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
+    jira: ctx.config.lines.flatMap((l) => (l.jira ? [{ line: l.name, site: l.jira.site, project: l.jira.project, label: l.jira.label, problem: ctx.store.getKv(jiraProblemKey(l.name)) }] : [])),
     merges: watchedJobs(ctx).map((job) => {
       const raw = ctx.store.getKv(mergeKey(job.id));
       const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };

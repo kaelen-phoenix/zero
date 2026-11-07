@@ -203,6 +203,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.codexUnsandboxed === "machine") out.push("AVISO: Codex corre sin su sandbox (codex.sandbox: off). zero solo comprueba la carpeta de trabajo y su repositorio en las estaciones de lectura; no cubre los archivos ignorados por git, el resto de la máquina ni la salida a internet.");
   if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const j of s.jira) out.push(`Issues de Jira: la línea ${j.line} toma los issues de ${j.project} (${j.site}) con la etiqueta "${j.label}"${j.problem ? ` · PROBLEMA: ${j.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);

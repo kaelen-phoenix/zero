@@ -122,7 +122,7 @@ export function githubIssues(token: string, repository: string, client?: Octokit
 
 /** Write access (admin covers maintain; write covers it too in GitHub's legacy permission field). */
 export const TRUSTED = new Set(["admin", "write"]);
-const MAX_REQUEST = 20_000;
+export const MAX_REQUEST = 20_000;
 
 export interface IssueState {
   job?: string;
@@ -142,20 +142,27 @@ export function lineRepository(line: LineConfig): string | undefined {
 
 const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
 
-/** What the issue is told when its job reaches a status worth telling, once per status (and per question). */
-function report(job: Job): { key: string; body: string } | undefined {
+/**
+ * What the issue is told when its job reaches a status worth telling, once per status (and per question).
+ * With `replyHere: false` (a tracker whose comments the factory does not read, and that is not GitHub) the texts
+ * invite no answer on the issue and do not mention GitHub.
+ */
+export function report(job: Job, opts: { replyHere?: boolean } = {}): { key: string; body: string } | undefined {
+  const replyHere = opts.replyHere ?? true;
   const id = `\`${job.id}\``;
   if (job.status === "waiting" && job.question) {
     const timeout = job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza";
     return {
       key: `waiting:${job.question.askedAt}`,
-      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\nRespondé comentando acá ("aprobado" o "rechazado"), desde el panel o el chat (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
+      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\n${replyHere ? `Respondé comentando acá ("aprobado" o "rechazado"), desde el panel o el chat` : "Respondé desde el panel o el chat"} (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
     };
   }
   if (job.status === "delivered" && job.delivery) {
     const local =
       job.delivery.mode === "merge"
-        ? " Quedó en la rama base de tu PC, no en GitHub: para publicarlo, subila (`git push`)."
+        ? replyHere
+          ? " Quedó en la rama base de tu PC, no en GitHub: para publicarlo, subila (`git push`)."
+          : " Quedó en la rama base de tu PC, sin subir: para publicarlo, subila (`git push`)."
         : job.delivery.mode === "branch"
           ? " La rama quedó en tu PC, sin subir."
           : "";

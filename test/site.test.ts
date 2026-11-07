@@ -302,6 +302,19 @@ describe("sitio del proyecto: contenido", () => {
     for (const item of ["next.engines", "next.intake", "next.regen"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
   });
 
+  it("da los pedidos desde Jira como disponibles y deja Linear en camino", () => {
+    const soonLines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    expect(soonLines.filter((l) => l.includes("Jira"))).toEqual([]);
+    const intake = soonLines.find((l) => l.includes('data-i18n="next.intake"'))!;
+    expect(/data-i18n="next\.intake">([^<]*)</.exec(intake)![1]).toBe("Pedidos desde Linear");
+    expect(loadSite().EN["next.intake"]).toBe("Requests from Linear");
+    const request = /<p data-i18n="workflow\.request">([^<]*)<\/p>/.exec(html)![1]!;
+    expect(request).toContain("GitHub");
+    expect(request).toContain("Jira");
+    expect(loadSite().EN["workflow.request"]).toContain("GitHub");
+    expect(loadSite().EN["workflow.request"]).toContain("Jira");
+  });
+
   it("da la exportación OTLP como disponible, no en camino", () => {
     expect(html.split("\n").filter((l) => l.includes('class="soon"') && l.includes("OTLP"))).toEqual([]);
     expect(html).not.toContain("next.otlp");

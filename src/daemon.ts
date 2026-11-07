@@ -7,6 +7,7 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
+import { jiraIssues, pollJira, type JiraApi, type JiraCredentials } from "./intake/jira.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
@@ -45,6 +46,8 @@ export interface DaemonOptions {
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
   /** GitHub for the issue intake; tests inject a fake. */
   issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
+  /** Jira for the Jira issue intake, per line with the stored credentials; tests inject a fake. */
+  jira?: (line: LineConfig, credentials: JiraCredentials) => JiraApi | undefined;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
@@ -73,6 +76,9 @@ const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
   const token = githubToken();
   return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
+
+/** The real Jira adapter, straight from zero's process with the global fetch; Jira is not GitHub, so no meter. */
+const realJira = (line: LineConfig, credentials: JiraCredentials) => (line.jira ? jiraIssues({ ...credentials, project: line.jira.project, fetch: globalThis.fetch }) : undefined);
 
 interface Running {
   line: string;
@@ -184,6 +190,16 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("issues");
         intake = undefined;
       });
+  };
+  // Jira issues, read the same way but outside the GitHub meter and its pauses.
+  let jiraAt = 0;
+  let jiraIntake: Promise<void> | undefined;
+  const takeJira = () => {
+    if (jiraIntake || !ctx.config.lines.some((l) => l.jira) || Date.now() - jiraAt < (opts.once ? 0 : INTAKE_MS)) return;
+    jiraAt = Date.now();
+    jiraIntake = pollJira(ctx, opts.jira ?? realJira)
+      .catch((err) => log.warn("jira intake failed", { error: String(err) }))
+      .finally(() => (jiraIntake = undefined));
   };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
@@ -309,6 +325,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         mergeReady();
         findReverts();
       }
+      takeJira();
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -375,6 +392,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
+    await jiraIntake;
     await publishing;
     await merging;
     await checkingReverts;

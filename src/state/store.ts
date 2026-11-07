@@ -63,6 +63,8 @@ export type JobSource =
       number: number;
       url: string;
     }
+  /** A labeled issue of a Jira project. */
+  | { kind: "jira-issue"; site: string; key: string; url: string }
   /**
    * A proposal of the scout station: approved by the owner (no autonomy), or
    * taken by the night shift on its own under the line's `build` or `auto` autonomy.

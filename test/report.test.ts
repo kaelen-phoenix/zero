@@ -153,10 +153,12 @@ describe("monthly report: each delivered job", () => {
       { kind: "night-shift", proposal: "p1" },
       { kind: "night-shift", proposal: "p2", autonomy: "build" },
       { kind: "research", note: "n1" },
+      { kind: "jira-issue", site: "https://acme.atlassian.net", key: "ABC-7", url: "https://acme.atlassian.net/browse/ABC-7" },
     ];
     for (const source of sources) await finished(f, { title: "x", source });
     const origins = one(f).jobs.map((j) => j.origin);
-    expect(new Set(origins).size).toBe(5);
+    expect(new Set(origins).size).toBe(6);
+    expect(origins).toContain("Issue de Jira ABC-7");
     expect(origins.find((o) => o.includes("#12"))).toContain("Issue de GitHub");
     expect(origins).toContain("Pedido de la persona responsable");
     expect(origins).toContain("Investigación");

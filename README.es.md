@@ -180,6 +180,29 @@ Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repi
 
 Por defecto los commits de la fábrica tienen como autor a `zero`, la identidad propia de la fábrica. Algunos servicios solo aceptan commits cuyo autor es una de sus cuentas: el plan Hobby de Vercel, por ejemplo, bloquea el despliegue ("GitHub couldn't verify an account for the commit"), así que las vistas previas de los pull requests fallan su check y la fusión automática nunca arranca. Con `commitAuthor: owner` (global, o en una línea, que manda) los commits de especificación, de intento y de merge tienen como autor a vos: el `user.name` y el `user.email` que da `git config` en el repositorio de la línea, leídos al hacer el commit y nunca escritos en el archivo de la fábrica. zero sigue como committer, así se sigue viendo que los hizo la fábrica. Si el repositorio no tiene nombre o email configurados, el commit sale con autor zero y el trabajo sigue. La detección de reversiones funciona igual, porque mira los mensajes y los SHA de los commits, no sus autores.
 
+## Issues de Jira
+
+Una línea también puede tomar como pedidos los issues de un proyecto de Jira Cloud que tengan una etiqueta. Agregás el bloque `jira` a la línea en el archivo de la fábrica y guardás el correo de la cuenta y un token de API en el almacén de secretos, nunca en el archivo (la fábrica rechaza un bloque `jira` con cualquier otra clave):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+Le ponés la etiqueta `zero` a un issue del proyecto, y la fábrica lo revisa cada minuto y lo convierte en un trabajo.
+- **Solo toma issues creados y etiquetados por personas con permiso para editar issues en el proyecto**, y solo si nadie sin ese permiso cambió su título o su descripción, porque ese texto se convierte en instrucciones para los agentes. Si no, explica por qué con un comentario en el issue. La cuenta del token necesita permiso para ver usuarios para revisarlo; si la consulta falla, `zero status` muestra el problema y el issue espera.
+- **Comenta en el issue** cuando lo toma, cuando te necesita y cómo terminó. No lee los comentarios del issue: respondés desde el panel, el chat o `zero approve`.
+- **Al entregar, pasa el issue a un estado terminado** con una de sus transiciones. Si el flujo no tiene ninguna, el issue queda como está y `zero status` lo avisa.
+- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
+
+`zero status` y el panel muestran una línea `Issues de Jira:` por cada línea con su proyecto, su etiqueta y cualquier problema, como credenciales faltantes.
+
 ## zero, tu CI y tus herramientas de calidad
 
 zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
@@ -303,6 +326,7 @@ lines:
     verify: ["npm test"]  # todo debe pasar antes de la revisión
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # opcional: issues de Jira con la etiqueta "zero"; credenciales con zero secret set
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
     commitAuthor: owner       # opcional: el autor de los commits de esta línea, sobre el global
     stations:                 # opcional: skills que un agente suma solo en esta línea
@@ -740,4 +764,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Linear y Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Simulacro de regeneración · entradas desde Linear · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
