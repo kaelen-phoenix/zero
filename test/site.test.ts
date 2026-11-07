@@ -227,6 +227,16 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["delegate", "trust"]) expect(en).toContain(word);
   });
 
+  it("la sinopsis dice, después de la delegación, que zero libera tiempo para las personas", () => {
+    const synopsis = section("synopsis");
+    const time = translatable(synopsis).find((t) => t.key === "synopsis.time");
+    expect(time?.inner.trim()).toBe("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.");
+    expect(time!.inner).toContain("las personas");
+    expect(synopsis.indexOf('data-i18n="synopsis.loop"')).toBeGreaterThanOrEqual(0);
+    expect(synopsis.indexOf('data-i18n="synopsis.time"')).toBeGreaterThan(synopsis.indexOf('data-i18n="synopsis.loop"'));
+    expect(loadSite().EN["synopsis.time"]).toBe("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.");
+  });
+
   it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
     const autonomy = section("autonomy");
     const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);
@@ -299,7 +309,7 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["soon"]).toBe("coming");
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.engines", "next.intake", "next.regen"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.engines", "next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -320,6 +330,14 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["ready"]).toBe("available");
     expect(loadSite().EN["next.linear"]).toContain("Linear");
     expect(loadSite().EN["next.intake"]).not.toContain("Linear");
+  });
+
+  it("da el simulacro de regeneración como disponible, no en camino", () => {
+    const lines = html.split("\n");
+    const regen = lines.filter((l) => l.includes('data-i18n="next.regen"'));
+    expect(regen).toHaveLength(1);
+    expect(regen[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("next.regen"))).toEqual([]);
   });
 });
 

@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
-import { AGENT_ACCESS, agentInstructions, type AgentRunner } from "./agent.js";
+import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { budgetState, type BudgetState } from "./budget.js";
@@ -24,6 +24,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
+import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
@@ -465,23 +466,67 @@ function realPath(path: string): string {
   }
 }
 
+/** The repository a folder of ZERO_HOME falls inside, a line's or the current folder's, in words; undefined when none. */
+function versionedAt(ctx: FactoryContext, folder: string, cwd: string): string | undefined {
+  const real = realPath(folder);
+  for (const line of ctx.config.lines) {
+    if (isInside(real, realPath(line.repo))) return `repositorio de la línea "${line.name}" (${line.repo})`;
+  }
+  const here = tryGit(["rev-parse", "--show-toplevel"], cwd);
+  if (here && isInside(real, realPath(resolve(here)))) return `repositorio de la carpeta actual (${here})`;
+  return undefined;
+}
+
 /**
  * Saves a report in `<ZERO_HOME>/reports` and returns the file's path. What the
  * factory produces is never versioned, so it refuses to write when that folder
  * falls inside a line's repository or the current folder's.
  */
 export function saveReport(ctx: FactoryContext, report: LineReport, format: "md" | "html", cwd = process.cwd()): string {
-  const reports = realPath(ctx.home.reports);
-  const refuse = (where: string) => new Error(`No guardé el informe: ${ctx.home.reports} queda dentro del ${where}, y lo que la fábrica produce no se versiona. Mové ZERO_HOME fuera de ese repositorio.`);
-  for (const line of ctx.config.lines) {
-    if (isInside(reports, realPath(line.repo))) throw refuse(`repositorio de la línea "${line.name}" (${line.repo})`);
-  }
-  const here = tryGit(["rev-parse", "--show-toplevel"], cwd);
-  if (here && isInside(reports, realPath(resolve(here)))) throw refuse(`repositorio de la carpeta actual (${here})`);
+  const where = versionedAt(ctx, ctx.home.reports, cwd);
+  if (where) throw new Error(`No guardé el informe: ${ctx.home.reports} queda dentro del ${where}, y lo que la fábrica produce no se versiona. Mové ZERO_HOME fuera de ese repositorio.`);
   mkdirSync(ctx.home.reports, { recursive: true });
   const path = join(ctx.home.reports, reportFileName(report, format));
   writeFileSync(path, format === "md" ? reportMarkdown(report) : reportHtml(report));
   return path;
+}
+
+export interface DrillRequest {
+  line: string;
+  capability: string;
+  patterns: string[];
+  /** Spend cap of the agent call; `limits.usdPerJob` when absent. */
+  usd?: number;
+}
+
+/**
+ * A regeneration drill (see line/drill.ts): rebuilds a line's files from its
+ * specification in a copy under `<ZERO_HOME>/drills` and runs the line's tests
+ * against it. Every refusal comes before anything is created or spent.
+ */
+export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; cwd?: string } = {}): Promise<DrillResult> {
+  const line = ctx.config.lines.find((l) => l.name === input.line);
+  if (!line) throw new Error(`No hay una línea llamada "${input.line}". Líneas: ${ctx.config.lines.map((l) => l.name).join(", ") || "(ninguna)"}.`);
+  if (ctx.config.isolation === "container") {
+    throw new Error("El simulacro de regeneración todavía no corre en la caja de aislamiento (isolation: container); en esta versión solo corre en la máquina, con isolation: worktree.");
+  }
+  if (ctx.store.getKv(ANDON_KEY) === "on") throw new Error("La fábrica está detenida (andon). Reanudala con zero resume antes del simulacro.");
+  const budget = budgetState(ctx.store, ctx.config, ctx.now?.());
+  if (budget.reached) throw new Error(`No hay presupuesto para el simulacro: ${budget.reason ?? "se llegó al límite"}.`);
+  const cap = ctx.config.limits.usdPerJob;
+  const usd = input.usd ?? cap;
+  if (!Number.isFinite(usd) || usd <= 0) throw new Error("--usd tiene que ser un número positivo.");
+  if (usd > cap) throw new Error(`--usd (${usd}) supera el tope por trabajo (limits.usdPerJob: ${cap}).`);
+  if (!line.verify.length) throw new Error(`La línea "${line.name}" no tiene comandos de verify: no habría tests contra los que medir lo regenerado.`);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(input.capability) || tryGit(["cat-file", "-e", `${line.baseBranch}:${specPath(input.capability)}`], line.repo) === undefined) {
+    throw new Error(`La capacidad "${input.capability}" no tiene ${specPath(input.capability)} en la rama ${line.baseBranch} de la línea "${line.name}".`);
+  }
+  const where = versionedAt(ctx, ctx.home.drills, deps.cwd ?? process.cwd());
+  if (where) throw new Error(`No hice el simulacro: ${ctx.home.drills} queda dentro del ${where}, y lo que la fábrica produce no se versiona. Mové ZERO_HOME fuera de ese repositorio.`);
+  const files = drillFiles(line, input.patterns);
+  if (!files.length) throw new Error(`Ningún archivo de código de la rama ${line.baseBranch} coincide con ${input.patterns.join(", ") || "(sin patrones)"}: los tests y lo que está bajo openspec/ nunca se quitan. Indicá qué quitar con --archivos.`);
+  const runAgent = deps.runAgent ?? createAgentRunner(ctx.config, { secrets: ctx.secrets });
+  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now }, { line, capability: input.capability, files, usd });
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */

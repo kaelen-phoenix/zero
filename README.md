@@ -37,6 +37,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
 
 ## Autonomy levels
@@ -277,6 +278,22 @@ zero informe tienda --mes 2026-10 --html    # saves a standalone HTML document i
 - What you share carries no secrets, no local paths and nothing from other lines. It is cleaned by patterns, so read it before sending it: a title that names another line by name stays as written.
 - The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML; each download also leaves a copy in `ZERO_HOME/reports`. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
 - Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
+
+## Regeneration drill
+
+Measures whether a line's specifications are enough to rebuild part of its code. You name the line, the capability (its spec is `openspec/specs/<capability>/spec.md` on the base branch) and the files to remove.
+
+```sh
+zero simulacro tienda pagos --archivos "src/pagos/**"              # cap: limits.usdPerJob
+zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap for this drill
+```
+
+- It works in a separate copy in `ZERO_HOME/drills/<id>/copy`, cloned from the line's base branch. The line's repository is only read: same branches, worktrees, HEAD and working state. The copy gets a fresh history with a single commit, so the agent cannot find the removed files in it.
+- Tests and everything under `openspec/` are never removed, even if the pattern names them: they are what the rebuilt code is measured against.
+- The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy, up to 20 minutes each.
+- The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
+- The report, in Spanish, is `ZERO_HOME/drills/<id>/informe.md`, next to `resultado.json` with the same data: line, capability, base commit, removed and rebuilt files, result, cost, each command with its exit code and the end of its output, and what the spec did not say and had to be guessed. The command prints its path. If `ZERO_HOME/drills` falls inside a line's repository or the current folder's, zero refuses, as with saved reports.
+- It refuses before spending anything when the andon is on or the budget ran out, and when the line has no `verify` commands. In this version it only runs on this machine: with `isolation: container` it refuses.
 
 ## What stays on your machine
 
@@ -762,9 +779,9 @@ zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with
 Every AI orchestrator starts from the same assumption: code is the product and agents are workers who touch it. zero aims to turn that around. **The product is your intent; code is its consequence**, something the factory can produce again whenever needed.
 
 - **The truth lives in the specifications.** `openspec/specs/` stops being documentation and becomes the source: what the system has to do, written as requirements and scenarios. You read and edit intents, in your language, from the chat, the panel or the phone; the factory maintains the code.
-- **Regeneration drill.** To show that the specifications are enough, the factory takes a module, builds it again from scratch from its spec alone, in a separate copy, and runs the same tests. If the result behaves differently, the spec was incomplete: the factory proposes the missing scenario. The old code is never overwritten; the drill only measures and proposes. It is expensive in tokens, so it runs on request or rarely, never on every job.
+- **Regeneration drill.** To show that the specifications are enough, `zero simulacro` (see [Regeneration drill](#regeneration-drill)) takes some files, builds them again from their spec alone in a separate copy and runs the same tests, then reports what the spec did not say. The old code is never overwritten; the drill only measures. It is expensive in tokens, so it runs on request, never on every job. Next, the factory will propose the missing scenarios itself.
 - **Closed loop with the live product.** Later, production errors, analytics and user feedback come in as requests nobody had to write: intent → change → deployment → observation → new intent.
 
 ## Next steps
 
-Regeneration drill · intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
