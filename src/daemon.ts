@@ -21,7 +21,7 @@ import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
-import { packagesPass, scheduledPass } from "./line/packages.js";
+import { onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -278,7 +278,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
-    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
+    // A run the person in charge asked for does not wait for the throttle.
+    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && (Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS) || onDemandPending(ctx));
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {

@@ -84,7 +84,7 @@ zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), y `zero_egress` y `zero_egress_block` (salidas a internet).
+Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda), y `zero_egress` y `zero_egress_block` (salidas a internet).
 
 ## Instalar con Docker
 
@@ -488,6 +488,7 @@ stations:
     schedule: ["08:00", "12:00", "18:00"] # horas locales en las que corre scheduled, aunque la fábrica esté ocupada
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # deja que ctx.requestJob abra trabajos; sin esto, no puede
+    onDemand: true                 # te deja pedir una pasada con zero package run; sin esto, no podés
 ```
 
 - **Agentes:** corren en todas las líneas como agentes a medida globales, después de los de tu archivo y con las mismas garantías (ver Agentes a medida). Nunca se escriben en tu archivo. Sus nombres no pueden repetir una estación fija, un agente tuyo ni el de otro paquete.
@@ -542,6 +543,8 @@ export async function scheduled(ctx, { at }) {
 
 **Pasadas con horario.** Con `schedule` (una lista de horas locales `HH:MM`, sin repetir), zero llama a `scheduled(ctx, { at })` del módulo en cada una de esas horas en vez de a `pass`; `at` es la hora tal como la escribe el manifiesto y `ctx.now` la hora real de la pasada. Corren aunque haya trabajos en cola o en marcha y aunque se haya agotado el presupuesto, porque no pueden usar un modelo: `ctx.runAgent` lanza un error y no llama a ningún motor. Sí tienen `ctx.secrets`, `ctx.state` (los mismos valores que `pass`), `ctx.log` y `ctx.lines`, y el resto de `ctx` funciona igual. Cada hora corre como máximo una vez por día local y cuenta como usada antes de la llamada, así que la que falla o supera `timeoutMinutes` no se repite ese día. Una hora que no pudo correr (la fábrica estaba apagada, el andon activo o faltaba un secreto declarado) corre después solo si no pasaron más de 2 horas, de la más vieja a la más nueva, y si no espera al día siguiente; con el andon activo no arranca ninguna. `pass` sigue con su propio ritmo en el tiempo libre, así que una estación puede exportar una, la otra o las dos. Las dos pueden correr a la vez y comparten `ctx.state`: tenelo en cuenta al escribir la estación.
 
+**Corridas a demanda.** A una estación cuyo manifiesto declara `onDemand: true` (por defecto es false) le podés pedir que corra una vez sin esperar sus `everyMinutes`: `zero package run <paquete>/<estación>`, o la herramienta `zero_package_run` del chat. zero llama a su `pass(ctx, { onDemand: true })`, con el mismo `ctx` de siempre, así la estación distingue tu pedido de su turno normal, que no recibe segundo argumento. El pedido espera las mismas condiciones que cualquier pasada del tiempo libre: nada en cola o en marcha, el andon apagado, presupuesto disponible y sus secretos declarados guardados; mientras tanto queda pendiente, y el daemon lo toma en su siguiente turno libre. `ctx.runAgent` sigue compartiendo el tope de `limits.usdPerNight`. Una corrida a demanda no mueve el período de la estación, y en esa pasada no corre además su turno normal. Hay como máximo una corrida pendiente por estación: si la pedís de nuevo antes de que corra, se rechaza. También recibís el motivo, y no se registra nada, cuando la estación no es `<paquete>/<estación>`, el paquete o la estación no existen, la estación no puede correr (por ejemplo, sin `allowCode`), no declara `onDemand: true`, el andon está activo o se agotó el presupuesto. Un módulo que no se puede importar, no tiene `pass` o cuyo `parseConfig` lanza un error descarta el pedido, y el motivo queda en el log. El comando sale con 1 cuando se rechaza, y enciende la fábrica si estaba apagada.
+
 **Cómo instalar uno:**
 
 ```sh
@@ -554,6 +557,7 @@ zero package add git@example.com:acme/hello-zero.git#main
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # muestra el cambio y lo aplica; sin nombre, todos los paquetes
+zero package run hello/note                  # una pasada de esa estación apenas la fábrica esté libre (onDemand: true)
 zero package remove hello                    # lo saca del archivo; sus archivos quedan
 ```
 

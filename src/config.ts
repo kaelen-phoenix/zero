@@ -425,6 +425,8 @@ export interface PackageStation {
   maxTurns: number;
   /** Absent: `ctx.requestJob` refuses every request. */
   requests?: { perLinePerDay: number };
+  /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
+  onDemand: boolean;
   entry: PackageEntry;
 }
 

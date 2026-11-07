@@ -23,7 +23,7 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { stationLastKey } from "./line/packages.js";
+import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
@@ -1151,6 +1151,33 @@ export function packageList(ctx: FactoryContext): PackageList {
       };
     }),
   };
+}
+
+export type StationRunResult = { ok: true; text: string } | { ok: false; reason: string };
+
+/**
+ * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
+ * period. Only for stations that declare `onDemand: true`, at most one pending per
+ * station; the daemon still waits for an idle factory and keeps every gate.
+ */
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date()): StationRunResult {
+  const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
+  if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
+  const [, pkg, name] = match as unknown as [string, string, string];
+  const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
+  const known = loaded.packages.find((p) => p.name === pkg);
+  if (!known) return { ok: false, reason: `no hay un paquete instalado que se llame "${pkg}"` };
+  if (!known.stations.includes(name)) return { ok: false, reason: `el paquete ${pkg} no tiene una estación "${name}"` };
+  const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
+  if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
+  if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
+  const key = stationOnDemandKey(pkg, name);
+  const pending = ctx.store.getKv(key);
+  if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
+  if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
+  if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
+  ctx.store.setKv(key, now.toISOString());
+  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.` };
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */
