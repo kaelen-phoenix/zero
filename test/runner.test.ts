@@ -832,4 +832,15 @@ describe("the dependency check", () => {
     expect(agents.calls.find((c) => c.station === "security")!.prompt).toContain("left-pad@1.3.0: no verificado");
     expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.dependencies")!.attrs).toMatchObject({ "zero.dependencies.unverified": "left-pad@1.3.0", "zero.dependencies.failed": false });
   });
+
+  it("tells security about a lock it could not parse instead of passing it as empty", async () => {
+    const { ctx } = lineWith(true);
+    const agents = fakeAgents({ build: (req: { cwd: string }) => writeTree(req.cwd, { "package-lock.json": "{ broken" }) });
+    const f = fakeFetch();
+    const { job } = requestWork(ctx, { text: "tocá el lock" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: f.fetch }))).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(f.urls).toEqual([]);
+    expect(agents.calls.find((c) => c.station === "security")!.prompt).toContain("manifest package-lock.json: no verificado");
+    expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.dependencies")!.attrs).toMatchObject({ "zero.dependencies.unverified": "manifest package-lock.json" });
+  });
 });

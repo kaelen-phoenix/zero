@@ -718,8 +718,9 @@ async function buildLoop(
     let dependencyData: string | undefined;
     if (line.checkDependencies) {
       const checked = await tracer.within("zero.dependencies", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "dependencies" } }, async (span) => {
-        const items = newNpmDependencies(copy);
-        const r = items.length ? await checkDependencies({ fetch: deps.fetch ?? fetch, now: nowOf(deps), signal }, items) : { ok: true as const, checked: 0, notes: [], unverified: [] };
+        const { items, unreadable } = newNpmDependencies(copy);
+        const found = items.length ? await checkDependencies({ fetch: deps.fetch ?? fetch, now: nowOf(deps), signal }, items) : { ok: true as const, checked: 0, notes: [], unverified: [] };
+        const r = { ...found, unverified: [...unreadable, ...found.unverified] };
         span.set({
           "zero.dependencies.count": r.checked,
           "zero.dependencies.notes": r.notes.length,
@@ -729,7 +730,7 @@ async function buildLoop(
         return r;
       });
       if (signal.aborted) throw new Interrupted(reasonOf(signal));
-      if (checked.unverified.length) log.warn("dependencies not verified: OSV or deps.dev did not answer", { job: jobId, packages: checked.unverified.length });
+      if (checked.unverified.length) log.warn("dependencies not verified: a manifest could not be read or OSV or deps.dev did not answer",{ job: jobId, packages: checked.unverified.length });
       if (!checked.ok) {
         failAttempt(checked.feedback);
         continue;

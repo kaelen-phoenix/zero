@@ -60,7 +60,7 @@ describe("new npm dependencies against the base", () => {
 
   it("takes only what the branch's lock adds", () => {
     const copy = changed({ "package-lock.json": lock({ "node_modules/left-pad": registry("left-pad", "1.3.0") }) }, { "package-lock.json": lock({ "node_modules/left-pad": registry("left-pad", "1.3.0"), "node_modules/is-odd": registry("is-odd", "3.0.1") }) });
-    expect(newNpmDependencies(copy)).toEqual([{ name: "is-odd", version: "3.0.1" }]);
+    expect(newNpmDependencies(copy).items).toEqual([{ name: "is-odd", version: "3.0.1" }]);
   });
 
   it("counts a changed version as new, in any folder, and reads the entry's own name", () => {
@@ -68,7 +68,7 @@ describe("new npm dependencies against the base", () => {
       { "web/package-lock.json": lock({ "node_modules/left-pad": registry("left-pad", "1.3.0") }) },
       { "web/package-lock.json": lock({ "node_modules/left-pad": registry("left-pad", "1.3.1"), "node_modules/alias": { ...registry("real-pkg", "2.0.0"), name: "real-pkg" }, "node_modules/a/node_modules/@scope/b": registry("@scope/b", "1.0.0") }) },
     );
-    expect(newNpmDependencies(copy)).toEqual([
+    expect(newNpmDependencies(copy).items).toEqual([
       { name: "left-pad", version: "1.3.1" },
       { name: "real-pkg", version: "2.0.0" },
       { name: "@scope/b", version: "1.0.0" },
@@ -78,12 +78,28 @@ describe("new npm dependencies against the base", () => {
   it("reads git objects, not the working tree", () => {
     const copy = changed({}, { "package-lock.json": lock({ "node_modules/is-odd": registry("is-odd", "3.0.1") }) });
     writeTree(copy.cwd, { "package-lock.json": lock({ "node_modules/other": registry("other", "1.0.0") }) });
-    expect(newNpmDependencies(copy)).toEqual([{ name: "is-odd", version: "3.0.1" }]);
+    expect(newNpmDependencies(copy).items).toEqual([{ name: "is-odd", version: "3.0.1" }]);
+  });
+
+  it("reads a lock larger than 1 MiB", () => {
+    const filler = Object.fromEntries(Array.from({ length: 12_000 }, (_, i) => [`node_modules/pkg-${i}`, registry(`pkg-${i}`, "1.0.0")]));
+    const big = lock(filler);
+    expect(big.length).toBeGreaterThan(1024 * 1024);
+    const copy = changed({ "package-lock.json": big }, { "package-lock.json": lock({ ...filler, "node_modules/is-odd": registry("is-odd", "3.0.1") }) });
+    expect(newNpmDependencies(copy)).toEqual({ items: [{ name: "is-odd", version: "3.0.1" }], unreadable: [] });
+  });
+
+  it("lists a manifest it cannot parse at HEAD as unverified instead of as empty", () => {
+    const copy = changed({}, { "package-lock.json": "{ not json", "web/package.json": "[]", "api/package-lock.json": `{"lockfileVersion":1,"dependencies":{}}` });
+    const found = newNpmDependencies(copy);
+    expect(found.items).toEqual([]);
+    expect([...found.unreadable].sort()).toEqual(["manifest api/package-lock.json", "manifest package-lock.json", "manifest web/package.json"]);
+    expect(dependencyBlock({ notes: [], unverified: found.unreadable })).toContain("manifest package-lock.json: no verificado (not verified: zero could not read");
   });
 
   it("makes no request when no manifest changed", async () => {
     const copy = changed({ "package.json": `{"dependencies":{}}` }, { "src/index.ts": "export {};\n" });
-    const items = newNpmDependencies(copy);
+    const items = newNpmDependencies(copy).items;
     const f = fakeFetch();
     expect(items).toEqual([]);
     expect(await checkDependencies({ fetch: f.fetch, now: NOW }, items)).toMatchObject({ ok: true, unverified: [] });
@@ -92,7 +108,7 @@ describe("new npm dependencies against the base", () => {
 
   it("looks a name added to package.json up on deps.dev when there is no lock", async () => {
     const copy = changed({ "package.json": `{"dependencies":{"left-pad":"^1.3.0"}}` }, { "package.json": `{"dependencies":{"left-pad":"^1.3.0","foo":"^1.0.0"}}` });
-    const items = newNpmDependencies(copy);
+    const items = newNpmDependencies(copy).items;
     expect(items).toEqual([{ name: "foo" }]);
     const f = fakeFetch({ packages: { foo: [{ version: "1.0.0" }, { version: "1.1.0" }] } });
     expect(await checkDependencies({ fetch: f.fetch, now: NOW }, items)).toMatchObject({ ok: true, notes: [] });
@@ -115,7 +131,7 @@ describe("new npm dependencies against the base", () => {
         }),
       },
     );
-    const items = newNpmDependencies(copy);
+    const items = newNpmDependencies(copy).items;
     expect(items).toEqual([{ name: "real-dev" }]);
     const f = fakeFetch({ packages: { "real-dev": [{ version: "1.0.0" }, { version: "2.0.0" }] } });
     await checkDependencies({ fetch: f.fetch, now: NOW }, items);
@@ -155,7 +171,7 @@ describe("dependency check against OSV and deps.dev", () => {
 
   it("fails on an invalid name without asking about it, and cleans it", async () => {
     const copy = changed({}, { "package-lock.json": lock({ "node_modules/x": { ...registry("x", "1.0.0"), name: "../../etc\u001b[31m" } }) });
-    const items = newNpmDependencies(copy);
+    const items = newNpmDependencies(copy).items;
     const f = fakeFetch();
     const r = await checkDependencies({ fetch: f.fetch, now: NOW }, items);
     expect(r.ok).toBe(false);
