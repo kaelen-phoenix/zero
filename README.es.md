@@ -278,6 +278,22 @@ zero informe tienda --mes 2026-10 --html    # guarda un documento HTML autónomo
 - La pestaña "Informe mensual" del panel deja elegir línea y mes y descargar cada línea en Markdown o HTML; cada descarga deja además una copia en `ZERO_HOME/reports`. En el chat, `zero_monthly_report` devuelve el mismo Markdown y solo lee.
 - Nada se envía solo: ninguna pasada del daemon lo genera ni lo publica. Solo existe cuando lo pedís, y vos decidís a quién se lo das.
 
+## Simulacro de regeneración
+
+Mide si las especificaciones de una línea alcanzan para reconstruir una parte de su código. Indicás la línea, la capacidad (su spec es `openspec/specs/<capacidad>/spec.md` en la rama base) y los archivos a quitar.
+
+```sh
+zero simulacro tienda pagos --archivos "src/pagos/**"              # cap: limits.usdPerJob
+zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap for this drill
+```
+
+- Trabaja en una copia aparte en `ZERO_HOME/drills/<id>/copy`, clonada de la rama base de la línea. El repositorio de la línea solo se lee: mismas ramas, worktrees, HEAD y estado de trabajo. La copia arranca con un historial nuevo de un solo commit, así el agente no encuentra ahí los archivos quitados.
+- Los tests y todo lo que está bajo `openspec/` nunca se quitan, aunque el patrón los nombre: son contra lo que se mide lo reconstruido.
+- El `setup` de la línea corre en la copia, y después una sola llamada al agente de build reconstruye los archivos desde la spec, con tope `--usd` o, sin él, `limits.usdPerJob` (no puede ser mayor). Luego corren en la copia los comandos de `verify` de la línea, hasta 20 minutos cada uno.
+- El resultado es `alcanzan` (todos los archivos quitados volvieron, todos los comandos de verify pasaron y el agente terminó bien), `no alcanzan` (cualquier otro caso, incluido un agente que falló o llegó a su tope) o `inválido` (el agente cambió o borró un test o una especificación).
+- El informe, en castellano, queda en `ZERO_HOME/drills/<id>/informe.md`, junto a `resultado.json` con los mismos datos: línea, capacidad, commit base, archivos quitados y reconstruidos, resultado, costo, cada comando con su código de salida y el final de su salida, y lo que la spec no decía y hubo que adivinar. El comando muestra su ruta. Si `ZERO_HOME/drills` cae dentro del repositorio de una línea o del de la carpeta actual, zero se niega, igual que con los informes guardados.
+- Se niega antes de gastar nada cuando el andon está encendido o se acabó el presupuesto, y cuando la línea no tiene comandos de `verify`. En esta versión solo corre en la máquina: con `isolation: container` se niega.
+
 ## Lo que queda en tu máquina
 
 Lo que la fábrica produce trabajando nunca se versiona: informes mensuales, briefings, propuestas, notas de investigación, trazas, reportes de estaciones de paquetes, imágenes o videos para redes, exportaciones del panel, `state.db`, logs y cualquier otro archivo de `ZERO_HOME` quedan en `ZERO_HOME`, en tu máquina. Quien instala zero no se descarga nada de eso, y los informes de un proyecto nunca terminan en el repositorio de otro. Lo único que entra a un repositorio es un desarrollo para ese repositorio.
@@ -758,9 +774,9 @@ zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con
 Todo orquestador de IA parte del mismo supuesto: el código es el producto y los agentes son obreros que lo tocan. zero apunta a dar vuelta eso. **El producto es tu intención; el código es su consecuencia**, algo que la fábrica puede volver a producir cuando haga falta.
 
 - **La verdad vive en las especificaciones.** `openspec/specs/` deja de ser documentación y pasa a ser la fuente: lo que el sistema tiene que hacer, escrito como requisitos y escenarios. Vos leés y editás intenciones, en tu idioma, desde el chat, el panel o el celular; el código lo mantiene la fábrica.
-- **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, la fábrica toma un módulo, lo construye de nuevo desde cero solo a partir de su spec, en una copia aparte, y corre los mismos tests. Si el resultado se comporta distinto, la spec estaba incompleta: la fábrica propone qué escenario falta. El código viejo nunca se pisa; el simulacro solo mide y propone. Es caro en tokens, así que corre a pedido o con poca frecuencia, nunca en cada trabajo.
+- **Simulacro de regeneración.** Para demostrar que las especificaciones alcanzan, `zero simulacro` (ver [Simulacro de regeneración](#simulacro-de-regeneración)) toma unos archivos, los construye de nuevo solo a partir de su spec en una copia aparte y corre los mismos tests, y después informa qué no decía la spec. El código viejo nunca se pisa; el simulacro solo mide. Es caro en tokens, así que corre a pedido, nunca en cada trabajo. Lo próximo: que la fábrica proponga sola los escenarios que faltan.
 - **Lazo cerrado con el producto vivo.** Más adelante, los errores de producción, la analítica y los comentarios de los usuarios entran como pedidos que nadie tuvo que escribir: intención → cambio → despliegue → observación → nueva intención.
 
 ## Próximas etapas
 
-Simulacro de regeneración · entradas desde Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Entradas desde Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
