@@ -1,0 +1,10 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Add an OpenSpec change `openspec/changes/zero-314a1b34/` (proposal.md, tasks.md, specs/production-line/spec.md with ADDED requirements in Spanish named like the ones above) and check it with `npx openspec validate --all`.
+- [ ] 1.2 In src/engines/claude.ts add a constant `CREDIT_TEXT = "Credit balance is too low"` and an exported pure helper (for example `creditQuota(text)` returning `{ billing: "api", windows: [], limited: true }` when the text contains it). Use it in `claudeResult` for both error branches (the `errors` array and the subtype on non-success; `result.result` on `is_error`), overriding the passed quota.
+- [ ] 1.3 In the `catch` of `claudeEngine.run`, after the cancelled/timeout checks, move the thrown-error conversion into an exported pure function (for example `claudeThrown(err)`) that returns `{ ok: false, text, quota }` with the credit quota when the message matches. Unit tests call it directly, since the tests do not mock the SDK's `query`.
+- [ ] 1.4 In src/budget.ts `engineBudget`, `api` branch: if `r.limited` and `r.at + UNKNOWN_RESET_MS > now`, return `{ engine, billing: "api", paused: true, until, reason: "la clave de API se quedó sin saldo" }`; otherwise keep the daily cap check. Update the function's doc comment.
+- [ ] 1.5 Tests: in test/budget-cut.test.ts (it has the `sdkResult` helper), cover `claudeResult` with an is_error result, with an errors array, and with an unrelated error. Also cover the thrown-error helper with matching and unrelated messages. In test/budget.test.ts, cover the api pause (paused at +5 min, until = +15 min, resumed at +16 min), the daily cap still working, and the fallback replacement being reported. If test/line or runner tests already have a subscription-refusal quota test, add a fake-agent case returning the credit quota and assert that no attempt is spent.
+- [ ] 1.6 Update the `src/budget.ts` bullet in AGENTS.md to say per-use engines also pause for a short time after a refused call (out of API credit), and run `npm run typecheck` and `npm test`.
