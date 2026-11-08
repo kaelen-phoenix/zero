@@ -5,9 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANDON_KEY, requestStationRun, requestWork, type FactoryContext } from "../src/app.js";
+import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { packagesPass, stationLastKey, stationOnDemandKey } from "../src/line/packages.js";
+import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { factoryConfig } from "../src/packages.js";
@@ -224,6 +225,64 @@ describe("the daemon runs a pending request", () => {
     requestStationRun(ctx, "hello/nota");
     await runDaemon(ctx, { once: true, pollMs: 5, packages: true, panel: false, agentRunner: () => fakeAgents({}).runner });
     expect(calls()).toContain(JSON.stringify({ onDemand: true }));
+  });
+});
+
+describe("seeing a pending request", () => {
+  const at = new Date(2026, 10, 7, 10, 5);
+  const now = new Date(2026, 10, 7, 12, 0);
+
+  it("packageList carries the request time and leaves the kv as it was", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    expect(requestStationRun(ctx, "hello/nota", at)).toMatchObject({ ok: true });
+    const stored = ctx.store.getKv(key)!;
+    expect(packageList(ctx).packages[0]!.stations[0]!.onDemandPendingSince).toBe(stored);
+    expect(ctx.store.getKv(key)).toBe(stored);
+  });
+
+  it("packageList has no field without a request", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    expect(packageList(ctx).packages[0]!.stations[0]!.onDemandPendingSince).toBeUndefined();
+  });
+
+  it("packageList ignores a stray key on a station without onDemand", async () => {
+    const ctx = await factory(stationPackage().dir);
+    ctx.store.setKv(key, at.toISOString());
+    expect(packageList(ctx).packages[0]!.stations[0]!.onDemandPendingSince).toBeUndefined();
+    expect(factoryStatus(ctx).onDemand).toEqual([]);
+  });
+
+  it("zero package list shows HH:MM for a same-day request and leaves other stations as before", () => {
+    const list: PackageList = {
+      problems: [],
+      packages: [{ name: "hello", version: "1.0.0", dir: "/p", agents: [], skills: [], source: "path", origin: "/p", allowCode: true, stations: [
+        { name: "nota", allowed: true, missingSecrets: [], onDemandPendingSince: at.toISOString() },
+        { name: "otra", allowed: true, missingSecrets: [] },
+      ] }],
+    };
+    const lines = formatPackages(list, now).split("\n");
+    expect(lines.find((l) => l.startsWith("- estación nota:"))).toContain("corrida a demanda pendiente desde 10:05");
+    expect(lines.find((l) => l.startsWith("- estación otra:"))).toBe("- estación otra: todavía no corrió");
+  });
+
+  it("zero status lists the pending run in one line outside the box filter", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    requestStationRun(ctx, "hello/nota", at);
+    const stored = ctx.store.getKv(key)!;
+    const status = factoryStatus(ctx);
+    expect(status.onDemand).toEqual([{ station: "hello/nota", since: stored }]);
+    expect(ctx.store.getKv(key)).toBe(stored);
+    const lines = formatStatus(status, now).split("\n").filter((l) => l.startsWith("Corridas a demanda pendientes: "));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("hello/nota (desde 10:05)");
+    expect(lines[0]!.startsWith("Caja") || lines[0]!.startsWith("Fábrica") || lines[0]!.startsWith("  ")).toBe(false);
+  });
+
+  it("zero status has no line with nothing pending", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const status = factoryStatus(ctx);
+    expect(status.onDemand).toEqual([]);
+    expect(formatStatus(status, now)).not.toContain("Corridas a demanda pendientes");
   });
 });
 

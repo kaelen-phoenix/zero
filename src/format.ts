@@ -125,7 +125,7 @@ export function formatAgents(lists: LineAgentList[]): string {
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
-export function formatPackages(l: PackageList): string {
+export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
   const short = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
@@ -138,7 +138,7 @@ export function formatPackages(l: PackageList): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}`);
+      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -206,6 +206,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
