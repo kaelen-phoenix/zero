@@ -269,6 +269,8 @@ export interface FactoryStatus {
   skills: SkillProblem[];
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
+  /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
+  onDemand: { station: string; since: string }[];
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -302,6 +304,10 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
     packages: ctx.config.loadedPackages?.problems ?? [],
+    onDemand: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+      const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
+      return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
+    }),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -1143,6 +1149,8 @@ export interface PackageStationView {
   /** Declared secrets not saved yet, by name; the pass waits for them. */
   missingSecrets: string[];
   lastRun?: string;
+  /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
+  onDemandPendingSince?: string;
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
@@ -1186,11 +1194,13 @@ export function packageList(ctx: FactoryContext): PackageList {
         allowCode: p.entry.allowCode,
         stations: p.stations.map((name) => {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
+          const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
           return {
             name,
             allowed: Boolean(station),
             missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
+            ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
           };
         }),
       };
