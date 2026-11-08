@@ -137,12 +137,15 @@ function customAgentChains(config: BudgetConfig): ChainLink[][] {
 /**
  * Where one engine stands. A subscription waits while one of its windows is
  * used up (or past the owner's reserve) or after it refused a call; per-use
- * billing waits once that engine's own spend today reaches the daily dollar cap.
+ * billing waits a little after its key ran out of credit, and once that
+ * engine's own spend today reaches the daily dollar cap.
  */
 function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[]): EngineBudget {
   const r = all.get(engine);
   if (!r) return { engine, billing: "unknown", paused: false };
   if (r.billing === "api") {
+    const until = new Date(r.at.getTime() + UNKNOWN_RESET_MS);
+    if (r.limited && until > now) return { engine, billing: "api", paused: true, until: until.toISOString(), reason: "la clave de API se quedó sin saldo" };
     return dailyBudgetReached(billedToday(store, all, now, engine), config.limits.usdPerDay)
       ? { engine, billing: "api", paused: true, reason: "se alcanzó el límite de gasto del día" }
       : { engine, billing: "api", paused: false };
