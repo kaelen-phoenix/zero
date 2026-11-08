@@ -350,7 +350,7 @@ describe("operation output", () => {
   it("recognizes the shapes by name and folder, in any case", () => {
     const paths = [
       "plus-media/a.txt", "x/plus-cleanup/b.json", "reports/2026-10.html", "docs/Informes/oct.pdf", "informe-tienda-2026-10.md", ".zero/townhall/a.md", "zero.factory.yaml", "sub/App.LOG",
-      "state.db", "a/state.db-wal", "a.db-shm", "a.db-journal", "a.sqlite", "a.SQLITE3", "daemon.lock", "x/secrets.enc", ".zero/worktrees/a", ".zero/jobs/b", ".zero/gate/c", ".zero/bin/d", ".zero/packages/e", ".zero/reports/f",
+      "state.db", "a/state.db-wal", "a.db-shm", "a.db-journal", "a.sqlite", "a.SQLITE3", "daemon.lock", "x/secrets.enc", ".zero/worktrees/a", ".zero/jobs/b", ".zero/gate/c", ".zero/bin/d", ".zero/packages/e", ".zero/reports/f", ".zero/drills/f",
       "report/a.csv", "informe/a.xlsx", "reports/deep/a.txt", "reports/a.xml", "reports/a.htm", "reports/a.json", "reports/a.md", "briefing-2026.pdf", "x/BRIEFING-lunes.html",
     ];
     expect(flagged(paths)).toEqual(paths);
@@ -358,6 +358,57 @@ describe("operation output", () => {
 
   it("leaves code with similar names alone", () => {
     expect(flagged(["src/reports/table.ts", "src/townhall/x.ts", "packages/a/index.ts", "jobs/run.ts", "src/report.ts", "plus-icon.tsx", ".zero/agents/a.md", "informe.md", "src/briefing.ts", "dblog.ts"])).toEqual([]);
+  });
+
+  const reasons = (paths: string[], opts: { allowed?: string[] } = {}) =>
+    Object.fromEntries(operationArtifacts(added(...paths), { allowed: opts.allowed ?? [], referenced: () => false }).map((a) => [a.path, a.why]));
+
+  it("treats the drills folder of ZERO_HOME like the others", () => {
+    expect(reasons([".zero/drills/abc/informe.md", "x/.ZERO/Drills/abc/copy/src/a.ts"])).toEqual({
+      ".zero/drills/abc/informe.md": "carpeta de ZERO_HOME",
+      "x/.ZERO/Drills/abc/copy/src/a.ts": "carpeta de ZERO_HOME",
+    });
+  });
+
+  it("flags a whole drill copied into the change", () => {
+    const paths = ["drills/a1b2/informe.md", "drills/a1b2/resultado.json", "drills/a1b2/copy/src/app.ts", "drills/a1b2/copy/package.json"];
+    const r = reasons(paths);
+    expect(Object.keys(r)).toEqual(paths);
+    expect(r["drills/a1b2/copy/src/app.ts"]).toBe("simulacro de regeneración");
+  });
+
+  it("flags a drill folder holding only its result", () => {
+    expect(reasons(["ops/drills/x9/resultado.json", "ops/drills/x9/copy/README.md"])).toEqual({
+      "ops/drills/x9/resultado.json": "simulacro de regeneración",
+      "ops/drills/x9/copy/README.md": "simulacro de regeneración",
+    });
+  });
+
+  it("leaves a drills folder without a drill's output alone", () => {
+    expect(flagged(["src/drills/index.ts", "drills/a1b2/notes.md"])).toEqual([]);
+  });
+
+  it("flags the report and result pair in the same folder, anywhere", () => {
+    expect(reasons(["docs/Informe.md", "docs/resultado.json"])).toEqual({ "docs/Informe.md": "simulacro de regeneración", "docs/resultado.json": "simulacro de regeneración" });
+    expect(flagged(["informe.md", "RESULTADO.json"])).toEqual(["informe.md", "RESULTADO.json"]);
+    expect(flagged(["a/informe.md", "b/resultado.json"])).toEqual([]);
+  });
+
+  it("leaves a loose report or result alone", () => {
+    expect(flagged(["informe.md", "docs/resultado.json"])).toEqual([]);
+  });
+
+  it("lets the line allow a drill's output, still counting allowed files to find it", () => {
+    expect(flagged(["docs/informe.md", "docs/resultado.json"], { allowed: ["docs/*"] })).toEqual([]);
+    expect(flagged(["drills/a1b2/informe.md", "drills/a1b2/copy/a.ts"], { allowed: ["drills/*/informe.md"] })).toEqual(["drills/a1b2/copy/a.ts"]);
+  });
+
+  it("fails a drill's output before running the line's commands", async () => {
+    const v = await verifying({ "drills/a1b2/informe.md": "# informe\n", "drills/a1b2/resultado.json": "{}\n" });
+    expect(v.result).toMatchObject({ ok: false, kind: "failed" });
+    expect(v.feedback).toContain("drills/a1b2/resultado.json");
+    expect(v.feedback).toContain("simulacro de regeneración");
+    expect(v.ran).toBe(false);
   });
 
   it("looks only at added files", () => {
