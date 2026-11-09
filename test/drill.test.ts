@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANDON_KEY, regenerationDrill } from "../src/app.js";
 import { factoryHome } from "../src/home.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory } from "./helpers.js";
@@ -110,7 +110,7 @@ describe("regeneration drill", () => {
         return rebuild()(req);
       },
     });
-    const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: agents.runner, cwd: away() });
+    const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"], keep: true }, { runAgent: agents.runner, cwd: away() });
     const copy = agents.calls[0]!.cwd;
     expect(setupFirst).toBe(true);
     expect(existsSync(join(copy, "verify.mark"))).toBe(true);
@@ -181,6 +181,63 @@ describe("regeneration drill", () => {
     expect(gitIn(repo, "status", "--porcelain")).toBe("");
   });
 
+  describe("working copy", () => {
+    const copyOf = (ctx: ReturnType<typeof factory>["ctx"], id: string) => join(ctx.home.drills, id, "copy");
+    const json = (ctx: ReturnType<typeof factory>["ctx"], id: string) => JSON.parse(readFileSync(join(ctx.home.drills, id, "resultado.json"), "utf8"));
+
+    it("is deleted at the end, leaving only the report and its JSON", async () => {
+      const { ctx } = factory();
+      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: rebuild() }).runner, cwd: away() });
+      expect(r.outcome).toBe("alcanzan");
+      expect(r.copyKept).toBe(false);
+      expect(existsSync(copyOf(ctx, r.id))).toBe(false);
+      const report = readFileSync(r.report, "utf8");
+      expect(report).toContain("alcanzan");
+      expect(report).toMatch(/Copia de trabajo:.*borr/);
+      expect(json(ctx, r.id)).toMatchObject({ outcome: "alcanzan", copyKept: false });
+    });
+
+    it("is deleted even when the agent fails", async () => {
+      const { ctx } = factory();
+      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: (req) => ({ ...rebuild()(req), ok: false, text: "no pude" }) }).runner, cwd: away() });
+      expect(r.outcome).toBe("no alcanzan");
+      expect(existsSync(r.report)).toBe(true);
+      expect(existsSync(copyOf(ctx, r.id))).toBe(false);
+    });
+
+    it("stays whole with keep, and the report names its path", async () => {
+      const mark = `node -e "require('fs').writeFileSync('verify.mark','x')"`;
+      const { ctx } = factory({}, { verify: [mark, VERIFY] });
+      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"], keep: true }, { runAgent: fakeAgents({ build: rebuild() }).runner, cwd: away() });
+      const copy = copyOf(ctx, r.id);
+      expect(r.copyKept).toBe(true);
+      expect(existsSync(join(copy, "verify.mark"))).toBe(true);
+      expect(readFileSync(join(copy, "src", "mod.ts"), "utf8")).toBe(MOD);
+      const report = readFileSync(r.report, "utf8");
+      expect(report).toContain("Copia de trabajo:");
+      expect(report).toContain(copy);
+      expect(json(ctx, r.id).copyKept).toBe(true);
+    });
+
+    it("a failed deletion leaves the result as it was and is only logged as a warning", async () => {
+      const { ctx } = factory();
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const removeCopy = async () => {
+          throw new Error("EBUSY");
+        };
+        const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: rebuild() }).runner, removeCopy, cwd: away() });
+        expect(r.outcome).toBe("alcanzan");
+        expect(existsSync(r.report)).toBe(true);
+        expect(json(ctx, r.id).outcome).toBe("alcanzan");
+        const lines = errors.mock.calls.map((c) => String(c[0]));
+        expect(lines.some((l) => l.includes('"level":"warn"') && l.includes(JSON.stringify(copyOf(ctx, r.id)).slice(1, -1)) && l.includes("EBUSY"))).toBe(true);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+  });
+
   it("refuses when ZERO_HOME is inside the line's repository, without calling the agent", async () => {
     const { ctx, repo } = factory();
     const inside = { ...ctx, home: factoryHome(join(repo, "sub", "home")) };
@@ -219,7 +276,9 @@ describe("regeneration drill documentation", () => {
   it("is in both READMEs and in the CLI help, and out of the next steps", () => {
     expect(read("README.md")).toContain("zero simulacro");
     expect(read("README.es.md")).toContain("zero simulacro");
-    expect(read("src/cli.ts")).toMatch(/^  zero simulacro <línea> <capacidad> --archivos <patrón>\.\.\. \[--usd N\]$/m);
+    expect(read("src/cli.ts")).toMatch(/^  zero simulacro <línea> <capacidad> --archivos <patrón>\.\.\. \[--usd N\] \[--conservar\]$/m);
+    expect(read("README.md")).toContain("--conservar");
+    expect(read("README.es.md")).toContain("--conservar");
     expect(after(read("README.md"), "## Next steps")).not.toContain("Regeneration drill");
     expect(after(read("README.es.md"), "## Próximas etapas")).not.toContain("Simulacro de regeneración");
   });
