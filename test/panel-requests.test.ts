@@ -5,7 +5,7 @@ import { requestsView, requestWork } from "../src/app.js";
 import { askOwner } from "../src/line/finish.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
-import { cleanup, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, tempDir, testFactory } from "./helpers.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 async function panel() {
-  const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "tienda", repo: gitRepo() }, { name: "blog", repo: gitRepo() }] });
+  const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "tienda", repo: tempDir() }, { name: "blog", repo: tempDir() }] });
   const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets) });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -37,7 +37,7 @@ const rowOf = (html: string, id: string) => {
 
 describe("typed requests", () => {
   it("composes title, type and description into the request", () => {
-    const ctx = testFactory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
     const { job } = requestWork(ctx, { type: "fix", title: " Botón roto ", description: " El botón de pagar no responde ", line: "tienda" });
     expect(ctx.store.listJobs()).toHaveLength(1);
     expect(job).toMatchObject({ line: "tienda", status: "queued", request: "Botón roto\n\nTipo de pedido: arreglo\n\nEl botón de pagar no responde" });
@@ -45,21 +45,21 @@ describe("typed requests", () => {
   });
 
   it("refuses an unknown type or an empty title and creates nothing", () => {
-    const ctx = testFactory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
     expect(() => requestWork(ctx, { type: "x", title: "algo" })).toThrow(/Tipo de pedido desconocido/);
     expect(() => requestWork(ctx, { type: "feature", title: " " })).toThrow(/título/);
     expect(ctx.store.listJobs()).toHaveLength(0);
   });
 
   it("keeps plain requests as they were", () => {
-    const ctx = testFactory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
     expect(requestWork(ctx, { text: "agregá un descuento" }).job.request).toBe("agregá un descuento");
   });
 });
 
 describe("requests view", () => {
   it("tells each job's age relative to now", () => {
-    const ctx = testFactory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
     const { job } = requestWork(ctx, { text: "x" });
     const at = new Date(job.createdAt).getTime();
     const age = (ms: number) => requestsView(ctx, {}, new Date(at + ms)).rows[0]!.age;
@@ -69,7 +69,7 @@ describe("requests view", () => {
   });
 
   it("reads every job, not only the store's first 1000", () => {
-    const ctx = testFactory({ lines: [{ name: "tienda", repo: gitRepo() }] });
+    const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
     for (let i = 0; i < 1001; i++) ctx.store.createJob({ line: "tienda", kind: "request", request: `pedido ${i}`, budgetUsd: 1 });
     const view = requestsView(ctx);
     expect(view.rows).toHaveLength(200);
