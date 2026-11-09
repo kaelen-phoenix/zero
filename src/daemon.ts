@@ -16,6 +16,7 @@ import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
 import { factoryConfig } from "./packages.js";
+import { effectivePriority, priorityRank } from "./priority.js";
 import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
@@ -348,13 +349,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
-        for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
+        const at = now();
+        const queued = ownerFirst(store.listJobs({ status: ["queued"] }), at);
+        for (const job of queued) {
           if (job.stopRequested) {
             await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
-          // The night shift's own jobs and the packages' never go ahead of other work: one at a time, and only while no other job is queued or running.
-          if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
+          const level = effectivePriority(job, at);
+          // Low priority (by default the night shift's own jobs and the packages') never goes ahead of other work: one at a time, and only while nothing else is queued or running.
+          if (level === "baja" && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || priorityRank(effectivePriority(j, at)) > priorityRank(level)))) continue;
+          // At most one urgent job runs at a time; the next one waits without holding other lines back.
+          if (level === "urgente" && [...running.keys()].some((id) => { const r = store.getJob(id); return r !== undefined && effectivePriority(r, at) === "urgente"; })) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
@@ -428,12 +434,13 @@ export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder:
   return runHere(engine, req, trace, station);
 };
 
-/** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
-const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";
-
-/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own and the packages' after. */
-export function ownerFirst(jobs: Job[]): Job[] {
-  return [...jobs.filter((j) => !lowPriority(j)), ...jobs.filter(lowPriority)];
+/** Queued jobs in the order the daemon considers them: highest effective priority first, the oldest first within one (stable on ties). */
+export function ownerFirst(jobs: Job[], now: Date = new Date()): Job[] {
+  const created = (j: Job) => (j.createdAt ? Date.parse(j.createdAt) || 0 : 0);
+  return jobs
+    .map((job, i) => ({ job, i, rank: priorityRank(effectivePriority(job, now)) }))
+    .sort((a, b) => b.rank - a.rank || created(a.job) - created(b.job) || a.i - b.i)
+    .map((e) => e.job);
 }
 
 /** Questions nobody answered in time get their default answer. */

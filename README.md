@@ -154,6 +154,24 @@ docker compose -f compose.yaml -f docker/compose.box.yaml up -d
 
 This installation is not exercised end to end by zero's tests, which only check these files: the image, the CLI logins and the box through the socket have not been run by them. See [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
 
+## Job priorities
+
+Every job has a priority: `baja` (low), `media` (medium, the default), `alta` (high) or `urgente` (urgent). The factory always takes the highest priority first and, within the same one, the oldest job.
+
+- **baja**: only when nothing else is queued or running. The night shift's own jobs and the ones a package asks for start here.
+- **media**: in order of arrival.
+- **alta**: goes ahead of everything queued, without stopping what is already running.
+- **urgente**: for cases like a security patch. Only you can choose it (a GitHub issue, the night shift or a package cannot), and at most one urgent job runs at a time. Pausing running jobs to make room for an urgent one is not there yet: it takes the next free slot.
+
+So that low work is not forgotten, a queued job goes up one level for each full day it waits, never past `alta`; `zero status` says so with `(subió por la espera)`.
+
+```sh
+zero request "patch the login vulnerability" --prioridad urgente
+zero priority <id> alta        # change it while the job has not finished
+```
+
+`zero status`, `zero status <id>` and the chat show the priority; `zero_request` takes it as `priority`.
+
 ## GitHub issues
 
 A line can take as requests the issues of its GitHub repository that carry a label:

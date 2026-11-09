@@ -25,6 +25,7 @@ import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
+import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
@@ -195,12 +196,22 @@ export interface RequestResult {
   next: string;
 }
 
-export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"]; source?: JobSource }): RequestResult {
+const PRIORITY_NAMES = PRIORITIES.join(", ");
+
+function checkPriority(name: string): JobPriority {
+  if (!isPriority(name)) throw new Error(`No conozco la prioridad "${name}". Las prioridades son: ${PRIORITY_NAMES}.`);
+  return name;
+}
+
+export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string }): RequestResult {
   const text = input.text.trim();
   if (!text) throw new Error("El pedido está vacío.");
+  const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
+  // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
+  if (priority === "urgente" && input.source) throw new Error("Solo vos podés marcar un trabajo como urgente.");
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
-  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob, source: input.source });
+  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob, source: input.source, priority });
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
     jobId: job.id,
@@ -208,6 +219,7 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
       "zero.line": line.name,
       "zero.kind": job.kind,
       "zero.level": level.level,
+      "zero.priority": storedPriority(job),
       ...((input.source?.kind === "github-issue" || input.source?.kind === "linear-issue") && { "zero.source": input.source.url }),
       ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
       ...(input.source?.kind === "research" && { "zero.research_note": input.source.note }),
@@ -226,6 +238,14 @@ export function getJob(ctx: FactoryContext, id: string): Job {
   const job = ctx.store.getJob(id);
   if (!job) throw new Error(`No existe el trabajo ${id}.`);
   return job;
+}
+
+/** Changes the priority of a job that has not finished; the daemon orders by it on its next pass. */
+export function setPriority(ctx: FactoryContext, id: string, level: string): Job {
+  const priority = checkPriority(level);
+  const job = getJob(ctx, id);
+  if (FINAL_STATUSES.includes(job.status)) throw new Error(`El trabajo ${id} ya terminó: no se le puede cambiar la prioridad.`);
+  return ctx.store.updateJob(id, { priority });
 }
 
 export async function answer(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<Job> {
