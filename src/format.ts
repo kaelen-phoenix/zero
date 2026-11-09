@@ -4,6 +4,7 @@ import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
+import { jobStage } from "./line/spec.js";
 import type { Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
@@ -51,7 +52,9 @@ export const jobOrigin = (j: Job) => (j.source?.kind === "package" ? `pedido por
 
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
-  return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""})` : ""}`;
+  const stage = job.status === "running" ? jobStage(job) : undefined;
+  const stageText = stage ? `, etapa ${stage.n} de ${stage.total}` : "";
+  return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""}${stageText})` : stageText}`;
 }
 
 export function formatRequest(r: RequestResult): string {

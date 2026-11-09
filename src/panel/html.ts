@@ -462,7 +462,8 @@ function lineRow(r: LineRow): string {
       : final
         ? `<p class="out bad"><b>${r.status === "failed" ? "fallido" : "detenido"}</b>${r.reason ? ` · ${esc(r.reason)}` : ""}</p>`
         : "";
-  const retry = r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "";
+  const stage = r.stage && !final ? `<p class="retry muted">etapa ${r.stage.n} de ${r.stage.total} · ${esc(r.stage.title)}</p>` : "";
+  const retry = stage + (r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "");
   const inner = `<h3 data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a> <span class="muted">${esc(r.id)} · ${esc(r.line)}${r.origin ? ` · ${esc(r.origin)}` : ""}</span></h3>
 <div data-part="retry">${retry}</div>${belt(r.stations, pos, piece, flow)}<div data-part="out">${out}</div>`;
   // Lets the page's script skip rows that did not change, so finished rows stay still.

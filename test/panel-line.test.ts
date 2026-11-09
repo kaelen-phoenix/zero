@@ -123,6 +123,17 @@ const rowOf = (html: string, id: string) => {
 const states = (html: string, id: string) => Object.fromEntries(Object.entries(stations(html, id)).map(([k, v]) => [k, v.text]));
 
 describe("production line view", () => {
+  it("shows the stage a staged job is on, and nothing about stages for others", () => {
+    const ctx = factory();
+    const stages = [{ title: "Base <datos>", tasks: ["a"] }, { title: "Vista", tasks: ["b"] }, { title: "Docs", tasks: ["c"] }];
+    const staged = job(ctx, "pedido grande", { status: "running", station: "build", attempt: 1, spec: { stages }, stagesDone: 0 });
+    const plain = job(ctx, "pedido chico", { status: "running", station: "build", attempt: 1 });
+    const html = lineView(productionLine(ctx));
+    expect(rowOf(html, staged.id)).toContain("etapa 1 de 3");
+    expect(rowOf(html, staged.id)).toContain("Base &lt;datos&gt;");
+    expect(rowOf(html, plain.id)).not.toContain("etapa");
+  });
+
   it("shows a job running in build, with the stations it passed and the ones ahead", () => {
     const ctx = factory();
     const j = job(ctx, "agregá descuentos", { status: "running", station: "build", attempt: 1, title: "Descuentos" });

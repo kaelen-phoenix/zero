@@ -27,6 +27,7 @@ import {
   renderSpecDelta,
   SpecSchema,
   specProblems,
+  specStages,
   uniqueRequirementNames,
   writeFiles,
   type Spec,
@@ -530,6 +531,7 @@ async function buildLoop(
   const custom = agents.filter((a) => a.type === "review");
   // What the change itself touches: the job's spec files do not count.
   const changedCode = () => copy.changedFiles().map((f) => f.path).filter((p) => !p.startsWith(specFiles));
+  const stages = specStages(spec);
 
   for (;;) {
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
@@ -539,10 +541,15 @@ async function buildLoop(
     const resumingCustom = job.attempt > 0 ? custom.findIndex((a) => a.name === job.station) : -1;
     const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security" || resumingWriter >= 0 || resumingCustom >= 0);
     const attempt = resuming ? job.attempt : job.attempt + 1;
+    // A staged spec is built one stage at a time; the earlier ones are committed and verified.
+    const stageNo = Math.min((job.stagesDone ?? 0) + 1, stages.length);
+    const stage = stages[stageNo - 1];
+    const stageText = stage && [`## Stage ${stageNo} of ${stages.length}: ${stage.title}`, ...stage.tasks.map((t) => `- ${t}`), stageNo > 1 ? `Stages 1 to ${stageNo - 1} are already committed and verified: build only this stage, on top of them.` : "Build only this stage; the next ones come later."].join("\n");
     const flagged = await egressStop(deps, jobId, level);
     if (flagged) return flagged;
     if (attempt > line.maxAttempts) {
-      return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
+      const which = stage ? ` de la etapa ${stageNo} de ${stages.length} (${stage.title})` : "";
+      return finalizeJob(deps, job, "failed", { reason: `Se agotaron los ${line.maxAttempts} intentos${which}. Último problema:\n${job.feedback ?? "(sin detalle)"}` });
     }
     // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
     // An attempt that starts with less than a small share of the cap would only be cut short by it.
@@ -574,6 +581,7 @@ async function buildLoop(
               requestBlock(job),
               `## Specification (the contract)\n${contract}`,
               memory,
+              stageText,
               job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
               `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
             ]
@@ -608,7 +616,7 @@ async function buildLoop(
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
         continue;
       }
-      copy.commitAll(withTrailer(`zero(${jobId}): intento ${attempt}`, lineSignature(config, line)));
+      copy.commitAll(withTrailer(`zero(${jobId}): ${stage ? `etapa ${stageNo} de ${stages.length}, ` : ""}intento ${attempt}`, lineSignature(config, line)));
       if (!changedCode().length) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
         continue;
@@ -650,6 +658,7 @@ async function buildLoop(
                 requestBlock(job),
                 `## Specification (the contract)\n${contract}`,
                 memory,
+                stageText,
                 job.feedback && `## Feedback from the previous attempt\n${job.feedback}`,
                 `You are this project's own "${station}" agent. The change so far is committed: see it with \`git diff ${copy.base}...HEAD\`. Do only what your instructions cover, on top of it, and leave your changes uncommitted: zero commits them. Never commit, push, change branches, or touch credentials or CI configuration. If this change needs nothing from you, change nothing.`,
               ]
@@ -728,6 +737,12 @@ async function buildLoop(
     }
     if (!verified.ok) {
       failAttempt(verified.feedback);
+      continue;
+    }
+    if (stage && stageNo < stages.length) {
+      // A verified stage is kept: its commits stay, and the next stage starts with fresh attempts.
+      store.updateJob(jobId, { stagesDone: stageNo, attempt: 0, feedback: null, station: "build" });
+      attemptSpan.end("ok", { "zero.stage": stageNo });
       continue;
     }
 

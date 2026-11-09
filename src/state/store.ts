@@ -113,6 +113,8 @@ export interface Job {
   createdAt: string;
   updatedAt: string;
   finishedAt?: string;
+  /** For a spec with stages: how many have passed verify, in order. Their work is committed and never built again. */
+  stagesDone?: number;
 }
 
 export interface SpanRow {
@@ -332,6 +334,7 @@ function toJob(r: Row): Job {
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
     finishedAt: str(r.finished_at),
+    ...(r.stages_done != null && { stagesDone: Number(r.stages_done) }),
   };
 }
 
@@ -416,7 +419,7 @@ const COLUMNS: Record<string, string> = {
   status: "status", station: "station", checkpoint: "checkpoint", attempt: "attempt", title: "title",
   spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", feedback: "feedback", costUsd: "cost_usd",
   budgetUsd: "budget_usd", question: "question", approvals: "approvals", delivery: "delivery",
-  reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at",
+  reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at", stagesDone: "stages_done",
 };
 const JSON_FIELDS = new Set(["spec", "question", "approvals", "delivery", "source"]);
 
@@ -443,6 +446,7 @@ export class Store {
   private migrate() {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
     for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
+    if (!columns.has("stages_done")) this.db.exec("ALTER TABLE jobs ADD COLUMN stages_done INTEGER");
     const proposalColumns = new Set((this.db.prepare("PRAGMA table_info(proposals)").all() as Row[]).map((c) => String(c.name)));
     for (const [column, type] of [
       ["issue_number", "INTEGER"],
