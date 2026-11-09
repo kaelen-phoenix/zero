@@ -70,7 +70,9 @@ describe("requests view", () => {
 
   it("reads every job, not only the store's first 1000", () => {
     const ctx = testFactory({ lines: [{ name: "tienda", repo: tempDir() }] });
-    for (let i = 0; i < 1001; i++) ctx.store.createJob({ line: "tienda", kind: "request", request: `pedido ${i}`, budgetUsd: 1 });
+    ctx.store.transaction(() => {
+      for (let i = 0; i < 1001; i++) ctx.store.createJob({ line: "tienda", kind: "request", request: `pedido ${i}`, budgetUsd: 1 });
+    });
     const view = requestsView(ctx);
     expect(view.rows).toHaveLength(200);
     expect(view.rows[0]!.job.request).toBe("pedido 1000");
