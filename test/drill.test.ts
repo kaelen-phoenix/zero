@@ -117,6 +117,14 @@ describe("regeneration drill", () => {
     expect(existsSync(join(repo, "setup.mark"))).toBe(false);
     expect(existsSync(join(repo, "verify.mark"))).toBe(false);
     expect(r.verify.map((c) => c.code)).toEqual([0, 0]);
+    // With keep the copy stays whole and the report names it.
+    expect(copy).toBe(join(ctx.home.drills, r.id, "copy"));
+    expect(r.copyKept).toBe(true);
+    expect(readFileSync(join(copy, "src", "mod.ts"), "utf8")).toBe(MOD);
+    const report = readFileSync(r.report, "utf8");
+    expect(report).toContain("Copia de trabajo:");
+    expect(report).toContain(copy);
+    expect(JSON.parse(readFileSync(join(ctx.home.drills, r.id, "resultado.json"), "utf8")).copyKept).toBe(true);
   });
 
   it("says the specifications are enough when the file comes back and verify passes", async () => {
@@ -150,6 +158,7 @@ describe("regeneration drill", () => {
       const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: (req) => ({ ...rebuild()(req), ...over }) }).runner, cwd: away() });
       expect(r.outcome).toBe("no alcanzan");
       expect(existsSync(r.report)).toBe(true);
+      expect(existsSync(join(ctx.home.drills, r.id, "copy"))).toBe(false);
     }
   });
 
@@ -179,45 +188,15 @@ describe("regeneration drill", () => {
     expect(json.outcome).toBe("alcanzan");
     expect(json.missing).toEqual(["el formato de fecha"]);
     expect(gitIn(repo, "status", "--porcelain")).toBe("");
+    // Only the report and its JSON stay: the copy is deleted at the end.
+    expect(existsSync(join(ctx.home.drills, r.id, "copy"))).toBe(false);
+    expect(report).toMatch(/Copia de trabajo:.*borr/);
+    expect(json).toMatchObject({ outcome: "alcanzan", copyKept: false });
   });
 
   describe("working copy", () => {
     const copyOf = (ctx: ReturnType<typeof factory>["ctx"], id: string) => join(ctx.home.drills, id, "copy");
     const json = (ctx: ReturnType<typeof factory>["ctx"], id: string) => JSON.parse(readFileSync(join(ctx.home.drills, id, "resultado.json"), "utf8"));
-
-    it("is deleted at the end, leaving only the report and its JSON", async () => {
-      const { ctx } = factory();
-      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: rebuild() }).runner, cwd: away() });
-      expect(r.outcome).toBe("alcanzan");
-      expect(r.copyKept).toBe(false);
-      expect(existsSync(copyOf(ctx, r.id))).toBe(false);
-      const report = readFileSync(r.report, "utf8");
-      expect(report).toContain("alcanzan");
-      expect(report).toMatch(/Copia de trabajo:.*borr/);
-      expect(json(ctx, r.id)).toMatchObject({ outcome: "alcanzan", copyKept: false });
-    });
-
-    it("is deleted even when the agent fails", async () => {
-      const { ctx } = factory();
-      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build: (req) => ({ ...rebuild()(req), ok: false, text: "no pude" }) }).runner, cwd: away() });
-      expect(r.outcome).toBe("no alcanzan");
-      expect(existsSync(r.report)).toBe(true);
-      expect(existsSync(copyOf(ctx, r.id))).toBe(false);
-    });
-
-    it("stays whole with keep, and the report names its path", async () => {
-      const mark = `node -e "require('fs').writeFileSync('verify.mark','x')"`;
-      const { ctx } = factory({}, { verify: [mark, VERIFY] });
-      const r = await regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"], keep: true }, { runAgent: fakeAgents({ build: rebuild() }).runner, cwd: away() });
-      const copy = copyOf(ctx, r.id);
-      expect(r.copyKept).toBe(true);
-      expect(existsSync(join(copy, "verify.mark"))).toBe(true);
-      expect(readFileSync(join(copy, "src", "mod.ts"), "utf8")).toBe(MOD);
-      const report = readFileSync(r.report, "utf8");
-      expect(report).toContain("Copia de trabajo:");
-      expect(report).toContain(copy);
-      expect(json(ctx, r.id).copyKept).toBe(true);
-    });
 
     it("a failed deletion leaves the result as it was and is only logged as a warning", async () => {
       const { ctx } = factory();
