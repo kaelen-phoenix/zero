@@ -238,7 +238,7 @@ Con `checkDependencies: true` en una línea, después de la verificación y ante
 
 Con la fábrica en marcha, el panel muestra:
 - el estado de la fábrica;
-- los trabajos;
+- los pedidos (pestaña "Pedidos"): un formulario con línea, tipo (función nueva, arreglo, seguridad, diseño, documentación u otro; el tipo le llega a la fábrica dentro del pedido), título y descripción, y debajo todos los pedidos con su estado, línea y antigüedad, filtros por línea y estado, y en cada pedido un enlace a su detalle y traza, los botones para responder su pregunta pendiente y un botón para frenarlo (pide confirmación antes);
 - las preguntas, con botones para aprobar o rechazar;
 - la traza de cada trabajo;
 - las salidas a internet y el informe;

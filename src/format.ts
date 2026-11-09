@@ -49,6 +49,15 @@ export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.requ
 /** Who asked for a job, only when a package's station did. */
 export const jobOrigin = (j: Job) => (j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : undefined);
 
+/** How long ago something happened: "hace 5 min", "hace 3 h", "hace 2 días". */
+export function ageText(at: string, now = new Date()): string {
+  const min = Math.max(0, Math.floor((now.getTime() - new Date(at).getTime()) / 60_000));
+  if (min < 60) return `hace ${min} min`;
+  if (min < 24 * 60) return `hace ${Math.floor(min / 60)} h`;
+  const days = Math.floor(min / (24 * 60));
+  return `hace ${days} ${days === 1 ? "día" : "días"}`;
+}
+
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
   return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""})` : ""}`;
