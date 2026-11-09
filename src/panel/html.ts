@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
+import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, MonitorPeriod, MonitorView, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
+import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { reportSection, type MonthlyReport } from "../report.js";
 import { FINAL_STATUSES, type Job, type ResearchNote } from "../state/store.js";
@@ -83,6 +84,12 @@ ol.route li span { display:block; font-size:.88rem; color:var(--muted); }
 .badge { display:inline-block; font-size:.8rem; padding:1px 8px; border-radius:9px; border:1px solid currentColor; }
 details.ins summary { cursor:pointer; color:var(--accent); margin-top:8px; }
 @media (max-width: 600px) { ol.route { flex-direction:column; gap:22px; } ol.route li { flex-basis:auto; } ol.route li:not(:last-child)::after { content:"↓"; right:auto; left:50%; top:auto; bottom:-21px; transform:none; } }
+.monitor { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin:0 0 14px; } .monitor .card { margin:0; }
+.monitor .big { display:block; font-size:2rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+.monitor .wide { grid-column:1 / -1; } .monitor svg { width:100%; height:auto; display:block; }
+.gauges { display:flex; flex-wrap:wrap; gap:10px; } figure.gauge { margin:0; width:110px; text-align:center; font-size:.85rem; color:var(--muted); } figure.gauge svg { color:var(--text); }
+.periods a { margin-right:10px; } .periods a[aria-current] { font-weight:700; text-decoration:none; }
+@media (max-width: 600px) { .monitor { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 `;
 
@@ -95,7 +102,7 @@ const REFRESH = `setInterval(() => {
 }, 15000);`;
 
 export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
+  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/monitor">Monitor</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body><header><strong>zero</strong>${nav}</header><main>
@@ -731,5 +738,55 @@ ${lineAgentItems(l.agents)}</ul></div>`,
     `<div class="card"><h1>Agentes</h1><p class="muted">Cada paso de la línea lo hace un agente con sus propias instrucciones y límites. Los límites los controla la fábrica, no el agente.</p></div>
 ${agents}<h2>Líneas</h2>${lines}`,
     { nonce },
+  );
+}
+
+/** "45 s", "3 min", "1 h 5 min". */
+function duration(ms: number | undefined): string {
+  if (ms === undefined) return "sin dato";
+  if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
+  const minutes = Math.round(ms / 60_000);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+const percent = (rate: number | undefined) => (rate === undefined ? "sin dato" : `${Math.round(rate * 100)} %`);
+const PERIODS: [MonitorPeriod, string][] = [["hoy", "Hoy"], ["7", "7 días"], ["30", "30 días"]];
+const stat = (label: string, value: string | number) => `<div class="card stat"><span class="muted">${esc(label)}</span><b class="big">${esc(value)}</b></div>`;
+
+/** The "Monitor" tab: a read-only cockpit of the factory, its agents and its lines, drawn in inline SVG. */
+export function monitorPage(view: MonitorView, nonce: string): string {
+  const periods = `<p class="periods">${PERIODS.map(([p, label]) => `<a href="/monitor?periodo=${p}"${p === view.period ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</p>`;
+  const totals = `<div class="monitor">
+${stat("Trabajos creados", view.created)}${stat("Entregados", view.delivered)}${stat("Fallidos", view.failed)}${stat("Detenidos", view.stopped)}
+${stat("En cola", view.queued)}${stat("En curso", view.running)}
+<div class="card"><span class="muted">Tasa de éxito</span>${gauge(view.successRate === undefined ? undefined : view.successRate * 100, "entregados sobre terminados")}</div>
+${stat("Tiempo promedio por trabajo", duration(view.avgJobMs))}${stat("Intentos por trabajo", view.avgAttempts === undefined ? "sin dato" : Number(view.avgAttempts.toFixed(1)))}
+${stat("Tokens", view.tokens === undefined ? "sin dato" : view.tokens.toLocaleString("es-AR"))}
+<div class="card wide"><h3>Trabajos por día</h3>${lineChart(view.days.map((d) => ({ label: d.day.slice(5), value: d.jobs })))}</div>
+${view.weeks ? `<div class="card wide"><h3>Trabajos por semana</h3>${bars(view.weeks.map((w) => ({ label: `desde ${w.week.slice(5)}`, value: w.jobs })))}</div>` : ""}
+<div class="card wide"><h3>Tiempo promedio por estación</h3>${bars(view.stations.map((s) => ({ label: s.station, value: s.avgMs, text: duration(s.avgMs) })))}</div>
+<div class="card wide"><h3>Uso de la suscripción</h3>${view.plans.length ? `<div class="gauges">${view.plans.map((w) => gauge((w.utilization ?? 0) * 100, `${w.engine} · ${w.label}`)).join("")}</div>` : `<p class="muted">sin dato</p>`}</div>
+<div class="card wide"><h3>Gasto del mes por motor</h3>${bars(view.monthUsd.map((m) => ({ label: m.engine, value: m.usd, text: usd(m.usd) })))}</div>
+</div>`;
+  const agents = view.agents
+    .map(
+      (a) => `<div class="card" data-agent="${esc(a.name)}"><h3>${esc(a.name)}</h3>${gauge(a.successRate === undefined ? undefined : a.successRate * 100, "éxito")}
+<ul class="kv"><li>Llamadas: <b>${a.calls}</b></li><li>Costo: <b>${usd(a.costUsd)}</b></li><li>Tokens: <b>${a.tokens === undefined ? "sin dato" : a.tokens.toLocaleString("es-AR")}</b></li>
+<li>Tiempo trabajado: <b>${duration(a.workedMs)}</b></li><li>Entregas: <b>${a.deliveries}</b></li>
+<li>Motores: ${a.engines.length ? esc(a.engines.join(", ")) : "—"}</li><li>Modelos: ${a.models.length ? esc(a.models.join(", ")) : "—"}</li><li>Líneas: ${a.lines.length ? esc(a.lines.join(", ")) : "—"}</li></ul></div>`,
+    )
+    .join("\n");
+  const lines = view.lines
+    .map(
+      (l) => `<div class="card" data-line="${esc(l.line)}"><h3>${esc(l.line)}</h3>
+<ul class="kv"><li>Trabajos: <b>${l.jobs}</b></li><li>Entregas: <b>${l.deliveries}</b></li><li>Pull requests abiertos: <b>${l.openPullRequests}</b></li>
+<li>Último trabajo: ${l.last ? `<a href="/job/${esc(l.last.id)}">${esc(l.last.name)}</a> <span class="badge">${esc(STATUS_TEXT[l.last.status])}</span>` : "ninguno"}</li></ul></div>`,
+    )
+    .join("\n");
+  return page(
+    "Monitor",
+    `<div class="card"><h1>Monitor</h1><p class="muted">Lo que la fábrica ya tiene guardado, sin escribir nada. Se actualiza solo.</p>${periods}</div>
+<h2>Fábrica</h2>${totals}<h2>Agentes</h2><div class="monitor">${agents}</div><h2>Líneas</h2><div class="monitor">${lines || `<p class="muted">No hay líneas.</p>`}</div>`,
+    { nonce, refresh: true },
   );
 }
