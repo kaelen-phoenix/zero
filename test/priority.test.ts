@@ -18,17 +18,16 @@ const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000).toISOStri
 const PACKAGE = { kind: "package", package: "hello", station: "nota" } as const;
 const NIGHT = { kind: "night-shift", proposal: "p", autonomy: "auto" } as const;
 
-function factory(over: Record<string, unknown> = {}): FactoryContext {
+/** One line unless a test needs two jobs running side by side: every repository costs real git calls. */
+function factory(over: Record<string, unknown> = {}, names = ["web"]): FactoryContext {
   return testFactory({
     isolation: "worktree",
     level: "L2",
-    lines: [
-      { name: "web", repo: gitRepo(), verify: [passes], integrate: "merge" },
-      { name: "blog", repo: gitRepo(), verify: [passes], integrate: "merge" },
-    ],
+    lines: names.map((name) => ({ name, repo: gitRepo(), verify: [passes], integrate: "merge" })),
     ...over,
   });
 }
+const twoLines = (over: Record<string, unknown>) => factory(over, ["web", "blog"]);
 
 const backdate = (ctx: FactoryContext, id: string, at: string) => ctx.store.db.prepare("UPDATE jobs SET created_at = ? WHERE id = ?").run(at, id);
 
@@ -137,7 +136,7 @@ describe("where the priority shows", () => {
   it("marks non-media jobs in the status", () => {
     const ctx = factory();
     const { job: alta } = requestWork(ctx, { text: "importante", line: "web", priority: "alta" });
-    const { job: media } = requestWork(ctx, { text: "normal", line: "blog" });
+    const { job: media } = requestWork(ctx, { text: "normal", line: "web" });
     const lines = formatStatus(factoryStatus(ctx)).split("\n");
     expect(lines.find((l) => l.startsWith(`- ${alta.id}`))).toContain("prioridad alta");
     expect(lines.find((l) => l.startsWith(`- ${media.id}`))).not.toContain("prioridad");
@@ -182,8 +181,9 @@ describe("priority in the daemon", () => {
   const building = () => fakeAgents({ build: (req) => void writeTree(req.cwd, { [`src/${req.prompt.match(/# Job (\w+)/)![1]}.ts`]: "ok\n" }) });
   const run = (ctx: FactoryContext) => runDaemon(ctx, { once: true, pollMs: 10, panel: false, agentRunner: () => building().runner });
 
-  it("starts a baja job only after the media one finished", async () => {
-    const ctx = factory({ concurrency: 2 });
+  // The baja job starting once it is alone also covers "low runs when alone".
+  it("starts a baja job only after the media one finished, then runs it alone", async () => {
+    const ctx = twoLines({ concurrency: 2 });
     const { job: low } = requestWork(ctx, { text: "bajo", line: "web", priority: "baja" });
     const { job: medium } = requestWork(ctx, { text: "normal", line: "blog" });
     await run(ctx);
@@ -193,15 +193,8 @@ describe("priority in the daemon", () => {
     expect(started(ctx, low.id)).toBeGreaterThanOrEqual(Date.parse(done.finishedAt!));
   });
 
-  it("runs a baja job when it is alone", async () => {
-    const ctx = factory();
-    const { job } = requestWork(ctx, { text: "bajo", line: "web", priority: "baja" });
-    await run(ctx);
-    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
-  });
-
   it("starts an aged baja job next to a media one", async () => {
-    const ctx = factory({ concurrency: 2 });
+    const ctx = twoLines({ concurrency: 2 });
     const { job: low } = requestWork(ctx, { text: "bajo", line: "web", priority: "baja" });
     backdate(ctx, low.id, new Date(Date.now() - 25 * 3600_000).toISOString());
     const { job: medium } = requestWork(ctx, { text: "normal", line: "blog" });
@@ -211,7 +204,7 @@ describe("priority in the daemon", () => {
   });
 
   it("runs one urgent job at a time", async () => {
-    const ctx = factory({ concurrency: 2 });
+    const ctx = twoLines({ concurrency: 2 });
     const { job: first } = requestWork(ctx, { text: "parche uno", line: "web", priority: "urgente" });
     const { job: second } = requestWork(ctx, { text: "parche dos", line: "blog", priority: "urgente" });
     await run(ctx);
