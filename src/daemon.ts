@@ -356,11 +356,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
-          const level = effectivePriority(job, at);
-          // Low priority (by default the night shift's own jobs and the packages') never goes ahead of other work: one at a time, and only while nothing else is queued or running.
-          if (level === "baja" && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || priorityRank(effectivePriority(j, at)) > priorityRank(level)))) continue;
-          // At most one urgent job runs at a time; the next one waits without holding other lines back.
-          if (level === "urgente" && [...running.keys()].some((id) => { const r = store.getJob(id); return r !== undefined && effectivePriority(r, at) === "urgente"; })) continue;
+          const runningJobs = [...running.keys()].map((id) => store.getJob(id)).filter((j): j is Job => j !== undefined);
+          if (waitsItsTurn(job, runningJobs, store.listJobs({ status: ["queued", "running"] }), at)) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
@@ -433,6 +430,16 @@ export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder:
   for (let busy = jobsIn(req.cwd); busy.length; busy = jobsIn(req.cwd)) await Promise.all(busy);
   return runHere(engine, req, trace, station);
 };
+
+/** Whether a queued job must wait although its line is free: `running` are the daemon's running jobs, `active` every queued or running job in the store. */
+export function waitsItsTurn(job: Job, running: Job[], active: Job[], now: Date = new Date()): boolean {
+  const level = effectivePriority(job, now);
+  // Low priority (by default the night shift's own jobs and the packages') never goes ahead of other work: one at a time, and only while nothing else is queued or running.
+  if (level === "baja") return running.length > 0 || active.some((j) => j.status === "running" || priorityRank(effectivePriority(j, now)) > priorityRank(level));
+  // At most one urgent job runs at a time; the next one waits without holding other lines back.
+  if (level === "urgente") return running.some((j) => effectivePriority(j, now) === "urgente");
+  return false;
+}
 
 /** Queued jobs in the order the daemon considers them: highest effective priority first, the oldest first within one (stable on ties). */
 export function ownerFirst(jobs: Job[], now: Date = new Date()): Job[] {

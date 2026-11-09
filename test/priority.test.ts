@@ -3,12 +3,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { factoryStatus, requestWork, setPriority, type FactoryContext } from "../src/app.js";
-import { ownerFirst, runDaemon } from "../src/daemon.js";
+import { ownerFirst, runDaemon, waitsItsTurn } from "../src/daemon.js";
 import { formatJob, formatRequest, formatStatus } from "../src/format.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { effectivePriority, isPriority, PRIORITY_AGING_MS } from "../src/priority.js";
 import type { Job } from "../src/state/store.js";
-import { cleanup, fakeAgents, gitRepo, testFactory, writeTree } from "./helpers.js";
+import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -18,18 +18,16 @@ const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000).toISOStri
 const PACKAGE = { kind: "package", package: "hello", station: "nota" } as const;
 const NIGHT = { kind: "night-shift", proposal: "p", autonomy: "auto" } as const;
 
-/** One line unless a test needs two jobs running side by side: every repository costs real git calls. */
-function factory(over: Record<string, unknown> = {}, names = ["web"]): FactoryContext {
+/** Only tests that run the daemon get real repositories: every one costs real git calls. */
+function factory(over: Record<string, unknown> = {}, names = ["web"], repo: () => string = () => tempDir("zero-repo-")): FactoryContext {
   return testFactory({
     isolation: "worktree",
     level: "L2",
-    lines: names.map((name) => ({ name, repo: gitRepo(), verify: [passes], integrate: "merge" })),
+    lines: names.map((name) => ({ name, repo: repo(), verify: [passes], integrate: "merge" })),
     ...over,
   });
 }
-const twoLines = (over: Record<string, unknown>) => factory(over, ["web", "blog"]);
-
-const backdate = (ctx: FactoryContext, id: string, at: string) => ctx.store.db.prepare("UPDATE jobs SET created_at = ? WHERE id = ?").run(at, id);
+const twoLines = (over: Record<string, unknown>) => factory(over, ["web", "blog"], () => gitRepo());
 
 describe("priority levels", () => {
   it("knows the four levels", () => {
@@ -193,24 +191,32 @@ describe("priority in the daemon", () => {
     expect(started(ctx, low.id)).toBeGreaterThanOrEqual(Date.parse(done.finishedAt!));
   });
 
-  it("starts an aged baja job next to a media one", async () => {
-    const ctx = twoLines({ concurrency: 2 });
-    const { job: low } = requestWork(ctx, { text: "bajo", line: "web", priority: "baja" });
-    backdate(ctx, low.id, new Date(Date.now() - 25 * 3600_000).toISOString());
-    const { job: medium } = requestWork(ctx, { text: "normal", line: "blog" });
-    await run(ctx);
-    expect(ctx.store.getJob(low.id)!.status).toBe("delivered");
-    expect(started(ctx, low.id)).toBeLessThan(Date.parse(ctx.store.getJob(medium.id)!.finishedAt!));
+});
+
+// The daemon asks `waitsItsTurn` for every queued job whose line is free; running whole jobs for each case would cost real git and seconds.
+describe("who waits for a turn", () => {
+  const queued = (id: string, priority: Job["priority"], hours = 0) => ({ id, status: "queued", priority, createdAt: hoursAgo(hours) }) as Job;
+  const running = (id: string, priority: Job["priority"]) => ({ id, status: "running", priority, createdAt: hoursAgo(0) }) as Job;
+
+  it("holds baja back while a higher job is queued or anything runs, and lets it run alone", () => {
+    const low = queued("b", "baja");
+    expect(waitsItsTurn(low, [], [low, queued("m", "media")], NOW)).toBe(true);
+    expect(waitsItsTurn(low, [running("r", "baja")], [low], NOW)).toBe(true);
+    expect(waitsItsTurn(low, [], [low], NOW)).toBe(false);
   });
 
-  it("runs one urgent job at a time", async () => {
-    const ctx = twoLines({ concurrency: 2 });
-    const { job: first } = requestWork(ctx, { text: "parche uno", line: "web", priority: "urgente" });
-    const { job: second } = requestWork(ctx, { text: "parche dos", line: "blog", priority: "urgente" });
-    await run(ctx);
-    const done = ctx.store.getJob(first.id)!;
-    expect(done.status).toBe("delivered");
-    expect(ctx.store.getJob(second.id)!.status).toBe("delivered");
-    expect(started(ctx, second.id)).toBeGreaterThanOrEqual(Date.parse(done.finishedAt!));
+  it("lets an aged baja start next to a media job", () => {
+    const aged = queued("b", "baja", 25);
+    const medium = queued("m", "media", 1);
+    expect(ownerFirst([medium, aged], NOW).map((j) => j.id)).toEqual(["b", "m"]);
+    expect(waitsItsTurn(aged, [], [aged, medium], NOW)).toBe(false);
+    expect(waitsItsTurn(medium, [], [aged, medium], NOW)).toBe(false);
+  });
+
+  it("runs one urgent job at a time without holding others back", () => {
+    const second = queued("u2", "urgente");
+    expect(waitsItsTurn(second, [running("u1", "urgente")], [second], NOW)).toBe(true);
+    expect(waitsItsTurn(second, [running("m", "media")], [second], NOW)).toBe(false);
+    expect(waitsItsTurn(queued("m2", "media"), [running("u1", "urgente")], [], NOW)).toBe(false);
   });
 });
