@@ -54,7 +54,7 @@ type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
 
-/** `quota`: the subscription plan refused a call; the job waits in the queue until the plan renews. */
+/** `quota`: an engine ran out of plan quota or API credit; the job waits in the queue until it renews. */
 class Interrupted extends Error {
   constructor(readonly why: StopReason | "quota") {
     super(`interrupted: ${why}`);
@@ -208,7 +208,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
       if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: STOPPED_BY_YOU });
-      if (why === "quota") log.info("subscription plan used up; job back in the queue until it renews", { job: jobId });
+      if (why === "quota") log.info("engine quota or credit used up; job back in the queue until it renews", { job: jobId });
       return store.updateJob(jobId, { status: "queued" });
     }
     const requeued = isTransientNetworkError(err) ? requeueAfterCut(deps, jobId, opened, err) : undefined;
@@ -329,7 +329,7 @@ const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.bi
 function goesOn(deps: RunnerDeps, run: AgentRun<unknown>, station: Who, switched: number): boolean {
   if (!run.quota?.limited || switched >= chainOf(deps, station).length - 1) return false;
   const next = choose(deps, station);
-  if (next.available) log.info("subscription plan used up; going on with a replacement", { station: nameOf(station), engine: next.engine });
+  if (next.available) log.info("engine quota or credit used up; going on with a replacement", { station: nameOf(station), engine: next.engine });
   return next.available;
 }
 
@@ -594,7 +594,7 @@ async function buildLoop(
         // The plan cut the call short: this attempt does not count, and the build is redone after the renewal.
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1 });
-        attemptSpan.end("error", { "error.message": "subscription plan used up" });
+        attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
         quotaStop(run);
       }
       if (run.budgetLimited) {
@@ -669,7 +669,7 @@ async function buildLoop(
         if (run.quota?.limited) {
           // The plan cut the call short: the attempt and the station stay, so only this agent runs again after the renewal.
           copy.discardChanges();
-          attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
           quotaStop(run);
         }
         if (run.budgetLimited) {
@@ -812,7 +812,7 @@ async function buildLoop(
             tryNo--;
             continue;
           }
-          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
           quotaStop(run);
           if (signal.aborted || (run.ok && run.output)) {
             if (!run.output) return undefined;

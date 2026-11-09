@@ -1,4 +1,5 @@
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.js";
@@ -193,6 +194,45 @@ describe("a build cut short by the job budget", () => {
     expect(agents.count).toMatchObject({ spec: 1, build: 2 });
     expect(builds(agents.calls)[1]!.prompt).not.toContain("Feedback from the previous attempt");
     expect(gitIn(repo, "ls-tree", "-r", "--name-only", "main")).not.toContain("half.ts");
+  });
+});
+
+describe("an engine out of quota or credit", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const NEUTRAL = "engine quota or credit used up";
+  const plan: QuotaReport = { billing: "subscription", limited: true, windows: [{ name: "five_hour", label: "5 horas", utilization: 1, status: "exhausted", resetsAt: "2099-01-01T00:00:00Z" }] };
+
+  it.each([
+    ["the API credit", { billing: "api", windows: [], limited: true } as QuotaReport],
+    ["the subscription plan", plan],
+  ])("sends the job back to the queue with a neutral text when %s runs out", async (_what, quota) => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const { ctx } = factory({ engine: "claude" });
+    const agents = fakeAgents({ build: () => ({ ok: false, text: "refused", quota }) });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("queued");
+    const attempt = ctx.store.spansForJob(job.id).find((s) => s.name === "zero.attempt")!;
+    expect(attempt.status).toBe("error");
+    expect(attempt.attrs["error.message"]).toBe(NEUTRAL);
+    const texts = info.mock.calls.map(([text]) => String(text));
+    expect(texts).toContain(`${NEUTRAL}; job back in the queue until it renews`);
+    expect(texts.join("\n")).not.toContain("subscription plan used up");
+  });
+
+  it("logs a neutral text when it goes on with a replacement", async () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const { ctx } = factory({ engine: "claude", fallback: ["codex"] });
+    const agents = fakeAgents({ build: (req, n) => (n === 1 ? { ok: false, text: "refused", quota: { billing: "api", windows: [], limited: true } } : (write(req), {})) });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("delivered");
+    expect(info.mock.calls.map(([text]) => text)).toContain(`${NEUTRAL}; going on with a replacement`);
+  });
+
+  it("leaves no text about the subscription plan alone in the runner", () => {
+    const source = readFileSync(new URL("../src/line/runner.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("subscription plan used up");
+    expect(source.split(NEUTRAL).length - 1).toBeGreaterThanOrEqual(5);
   });
 });
 
