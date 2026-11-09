@@ -247,7 +247,7 @@ describe("panel research tab", () => {
     const html = await r.text();
     for (const text of ["Caché de dependencias", "https://a.example/one", "https://b.example/two", "https://github.com/o/r/issues/9", "Bajaría el tiempo de CI", "verify", "estable", "<h2>blog</h2>", `/research/${n.id}/request`]) expect(html).toContain(text);
     expect(html).toContain(`href="/research"`);
-    expect(await (await p.get("/")).text()).toContain(`href="/research">Investigación</a>`);
+    expect(await (await p.get("/")).text()).toMatch(/<a href="\/research"[^>]*>[\s\S]*?<span class="lb">Investigación<\/span><\/a>/);
   });
 
   it("escapes the notes", async () => {
