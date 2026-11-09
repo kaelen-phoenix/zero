@@ -18,6 +18,7 @@ import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js"
 import { factoryConfig } from "./packages.js";
 import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
+import { cleanupPass } from "./line/cleanup.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
@@ -247,6 +248,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // Work copies a finished job could not remove (a locked folder on Windows), tried again in the background.
+  let cleanupsAt = 0;
+  let cleaning: Promise<void> | undefined;
+  const retryCleanups = () => {
+    if (cleaning || Date.now() - cleanupsAt < (opts.once ? 0 : INTAKE_MS)) return;
+    cleanupsAt = Date.now();
+    cleaning = cleanupPass(ctx)
+      .catch((err) => log.warn("work copy cleanup failed", { error: String(err) }))
+      .finally(() => (cleaning = undefined));
+  };
+
   // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
   let exportAt = 0;
   let exporting: Promise<void> | undefined;
@@ -330,6 +342,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         findReverts();
       }
       takeLinear();
+      retryCleanups();
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -400,6 +413,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await publishing;
     await merging;
     await checkingReverts;
+    await cleaning;
     await exporting;
     await scheduling;
     await looking;

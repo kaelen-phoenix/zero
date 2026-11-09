@@ -19,6 +19,7 @@ import { isGitSource, parseGitSource } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
+import { pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
@@ -271,6 +272,8 @@ export interface FactoryStatus {
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
   onDemand: { station: string; since: string }[];
+  /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
+  cleanups: { job: string; path: string; since: string }[];
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -308,6 +311,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
       return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
     }),
+    cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),

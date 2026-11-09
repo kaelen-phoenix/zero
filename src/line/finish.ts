@@ -1,4 +1,6 @@
 import { AGENT_STATIONS, type FactoryConfig } from "../config.js";
+import { log } from "../log.js";
+import { recordCleanup } from "./cleanup.js";
 import type { Delivery, Job, Question, Store } from "../state/store.js";
 import { APPROVAL_SPAN } from "../telemetry/metrics.js";
 import type { Tracer } from "../telemetry/tracer.js";
@@ -11,6 +13,8 @@ export interface LedgerDeps {
   tracer: Tracer;
   townhall: Townhall;
   now?: () => Date;
+  /** Removes a finished job's work copy; tests inject a failing one. */
+  removeCopy?: (repo: string, path: string) => void;
 }
 
 export function engineSummary(config: FactoryConfig): string {
@@ -85,8 +89,17 @@ export async function finalizeJob(
     "zero.cost.usd": done.costUsd,
   });
 
+  // A copy that cannot be removed now (EBUSY on Windows) never changes how the job ended: the daemon retries it.
   const line = deps.config.lines.find((l) => l.name === job.line);
-  if (line && done.worktree) removeWorkCopy(line.repo, done.worktree);
+  if (line && done.worktree) {
+    try {
+      (deps.removeCopy ?? removeWorkCopy)(line.repo, done.worktree);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn("work copy cleanup failed; retrying in the background", { job: job.id, path: done.worktree, error });
+      recordCleanup(deps.store, job.id, { repo: line.repo, path: done.worktree, error, since: (deps.now ?? (() => new Date()))().toISOString() });
+    }
+  }
 
   const topic = done.title ?? done.request.slice(0, 80);
   const posts: NewPost[] = [

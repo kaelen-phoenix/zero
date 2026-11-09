@@ -207,6 +207,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
+  if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
