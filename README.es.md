@@ -161,7 +161,7 @@ Cada trabajo tiene una prioridad: `baja`, `media` (la de siempre), `alta` o `urg
 - **baja**: solo cuando no hay nada más en cola ni corriendo. Los trabajos propios del turno nocturno y los que pide un paquete arrancan acá.
 - **media**: en orden de llegada.
 - **alta**: pasa adelante de todo lo que está en cola, sin frenar lo que ya corre.
-- **urgente**: para casos como un parche de seguridad. Solo vos podés elegirla (un issue de GitHub, el turno nocturno o un paquete no pueden), y a lo sumo un urgente corre a la vez. Pausar los trabajos que corren para hacerle lugar todavía no está: toma el próximo lugar libre.
+- **urgente**: para casos como un parche de seguridad. Solo vos podés elegirla (un issue de GitHub, el turno nocturno o un paquete no pueden); la única excepción son los trabajos de seguridad que la fábrica abre por alertas altas o críticas de Dependabot, que nacen urgentes. A lo sumo un urgente corre a la vez. Pausar los trabajos que corren para hacerle lugar todavía no está: toma el próximo lugar libre.
 
 Para que lo bajo no quede olvidado, un trabajo en cola sube un nivel por cada día completo que espera, nunca más allá de `alta`; `zero status` lo dice con `(subió por la espera)`.
 
@@ -196,6 +196,24 @@ Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde s
 Antes de dejar un pull request trabado por checks fallidos, la fábrica prueba lo que suele arreglarlo sin tocar el código. Si la rama quedó atrás de su base (los checks corrieron contra una base vieja: después llegó un arreglo a la base, o cambió un workflow), funde la base en la rama desde GitHub, nunca con rebase ni force-push, y espera los checks nuevos. Lo hace con un pull request por repositorio a la vez, porque un CI que comparte un ambiente cancela las corridas que se acumulan, y como mucho 3 veces por pull request. Si la rama está al día, vuelve a correr las corridas fallidas de GitHub Actions, una vez por commit: una corrida cancelada o un test que falló una vez sin que sea culpa del código. Recién si eso no alcanza lo avisa en el pull request y lo deja abierto.
 
 Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
+
+### Alertas de seguridad (`securityAlerts`)
+
+En cada línea cuyo remoto está en GitHub, la fábrica lee cada minuto las alertas abiertas de Dependabot (dependencias con vulnerabilidades conocidas), con el mismo cupo de GitHub y las mismas pausas. Cada alerta nueva de severidad alta o crítica se convierte en un trabajo de seguridad en esa línea, para actualizar la dependencia a la versión corregida: la más alta que GitHub da como corregida entre las alertas de ese paquete. Las alertas del mismo paquete comparten un trabajo, y la fábrica recuerda qué alertas tomó, así que nunca abre un segundo trabajo por ellas; una alerta nueva de un paquete cuyo trabajo todavía no terminó se suma a ese trabajo. Estos trabajos nacen con prioridad `urgente` (ver [Prioridades de los trabajos](#prioridades-de-los-trabajos)), así que van primeros en la cola, antes que cualquier otro y de a uno, y pasan por verify, revisión y seguridad como cualquier cambio; en líneas con `autoMerge` se funden cuando pasan los checks de GitHub. Las alertas sin versión corregida publicada no abren trabajo y solo se muestran. El texto de sus avisos llega a los agentes como dato de terceros, no como instrucción.
+
+Cada línea elige con `securityAlerts`:
+
+```yaml
+lines:
+  - name: tienda
+    securityAlerts: { mode: jobs, minSeverity: high }   # off · notify · jobs; minSeverity: low · medium · high · critical
+```
+
+- **`jobs`** (el valor por defecto, con `minSeverity: high`): abre trabajos para las alertas de `minSeverity` o más y solo muestra el resto. Con `minSeverity: low` o `medium`, esas alertas también tienen trabajo, con prioridad `media`.
+- **`notify`**: no abre trabajos; solo muestra las alertas.
+- **`off`**: no las lee.
+
+`zero status` muestra una línea `Alertas de seguridad:` por cada alerta abierta, con el trabajo que la atiende o `solo aviso`, y un problema cuando GitHub no deja leerlas (el token necesita permiso de lectura de alertas de Dependabot, y Dependabot tiene que estar activado en el repositorio). El informe las lista bajo `## Alertas de seguridad`, y el panel marca sus trabajos como trabajos de seguridad.
 
 ### Autor de los commits
 

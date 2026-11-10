@@ -161,7 +161,7 @@ Every job has a priority: `baja` (low), `media` (medium, the default), `alta` (h
 - **baja**: only when nothing else is queued or running. The night shift's own jobs and the ones a package asks for start here.
 - **media**: in order of arrival.
 - **alta**: goes ahead of everything queued, without stopping what is already running.
-- **urgente**: for cases like a security patch. Only you can choose it (a GitHub issue, the night shift or a package cannot), and at most one urgent job runs at a time. Pausing running jobs to make room for an urgent one is not there yet: it takes the next free slot.
+- **urgente**: for cases like a security patch. Only you can choose it (a GitHub issue, the night shift or a package cannot); the one exception is the security jobs the factory opens for high or critical Dependabot alerts, which are urgent on their own. At most one urgent job runs at a time. Pausing running jobs to make room for an urgent one is not there yet: it takes the next free slot.
 
 So that low work is not forgotten, a queued job goes up one level for each full day it waits, never past `alta`; `zero status` says so with `(subió por la espera)`.
 
@@ -196,6 +196,24 @@ With `autoMerge: true` on a `pull-request` line, the factory also merges its pul
 Before leaving a pull request blocked by failed checks, the factory tries what usually fixes it without touching the code. If the branch is behind its base (the checks ran against an older base: a fix reached the base since, or a workflow changed), it merges the base in on GitHub, never a rebase or a forced push, and waits for the new checks. It does that for one pull request per repository at a time, since CI that shares an environment cancels the runs that pile up, and at most 3 times per pull request. If the branch is up to date, it runs the failed GitHub Actions runs again, once per commit: a cancelled run or a test that failed once for no reason of the code. Only when that does not help does it say so on the pull request and leave it open.
 
 The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
+
+### Security alerts (`securityAlerts`)
+
+On every line whose remote is on GitHub, the factory reads the open Dependabot alerts (dependencies with known vulnerabilities) every minute, with the same GitHub quota and the same pauses. Each new alert of high or critical severity becomes a security job on that line, to update the dependency to the fixed version: the highest version GitHub gives as fixed among that package's alerts. Alerts of the same package share one job, and the factory remembers which alerts it took, so it never opens a second job for them; a new alert of a package whose job is still unfinished joins that job. These jobs get the `urgente` priority on their own (see [Job priorities](#job-priorities)), so they go first in the queue, ahead of all other work and one at a time, and pass through verify, review and security like any other change; on `autoMerge` lines they merge once GitHub's checks pass. Alerts with no published fixed version open no job and are only shown. Their advisory text reaches the agents as third-party data, not as instructions.
+
+Each line chooses with `securityAlerts`:
+
+```yaml
+lines:
+  - name: tienda
+    securityAlerts: { mode: jobs, minSeverity: high }   # off · notify · jobs; minSeverity: low · medium · high · critical
+```
+
+- **`jobs`** (the default, with `minSeverity: high`): it opens jobs for alerts at or above `minSeverity` and only shows the rest. With `minSeverity: low` or `medium`, those alerts also get a job, with the `media` priority.
+- **`notify`**: it opens no job; it only shows the alerts.
+- **`off`**: it does not read them.
+
+`zero status` shows one `Alertas de seguridad:` line per open alert, with the job that handles it or `solo aviso`, and a problem when GitHub does not let the factory read them (the token needs read access to Dependabot alerts, and Dependabot must be on in the repository). The briefing lists them under `## Alertas de seguridad`, and the panel labels their jobs as security jobs.
 
 ### Commit author
 

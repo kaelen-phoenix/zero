@@ -58,6 +58,14 @@ describe("README in English and Spanish", () => {
     }
   });
 
+  it("document the security alerts in both languages", () => {
+    for (const text of [en, es]) {
+      expect(text).toContain("securityAlerts");
+      expect(text).toContain("Dependabot");
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("securityAlerts: { mode: jobs, minSeverity: high }");
+    }
+  });
+
   it("links the other language at the top", () => {
     const enTop = en.split("\n").slice(0, 3).join("\n");
     const esTop = es.split("\n").slice(0, 3).join("\n");

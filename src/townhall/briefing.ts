@@ -1,5 +1,5 @@
-import { bytes, describeJobStatus, jobOrigin } from "../format.js";
-import { FINAL_STATUSES, type Job, type Proposal, type ResearchNote } from "../state/store.js";
+import { bytes, describeAlert, describeJobStatus, jobOrigin } from "../format.js";
+import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
 
@@ -13,6 +13,18 @@ export interface NightShiftReport {
   built?: Job[];
   integrated?: Job[];
   jobs: Job[];
+}
+
+/** An open Dependabot alert of a line and the job that handles it, if any. */
+export interface BriefingAlert {
+  line: string;
+  number: number;
+  package: string;
+  ecosystem: string;
+  severity: AlertSeverity;
+  fixed?: string;
+  job?: string;
+  jobStatus?: Job["status"];
 }
 
 export interface Briefing {
@@ -35,7 +47,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -77,6 +89,9 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   }
   if (packages.length) {
     sections.push(["## Pedidos de paquetes", ...packages.map((j) => `- ${jobLabel(j)} · ${jobOrigin(j)}: ${FINAL_STATUSES.includes(j.status) ? outcome(j) : describeJobStatus(j)}`)].join("\n"));
+  }
+  if (alerts.length) {
+    sections.push(["## Alertas de seguridad", ...alerts.map((a) => `- (${a.line}) ${describeAlert(a)}`)].join("\n"));
   }
   sections.push(
     `Período: ${metrics.from} → ${metrics.to}`,

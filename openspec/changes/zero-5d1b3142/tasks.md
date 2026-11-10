@@ -1,0 +1,17 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 Create the OpenSpec change `openspec/changes/zero-5d1b3142/` (proposal.md, tasks.md, specs/work-intake/spec.md with ADDED requirements under new names) and check it with `npx openspec validate --all`.
+- [x] 1.2 src/config.ts: add `securityAlerts: z.object({ mode: z.enum(['off','notify','jobs']).default('jobs'), minSeverity: z.enum(['low','medium','high','critical']).default('high') }).strict().prefault({})` to LineSchema. Use prefault, as other nested defaults do with zod 4.
+- [x] 1.3 src/state/store.ts: add the JobSource variant `{ kind: 'security-alert'; repository: string; ecosystem: string; package: string; alerts: number[]; severity: 'low'|'medium'|'high'|'critical' }`.
+- [x] 1.4 src/intake/keys.ts: add `securityAlertKey(repository, number)`, `securityAlertsKey(line)` (snapshot) and `securityAlertsProblemKey(line)`.
+- [x] 1.5 src/github-quota.ts: add 'alerts' to GithubPass.
+- [x] 1.6 New src/intake/security-alerts.ts: `DependabotAlert` type, `AlertApi { openAlerts(): Promise<DependabotAlert[]> }`, `githubAlerts(token, repository, client?)` using `gh.paginate(gh.dependabot.listAlertsForRepo, { state: 'open', per_page: 100 })`, and `pollSecurityAlerts(ctx, api)`. Per line it skips mode off and non-GitHub remotes, rethrows GithubHalted and rate limits, records 403/404 and other errors as a line problem, groups new eligible alerts by ecosystem and name, takes the highest first_patched_version, joins the package's unfinished job or opens one through requestWork, writes the per-alert kv and the snapshot, and clears the problem.
+- [x] 1.7 src/app.ts requestWork: add tracer attrs for security-alert (`zero.security_alert`: the package, `zero.severity`). factoryStatus: add `securityAlerts: { line, alerts: (snapshot entry & { jobStatus? })[], problem? }[]` and briefing(): pass the same data to renderBriefing as a new optional trailing argument.
+- [x] 1.8 src/daemon.ts: add `DaemonOptions.alerts`, a background `scanAlerts` pass on INTAKE_MS through `meter.client(token, 'alerts')`, only when no GitHub pause is in force (off in `once` runs unless injected), awaited at shutdown. Make `ownerFirst` put high and critical security-alert jobs first and keep `lowPriority` false for them.
+- [x] 1.9 src/line/runner.ts requestBlock: add the security-alert framing (GitHub Dependabot data, NOT_AN_INSTRUCTION).
+- [x] 1.10 src/format.ts: extend jobOrigin with the security label and print the `Alertas de seguridad:` lines in formatStatus, with Spanish severity names (baja, media, alta, crítica). src/townhall/briefing.ts: add the `## Alertas de seguridad` section.
+- [x] 1.11 Tests: new test/security-alerts.test.ts with a fake AlertApi and testFactory lines with a GitHub origin remote (as issueFactory in test/intake.test.ts), covering grouping, threshold, no fixed version, memory, joining, notify, snapshot, 403 and the limit. Add the ownerFirst order to the existing daemon or night-shift tests, a config defaults test, and checks for status, briefing and the requestBlock prompt.
+- [x] 1.12 Document `securityAlerts` in README.md and README.es.md with identical structure and code blocks, and update AGENTS.md's Layout with the new module.
+- [x] 1.13 Run `npm run typecheck`, the new and touched test files (`npx vitest run test/security-alerts.test.ts test/config.test.ts test/docs.test.ts test/wording.test.ts ...`), and `npx openspec validate --all`.

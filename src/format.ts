@@ -5,7 +5,7 @@ import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
 import { effectivePriority, storedPriority } from "./priority.js";
-import type { Job, Proposal, ResearchNote } from "./state/store.js";
+import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -47,8 +47,18 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
-/** Who asked for a job, only when a package's station did. */
-export const jobOrigin = (j: Job) => (j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : undefined);
+/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it. */
+export const jobOrigin = (j: Job) =>
+  j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : j.source?.kind === "security-alert" ? `seguridad: alerta de Dependabot ${j.source.package}` : undefined;
+
+/** Spanish severity names, for what the owner reads. */
+export const SEVERITY_TEXT: Record<AlertSeverity, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
+
+/** One open Dependabot alert and who handles it: "lodash (npm) · crítica · alerta #3 · trabajo j1 (en cola)". */
+export function describeAlert(a: { package: string; ecosystem: string; severity: AlertSeverity; number: number; fixed?: string; job?: string; jobStatus?: Job["status"] }): string {
+  const handled = a.job ? `trabajo ${a.job}${a.jobStatus ? ` (${STATUS_TEXT[a.jobStatus]})` : ""}` : `solo aviso${a.fixed ? "" : " (sin versión corregida)"}`;
+  return `${a.package} (${a.ecosystem}) · ${SEVERITY_TEXT[a.severity]} · alerta #${a.number} · ${handled}`;
+}
 
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
@@ -215,6 +225,10 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const j of s.jira) out.push(`Issues de Jira: la línea ${j.line} toma los issues de ${j.project} (${j.site}) con la etiqueta "${j.label}"${j.problem ? ` · PROBLEMA: ${j.problem}` : ""}`);
+  for (const l of s.securityAlerts) {
+    if (l.problem) out.push(`Alertas de seguridad: la línea ${l.line} · PROBLEMA: ${l.problem}`);
+    for (const a of l.alerts) out.push(`Alertas de seguridad: la línea ${l.line} · ${describeAlert(a)}`);
+  }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
