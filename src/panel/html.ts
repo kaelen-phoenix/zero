@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, MonitorPeriod, MonitorView, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
+import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, MonitorPeriod, MonitorView, PackageTabLink, PackageTabView, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
+import { safeUrl } from "../package-tabs.js";
 import { reportSection, type MonthlyReport } from "../report.js";
 import { FINAL_STATUSES, type Job, type JobStatus, type ResearchNote } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
@@ -165,10 +166,19 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
 ];
 
+/** Where the packages' tabs go in the side menu; `send` in server.ts fills it, since pages do not get the context. Escaped text can never contain it. */
+export const TABS_MARK = "<!--zero:tabs-->";
+
+const TAB_ICON = `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`;
+
+/** The side menu's entries of the packages' tabs, every title escaped; `active` is the address of the tab being shown. */
+export const tabLinks = (tabs: PackageTabLink[], active?: string) =>
+  tabs.map((t) => `<li><a href="${esc(t.href)}"${t.href === active ? ` aria-current="page"` : ""} title="${esc(t.title)}">${icon(TAB_ICON)}<span class="lb">${esc(t.title)}</span></a></li>`).join("");
+
 /** The side menu: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
 function sideMenu(active?: string): string {
   const links = NAV.map(([href, label, paths]) => `<li><a href="${href}"${href === active ? ` aria-current="page"` : ""} title="${esc(label)}">${icon(paths)}<span class="lb">${esc(label)}</span></a></li>`).join("");
-  return `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row"><span class="brand">${LOGO}</span><label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}</ul></nav>`;
+  return `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row"><span class="brand">${LOGO}</span><label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}${TABS_MARK}</ul></nav>`;
 }
 
 /** Reloads the page every 15 s while nobody is typing, so the phone shows live state without a framework. */
@@ -205,14 +215,39 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
-/** The only page without a session: exchanges the key in the link's fragment for a cookie, then clears it from the address bar. */
+/** A package's read-only tab: a third party's data, so every text is escaped and only http(s) links get an href. */
+export function packageTabPage(view: PackageTabView, nonce: string): string {
+  const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
+  const filter = view.categories.length
+    ? `<form method="get" action="${esc(view.href)}"><label for="t-cat">Categoría</label><select id="t-cat" name="categoria"><option value="">Todas</option>${options}</select><button>Filtrar</button></form>`
+    : "";
+  const item = (i: PackageTabView["items"][number]) => {
+    const href = safeUrl(i.url);
+    const title = href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(i.title)}</a>` : esc(i.title);
+    const meta = [i.category, i.date].filter(Boolean).map(esc).join(" · ");
+    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}</li>`;
+  };
+  const body =
+    view.state === "missing"
+      ? `<div class="card muted">Todavía no hay datos: el paquete no escribió el archivo de esta pestaña.</div>`
+      : view.state === "invalid"
+        ? `<div class="card bad">Los datos de esta pestaña no son válidos, así que no se muestran.</div>`
+        : view.items.length
+          ? `<div class="card"><ul class="jobs">${view.items.map(item).join("")}</ul></div>`
+          : `<div class="card muted">No hay elementos${view.category ? " en esa categoría" : ""}.</div>`;
+  return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
+}
+
+/** The only page without a session: exchanges the key in the link's fragment for a cookie, clears it from the address bar and goes back to the page the link pointed at. */
 export function loginPage(nonce: string, failed = false): string {
   const script = `(() => {
   const k = new URLSearchParams(location.hash.slice(1)).get("k");
   if (!k) return;
-  history.replaceState(null, "", "/");
+  const here = location.pathname + location.search;
+  const to = here.startsWith("/") && !here.startsWith("//") ? here : "/";
+  history.replaceState(null, "", to);
   fetch("/login", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "k=" + encodeURIComponent(k) })
-    .then((r) => (r.ok ? location.replace("/") : (document.getElementById("msg").textContent = "La clave no es válida.")));
+    .then((r) => (r.ok ? location.replace(to) : (document.getElementById("msg").textContent = "La clave no es válida.")));
 })();`;
   return page(
     "Ingresar",

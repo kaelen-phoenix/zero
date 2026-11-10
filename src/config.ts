@@ -430,6 +430,14 @@ export interface PackageStation {
   entry: PackageEntry;
 }
 
+/** A read-only panel tab a package declared; `data` is relative to the package's data folder. */
+export interface PackageTab {
+  name: string;
+  title: string;
+  data: string;
+  categories?: string[];
+}
+
 export interface LoadedPackage {
   name: string;
   version: string;
@@ -441,6 +449,8 @@ export interface LoadedPackage {
   skills: string[];
   /** Every station of its manifest, whether or not its code may run. */
   stations: string[];
+  /** Its panel tabs; they show data only, so they need no `allowCode`. */
+  tabs: PackageTab[];
 }
 
 export interface PackageProblem {
