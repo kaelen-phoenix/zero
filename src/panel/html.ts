@@ -647,7 +647,8 @@ function jobCard(r: LineRow): string {
       : final
         ? `<p class="out bad"><b>${r.status === "failed" ? "fallido" : "detenido"}</b>${r.reason ? ` · ${esc(r.reason)}` : ""}</p>`
         : "";
-  const retry = r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "";
+  const stage = r.stage && !final ? `<p class="retry muted">etapa ${r.stage.n} de ${r.stage.total} · ${esc(r.stage.title)}</p>` : "";
+  const retry = stage + (r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "");
   const inner = `<h3 class="jh" data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a>${chip(r.status)}</h3>
 <p class="meta muted">${esc(r.id)} · ${esc(r.line)}${r.origin ? ` · ${esc(r.origin)}` : ""}</p>${retry}<ol class="stations">${r.stations.map(station).join("")}</ol>${out}`;
   // Lets the page's script skip cards that did not change, so open details stay open.

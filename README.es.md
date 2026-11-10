@@ -40,6 +40,10 @@ El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en
 - **Tiempo para las personas.** zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.
 - **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity, OpenCode, cualquier agente que hable ACP (Agent Client Protocol) o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
+### Pedidos grandes en etapas
+
+Cada llamada de build tiene un tiempo límite (`stations.build.timeoutMinutes`, 45 minutos por omisión). Cuando un pedido tiene muchas tareas o toca muchas áreas del código, la estación spec lo divide en etapas, cada una lo bastante chica para una sola llamada de build; `tasks.md` las lista como secciones numeradas. zero construye y verifica cada etapa en la misma rama, una detrás de otra, y corre las revisiones una sola vez, después de la última. Una etapa que pasa verify se conserva: sus commits quedan, y si la etapa siguiente falla o su build se corta por tiempo, solo esa etapa se vuelve a construir sobre ellos, también cuando el trabajo sigue después de un reinicio. Los intentos (`maxAttempts`) se cuentan por etapa, y una etapa que los agota hace fallar el trabajo, nombrando la etapa. `zero status` muestra `etapa 2 de 4` junto a la estación, y la línea de producción del panel muestra la etapa y su título.
+
 ## Niveles de autonomía
 
 | Nivel | Qué aprobás |

@@ -40,6 +40,10 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
 - **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity, OpenCode, any agent that speaks ACP (Agent Client Protocol) or any CLI declared in the configuration, and a different one per station if you want.
 
+### Large requests in stages
+
+A build call has a time limit (`stations.build.timeoutMinutes`, 45 minutes by default). When a request has many tasks or touches many areas of the code, the spec station splits it into stages, each small enough for one build call; `tasks.md` lists them as numbered sections. zero builds and verifies each stage in the same branch, one after the other, and runs the reviews once, after the last one. A stage that passes verify is kept: its commits stay, and if the next stage fails or its build is cut by the time limit, only that stage is built again on top of them, also when the job resumes after a restart. Attempts (`maxAttempts`) count per stage, and a stage that uses them all fails the job, naming the stage. `zero status` shows `etapa 2 de 4` next to the station, and the panel's production line shows the stage and its title.
+
 ## Autonomy levels
 
 | Level | What you approve |

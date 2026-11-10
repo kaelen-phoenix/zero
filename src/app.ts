@@ -28,6 +28,7 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
+import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
@@ -1009,6 +1010,8 @@ export interface LineRow {
   maxAttempts: number;
   /** What made the factory build again, when this is not the first attempt. */
   retryError?: string;
+  /** The stage being built, for an unfinished job whose spec has stages. */
+  stage?: { n: number; total: number; title: string };
   delivery?: { text: string; url?: string; merge?: string };
   reason?: string;
   stations: StationView[];
@@ -1098,6 +1101,7 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
     attempt: job.attempt,
     maxAttempts,
     retryError: job.attempt > 1 ? brief(previous?.attrs["error.message"] || job.feedback) || undefined : undefined,
+    stage: final ? undefined : jobStage(job),
     delivery: job.delivery && {
       text: describeDelivery(job.delivery),
       url: job.delivery.url,
