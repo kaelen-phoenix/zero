@@ -4,6 +4,9 @@ import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { EgressEvent, EgressRule } from "../box/egress.js";
+import { defaultPriority, type JobPriority } from "../priority.js";
+
+export type { JobPriority };
 
 /** node:sqlite is still flagged experimental; load it without printing that warning on every command. */
 export function loadSqlite(): typeof import("node:sqlite") {
@@ -102,6 +105,8 @@ export interface Job {
   /** The ref the job's branch started from and is measured against (`main`, or `origin/main` for pull requests). */
   base?: string;
   source?: JobSource;
+  /** Absent only on jobs built outside the store; read rows always carry one. */
+  priority?: JobPriority;
   feedback?: string;
   costUsd: number;
   budgetUsd: number;
@@ -321,6 +326,7 @@ function toJob(r: Row): Job {
     isolation: str(r.isolation) as Job["isolation"],
     base: str(r.base),
     source: json<JobSource>(r.source),
+    priority: (str(r.priority) as JobPriority | undefined) ?? defaultPriority(json<JobSource>(r.source)),
     feedback: str(r.feedback),
     costUsd: Number(r.cost_usd),
     budgetUsd: Number(r.budget_usd),
@@ -414,7 +420,7 @@ function toEgress(r: Row): EgressRow {
 
 const COLUMNS: Record<string, string> = {
   status: "status", station: "station", checkpoint: "checkpoint", attempt: "attempt", title: "title",
-  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", feedback: "feedback", costUsd: "cost_usd",
+  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", priority: "priority", feedback: "feedback", costUsd: "cost_usd",
   budgetUsd: "budget_usd", question: "question", approvals: "approvals", delivery: "delivery",
   reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at",
 };
@@ -442,7 +448,7 @@ export class Store {
   /** Columns added after the first release, for factories created before them. */
   private migrate() {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
-    for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
+    for (const column of ["isolation", "base", "source", "priority"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
     const proposalColumns = new Set((this.db.prepare("PRAGMA table_info(proposals)").all() as Row[]).map((c) => String(c.name)));
     for (const [column, type] of [
       ["issue_number", "INTEGER"],
@@ -478,12 +484,12 @@ export class Store {
     return this.now().toISOString();
   }
 
-  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource }): Job {
+  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority }): Job {
     const at = this.stamp();
     const id = newId();
     this.db
-      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)")
-      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, at, at);
+      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, priority, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
+      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), at, at);
     return this.getJob(id)!;
   }
 

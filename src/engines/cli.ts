@@ -207,12 +207,22 @@ export function codexWindows(stdout: string, now = new Date()): QuotaWindow[] {
   return found;
 }
 
+/** What OpenAI answers when an API key has no credit left. */
+export const CODEX_OUT_OF_CREDIT = /insufficient_quota|you exceeded your current quota/i;
+
+/** Whether a failed call was refused for lack of credit: its stderr or its last error event says so. */
+export function codexOutOfCredit(stdout: string, stderr: string): boolean {
+  return CODEX_OUT_OF_CREDIT.test(stderr) || CODEX_OUT_OF_CREDIT.test(codexError(stdout) ?? "");
+}
+
 /**
  * What a run tells about the plan. Only plans report usage windows, so windows
  * without any word on the session still mean a subscription; a failed call with
- * a window used up counts as refused by the plan.
+ * a window used up counts as refused by the plan, and a failed call refused for
+ * lack of credit, outside a known subscription, as an API key that ran out.
  */
-export function codexQuota(session: QuotaReport["billing"] | undefined, windows: QuotaWindow[], ok: boolean): QuotaReport | undefined {
+export function codexQuota(session: QuotaReport["billing"] | undefined, windows: QuotaWindow[], ok: boolean, outOfCredit = false): QuotaReport | undefined {
+  if (!ok && outOfCredit && session !== "subscription") return { billing: "api", windows: [], limited: true };
   const billing = session ?? (windows.length ? "subscription" : undefined);
   if (!billing) return undefined;
   if (billing === "api") return { billing, windows: [] };
@@ -277,7 +287,7 @@ async function runCodex(req: EngineRequest, sandbox: "on" | "off"): Promise<Engi
       // The answer is the last message; stdout is only the fallback when that file cannot be read.
       output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
       failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
-      quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok),
+      quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok, !ok && codexOutOfCredit(r.stdout, r.stderr)),
     });
     return req.schema && result.ok ? withStructuredOutput(req.schema, result) : result;
   } finally {

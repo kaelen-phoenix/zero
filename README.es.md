@@ -154,6 +154,24 @@ docker compose -f compose.yaml -f docker/compose.box.yaml up -d
 
 Las pruebas de zero no ejercitan esta instalación de punta a punta, solo revisan estos archivos: no corrieron la imagen, los login de los CLI ni la caja por el socket. Ver [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
 
+## Prioridades de los trabajos
+
+Cada trabajo tiene una prioridad: `baja`, `media` (la de siempre), `alta` o `urgente`. La fábrica toma siempre primero la de mayor prioridad y, dentro de la misma, el trabajo más viejo.
+
+- **baja**: solo cuando no hay nada más en cola ni corriendo. Los trabajos propios del turno nocturno y los que pide un paquete arrancan acá.
+- **media**: en orden de llegada.
+- **alta**: pasa adelante de todo lo que está en cola, sin frenar lo que ya corre.
+- **urgente**: para casos como un parche de seguridad. Solo vos podés elegirla (un issue de GitHub, el turno nocturno o un paquete no pueden), y a lo sumo un urgente corre a la vez. Pausar los trabajos que corren para hacerle lugar todavía no está: toma el próximo lugar libre.
+
+Para que lo bajo no quede olvidado, un trabajo en cola sube un nivel por cada día completo que espera, nunca más allá de `alta`; `zero status` lo dice con `(subió por la espera)`.
+
+```sh
+zero request "parchear la vulnerabilidad del login" --prioridad urgente
+zero priority <id> alta        # cambiarla mientras el trabajo no terminó
+```
+
+`zero status`, `zero status <id>` y el chat muestran la prioridad; `zero_request` la recibe como `priority`.
+
 ## Issues de GitHub
 
 Una línea puede tomar como pedidos los issues de su repositorio de GitHub que tengan una etiqueta:

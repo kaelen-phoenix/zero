@@ -65,7 +65,7 @@ const total = (html: string, label: string) => new RegExp(`${label}</span><b cla
 describe("monitor tab", () => {
   it("is in the menu and asks for the session", async () => {
     const p = await panel();
-    expect(await p.text("/")).toContain(`<a href="/monitor">Monitor</a>`);
+    expect(await p.text("/")).toMatch(/<a href="\/monitor"[^>]*>[\s\S]*?<span class="lb">Monitor<\/span><\/a>/);
     const r = await p.get("/monitor", {});
     expect(r.status).toBe(401);
     const html = await r.text();
