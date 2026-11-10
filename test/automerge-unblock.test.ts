@@ -193,6 +193,92 @@ describe("a pull request whose checks failed on today's base", () => {
   });
 });
 
+describe("a repository whose checks share one environment", () => {
+  const half = (run: number): Check[] => [{ name: "ci", done: true, ok: false, run }, { name: "e2e", done: false, ok: false, run }];
+
+  it("starts nothing for a pull request while some of its checks are still running", async () => {
+    const { ctx, clock, state } = await factoryWith([10]);
+    const prs = { 10: pull("abc", half(77), true) };
+    const gh = fakeGitHub(prs);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual([]);
+    expect(state(10)).toMatchObject({ status: "waiting", why: "fallaron los checks ci; esperando los demás checks" });
+
+    prs[10] = pull("abc", red(77), false);
+    clock.ms += MINUTE;
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.acts()).toEqual(["rerun 77"]);
+  });
+
+  it("keeps the repository for a refreshed pull request until every check of its new tip ended", async () => {
+    const { ctx, clock, state } = await factoryWith([10, 11]);
+    const prs = { 10: pull("a-old", red(1), true), 11: pull("b-old", red(2), true) };
+    const gh = fakeGitHub(prs);
+    const pass = () => pollMerges(ctx, () => gh.api);
+    await pass();
+    expect(gh.acts()).toEqual(["update #10 @a-old"]);
+
+    // One check of the new tip failed at once and the slow one still runs: the second waits.
+    prs[10] = pull("a-new", half(3), false);
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual(["update #10 @a-old"]);
+    expect(state(11).status).toBe("blocked");
+    expect(state(11).refreshes).toBeUndefined();
+
+    // The slow one ends: the first has its failed runs run again and keeps the repository.
+    prs[10] = pull("a-new", red(3), false);
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual(["update #10 @a-old", "rerun 3"]);
+
+    // It fails again: the first is told, and the second takes its turn.
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(state(10)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e" });
+    expect(gh.acts().filter((d) => !d.startsWith("comment"))).toEqual(["update #10 @a-old", "rerun 3", "update #11 @b-old"]);
+  });
+
+  it("runs the failed checks of its pull requests again one at a time", async () => {
+    const { ctx, clock, state } = await factoryWith([10, 11]);
+    const prs = { 10: pull("a", red(1), false), 11: pull("b", red(2), false) };
+    const gh = fakeGitHub(prs);
+    const pass = () => pollMerges(ctx, () => gh.api);
+    await pass();
+    expect(gh.acts()).toEqual(["rerun 1"]);
+    expect(state(11)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e; espera su turno para correr de nuevo sus checks" });
+    expect(state(11).rerun).toBeUndefined();
+
+    prs[10] = pull("a", running, false);
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual(["rerun 1"]);
+
+    prs[10] = pull("a", green, false);
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual(["rerun 1", "merge #10 @a", "rerun 2"]);
+  });
+
+  it("starts nothing while a pull request delivered a moment ago waits for its first checks", async () => {
+    const { ctx, clock, state } = await factoryWith([10, 11]);
+    const prs = { 10: pull("a", running, false), 11: pull("b", running, false) };
+    const gh = fakeGitHub(prs);
+    const pass = () => pollMerges(ctx, () => gh.api);
+    await pass();
+    prs[11] = pull("b", red(2), false);
+    clock.ms += MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual([]);
+    expect(state(11)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e; espera su turno para correr de nuevo sus checks" });
+
+    prs[10] = pull("a", green, false);
+    clock.ms += 6 * MINUTE;
+    await pass();
+    expect(gh.acts()).toEqual(["merge #10 @a", "rerun 2"]);
+  });
+});
+
 describe("the pieces", () => {
   it("reads the run of a check from the address of its details", () => {
     expect(actionsRun("https://github.com/kaelen/demo/actions/runs/42745836620/job/129597588242")).toEqual({ run: 42745836620 });

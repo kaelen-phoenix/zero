@@ -118,6 +118,8 @@ export const MAX_REFRESHES = 3;
 const REFRESH_HOLD_MS = 2 * 3_600_000;
 /** How long GitHub is given to show the tip of a refresh before it is asked for again. */
 const REFRESH_SHOWS_MS = 10 * 60_000;
+/** How long GitHub is given to show that the runs it was asked to run again are under way. */
+const RERUN_SHOWS_MS = 2 * 60_000;
 
 export type MergeDecision =
   | { kind: "merge" }
@@ -147,8 +149,11 @@ export interface MergeState {
   backoff?: { sha: string; mergeable: boolean | null; why: string; delayMs: number; nextChecksAt: string };
   /** How many times the factory brought the base branch into it (see `unblock`). */
   refreshes?: number;
-  /** The refresh under way: the tip it was asked for and when. Gone once the new tip's checks end. */
-  refreshing?: { head: string; at: string };
+  /**
+   * What the factory started and is still under way: a refresh (the tip it was asked for, gone once the new
+   * tip's checks end) or, with `rerun`, failed runs run again on that tip (gone once its checks end).
+   */
+  refreshing?: { head: string; at: string; rerun?: true };
   /** The tip whose failed checks were already run again. */
   rerun?: string;
   /** The last pull request tip whose job went back to the queue to merge the base in. */
@@ -184,23 +189,32 @@ const EXPIRED = "pasaron 14 días sin poder fundirlo";
 /** The repositories where a refresh is under way, so the pull requests of one repository are refreshed one at a time. */
 type Refreshing = Set<string>;
 
-/** Whether a refresh the state tells about still holds its repository. */
+/** Whether a refresh or a second run the state tells about still holds its repository. */
 const holds = (state: MergeState, now: number) => Boolean(state.refreshing) && now - Date.parse(state.refreshing!.at) < REFRESH_HOLD_MS;
+
+/** Whether what the factory started for this pull request has ended, so its repository is free for the next one. Asked only once every check of its tip is done. */
+function ended(started: NonNullable<MergeState["refreshing"]>, head: string, now: number): boolean {
+  return started.rerun ? started.head !== head || now - Date.parse(started.at) >= RERUN_SHOWS_MS : started.head !== head;
+}
 
 /**
  * What the factory does on its own for a pull request whose checks failed, before leaving it blocked. Most of
  * these are not the change's fault: the checks ran against an older base (a fix that reached the base since,
  * a workflow that changed), or a run was cancelled or failed once for no reason of the code.
  * - Behind its base: the base is merged in on GitHub (never a rebase or a forced push), so every check runs
- *   again on today's base. One pull request per repository at a time (CI that shares a staging environment
- *   cancels the runs that pile up), and at most `MAX_REFRESHES` times in its life.
+ *   again on today's base. At most `MAX_REFRESHES` times in its life.
  * - Up to date: the failed GitHub Actions runs are run again, once per tip.
+ * Either of them only with nothing else under way in the repository (`busy`): CI that shares an environment
+ * keeps one run waiting and cancels the others, so a run started on top of another loses one of the two.
  * Returns what it did, or undefined when there is nothing left to try. Never throws: a GitHub that refuses means nothing was done.
  */
 async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestState, failed: Check[], state: MergeState, busy: boolean, now: number): Promise<Unblocking | undefined> {
   try {
     // GitHub takes a moment to make the new tip: until it shows, the refresh asked for this one is still under way.
-    if (state.refreshing?.head === pr.headSha && now - Date.parse(state.refreshing.at) < REFRESH_SHOWS_MS) return { kind: "done", why: "actualizándose con la rama base", patch: {} };
+    const started = state.refreshing;
+    if (started?.head === pr.headSha && now - Date.parse(started.at) < (started.rerun ? RERUN_SHOWS_MS : REFRESH_SHOWS_MS)) {
+      return { kind: "done", why: started.rerun ? "sus checks fallidos corren de nuevo" : "actualizándose con la rama base", patch: {} };
+    }
     const refreshes = state.refreshes ?? 0;
     if (pr.base && gh.behind && gh.updateBranch && refreshes < MAX_REFRESHES && (await gh.behind(pr.base, pr.headSha))) {
       if (busy) return { kind: "turn", why: "espera su turno para actualizarse con la rama base" };
@@ -210,9 +224,10 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
     }
     const runs = [...new Set(failed.flatMap((c) => (c.run ? [c.run] : [])))];
     if (gh.rerun && runs.length && state.rerun !== pr.headSha) {
+      if (busy) return { kind: "turn", why: "espera su turno para correr de nuevo sus checks" };
       for (const run of runs) await gh.rerun(run);
       log.info("failed checks of a pull request run again", { job: job.id, head: pr.headSha, runs });
-      return { kind: "done", why: "sus checks fallidos corren de nuevo", patch: { rerun: pr.headSha } };
+      return { kind: "done", why: "sus checks fallidos corren de nuevo", patch: { rerun: pr.headSha, refreshing: { head: pr.headSha, at: new Date(now).toISOString(), rerun: true } }, refreshed: true };
     }
   } catch (err) {
     if (err instanceof GithubHalted || isRateLimit(err)) throw err;
@@ -223,9 +238,24 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
 
 type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string };
 
-/** Whether another watched pull request of the repository has a refresh under way. */
+/** The other watched pull requests of the repository, with what the factory knows of each. */
+function elsewhere(ctx: FactoryContext, job: Job, repository: string): { job: Job; state: MergeState }[] {
+  return watchedJobs(ctx)
+    .filter((j) => j.id !== job.id && pullRequestOf(j.delivery!.url!)?.repository === repository)
+    .map((j) => ({ job: j, state: JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "{}") as MergeState }));
+}
+
+/** Whether another watched pull request of the repository has a refresh or a second run under way. */
 function refreshedElsewhere(ctx: FactoryContext, job: Job, repository: string, now: number): boolean {
-  return watchedJobs(ctx).some((j) => j.id !== job.id && pullRequestOf(j.delivery!.url!)?.repository === repository && holds(JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "{}") as MergeState, now));
+  return elsewhere(ctx, job, repository).some((other) => holds(other.state, now));
+}
+
+/**
+ * Whether another watched pull request of the repository, delivered a short while ago, is still waiting for its
+ * first checks: a run started now could cancel the one it has waiting. Read from what is saved, without asking GitHub.
+ */
+function firstChecksElsewhere(ctx: FactoryContext, job: Job, repository: string, now: number): boolean {
+  return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
 }
 
 /**
@@ -292,19 +322,25 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     return save({ ...state, status: "blocked", why: unchanged.why });
   }
   if (pr.open && !pr.merged && pr.mergeable === false && since <= WATCH_MS && takeBack(ctx, job, pr.headSha, state, save)) return;
-  const decision = mergeDecision(pr, pr.open ? await gh.checks(pr.headSha) : [], since);
+  const checks = pr.open ? await gh.checks(pr.headSha) : [];
+  const decision = mergeDecision(pr, checks, since);
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
   if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
   if (decision.kind === "wait") return save({ reported: state.reported, status: "waiting", why: decision.why });
-  // The checks of the refreshed tip ended, well or badly: its repository is free for the next one.
-  if (state.refreshing && pr.headSha !== state.refreshing.head) {
+  // Some checks failed and others are still running: starting anything now would cancel them, and the repository is not free yet.
+  if (decision.kind === "blocked" && decision.failed && checks.some((c) => !c.done)) {
+    return save({ reported: state.reported, status: "waiting", why: `${decision.why}; esperando los demás checks` });
+  }
+  // Every check of the tip ended, well or badly: its repository is free for the next one.
+  if (state.refreshing && ended(state.refreshing, pr.headSha, now)) {
+    if (!state.refreshing.rerun) followRemoteTip(ctx, job);
     delete state.refreshing;
-    followRemoteTip(ctx, job);
     if (!refreshedElsewhere(ctx, job, repository, now)) refreshing.delete(repository);
   }
   if (decision.kind === "blocked" && decision.failed) {
-    const did = await unblock(job, gh, number, pr, decision.failed, state, refreshing.has(repository) && !state.refreshing, now);
+    const busy = (refreshing.has(repository) && !state.refreshing) || firstChecksElsewhere(ctx, job, repository, now);
+    const did = await unblock(job, gh, number, pr, decision.failed, state, busy, now);
     if (did?.kind === "done") {
       if (did.refreshed) refreshing.add(repository);
       Object.assign(state, did.patch);
