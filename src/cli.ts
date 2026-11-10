@@ -40,10 +40,11 @@ Uso diario (también desde el chat):
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
-  zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]
+  zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N] [--conservar]
                                  Simulacro de regeneración: en una copia aparte en ZERO_HOME/drills quita esos archivos,
                                  los reconstruye solo desde openspec/specs/<capacidad>/spec.md (tope: --usd o limits.usdPerJob),
-                                 corre el verify de la línea y deja un informe con lo que faltaba en las especificaciones
+                                 corre el verify de la línea y deja un informe con lo que faltaba en las especificaciones;
+                                 al terminar borra la copia y deja solo el informe, salvo con --conservar
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
@@ -115,6 +116,7 @@ async function main(argv: string[]): Promise<number> {
       mes: { type: "string" },
       html: { type: "boolean" },
       usd: { type: "string" },
+      conservar: { type: "boolean" },
       label: { type: "string" },
       station: { type: "string" },
       detach: { type: "boolean" },
@@ -286,8 +288,8 @@ async function main(argv: string[]): Promise<number> {
       }
       case "simulacro": {
         const [line, capability] = rest;
-        if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]");
-        const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd) });
+        if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N] [--conservar]");
+        const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd), keep: Boolean(values.conservar) });
         console.log(`Resultado: ${r.outcome}
 Informe: ${r.report}`);
         return 0;

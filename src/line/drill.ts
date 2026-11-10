@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
 import { pickEngine } from "../budget.js";
@@ -10,6 +10,7 @@ import type { FactoryHome } from "../home.js";
 import { git, sh, type ShellResult } from "../shell.js";
 import type { Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
+import { log } from "../log.js";
 import { FACTORY_IDENTITY } from "../workspace.js";
 import { isTestFile } from "./verify.js";
 
@@ -50,6 +51,8 @@ export interface DrillResult {
   missing: string[];
   /** Where `informe.md` was written. */
   report: string;
+  /** Whether the working copy stays in `<ZERO_HOME>/drills/<id>/copy` (`--conservar`); otherwise it is deleted at the end. */
+  copyKept: boolean;
 }
 
 export interface DrillDeps {
@@ -60,6 +63,8 @@ export interface DrillDeps {
   runAgent: AgentRunner;
   sh?: (command: string, cwd: string, opts: { timeoutMs: number }) => Promise<ShellResult>;
   now?: () => Date;
+  /** Deletes the working copy at the end; a failure is only logged. */
+  removeCopy?: (path: string) => Promise<void>;
 }
 
 export interface DrillInput {
@@ -68,6 +73,8 @@ export interface DrillInput {
   /** The files to remove, already chosen by `drillFiles`. */
   files: string[];
   usd: number;
+  /** Keep the working copy instead of deleting it at the end. */
+  keep?: boolean;
 }
 
 /** Tests and specifications stay in the copy: they are what the regenerated code is measured against. */
@@ -89,12 +96,27 @@ const tail = (r: ShellResult, command: string): DrillCommand => ({ command, code
  * what came out. The line's repository is only read (a clone without links).
  */
 export async function runDrill(deps: DrillDeps, input: DrillInput): Promise<DrillResult> {
-  const run = deps.sh ?? ((command, cwd, opts) => sh(command, cwd, opts));
-  const { line, capability, files } = input;
   const id = randomBytes(4).toString("hex");
   const dir = join(deps.home.drills, id);
   const copy = join(dir, "copy");
   await mkdir(dir, { recursive: true });
+  try {
+    return await drillIn(deps, input, id, dir, copy);
+  } finally {
+    // The report holds everything worth keeping; the copy (maybe with node_modules) would only fill the disk.
+    if (!input.keep) {
+      try {
+        await (deps.removeCopy ?? ((path) => rm(path, { recursive: true, force: true, maxRetries: 3 })))(copy);
+      } catch (e) {
+        log.warn("cannot remove the drill's working copy", { drill: id, copy, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  }
+}
+
+async function drillIn(deps: DrillDeps, input: DrillInput, id: string, dir: string, copy: string): Promise<DrillResult> {
+  const run = deps.sh ?? ((command, cwd, opts) => sh(command, cwd, opts));
+  const { line, capability, files } = input;
   const baseCommit = git(["rev-parse", `${line.baseBranch}^{commit}`], line.repo);
   git(["clone", "-q", "--no-hardlinks", "--no-local", "--branch", line.baseBranch, line.repo, copy], dir);
   for (const file of files) await rm(join(copy, file), { force: true });
@@ -154,7 +176,7 @@ export async function runDrill(deps: DrillDeps, input: DrillInput): Promise<Dril
       : "no alcanzan";
 
   const report = join(dir, "informe.md");
-  const result: DrillResult = { id, line: line.name, capability, baseBranch: line.baseBranch, baseCommit, removed: files, rebuilt, notRebuilt, tampered, outcome, agent, setup, verify, missing, report };
+  const result: DrillResult = { id, line: line.name, capability, baseBranch: line.baseBranch, baseCommit, removed: files, rebuilt, notRebuilt, tampered, outcome, agent, setup, verify, missing, report, copyKept: !!input.keep };
   await writeFile(report, drillMarkdown(result));
   await writeFile(join(dir, "resultado.json"), JSON.stringify(result, null, 2));
   return result;
@@ -180,6 +202,7 @@ export function drillMarkdown(r: DrillResult): string {
       `- Commit base: ${r.baseCommit} (${r.baseBranch})`,
       `- Resultado: **${r.outcome}**, ${OUTCOME_TEXT[r.outcome]}`,
       `- Costo de la llamada: US$ ${r.agent.costUsd.toFixed(2)}${r.agent.engine ? ` (${r.agent.engine})` : ""}`,
+      `- Copia de trabajo: ${r.copyKept ? `conservada en ${join(dirname(r.report), "copy")}` : "se borra al terminar el simulacro"}`,
       `- Agente: ${r.agent.ok ? "terminó bien" : "no terminó bien"}${r.agent.budgetLimited ? ", cortado por el tope de gasto" : ""}`,
     ].join("\n"),
     `## Archivos quitados\n\n${list(r.removed)}`,

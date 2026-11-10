@@ -531,6 +531,8 @@ export interface DrillRequest {
   patterns: string[];
   /** Spend cap of the agent call; `limits.usdPerJob` when absent. */
   usd?: number;
+  /** Keep the working copy (`--conservar`); it is deleted at the end otherwise. */
+  keep?: boolean;
 }
 
 /**
@@ -538,7 +540,7 @@ export interface DrillRequest {
  * specification in a copy under `<ZERO_HOME>/drills` and runs the line's tests
  * against it. Every refusal comes before anything is created or spent.
  */
-export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; cwd?: string } = {}): Promise<DrillResult> {
+export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; removeCopy?: DrillDeps["removeCopy"]; cwd?: string } = {}): Promise<DrillResult> {
   const line = ctx.config.lines.find((l) => l.name === input.line);
   if (!line) throw new Error(`No hay una línea llamada "${input.line}". Líneas: ${ctx.config.lines.map((l) => l.name).join(", ") || "(ninguna)"}.`);
   if (ctx.config.isolation === "container") {
@@ -560,7 +562,7 @@ export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest
   const files = drillFiles(line, input.patterns);
   if (!files.length) throw new Error(`Ningún archivo de código de la rama ${line.baseBranch} coincide con ${input.patterns.join(", ") || "(sin patrones)"}: los tests y lo que está bajo openspec/ nunca se quitan. Indicá qué quitar con --archivos.`);
   const runAgent = deps.runAgent ?? createAgentRunner(ctx.config, { secrets: ctx.secrets });
-  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now }, { line, capability: input.capability, files, usd });
+  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now, removeCopy: deps.removeCopy }, { line, capability: input.capability, files, usd, keep: input.keep });
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */
