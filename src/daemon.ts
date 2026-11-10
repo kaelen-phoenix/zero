@@ -25,7 +25,7 @@ import { cleanupPass } from "./line/cleanup.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
-import { onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
+import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -329,8 +329,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
-    // A run the person in charge asked for does not wait for the throttle.
-    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && (Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS) || onDemandPending(ctx));
+    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
@@ -354,6 +353,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     scheduling = scheduledPass(ctx, now(), { signal: researchStop.signal })
       .catch((err) => log.warn("scheduled stations failed", { error: String(err) }))
       .finally(() => (scheduling = undefined));
+  };
+
+  // A run the person in charge asked for waits neither for the queue nor for scout or research: its own background pass,
+  // which starts no job and takes no job's place. onDemandPass itself holds requests back for the andon, the budget and missing secrets.
+  let onDemandAt = 0;
+  let demanding: Promise<void> | undefined;
+  const runOnDemand = () => {
+    if (demanding || !(opts.packages ?? !opts.once) || !onDemandPending(ctx) || Date.now() - onDemandAt < (opts.once ? 0 : INTAKE_MS)) return;
+    onDemandAt = Date.now();
+    demanding = onDemandPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal })
+      .catch((err) => log.warn("on-demand stations failed", { error: String(err) }))
+      .finally(() => (demanding = undefined));
   };
 
   try {
@@ -386,6 +397,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       retryCleanups();
       exportTraces();
       runSchedules();
+      runOnDemand();
       lookForPackageUpdates();
       await expireQuestions(ctx);
 
@@ -448,7 +460,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
   } finally {
-    // A shutdown cuts research and the packages' stations short, scheduled passes included; a `once` run lets them finish.
+    // A shutdown cuts research and the packages' stations short, scheduled and on-demand passes included; a `once` run lets them finish.
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
@@ -461,6 +473,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await cleaning;
     await exporting;
     await scheduling;
+    await demanding;
     await looking;
     await idle;
     tunnel.stop();

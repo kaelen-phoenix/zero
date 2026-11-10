@@ -150,7 +150,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     "zero_package_run",
     {
       title: "Correr una estación de un paquete",
-      description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
+      description: "Ask the factory to run a package station's pass once, on the daemon's next pass, without waiting for its period or for queued and running jobs. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
       inputSchema: {
         station: z.string().describe("The station, as <package>/<station>."),
         request: z.string().optional().describe("Optional request text from the owner for this run; the station receives it cleaned of secrets and local paths."),

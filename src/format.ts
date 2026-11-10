@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -221,6 +221,24 @@ export function priorityNote(job: Job, now = new Date()): string {
   return ` · prioridad ${level}${level !== storedPriority(job) ? " (subió por la espera)" : ""}`;
 }
 
+const ON_DEMAND_END: Record<NonNullable<OnDemandRun["outcome"]>, string> = {
+  ok: "terminó bien",
+  failed: "falló",
+  timeout: "superó su tiempo",
+  stopped: "se cortó al apagar la fábrica",
+  "not-run": "no pudo correr",
+};
+
+/** How a station's last on-demand run went: "corriendo desde 10:05", "terminó bien a las 10:07" or "sin resultado". */
+export function onDemandState(r: OnDemandRun, now = new Date()): string {
+  if (r.endedAt && r.outcome) return `${ON_DEMAND_END[r.outcome]} (${resetTime(r.endedAt, now)})`;
+  if (r.stale || !r.startedAt) return "sin resultado";
+  return `corriendo desde ${resetTime(r.startedAt, now)}`;
+}
+
+/** "hello/nota (pedida 10:00): terminó bien (10:07)". */
+export const describeOnDemandRun = (r: OnDemandRun, now = new Date()) => `${r.station} (pedida ${resetTime(r.asked, now)}): ${onDemandState(r, now)}`;
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -256,6 +274,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
+  if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
