@@ -21,6 +21,17 @@ Cada comando de verify de una línea SHALL tener como tiempo límite los minutos
 - **WHEN** un comando de verify supera su límite
 - **THEN** el intento falla y el motivo dice de cuántos minutos era el límite y que se cambia con `verifyTimeoutMinutes` en la línea
 
+### Requirement: Una falla de la máquina se corre una vez más
+Cuando un comando de verify falla y su salida muestra un problema de la máquina y no del cambio (un test que superó su propio tiempo, falta de memoria, un archivo trabado, un proceso que murió, un corte de red), la fábrica SHALL correrlo una vez más antes de dar el intento por fallado. MUST NOT correrlo más de dos veces por intento.
+
+#### Scenario: Test que supera su tiempo con la máquina ocupada
+- **WHEN** `npm test` falla con `Test timed out in 5000ms` y en la segunda corrida pasa
+- **THEN** la verificación sigue y el intento no se gasta
+
+#### Scenario: Falla del cambio
+- **WHEN** `npm test` falla con una aserción
+- **THEN** el intento falla sin correr el comando otra vez
+
 ### Requirement: Los comandos de los trabajos se turnan en la máquina
 Fuera de la caja, los comandos de setup y de verify de todos los trabajos SHALL correr de a `commandConcurrency` a la vez (1 por defecto), en orden de llegada. Un comando cuyo trabajo se detiene mientras espera MUST NOT llegar a correr.
 
