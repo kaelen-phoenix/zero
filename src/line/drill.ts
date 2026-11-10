@@ -108,7 +108,7 @@ export async function runDrill(deps: DrillDeps, input: DrillInput): Promise<Dril
       try {
         await (deps.removeCopy ?? ((path) => rm(path, { recursive: true, force: true, maxRetries: 3 })))(copy);
       } catch (e) {
-        log.warn(`no pude borrar la copia del simulacro ${copy}: ${e instanceof Error ? e.message : String(e)}`, { drill: id, copy });
+        log.warn("cannot remove the drill's working copy", { drill: id, copy, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }
