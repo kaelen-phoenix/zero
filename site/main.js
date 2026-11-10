@@ -119,6 +119,7 @@
     "compat.label": "Compatibility",
     "compat.title": "What it supports today.",
     "compat.engines": "Engines",
+    "compat.acp.note": "agents that speak ACP",
     "compat.custom": "Custom CLI",
     "compat.custom.note": "declared in the configuration",
     "compat.clients": "Chat clients",

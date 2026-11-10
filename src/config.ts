@@ -131,17 +131,31 @@ export const SiteSchema = z
   .toLowerCase()
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?::\d{1,5})?$/, "use a site name like example.com or example.com:8443");
 
-/** Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin. */
-export const CustomEngineSchema = z.object({
-  command: z.array(z.string()).min(1),
-  readArgs: z.array(z.string()).default([]),
-  writeArgs: z.array(z.string()).default([]),
-  modelArgs: z.array(z.string()).default([]),
-  /** Environment variables (credentials) this engine needs inside the isolation box. */
-  secrets: z.array(z.string()).default([]),
-  /** Sites this engine must reach (its model's API); allowed by the egress gate in every mode. */
-  hosts: z.array(SiteSchema).default([]),
-});
+/**
+ * Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin.
+ * With `protocol: acp` the command is an Agent Client Protocol agent: the prompt goes over JSON-RPC, never on argv.
+ */
+export const CustomEngineSchema = z
+  .object({
+    command: z.array(z.string()).min(1),
+    readArgs: z.array(z.string()).default([]),
+    writeArgs: z.array(z.string()).default([]),
+    modelArgs: z.array(z.string()).default([]),
+    /** Environment variables (credentials) this engine needs inside the isolation box. */
+    secrets: z.array(z.string()).default([]),
+    /** Sites this engine must reach (its model's API); allowed by the egress gate in every mode. */
+    hosts: z.array(SiteSchema).default([]),
+    /** `cli` (the default): the prompt goes in `{prompt}` or on stdin. `acp`: the agent speaks ACP on stdio. */
+    protocol: z.enum(["cli", "acp"]).optional(),
+  })
+  .superRefine((def, ctx) => {
+    if (def.protocol !== "acp") return;
+    for (const key of ["command", "readArgs", "writeArgs", "modelArgs"] as const) {
+      if (def[key].some((a) => a.includes("{prompt}"))) {
+        ctx.addIssue({ code: "custom", path: [key], message: "un motor ACP recibe el pedido por el protocolo: sacá {prompt}" });
+      }
+    }
+  });
 
 /** The stations zero itself defines; a custom agent never takes one of their names. */
 export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
@@ -430,6 +444,14 @@ export interface PackageStation {
   entry: PackageEntry;
 }
 
+/** A read-only panel tab a package declared; `data` is relative to the package's data folder. */
+export interface PackageTab {
+  name: string;
+  title: string;
+  data: string;
+  categories?: string[];
+}
+
 export interface LoadedPackage {
   name: string;
   version: string;
@@ -441,6 +463,8 @@ export interface LoadedPackage {
   skills: string[];
   /** Every station of its manifest, whether or not its code may run. */
   stations: string[];
+  /** Its panel tabs; they show data only, so they need no `allowCode`. */
+  tabs: PackageTab[];
 }
 
 export interface PackageProblem {

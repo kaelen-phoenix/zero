@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -31,7 +31,8 @@ Primeros pasos:
                                  Se puede volver a correr; con Docker: docker compose run --rm zero setup
 
 Uso diario (también desde el chat):
-  zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec]
+  zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec] [--prioridad baja|media|alta|urgente]
+  zero priority <trabajo> <nivel>    Cambia la prioridad de un trabajo que no terminó (baja, media, alta, urgente)
   zero status [trabajo]          Estado de la fábrica o de un trabajo
   zero approve <trabajo>         Aprueba una consulta   [--reject] [--note "<motivo>"]
   zero stop [trabajo]            Andon: detiene un trabajo, o toda la fábrica
@@ -103,6 +104,7 @@ async function main(argv: string[]): Promise<number> {
       line: { type: "string" },
       name: { type: "string" },
       spec: { type: "boolean" },
+      prioridad: { type: "string" },
       reject: { type: "boolean" },
       informativo: { type: "boolean" },
       tipo: { type: "string" },
@@ -242,9 +244,14 @@ async function main(argv: string[]): Promise<number> {
       }
       case "request": {
         const text = rest.join(" ");
-        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request" });
+        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
         const started = await ensureDaemon(ctx);
         console.log(formatRequest(r) + (started ? "\nLa fábrica estaba apagada: la encendí." : ""));
+        return 0;
+      }
+      case "priority": {
+        if (!rest[0] || !rest[1]) throw new Error("Indicá el trabajo y la prioridad: zero priority <trabajo> <baja|media|alta|urgente>");
+        console.log(formatJob(setPriority(ctx, rest[0], rest[1]), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
         return 0;
       }
       case "status":

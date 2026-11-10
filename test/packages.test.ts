@@ -221,6 +221,51 @@ describe("the manifest", () => {
   });
 });
 
+describe("a package's tabs", () => {
+  const tab = { name: "noticias", title: "Noticias", data: "items.json", categories: ["a", "b"] };
+
+  it("loads a valid one, with its title, file and categories", async () => {
+    const ctx = await factory([{ path: pkg({ tabs: [tab] }) }]);
+    expect(problems(ctx)).toEqual([]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs).toEqual([tab]);
+  });
+
+  it("has none when the manifest declares none", async () => {
+    const ctx = await factory([{ path: pkg({}) }]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs).toEqual([]);
+  });
+
+  it.each(["../x.json", "/etc/x.json", "C:/x.json"])("refuses the data path %s, naming it", async (data) => {
+    const ctx = await factory([{ path: pkg({ tabs: [{ ...tab, data }] }) }]);
+    expect(ctx.config.loadedPackages!.packages).toEqual([]);
+    expect(problems(ctx)[0]!.reason).toContain(data);
+  });
+
+  it("refuses a repeated name, naming the tab", async () => {
+    const ctx = await factory([{ path: pkg({ tabs: [tab, { ...tab, title: "Otra" }] }) }]);
+    expect(ctx.config.loadedPackages!.packages).toEqual([]);
+    expect(problems(ctx)[0]!.reason).toMatch(/tabs.*"noticias"/);
+  });
+
+  it.each([
+    ["an unknown key", { ...tab, extra: true }],
+    ["a file that is not .json", { ...tab, data: "items.txt" }],
+    ["an empty title", { ...tab, title: "" }],
+    ["a title over 60 characters", { ...tab, title: "x".repeat(61) }],
+    ["repeated categories", { ...tab, categories: ["a", "a"] }],
+  ])("refuses %s, naming tabs", async (_what, bad) => {
+    const ctx = await factory([{ path: pkg({ tabs: [bad] }) }]);
+    expect(ctx.config.loadedPackages!.packages).toEqual([]);
+    expect(problems(ctx)[0]!.reason).toContain("tabs");
+  });
+
+  it("needs no allowCode", async () => {
+    const { dir } = stationPkg({ extra: { tabs: [tab] } });
+    const ctx = await factory([{ path: dir }]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs).toEqual([tab]);
+  });
+});
+
 describe("a broken package", () => {
   it("stays out without throwing, and the valid one loads", async () => {
     const missing = join(tempDir(), "no-existe");
@@ -510,6 +555,17 @@ describe("a station's config", () => {
     expect(calls(marker)).toBe(0);
     expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
     expect(warn.mock.calls.some(([m]) => m.includes("falta el saludo"))).toBe(true);
+  });
+});
+
+describe("a station's data folder", () => {
+  it("is <ZERO_HOME>/package-data/<package>, created before the pass", async () => {
+    const out = join(tempDir(), "data.json");
+    const { dir } = stationPkg({ top: `import { existsSync, writeFileSync } from "node:fs";`, body: `writeFileSync(${JSON.stringify(out)}, JSON.stringify({ dir: ctx.dataDir, exists: existsSync(ctx.dataDir) }));` });
+    const ctx = await factory([{ path: dir, allowCode: true }]);
+    expect(ctx.home.packageData).toBe(join(ctx.home.root, "package-data"));
+    await pass(ctx);
+    expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({ dir: join(ctx.home.root, "package-data", "hello"), exists: true });
   });
 });
 
