@@ -5,6 +5,7 @@
 - [x] 1.1 `verifyTimeoutMs` and `localCommands` in `src/line/pace.ts`; `lines[].verifyTimeoutMinutes` and `commandConcurrency` in `src/config.ts`.
 - [x] 1.2 `verifyChange` takes the limit per command (`timeoutFor`), records `zero.timeout_ms` and `zero.run_ms`, and names the limit and the option when it is reached.
 - [x] 1.3 The runner's local `shell` goes through `localCommands`; `prepareWorkCopy` tries a failed setup once more in a fresh copy.
+- [x] 1.4 `machineTrouble` in `src/line/verify.ts`: a failed verify command that reads like the machine is run once more.
 
 ## 2. Procesos que quedan vivos
 
