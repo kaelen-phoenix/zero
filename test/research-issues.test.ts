@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { IssueApi } from "../src/intake/github.js";
-import { RESEARCH_LABEL, syncResearchIssues } from "../src/intake/research.js";
+import { RESEARCH_LABEL, researchIssueBody, researchIssueTitle, syncResearchIssues } from "../src/intake/research.js";
 import { cleanup, gitIn, gitRepo, testFactory } from "./helpers.js";
 
 afterEach(cleanup);
@@ -123,5 +123,34 @@ describe("research notes as GitHub issues", () => {
     await syncResearchIssues(ctx, () => gh.api);
     const body = gh.created()[0]!.body!;
     for (const part of [finding.findings, finding.serves, finding.maturity, ...finding.sources, note.id, `zero research request ${note.id}`]) expect(body).toContain(part);
+  });
+
+  it("publishes images and resource tags as text", async () => {
+    const ctx = factory();
+    ctx.store.createResearchNote({ line: "demo", ...finding, findings: "![x](https://sitio.example/?d=1)", serves: "![y][r]", maturity: '<IMG\nsrc="https://sitio.example/?d=2">' });
+    const gh = fakeGitHub();
+    await syncResearchIssues(ctx, () => gh.api);
+    const body = gh.created()[0]!.body!;
+    expect(body).not.toContain("![");
+    expect(body).not.toContain("<IMG");
+    expect(body).toContain("https://sitio.example/?d=1");
+    expect(body).toContain("https://sitio.example/?d=2");
+  });
+
+  it("makes media inert after the scrub, which could bring it together", () => {
+    const ctx = factory();
+    const line = ctx.config.lines[0]!;
+    const note = ctx.store.createResearchNote({ line: "demo", ...finding, findings: `!${line.repo}/[x](https://sitio.example/a) y <${line.repo}/img src=https://sitio.example/b>` });
+    const body = researchIssueBody(note, line);
+    expect(body.toLowerCase()).not.toContain(line.repo.toLowerCase());
+    expect(body).not.toContain("![");
+    expect(body).not.toContain("<img");
+  });
+
+  it("makes media in the title inert", () => {
+    const ctx = factory();
+    const line = ctx.config.lines[0]!;
+    const note = ctx.store.createResearchNote({ line: "demo", ...finding, topic: "Tema ![x](https://sitio.example/a)" });
+    expect(researchIssueTitle(note, line)).not.toContain("![");
   });
 });

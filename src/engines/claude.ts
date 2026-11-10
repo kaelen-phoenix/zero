@@ -157,13 +157,15 @@ function answeringModel(usage: SDKResultMessage["modelUsage"] | undefined): stri
 export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): EngineResult {
   const sessionId = result.session_id;
   const model = answeringModel(result.modelUsage);
+  const usage = result.usage as { input_tokens?: unknown; output_tokens?: unknown } | undefined;
+  const tokens = typeof usage?.input_tokens === "number" && typeof usage.output_tokens === "number" ? { input: usage.input_tokens, output: usage.output_tokens } : undefined;
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
     if (errors.some((e) => String(e).includes(CREDIT_TEXT))) quota = NO_CREDIT;
-    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
   if (result.is_error && typeof result.result === "string" && result.result.includes(CREDIT_TEXT)) quota = NO_CREDIT;
-  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
 }

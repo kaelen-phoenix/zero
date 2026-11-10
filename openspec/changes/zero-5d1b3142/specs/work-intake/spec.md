@@ -75,7 +75,7 @@ The pass MUST remember each alert it took (kv per repository and alert number, r
 - **THEN** the pass creates no job for alert #3
 
 ### Requirement: Prioridad urgente en la cola
-The daemon's queue order (`ownerFirst`) SHALL put queued jobs with source kind `security-alert` and severity `high` or `critical` before every other queued job. Security jobs of severity `medium` or `low` SHALL keep the position of ordinary jobs. No security-alert job MUST ever count as low priority.
+A job with source kind `security-alert` and severity `high` or `critical` SHALL get the priority `urgente` by default (`defaultPriority`), so the daemon's queue order (`ownerFirst`) puts it before every queued job of a lower priority; zero gives it on its own, and `requestWork` MUST still refuse `urgente` asked for together with a source. Security jobs of severity `medium` or `low` SHALL get `media` and keep the position of ordinary jobs. No security-alert job MUST ever count as low priority.
 
 #### Scenario: Critical goes first
 - **WHEN** ownerFirst receives [owner job A, package job B, security job C with severity critical] in that order

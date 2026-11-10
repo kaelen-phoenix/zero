@@ -4,6 +4,9 @@ export const intakeProblemKey = (line: string) => `intake.problem.${line}`;
 /** The same for the Linear intake. */
 export const linearIssueKey = (team: string, id: string) => `linear-issue:${team}/${id}`;
 export const linearProblemKey = (line: string) => `intake.linear.problem.${line}`;
+/** A Jira issue's state, by the site's host and the issue key. */
+export const jiraIssueKey = (site: string, key: string) => `jira:${new URL(site).host}/${key}`;
+export const jiraProblemKey = (line: string) => `jira.problem.${line}`;
 
 /** The security-alerts pass: each alert it took (its job), each line's open alerts and its last read problem. */
 export const securityAlertKey = (repository: string, number: number) => `security-alert:${repository}#${number}`;

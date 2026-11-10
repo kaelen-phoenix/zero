@@ -103,6 +103,18 @@ describe("budget", () => {
     expect(budgetState(store, config(), new Date("2026-10-29T15:16:00Z")).reached).toBe(false);
   });
 
+  it("pauses codex for a while after its API key ran out of credit", () => {
+    const store = testStore();
+    call(new Tracer(store, at("2026-10-29T15:00:00Z")), 0, { billing: "api", windows: [], limited: true }, "codex");
+    const cfg = parseFactory("engine: codex\nlines: []\n");
+    expect(budgetState(store, cfg, new Date("2026-10-29T15:05:00Z"))).toMatchObject({
+      reached: true,
+      until: "2026-10-29T15:15:00.000Z",
+      reason: expect.stringContaining("la clave de API se quedó sin saldo"),
+    });
+    expect(budgetState(store, cfg, new Date("2026-10-29T15:16:00Z")).reached).toBe(false);
+  });
+
   it("keeps the daily cap after the out-of-credit pause and hands the station to the fallback", () => {
     const capped = testStore();
     call(new Tracer(capped, at("2026-10-29T15:00:00Z")), 10, { billing: "api", windows: [] });

@@ -4,12 +4,13 @@ import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
+import { effectivePriority, storedPriority } from "./priority.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
 
-const STATUS_TEXT: Record<Job["status"], string> = {
+export const STATUS_TEXT: Record<Job["status"], string> = {
   queued: "en cola",
   running: "trabajando",
   waiting: "esperando tu respuesta",
@@ -65,7 +66,8 @@ export function describeJobStatus(job: Job): string {
 }
 
 export function formatRequest(r: RequestResult): string {
-  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}".`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+  const priority = storedPriority(r.job);
+  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}"${priority === "media" ? "" : `, con prioridad ${priority}`}.`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
@@ -102,6 +104,7 @@ export function formatJob(job: Job, opts: { subscription?: boolean } = {}): stri
     `Trabajo ${job.id} · ${jobName(job)}`,
     `Estado: ${describeJobStatus(job)}`,
     `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
+    `Prioridad: ${storedPriority(job)}`,
   ];
   const origin = jobOrigin(job);
   if (origin) lines.push(`Origen: ${origin}`);
@@ -187,6 +190,13 @@ function githubLine(g: GithubStatus, now: Date): string {
   return `GitHub: ${parts.join(" · ")}`;
 }
 
+/** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
+export function priorityNote(job: Job, now = new Date()): string {
+  const level = effectivePriority(job, now);
+  if (level === "media" && storedPriority(job) === "media") return "";
+  return ` · prioridad ${level}${level !== storedPriority(job) ? " (subió por la espera)" : ""}`;
+}
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -214,6 +224,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const j of s.jira) out.push(`Issues de Jira: la línea ${j.line} toma los issues de ${j.project} (${j.site}) con la etiqueta "${j.label}"${j.problem ? ` · PROBLEMA: ${j.problem}` : ""}`);
   for (const l of s.securityAlerts) {
     if (l.problem) out.push(`Alertas de seguridad: la línea ${l.line} · PROBLEMA: ${l.problem}`);
     for (const a of l.alerts) out.push(`Alertas de seguridad: la línea ${l.line} · ${describeAlert(a)}`);
@@ -229,7 +240,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;
     out.push("", `${title}:`);
-    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}`);
+    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`);
   };
   list("Esperando tu respuesta", s.waiting);
   list("Trabajando", s.running);

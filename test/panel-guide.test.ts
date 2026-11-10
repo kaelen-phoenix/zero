@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
+import { requestWork } from "../src/app.js";
 import { saveBoxStatus } from "../src/box/status.js";
 import { esc } from "../src/panel/html.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
@@ -41,8 +42,8 @@ describe("panel guide pages", () => {
   it("adds both tabs to the menu", async () => {
     const p = await panel();
     const home = await p.text("/");
-    expect(home).toContain(`<a href="/about">Qué es zero</a>`);
-    expect(home).toContain(`<a href="/agents">Agentes</a>`);
+    expect(home).toMatch(/<a href="\/about"[^>]*><svg[^>]*>[\s\S]*?<\/svg><span class="lb">Qué es zero<\/span><\/a>/);
+    expect(home).toMatch(/<a href="\/agents"[^>]*><svg[^>]*>[\s\S]*?<\/svg><span class="lb">Agentes<\/span><\/a>/);
   });
 
   it("asks for the session and shows no factory data without it", async () => {
@@ -60,7 +61,8 @@ describe("panel guide pages", () => {
   it("is read-only: no forms, and a POST changes nothing", async () => {
     const p = await panel();
     for (const path of ["/about", "/agents"]) {
-      const html = await p.text(path);
+      // The side menu's collapse checkbox is the only input: it changes nothing but the menu.
+      const html = (await p.text(path)).replace('<input type="checkbox" id="nav-toggle" class="nav-toggle">', "");
       for (const tag of ["<form", "<textarea", "<input", "<select"]) expect(html).not.toContain(tag);
     }
     const before = readFileSync(p.ctx.home.config, "utf8");
@@ -217,5 +219,87 @@ describe("panel guide pages", () => {
     for (const path of ["/about", "/agents"]) expect(await p.text(path)).not.toMatch(/ on[a-z]+=/);
     const csp = (r: Response) => r.headers.get("content-security-policy")!.replace(/'nonce-[^']+'/, "'nonce'");
     expect(csp(await p.get("/agents"))).toBe(csp(await p.get("/")));
+  });
+});
+
+const SECTIONS = ["/", "/line", "/egress", "/proposals", "/research", "/monitor", "/briefing", "/report", "/about", "/agents"];
+const sideNav = (html: string) => {
+  const navs = html.match(/<nav class="side"[\s\S]*?<\/nav>/g) ?? [];
+  expect(navs).toHaveLength(1);
+  return navs[0]!;
+};
+const styleOf = (html: string) => /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+
+describe("panel layout and brand", () => {
+  it("puts the side menu on every page, with an icon and a label per section and the current one marked", async () => {
+    const p = await panel();
+    for (const path of ["/", "/line", "/proposals", "/research", "/report", "/about", "/agents"]) {
+      const html = await p.text(path);
+      const nav = sideNav(html);
+      expect([...nav.matchAll(/<a href="([^"]+)"/g)].map((m) => m[1])).toEqual(SECTIONS);
+      for (const link of nav.match(/<a [\s\S]*?<\/a>/g)!) {
+        expect(link).toMatch(/<svg[^>]*aria-hidden="true"/);
+        expect(link).toMatch(/<span class="lb">[^<]+<\/span>/);
+      }
+      expect([...html.matchAll(/<a href="([^"]+)" aria-current="page"/g)].map((m) => m[1])).toEqual([path]);
+      expect(html.match(/<[a-z][^>]*\saria-current=/gi)).toHaveLength(1);
+      expect(html).toContain(`<meta name="viewport" content="width=device-width, initial-scale=1">`);
+    }
+  });
+
+  it("collapses with a checkbox and a label, and turns into a dropdown on a phone, all in CSS", async () => {
+    const p = await panel();
+    const html = await p.text("/");
+    expect(html).toContain(`<input type="checkbox" id="nav-toggle"`);
+    expect(html).toMatch(/<label for="nav-toggle"[^>]*aria-label="[^"]+"/);
+    const css = styleOf(html);
+    expect(css).toMatch(/#nav-toggle:checked ~ \.side \{[^}]*width:/);
+    expect(css).toMatch(/#nav-toggle:checked ~ \.side \.lb[^{]*\{[^}]*display:none/);
+    const phone = /@media \(max-width: \d+px\) \{\n([\s\S]*?)\n\}/.exec(css)![1]!;
+    expect(phone).toMatch(/\.side ul\.links \{[^}]*display:none/);
+    expect(phone).toMatch(/#nav-toggle:checked ~ \.side ul\.links \{[^}]*display:flex;[^}]*flex-direction:column/);
+    expect(await p.text("/about")).not.toContain("<script");
+    for (const path of ["/about", "/line"]) expect([...(await p.text(path)).matchAll(/<[a-z][^>]*>/gi)].some((t) => /\son[a-z]+=/i.test(t[0]))).toBe(false);
+  });
+
+  it("uses the site's palette, fonts and logo, in light and dark", async () => {
+    const p = await panel();
+    const html = await p.text("/");
+    const css = styleOf(html);
+    for (const color of ["#fbfbf9", "#111111", "#a8360b", "#0e0e0f", "#ececea", "#ff8a5c"]) expect(css).toContain(color);
+    expect(css).toMatch(/--sans:\s*system-ui/);
+    expect(css).toMatch(/--mono:\s*ui-monospace/);
+    expect(css).toMatch(/color-scheme:\s*light dark/);
+    const dark = /@media \(prefers-color-scheme: dark\) \{([\s\S]*?\})\s*\}/.exec(css)![1]!;
+    for (const token of ["--bg:", "--fg:", "--accent:", "--st-ok:", "--st-bad:", "--st-waiting:", "--st-active:"]) expect(dark).toContain(token);
+    const login = await (await p.get("/", {})).text();
+    expect(login).not.toContain(`<nav class="side"`);
+    for (const page of [html, login]) {
+      expect(page).toMatch(/<svg class="logo"[^>]*>(?:(?!<\/svg>)[\s\S])*<circle(?:(?!<\/svg>)[\s\S])*#ff8a5c/);
+      expect(page).not.toContain("<img");
+    }
+  });
+
+  it("loads nothing from outside and keeps the same policy", async () => {
+    const p = await panel();
+    for (const path of ["/", "/line", "/about", "/agents"]) {
+      const html = await p.text(path);
+      for (const outside of ["<link ", "<img", "@import", "url(http", 'src="http']) expect(html, `${path}: ${outside}`).not.toContain(outside);
+    }
+    const csp = async (path: string) => (await p.get(path)).headers.get("content-security-policy")!.replace(/'nonce-[^']+'/, "'nonce'");
+    const home = await csp("/");
+    expect(home).toMatch(/default-src 'none'.*script-src 'nonce'.*frame-ancestors 'none'/);
+    for (const path of ["/line", "/agents"]) expect(await csp(path)).toBe(home);
+    for (const path of ["/proposals", "/about"]) expect((await p.get(path, {})).status).toBe(401);
+  });
+
+  it("shows each job's status as a chip on the overview", async () => {
+    const p = await panel();
+    requestWork(p.ctx, { text: "en cola" });
+    const { job } = requestWork(p.ctx, { text: "listo" });
+    p.ctx.store.finishJob(job.id, "delivered", { delivery: { mode: "branch", branch: "zero/x" } });
+    const html = await p.text("/");
+    expect(html).toContain(`class="chip" data-status="queued"`);
+    expect(html).toContain(`class="chip" data-status="delivered"`);
   });
 });

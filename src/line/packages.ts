@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,7 +8,7 @@ import { ANDON_KEY, requestWork, type FactoryContext } from "../app.js";
 import { budgetState, pickAgentEngine } from "../budget.js";
 import type { PackageStation } from "../config.js";
 import { log } from "../log.js";
-import { warnOnce } from "../packages.js";
+import { packageDataDir, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
@@ -53,6 +54,8 @@ export interface StationContext {
   log: { info(message: string, fields?: Record<string, unknown>): void; warn(message: string, fields?: Record<string, unknown>): void };
   /** Line names only. */
   lines: string[];
+  /** The package's own data folder in ZERO_HOME, already created; its panel tabs read their JSON from here. */
+  dataDir: string;
   /** Kept between passes, in keys of this station alone; any value JSON can hold. */
   state: { get<T = unknown>(name: string): T | undefined; set(name: string, value: unknown): void };
   /** No job ids, branches or local paths. */
@@ -228,6 +231,8 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
 function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
   const key = stationKey(station);
   const stateKey = (name: string) => `${key}:state:${name}`;
+  const dataDir = packageDataDir(ctx.home, station.package);
+  mkdirSync(dataDir, { recursive: true });
   const clean = (fields?: Record<string, unknown>) => (fields ? (JSON.parse(JSON.stringify(fields, (_k, v: unknown) => (typeof v === "string" ? withoutSecrets(v, ctx, station) : v))) as Record<string, unknown>) : undefined);
   return {
     package: station.package,
@@ -243,6 +248,7 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
       warn: (message, fields) => log.warn(`${key}: ${withoutSecrets(message, ctx, station)}`, clean(fields)),
     },
     lines: ctx.config.lines.map((l) => l.name),
+    dataDir,
     state: {
       get: <T>(name: string) => {
         const raw = ctx.store.getKv(stateKey(name));
