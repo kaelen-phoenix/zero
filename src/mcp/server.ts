@@ -45,11 +45,15 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         text: z.string().describe("What the owner wants, in their words."),
         line: z.string().optional().describe("Project (line) name; optional when the factory has a single line."),
         kind: z.enum(["request", "spec"]).optional().describe("'spec' when the owner pasted a written specification."),
+        priority: z
+          .enum(["baja", "media", "alta", "urgente"])
+          .optional()
+          .describe("Priority; default 'media'. 'alta' goes ahead of the queue. Use 'urgente' (for example a security patch) only when the owner explicitly asks for it."),
       },
     },
-    ({ text: request, line, kind }) =>
+    ({ text: request, line, kind, priority }) =>
       withFactory(home, async (ctx) => {
-        const result = requestWork(ctx, { text: request, line, kind });
+        const result = requestWork(ctx, { text: request, line, kind, priority });
         const started = autoStart && (await ensureDaemon(ctx));
         return formatRequest(result) + (started ? "\nLa fábrica estaba apagada: la encendí." : "");
       }),

@@ -6,6 +6,7 @@ import { log } from "../log.js";
 import { redact } from "../secrets.js";
 import type { Proposal } from "../state/store.js";
 import { lineRepository, TRUSTED, type IssueApi, type IssueState } from "./github.js";
+import { inertMedia } from "./inert-media.js";
 import { issueKey, PROPOSAL_LABEL } from "./keys.js";
 
 /**
@@ -63,11 +64,11 @@ export function proposalIssueBody(proposal: Proposal, line: Pick<LineConfig, "re
     `Costo estimado: $${proposal.estimatedUsd.toFixed(2)} · propuesta \`${proposal.id}\``,
     howToDecide(proposal, line.issues?.label ?? "zero", proposalAutonomy(config, line, proposal)),
   ].join("\n\n");
-  return breakMentions(scrub(body, line));
+  return inertMedia(breakMentions(scrub(body, line)));
 }
 
 async function publish(ctx: FactoryContext, line: LineConfig, proposal: Proposal, gh: IssueApi): Promise<Proposal> {
-  const issue = await gh.createIssue(breakMentions(scrub(proposal.title, line)), proposalIssueBody(proposal, line, ctx.config), [PROPOSAL_LABEL]);
+  const issue = await gh.createIssue(inertMedia(breakMentions(scrub(proposal.title, line))), proposalIssueBody(proposal, line, ctx.config), [PROPOSAL_LABEL]);
   ctx.store.setProposalIssue(proposal.id, issue);
   log.info("proposal published as an issue", { proposal: proposal.id, issue: issue.number });
   return { ...proposal, issueNumber: issue.number, issueUrl: issue.url };
@@ -96,14 +97,14 @@ async function tellApproved(ctx: FactoryContext, line: LineConfig, repository: s
   ctx.store.setKv(key, JSON.stringify({ job: proposal.jobId, reported: "queued", labeledAt: "" } satisfies IssueState));
   // Idempotent first: a failed comment is retried without labeling twice.
   await gh.addLabels(proposal.issueNumber, [label]);
-  await gh.comment(proposal.issueNumber, scrub(approvalText(ctx, line, proposal), line));
+  await gh.comment(proposal.issueNumber, inertMedia(scrub(approvalText(ctx, line, proposal), line)));
   ctx.store.markProposalIssueTold(proposal.id, "approved");
 }
 
 async function tellRejected(ctx: FactoryContext, line: LineConfig, proposal: Proposal & { issueNumber: number }, gh: IssueApi) {
   const reason = proposal.note ? `con este motivo:\n\n${proposal.note.split("\n").map((l) => `> ${l}`).join("\n")}` : "sin dar motivo.";
   await gh.close(proposal.issueNumber);
-  await gh.comment(proposal.issueNumber, breakMentions(scrub(`La persona responsable rechazó esta propuesta ${reason}`, line)));
+  await gh.comment(proposal.issueNumber, inertMedia(breakMentions(scrub(`La persona responsable rechazó esta propuesta ${reason}`, line))));
   ctx.store.markProposalIssueTold(proposal.id, "rejected");
 }
 

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
+import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, MonitorPeriod, MonitorView, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
+import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
 import { reportSection, type MonthlyReport } from "../report.js";
-import { FINAL_STATUSES, type Job, type ResearchNote } from "../state/store.js";
+import { FINAL_STATUSES, type Job, type JobStatus, type ResearchNote } from "../state/store.js";
 import type { EgressSite } from "../telemetry/metrics.js";
 import type { SkillView } from "../skills.js";
 
@@ -17,74 +18,158 @@ export const esc = (s: unknown) =>
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 const STYLE = `
-:root { --bg:#f6f7f9; --card:#fff; --text:#16181d; --muted:#5d6470; --line:#e3e6eb; --accent:#2f5bea; --warn:#b4540a; --bad:#c22f2f; --ok:#1f7a45; }
-@media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d23; --text:#e8eaee; --muted:#9aa2ae; --line:#2a2f37; --accent:#7d9bff; --warn:#f0a35e; --bad:#ff7b7b; --ok:#5fd394; } }
+:root { color-scheme:light dark; --bg:#fbfbf9; --fg:#111111; --muted:#5c5c58; --accent:#a8360b; --on-accent:#ffffff; --surface:#ffffff; --surface-2:#f3f3ef; --rule:#dcdcd6; --code-bg:#f0f0eb;
+  --st-queued:#6b6b66; --st-active:#1f5fbf; --st-waiting:#9a5b00; --st-ok:#1f7a45; --st-bad:#b42318; --st-stopped:#6d5a8a;
+  --warn:var(--st-waiting); --bad:var(--st-bad); --ok:var(--st-ok); --side-w:232px; --side-min:64px;
+  --sans:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --mono:ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0e0e0f; --fg:#ececea; --muted:#a3a3a0; --accent:#ff8a5c; --on-accent:#0e0e0f; --surface:#161618; --surface-2:#121214; --rule:#2c2c2f; --code-bg:#19191b;
+  --st-queued:#9a9a96; --st-active:#7aa7ff; --st-waiting:#f0b35e; --st-ok:#5fd394; --st-bad:#ff7b7b; --st-stopped:#b8a3dd; } }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-header { position:sticky; top:0; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; z-index:1; }
-header strong { margin-right:auto; }
-header a { color:var(--accent); text-decoration:none; }
-main { max-width:760px; margin:0 auto; padding:16px; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:0 0 14px; }
-h1 { font-size:1.25rem; margin:0 0 8px; } h2 { font-size:1.05rem; margin:18px 0 8px; } h3 { font-size:1rem; margin:0 0 6px; }
+html { -webkit-text-size-adjust:100%; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 var(--sans); overflow-wrap:break-word; }
+body.shell { display:flex; min-height:100vh; }
+a { color:var(--accent); text-underline-offset:.2em; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+code, pre { font-family:var(--mono); }
+:not(pre) > code { background:var(--code-bg); padding:.1em .35em; border-radius:4px; font-size:.9em; }
+.brand { display:inline-flex; align-items:center; gap:10px; font:600 1.2rem/1 var(--mono); letter-spacing:-.02em; color:var(--fg); }
+.brand .logo { width:26px; height:26px; flex:none; }
+header.top { padding:14px 20px; border-bottom:1px solid var(--rule); background:var(--surface); }
+.nav-toggle { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
+.side { position:sticky; top:0; height:100vh; width:var(--side-w); flex:none; display:flex; flex-direction:column; gap:6px; padding:14px 10px; background:var(--surface); border-right:1px solid var(--rule); overflow-y:auto; transition:width .2s ease; }
+.side .brand-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 6px 12px; }
+.side .toggle { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:8px; color:var(--muted); cursor:pointer; margin:0; }
+.side .toggle:hover { background:var(--surface-2); color:var(--fg); }
+#nav-toggle:focus-visible ~ .side .toggle { outline:2px solid var(--accent); }
+.side ul.links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
+.side ul.links a { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:8px; color:var(--muted); text-decoration:none; font-weight:500; white-space:nowrap; }
+.side ul.links a:hover { background:var(--surface-2); color:var(--fg); }
+.side ul.links a[aria-current="page"] { background:var(--surface-2); color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
+.side svg, .ic svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+#nav-toggle:checked ~ .side { width:var(--side-min); }
+#nav-toggle:checked ~ .side .lb, #nav-toggle:checked ~ .side .word { display:none; }
+#nav-toggle:checked ~ .side .brand-row { flex-direction:column; padding:4px 0 12px; }
+#nav-toggle:checked ~ .side ul.links a { justify-content:center; padding:9px 0; }
+main { flex:1; min-width:0; padding:22px 28px 40px; }
+main > :not(#line) { max-width:980px; }
+body.plain main { max-width:480px; margin:0 auto; }
+.card { background:var(--surface); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; margin:0 0 14px; }
+h1 { font-size:1.35rem; line-height:1.25; margin:0 0 10px; letter-spacing:-.01em; } h2 { font-size:1.08rem; margin:20px 0 8px; } h3 { font-size:1rem; margin:0 0 6px; }
+.card > h2:first-child { margin-top:0; }
 .muted { color:var(--muted); font-size:.92rem; } .warn { color:var(--warn); } .bad { color:var(--bad); } .ok { color:var(--ok); }
-pre { white-space:pre-wrap; word-break:break-word; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; font:13px/1.4 ui-monospace,Consolas,monospace; margin:8px 0; }
+pre { white-space:pre-wrap; word-break:break-word; background:var(--code-bg); border:1px solid var(--rule); border-radius:8px; padding:10px; font:13px/1.45 var(--mono); margin:8px 0; }
 form { margin:8px 0 0; } form.inline { display:inline; }
-button { font:inherit; padding:9px 14px; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; margin:4px 6px 0 0; }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; } button.danger { border-color:var(--bad); color:var(--bad); }
-textarea, input, select { font:inherit; width:100%; padding:9px 10px; border-radius:9px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+button { font:inherit; font-weight:500; padding:8px 14px; border-radius:8px; border:1px solid var(--rule); background:var(--surface); color:var(--fg); cursor:pointer; margin:4px 6px 0 0; }
+button:hover { border-color:var(--muted); }
+button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); } button.danger { border-color:var(--bad); color:var(--bad); }
+textarea, input, select { font:inherit; width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--rule); background:var(--bg); color:var(--fg); }
 textarea { min-height:90px; } label { display:block; margin:8px 0 4px; font-size:.92rem; color:var(--muted); }
-ul.jobs { list-style:none; padding:0; margin:0; } ul.jobs li { padding:8px 0; border-top:1px solid var(--line); } ul.jobs li:first-child { border-top:0; }
-a.job { color:var(--text); text-decoration:none; } a.job:hover { text-decoration:underline; }
+ul.jobs { list-style:none; padding:0; margin:0; } ul.jobs li { padding:10px 0; border-top:1px solid var(--rule); } ul.jobs li:first-child { border-top:0; }
+ul.jobs .top { display:flex; gap:8px; align-items:center; justify-content:space-between; }
+a.job { color:var(--fg); text-decoration:none; } a.job:hover { text-decoration:underline; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
-.stat b { display:block; font-size:1.3rem; }
-.flash { border-color:var(--accent); }
-table { border-collapse:collapse; width:100%; font-size:.9rem; display:block; overflow-x:auto; } td, th { border:1px solid var(--line); padding:4px 6px; text-align:left; }
-.row h3 { overflow-wrap:anywhere; } .row .out, .row .retry { margin:8px 0 0; }
-.belt { margin-top:8px; } .track { position:relative; padding-top:30px; }
-.track::before { content:""; position:absolute; left:2%; right:2%; top:10px; height:8px; border-radius:4px; background:repeating-linear-gradient(90deg,var(--line) 0 10px,transparent 10px 20px); background-size:20px 8px; }
-.piece { position:absolute; top:4px; left:calc(var(--pos) * 100% / 7 + 100% / 14 - 11px); width:22px; height:20px; border-radius:5px; background:var(--accent); transition:left .9s ease, background-color .4s, opacity .4s; }
-.piece.out { left:calc(100% - 22px); } .piece.ok { background:var(--ok); } .piece.bad { background:var(--bad); } .piece.idle { opacity:0; }
-ol.stations { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:4px; }
-.st { text-align:center; font-size:.78rem; color:var(--muted); border:1px solid var(--line); border-radius:9px; padding:4px 2px; transition:border-color .4s, color .4s; }
-.st summary { list-style:none; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:1px; } .st summary::-webkit-details-marker { display:none; }
-.st .ic { display:inline-flex; width:26px; height:26px; } .st svg { width:26px; height:26px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.st .nm { font-weight:600; } .st .mk { font-weight:700; } .st .why { color:var(--bad); overflow-wrap:anywhere; }
-.st .dt { text-align:left; padding:4px; overflow-wrap:anywhere; }
-.st[data-state="active"] { color:var(--accent); border-color:var(--accent); }
-.st[data-state="done"] { color:var(--ok); }
-.st[data-state="error"] { color:var(--bad); border-color:var(--bad); }
-.st[data-state="waiting"] { color:var(--warn); border-color:var(--warn); }
+.stat { border-left:3px solid var(--rule); padding:2px 0 2px 10px; }
+.stat b { display:block; font:600 1.4rem/1.2 var(--mono); }
+.flash { border-color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
+table { border-collapse:collapse; width:100%; font-size:.9rem; display:block; overflow-x:auto; } td, th { border:1px solid var(--rule); padding:4px 6px; text-align:left; }
+[data-status="queued"], [data-state="pending"] { --st:var(--st-queued); }
+[data-status="running"], [data-state="active"] { --st:var(--st-active); }
+[data-status="waiting"], [data-state="waiting"] { --st:var(--st-waiting); }
+[data-status="delivered"], [data-state="done"] { --st:var(--st-ok); }
+[data-status="failed"], [data-state="error"] { --st:var(--st-bad); }
+[data-status="stopped"] { --st:var(--st-stopped); }
+.chip { display:inline-flex; align-items:center; gap:5px; flex:none; font-size:.75rem; font-weight:600; line-height:1; padding:4px 8px; border-radius:999px; color:var(--st); border:1px solid var(--st); background:var(--surface); white-space:nowrap; }
+.chip::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--st); }
+.badge { display:inline-block; font-size:.8rem; padding:1px 8px; border-radius:9px; border:1px solid currentColor; }
+.board-note:empty { display:none; }
+.board { display:grid; grid-template-columns:repeat(8, minmax(0, 1fr)); gap:8px; height:calc(100vh - 13rem); min-height:22rem; }
+.lane { display:flex; flex-direction:column; min-width:0; background:var(--surface-2); border:1px solid var(--rule); border-radius:10px; overflow-y:auto; }
+.lane-head { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:6px; padding:8px; background:var(--surface-2); border-bottom:1px solid var(--rule); font-size:.8rem; font-weight:600; }
+.lane-head .ic svg { width:16px; height:16px; }
+.lane-head .ln { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.lane-head .n { font-family:var(--mono); color:var(--muted); }
+.lane[data-count="0"] .lane-head .n { opacity:.5; }
+.lane .cards { display:flex; flex-direction:column; gap:6px; padding:6px; }
+.card.job { margin:0; padding:8px; border-radius:8px; border-left:3px solid var(--st); font-size:.82rem; transition:border-color .3s; }
+.card.job .jh { display:flex; flex-direction:column; align-items:flex-start; gap:4px; margin:0; font-size:.85rem; }
+.card.job .jh a { font-weight:600; overflow-wrap:anywhere; }
+.card.job .meta { margin:4px 0 0; font-size:.75rem; overflow-wrap:anywhere; }
+.card.job .retry, .card.job .out { margin:6px 0 0; font-size:.78rem; overflow-wrap:anywhere; }
+ol.stations { list-style:none; margin:6px 0 0; padding:0; display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; }
+.st { min-width:0; color:var(--st); border-radius:5px; }
+.st[data-state="pending"] { color:var(--muted); opacity:.6; }
+.st summary { list-style:none; cursor:pointer; display:flex; justify-content:center; padding:2px 0; border-radius:5px; } .st summary::-webkit-details-marker { display:none; }
+.st summary:hover { background:var(--surface-2); }
+.st .ic { display:inline-flex; } .st .ic svg { width:15px; height:15px; }
+.st .nm, .st .mk, .st .tx { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.st:has(details[open]) { grid-column:1 / -1; order:9; }
+.st .dt { color:var(--fg); text-align:left; padding:6px; margin-top:2px; background:var(--surface-2); border-radius:6px; overflow-wrap:anywhere; font-size:.75rem; }
+.st .why { display:block; color:var(--bad); }
 @keyframes spin { to { transform:rotate(360deg); } }
-@keyframes scan { 0%,100% { transform:translateX(-3px); } 50% { transform:translateX(3px); } }
-@keyframes glow { 0%,100% { opacity:1; } 50% { opacity:.45; } }
-@keyframes bob { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-3px); } }
-@keyframes beat { 0%,100% { transform:scale(1); } 50% { transform:scale(1.12); } }
-@keyframes belt { to { background-position:20px 0; } }
-@keyframes pop { 0% { transform:scale(0); } 60% { transform:scale(1.35); } 100% { transform:scale(1); } }
-@keyframes shake { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-4px); } 75% { transform:translateX(4px); } }
-@keyframes back { 0% { transform:translateX(0); } 40% { transform:translateX(-8px) rotate(-8deg); } 100% { transform:translateX(0); } }
-.row:not(.final) .st[data-state="active"] .ic { animation:bob 1.4s ease-in-out infinite; }
-.row:not(.final) .st[data-state="active"][data-station="build"] .ic { animation:spin 2.4s linear infinite; }
-.row:not(.final) .st[data-state="active"][data-station="review"] .ic { animation:scan 1.6s ease-in-out infinite; }
-.row:not(.final) .st[data-state="active"][data-station="security"] .ic { animation:glow 1.8s ease-in-out infinite; }
-.row:not(.final) .st[data-state="waiting"] .ic { animation:beat 2.6s ease-in-out infinite; }
-.row:not(.final) .belt[data-flow="active"] .track::before { animation:belt 1s linear infinite; }
-.row:not(.final) .st[data-state="done"] .mk { display:inline-block; animation:pop .5s ease-out 1; }
-.st[data-state="error"] { animation:shake .5s ease 1; }
-.piece.back { animation:back .9s ease 1; }
-@media (max-width: 600px) { .belt { overflow-x:auto; } .track { min-width:560px; } }
+@keyframes glow { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+@keyframes bob { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-2px); } }
+.job:not(.final) .st[data-state="active"] .ic { animation:bob 1.4s ease-in-out infinite; }
+.job:not(.final) .st[data-state="active"][data-station="build"] .ic { animation:spin 2.4s linear infinite; }
+.job:not(.final) .st[data-state="waiting"] .ic { animation:glow 2.2s ease-in-out infinite; }
 ol.route { list-style:none; margin:8px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:8px 22px; counter-reset:step; }
-ol.route li { position:relative; flex:1 1 150px; border:1px solid var(--line); border-radius:9px; padding:8px 10px; counter-increment:step; }
+ol.route li { position:relative; flex:1 1 150px; border:1px solid var(--rule); border-radius:9px; padding:8px 10px; counter-increment:step; }
 ol.route li b::before { content:counter(step) ". "; color:var(--muted); }
 ol.route li:not(:last-child)::after { content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%); color:var(--accent); }
 ol.route li span { display:block; font-size:.88rem; color:var(--muted); }
 .kv { margin:6px 0 0; padding:0; list-style:none; } .kv li { margin:3px 0; overflow-wrap:anywhere; } .kv code { overflow-wrap:anywhere; white-space:pre-wrap; }
-.badge { display:inline-block; font-size:.8rem; padding:1px 8px; border-radius:9px; border:1px solid currentColor; }
 details.ins summary { cursor:pointer; color:var(--accent); margin-top:8px; }
 @media (max-width: 600px) { ol.route { flex-direction:column; gap:22px; } ol.route li { flex-basis:auto; } ol.route li:not(:last-child)::after { content:"↓"; right:auto; left:50%; top:auto; bottom:-21px; transform:none; } }
+.monitor { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin:0 0 14px; } .monitor .card { margin:0; }
+.monitor .big { display:block; font-size:2rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+.monitor .wide { grid-column:1 / -1; } .monitor svg { width:100%; height:auto; display:block; }
+.gauges { display:flex; flex-wrap:wrap; gap:10px; } figure.gauge { margin:0; width:110px; text-align:center; font-size:.85rem; color:var(--muted); } figure.gauge svg { color:var(--text); }
+.periods a { margin-right:10px; } .periods a[aria-current] { font-weight:700; text-decoration:none; }
+@media (max-width: 600px) { .monitor { grid-template-columns:1fr; } }
+@media (max-width: 760px) {
+  body.shell { display:block; }
+  .side { position:sticky; top:0; z-index:5; width:auto; height:auto; max-height:100vh; padding:8px 12px; flex-direction:column; border-right:0; border-bottom:1px solid var(--rule); }
+  .side .brand-row { padding:0; }
+  .side ul.links { display:none; }
+  #nav-toggle:checked ~ .side { width:auto; }
+  #nav-toggle:checked ~ .side .brand-row { flex-direction:row; padding:0; }
+  #nav-toggle:checked ~ .side ul.links { display:flex; flex-direction:column; padding:8px 0 4px; }
+  #nav-toggle:checked ~ .side .lb, #nav-toggle:checked ~ .side .word { display:inline; }
+  #nav-toggle:checked ~ .side ul.links a { justify-content:flex-start; padding:10px; }
+  main { padding:16px 14px 32px; }
+  .board { grid-template-columns:1fr; height:auto; min-height:0; }
+  .lane { overflow-y:visible; }
+  .lane[data-count="0"] { display:none; }
+}
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 `;
+
+/** Draws an icon from its inline SVG paths, so the panel's policy needs no outside resource. */
+const icon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+
+/** The site's symbol (site/favicon.svg): a ring and an orange dot, next to the word in the mono font. */
+const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="25" cy="7" r="3.5" fill="#ff8a5c"/></svg><span class="word">zero</span>`;
+
+const MENU_ICON = `<path d="M4 6h16M4 12h16M4 18h16"/>`;
+
+/** The panel's sections, in the side menu's order. */
+const NAV: [href: string, label: string, icon: string][] = [
+  ["/", "Resumen", `<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>`],
+  ["/line", "Línea", `<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>`],
+  ["/egress", "Salidas", `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>`],
+  ["/proposals", "Propuestas", `<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>`],
+  ["/research", "Investigación", `<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>`],
+  ["/monitor", "Monitor", `<path d="M3 12h4l2.5-7 4 14 2.5-7h5"/>`],
+  ["/briefing", "Informe", `<path d="M4 5h13v14H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v8a2 2 0 0 1-2 2M8 9h5M8 13h5M8 16h3"/>`],
+  ["/report", "Informe mensual", `<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>`],
+  ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
+  ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
+];
+
+/** The side menu: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
+function sideMenu(active?: string): string {
+  const links = NAV.map(([href, label, paths]) => `<li><a href="${href}"${href === active ? ` aria-current="page"` : ""} title="${esc(label)}">${icon(paths)}<span class="lb">${esc(label)}</span></a></li>`).join("");
+  return `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row"><span class="brand">${LOGO}</span><label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}</ul></nav>`;
+}
 
 /** Reloads the page every 15 s while nobody is typing, so the phone shows live state without a framework. */
 const REFRESH = `setInterval(() => {
@@ -94,11 +179,12 @@ const REFRESH = `setInterval(() => {
   if (document.visibilityState === "visible" && !typing && !drafted) location.reload();
 }, 15000);`;
 
-export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean } = { nonce: "" }): string {
-  const nav = opts.nav === false ? "" : `<a href="/">Resumen</a><a href="/line">Línea</a><a href="/egress">Salidas</a><a href="/proposals">Propuestas</a><a href="/research">Investigación</a><a href="/briefing">Informe</a><a href="/report">Informe mensual</a><a href="/about">Qué es zero</a><a href="/agents">Agentes</a>`;
+/** `active` is the side menu's section of the page; `nav: false` is the login page, which shows only the logo. */
+export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean; active?: string } = { nonce: "" }): string {
+  const chrome = opts.nav === false ? `<header class="top"><span class="brand">${LOGO}</span></header>` : sideMenu(opts.active);
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
-<body><header><strong>zero</strong>${nav}</header><main>
+<body class="${opts.nav === false ? "plain" : "shell"}">${chrome}<main>
 ${opts.flash ? `<div class="card flash">${esc(opts.flash)}</div>` : ""}${body}</main>
 ${opts.refresh ? `<script nonce="${opts.nonce}">${REFRESH}</script>` : ""}</body></html>`;
 }
@@ -116,7 +202,7 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   const body = view.error
     ? `<div class="card bad">${esc(view.error)}</div>`
     : (view.report?.lines ?? []).map((l) => `<div class="card">${reportSection(l)}<p>Descargar: ${download(l.line, "md", "Markdown")} · ${download(l.line, "html", "HTML")}</p></div>`).join("");
-  return page("Informe mensual", form + body, { nonce });
+  return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
 /** The only page without a session: exchanges the key in the link's fragment for a cookie, then clears it from the address bar. */
@@ -139,8 +225,12 @@ export function loginPage(nonce: string, failed = false): string {
   );
 }
 
+/** Short status texts for the chips; the colors come from the shared status tokens. */
+const CHIP_TEXT: Record<JobStatus, string> = { queued: "en cola", running: "trabajando", waiting: "te espera", delivered: "entregado", failed: "fallido", stopped: "detenido" };
+const chip = (status: JobStatus) => `<span class="chip" data-status="${status}">${CHIP_TEXT[status]}</span>`;
+
 const jobLine = (j: Job) =>
-  `<li><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a><br><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
 
 const answerForms = (j: Job) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
@@ -197,7 +287,7 @@ ${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos ter
 <form method="post" action="/request"><label for="text">Qué querés, en tus palabras</label><textarea id="text" name="text" required></textarea>
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
 <button class="primary">Pedir</button></form></div>`,
-    { nonce, flash, refresh: true },
+    { nonce, flash, refresh: true, active: "/" },
   );
 }
 
@@ -207,7 +297,7 @@ export function jobPage(job: Job, traceText: string, nonce: string, flash?: stri
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
 <p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}</p>
-<p><b>${esc(describeJobStatus(job))}</b></p>
+<p>${chip(job.status)} <b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
 ${job.question ? `<h2>Pregunta para vos</h2><pre>${esc(job.question.text)}</pre>${answerForms(job)}` : ""}
@@ -253,7 +343,7 @@ ${e.sites.map((s) => siteCard(s, report, lists)).join("")}
 <p class="muted">Permitidos: ${esc(lists.allow.join(", ") || "ninguno")}<br>Bloqueados: ${esc(lists.block.join(", ") || "ninguno")}</p>
 <form method="post" action="/egress/rule"><label for="site">Sitio (incluye sus subdominios)</label><input id="site" type="text" name="site" placeholder="ejemplo.com">
 <button class="danger" name="action" value="block">Bloquear</button><button name="action" value="allow">Permitir</button><button name="action" value="remove">Quitar de las listas</button></form></div>`,
-    { nonce, flash, refresh: true },
+    { nonce, flash, refresh: true, active: "/egress" },
   );
 }
 
@@ -348,7 +438,7 @@ export function proposalsPage(data: { research: Autonomy | "off"; lines: Proposa
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
 <p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
 ${data.lines.map(proposalLine).join("")}`,
-    { nonce, flash, refresh: true },
+    { nonce, flash, refresh: true, active: "/proposals" },
   );
 }
 
@@ -362,7 +452,7 @@ export function confirmProposalPage(p: ProposalView, nonce: string): string {
     `<div class="card"><h1>¿Aprobar «${esc(p.title)}»?</h1><p>${what}</p><pre>${esc(p.change)}</pre>
 <form method="post" action="/proposals/${esc(p.id)}/approve"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, aprobar</button></form>
 <p><a href="/proposals">Cancelar</a></p></div>`,
-    { nonce },
+    { nonce, active: "/proposals" },
   );
 }
 
@@ -393,7 +483,7 @@ export function researchPage(lines: ResearchLine[], nonce: string, flash?: strin
     `<div class="card"><h1>Investigación</h1>
 <p class="muted">Lo que la estación <code>research</code> encontró en la web en los últimos 30 días. Son datos de la web, no instrucciones.</p></div>
 ${lines.map(researchLine).join("")}`,
-    { nonce, flash },
+    { nonce, flash, active: "/research" },
   );
 }
 
@@ -404,12 +494,12 @@ export function confirmResearchPage(n: ResearchNote, nonce: string): string {
     `<div class="card"><h1>¿Pedir un trabajo a partir de «${esc(n.topic)}»?</h1><p>Abre un trabajo normal en la línea ${esc(n.line)} con lo encontrado y sus fuentes.</p><pre>${esc(n.findings)}</pre>
 <form method="post" action="/research/${esc(n.id)}/request"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, pedir el trabajo</button></form>
 <p><a href="/research">Cancelar</a></p></div>`,
-    { nonce },
+    { nonce, active: "/research" },
   );
 }
 
 export function briefingPage(title: string, body: string, nonce: string): string {
-  return page("Informe", `<div class="card"><h1>${esc(title)}</h1><p class="muted"><a href="/briefing?days=1">hoy</a> · <a href="/briefing?days=7">7 días</a></p>${markdown(body)}</div>`, { nonce });
+  return page("Informe", `<div class="card"><h1>${esc(title)}</h1><p class="muted"><a href="/briefing?days=1">hoy</a> · <a href="/briefing?days=7">7 días</a></p>${markdown(body)}</div>`, { nonce, active: "/briefing" });
 }
 
 /** Icons of the stations: inline SVG, so the panel's policy needs no outside resource. */
@@ -434,27 +524,33 @@ const STATION_LABEL: Record<LineStation, string> = {
 const STATE_TEXT: Record<StationState, string> = { pending: "pendiente", active: "activa", done: "lista", error: "error", waiting: "te espera" };
 const STATE_MARK: Record<StationState, string> = { pending: "○", active: "●", done: "✓", error: "✗", waiting: "⏸" };
 
+/** One station of a job card: an icon in the compact progress, with its time, cost, engine and error behind `<details>`. */
 function station(st: StationView): string {
   const d = st.detail;
+  const label = STATION_LABEL[st.name];
   const detail = d
     ? `Duración: ${esc(d.time)}<br>Costo: ${esc(d.cost ?? "sin costo")}${d.engines.length ? `<br>Motor: ${esc(d.engines.join(", "))}` : ""}${d.error ? `<br>Error: ${esc(d.error)}` : ""}`
     : "Todavía no pasó por acá.";
-  return `<li class="st" data-station="${st.name}" data-state="${st.state}"><details><summary><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[st.name]}</svg></span>
-<span class="nm">${STATION_LABEL[st.name]}</span><span><span class="mk" aria-hidden="true">${STATE_MARK[st.state]}</span> <span class="tx">${STATE_TEXT[st.state]}</span></span>${
+  return `<li class="st" data-station="${st.name}" data-state="${st.state}"><details><summary title="${label}: ${STATE_TEXT[st.state]}"><span class="ic">${icon(ICONS[st.name])}</span><span class="nm">${label}</span><span class="mk" aria-hidden="true">${STATE_MARK[st.state]}</span><span class="tx">${STATE_TEXT[st.state]}</span></summary><div class="dt"><b>${label}</b> · ${STATE_TEXT[st.state]}${
     st.reason ? `<span class="why">${esc(st.reason)}</span>` : ""
-  }</summary><div class="dt">${detail}</div></details></li>`;
+  }<br>${detail}</div></details></li>`;
 }
 
-/** The belt: the stations in order and the piece, whose position (`--pos`) changes so CSS can slide it. */
-const belt = (stations: StationView[], pos: number, piece: string, flow: string) =>
-  `<div class="belt" data-part="belt" data-flow="${flow}"><div class="track"><div class="${piece}" style="--pos:${pos}"></div><ol class="stations">${stations.map(station).join("")}</ol></div></div>`;
+const LINE_ORDER: LineStation[] = ["setup", "spec", "build", "verify", "review", "security", "integrate"];
 
-function lineRow(r: LineRow): string {
+type Lane = LineStation | "out";
+const OUT_ICON = `<path d="M3 13h5l1.5 3h5l1.5-3h5"/><path d="M5 13l2-8h10l2 8v6H5z"/>`;
+const LANES: [Lane, string, string][] = [
+  ...LINE_ORDER.map((n): [Lane, string, string] => [n, STATION_LABEL[n][0]!.toUpperCase() + STATION_LABEL[n].slice(1), ICONS[n]]),
+  ["out", "Salida", OUT_ICON],
+];
+
+/** Where a job's card goes: finished work leaves the line, the rest sits at its station (setup until it has one). */
+const laneOf = (r: LineRow): Lane => (FINAL_STATUSES.includes(r.status) ? "out" : (r.at ?? "setup"));
+
+function jobCard(r: LineRow): string {
   const final = FINAL_STATUSES.includes(r.status);
-  const pos = final ? 7 : Math.max(LINE_ORDER.indexOf(r.at ?? "setup"), 0);
-  const backing = !final && r.attempt > 1 && r.at === "build";
-  const piece = ["piece", final && "out", r.status === "delivered" ? "ok" : final && "bad", backing && "back"].filter(Boolean).join(" ");
-  const flow = final ? "still" : r.stations.some((s) => s.state === "active") ? "active" : r.status === "waiting" ? "waiting" : "still";
+  const back = !final && r.attempt > 1 && r.at === "build";
   const d = r.delivery;
   const out =
     r.status === "delivered"
@@ -463,16 +559,14 @@ function lineRow(r: LineRow): string {
         ? `<p class="out bad"><b>${r.status === "failed" ? "fallido" : "detenido"}</b>${r.reason ? ` · ${esc(r.reason)}` : ""}</p>`
         : "";
   const retry = r.attempt > 1 && !final ? `<p class="retry warn">intento ${r.attempt} de ${r.maxAttempts}${r.retryError ? ` · ${esc(r.retryError)}` : ""}</p>` : "";
-  const inner = `<h3 data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a> <span class="muted">${esc(r.id)} · ${esc(r.line)}${r.origin ? ` · ${esc(r.origin)}` : ""}</span></h3>
-<div data-part="retry">${retry}</div>${belt(r.stations, pos, piece, flow)}<div data-part="out">${out}</div>`;
-  // Lets the page's script skip rows that did not change, so finished rows stay still.
+  const inner = `<h3 class="jh" data-part="head"><a class="job" href="/job/${esc(r.id)}">${esc(r.title)}</a>${chip(r.status)}</h3>
+<p class="meta muted">${esc(r.id)} · ${esc(r.line)}${r.origin ? ` · ${esc(r.origin)}` : ""}</p>${retry}<ol class="stations">${r.stations.map(station).join("")}</ol>${out}`;
+  // Lets the page's script skip cards that did not change, so open details stay open.
   const sig = createHash("sha256").update(inner).digest("hex").slice(0, 16);
-  return `<article class="card row${final ? " final" : ""}" id="job-${esc(r.id)}" data-status="${r.status}" data-sig="${sig}">${inner}</article>`;
+  return `<article class="card job${final ? " final" : ""}${back ? " back" : ""}" id="job-${esc(r.id)}" data-status="${r.status}" data-sig="${sig}">${inner}</article>`;
 }
 
-const LINE_ORDER: LineStation[] = ["setup", "spec", "build", "verify", "review", "security", "integrate"];
-
-/** The production line's counters and rows: the page's content, and the fragment the page fetches to stay current. */
+/** The production line's counters and board: the page's content, and the fragment the page fetches to stay current. */
 export function lineView(data: ProductionLine): string {
   const c = data.counts;
   const summary = `<div class="card grid" data-part="summary">
@@ -480,63 +574,64 @@ export function lineView(data: ProductionLine): string {
 <div class="stat"><b>${c.waiting}</b><span class="muted">esperando</span></div>
 <div class="stat"><b>${c.failed}</b><span class="muted">con error</span></div>
 <div class="stat"><b>${c.delivered}</b><span class="muted">entregados hoy</span></div></div>`;
-  if (!data.rows.length) {
-    const idle = LINE_ORDER.map((name) => station({ name, state: "pending" })).join("");
-    return `${summary}<div class="card row final" data-part="idle"><h3>La fábrica está libre</h3><div class="belt" data-flow="still"><div class="track"><div class="piece idle" style="--pos:0"></div><ol class="stations">${idle}</ol></div></div></div>`;
-  }
-  return `${summary}<div data-part="rows">${data.rows.map(lineRow).join("")}</div>`;
+  const note = `<p class="board-note muted" data-part="note">${data.rows.length ? "" : "La fábrica está libre"}</p>`;
+  const lanes = LANES.map(([lane, label, paths]) => {
+    const cards = data.rows.filter((r) => laneOf(r) === lane);
+    return `<section class="lane" data-lane="${lane}" data-count="${cards.length}" aria-label="${label}"><header class="lane-head" data-part="lane-head"><span class="ic">${icon(paths)}</span><span class="ln">${label}</span><span class="n">${cards.length}</span></header><div class="cards" data-part="cards">${cards.map(jobCard).join("")}</div></section>`;
+  }).join("");
+  return `${summary}${note}<div class="board" data-part="board">${lanes}</div>`;
 }
 
 /**
- * Keeps the line current without reloading: gets the fragment (pushed on `/line/events`, or polled) and patches only what changed,
- * keeping each row's elements so CSS transitions slide the piece instead of jumping.
+ * Keeps the board current without reloading: gets the fragment (pushed on `/line/events`, or polled), patches only the cards
+ * that changed, moves each card to the lane the fragment puts it in, and keeps open station details open.
  */
 const LINE_REFRESH = `(() => {
   const root = document.getElementById("line");
   let last = "";
   const part = (el, name) => el.querySelector('[data-part="' + name + '"]');
-  const patchRow = (old, row) => {
-    for (const name of ["head", "retry", "out"]) {
-      const a = part(old, name);
-      const b = part(row, name);
-      if (a && b && a.outerHTML !== b.outerHTML) a.replaceWith(b);
+  const lanesOf = (board) => [...board.querySelectorAll("[data-lane]")];
+  const keepOpen = (old, card) => {
+    for (const st of [...card.querySelectorAll("[data-station]")]) {
+      const cur = old.querySelector('[data-station="' + st.dataset.station + '"] details');
+      if (cur) st.querySelector("details").open = cur.open;
     }
-    const belt = part(old, "belt");
-    const fresh = part(row, "belt");
-    belt.dataset.flow = fresh.dataset.flow;
-    const piece = belt.querySelector(".piece");
-    const next = fresh.querySelector(".piece");
-    piece.className = next.className;
-    piece.setAttribute("style", next.getAttribute("style"));
-    for (const st of [...fresh.querySelectorAll("[data-station]")]) {
-      const cur = belt.querySelector('[data-station="' + st.dataset.station + '"]');
-      st.querySelector("details").open = cur.querySelector("details").open;
-      if (cur.outerHTML !== st.outerHTML) cur.replaceWith(st);
-    }
-    old.className = row.className;
-    old.dataset.status = row.dataset.status;
-    old.dataset.sig = row.dataset.sig;
   };
   const update = (html) => {
     const t = document.createElement("template");
     t.innerHTML = html;
     const next = t.content;
-    const rows = part(root, "rows");
-    const fresh = part(next, "rows");
-    if (!rows || !fresh) return root.replaceChildren(next);
-    part(root, "summary").replaceWith(part(next, "summary"));
-    const kept = new Map([...rows.children].map((r) => [r.id, r]));
-    const order = [...fresh.children].map((row) => {
-      const old = kept.get(row.id);
-      if (!old) return row;
-      kept.delete(row.id);
-      if (old.dataset.sig !== row.dataset.sig) patchRow(old, row);
-      return old;
-    });
-    kept.forEach((r) => r.remove());
-    order.forEach((r, i) => {
-      if (rows.children[i] !== r) rows.insertBefore(r, rows.children[i] || null);
-    });
+    const board = part(root, "board");
+    const fresh = part(next, "board");
+    const same = board && fresh && lanesOf(fresh).every((l) => board.querySelector('[data-lane="' + l.dataset.lane + '"]'));
+    if (!same) return root.replaceChildren(next);
+    for (const name of ["summary", "note"]) {
+      const a = part(root, name);
+      const b = part(next, name);
+      if (a && b && a.outerHTML !== b.outerHTML) a.replaceWith(b);
+    }
+    const kept = new Map([...board.querySelectorAll("article[id]")].map((c) => [c.id, c]));
+    for (const lane of lanesOf(fresh)) {
+      const cur = board.querySelector('[data-lane="' + lane.dataset.lane + '"]');
+      cur.dataset.count = lane.dataset.count;
+      const head = part(cur, "lane-head");
+      const freshHead = part(lane, "lane-head");
+      if (head.outerHTML !== freshHead.outerHTML) head.replaceWith(freshHead);
+      const list = part(cur, "cards");
+      const order = [...part(lane, "cards").children].map((card) => {
+        const old = kept.get(card.id);
+        if (!old) return card;
+        kept.delete(card.id);
+        if (old.dataset.sig === card.dataset.sig) return old;
+        keepOpen(old, card);
+        old.remove();
+        return card;
+      });
+      order.forEach((c, i) => {
+        if (list.children[i] !== c) list.insertBefore(c, list.children[i] || null);
+      });
+    }
+    kept.forEach((c) => c.remove());
   };
   const apply = (html) => {
     if (html && html !== last) update(html);
@@ -562,7 +657,7 @@ const LINE_REFRESH = `(() => {
 
 export function linePage(data: ProductionLine, nonce: string): string {
   const view = lineView(data);
-  return page("Línea de producción", `<h1>Línea de producción</h1><div id="line">${view}</div><script nonce="${nonce}">${LINE_REFRESH}</script>`, { nonce });
+  return page("Línea de producción", `<h1>Línea de producción</h1><div id="line">${view}</div><script nonce="${nonce}">${LINE_REFRESH}</script>`, { nonce, active: "/line" });
 }
 
 /** The path of every request, in the order the line runs it. */
@@ -623,7 +718,7 @@ export function aboutPage(g: FactoryGuide, nonce: string): string {
 <li>Límite de gasto por trabajo, si se paga por uso: <b>${usd(g.limits.usdPerJob)}</b></li>
 <li>Caja de aislamiento: ${box}</li>
 <li>Líneas: <b>${g.lines.length}</b></li></ul></div>`,
-    { nonce },
+    { nonce, active: "/about" },
   );
 }
 
@@ -730,6 +825,56 @@ ${lineAgentItems(l.agents)}</ul></div>`,
     "Agentes",
     `<div class="card"><h1>Agentes</h1><p class="muted">Cada paso de la línea lo hace un agente con sus propias instrucciones y límites. Los límites los controla la fábrica, no el agente.</p></div>
 ${agents}<h2>Líneas</h2>${lines}`,
-    { nonce },
+    { nonce, active: "/agents" },
+  );
+}
+
+/** "45 s", "3 min", "1 h 5 min". */
+function duration(ms: number | undefined): string {
+  if (ms === undefined) return "sin dato";
+  if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
+  const minutes = Math.round(ms / 60_000);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+const percent = (rate: number | undefined) => (rate === undefined ? "sin dato" : `${Math.round(rate * 100)} %`);
+const PERIODS: [MonitorPeriod, string][] = [["hoy", "Hoy"], ["7", "7 días"], ["30", "30 días"]];
+const stat = (label: string, value: string | number) => `<div class="card stat"><span class="muted">${esc(label)}</span><b class="big">${esc(value)}</b></div>`;
+
+/** The "Monitor" tab: a read-only cockpit of the factory, its agents and its lines, drawn in inline SVG. */
+export function monitorPage(view: MonitorView, nonce: string): string {
+  const periods = `<p class="periods">${PERIODS.map(([p, label]) => `<a href="/monitor?periodo=${p}"${p === view.period ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</p>`;
+  const totals = `<div class="monitor">
+${stat("Trabajos creados", view.created)}${stat("Entregados", view.delivered)}${stat("Fallidos", view.failed)}${stat("Detenidos", view.stopped)}
+${stat("En cola", view.queued)}${stat("En curso", view.running)}
+<div class="card"><span class="muted">Tasa de éxito</span>${gauge(view.successRate === undefined ? undefined : view.successRate * 100, "entregados sobre terminados")}</div>
+${stat("Tiempo promedio por trabajo", duration(view.avgJobMs))}${stat("Intentos por trabajo", view.avgAttempts === undefined ? "sin dato" : Number(view.avgAttempts.toFixed(1)))}
+${stat("Tokens", view.tokens === undefined ? "sin dato" : view.tokens.toLocaleString("es-AR"))}
+<div class="card wide"><h3>Trabajos por día</h3>${lineChart(view.days.map((d) => ({ label: d.day.slice(5), value: d.jobs })))}</div>
+${view.weeks ? `<div class="card wide"><h3>Trabajos por semana</h3>${bars(view.weeks.map((w) => ({ label: `desde ${w.week.slice(5)}`, value: w.jobs })))}</div>` : ""}
+<div class="card wide"><h3>Tiempo promedio por estación</h3>${bars(view.stations.map((s) => ({ label: s.station, value: s.avgMs, text: duration(s.avgMs) })))}</div>
+<div class="card wide"><h3>Uso de la suscripción</h3>${view.plans.length ? `<div class="gauges">${view.plans.map((w) => gauge((w.utilization ?? 0) * 100, `${w.engine} · ${w.label}`)).join("")}</div>` : `<p class="muted">sin dato</p>`}</div>
+<div class="card wide"><h3>Gasto del mes por motor</h3>${bars(view.monthUsd.map((m) => ({ label: m.engine, value: m.usd, text: usd(m.usd) })))}</div>
+</div>`;
+  const agents = view.agents
+    .map(
+      (a) => `<div class="card" data-agent="${esc(a.name)}"><h3>${esc(a.name)}</h3>${gauge(a.successRate === undefined ? undefined : a.successRate * 100, "éxito")}
+<ul class="kv"><li>Llamadas: <b>${a.calls}</b></li><li>Costo: <b>${usd(a.costUsd)}</b></li><li>Tokens: <b>${a.tokens === undefined ? "sin dato" : a.tokens.toLocaleString("es-AR")}</b></li>
+<li>Tiempo trabajado: <b>${duration(a.workedMs)}</b></li><li>Entregas: <b>${a.deliveries}</b></li>
+<li>Motores: ${a.engines.length ? esc(a.engines.join(", ")) : "—"}</li><li>Modelos: ${a.models.length ? esc(a.models.join(", ")) : "—"}</li><li>Líneas: ${a.lines.length ? esc(a.lines.join(", ")) : "—"}</li></ul></div>`,
+    )
+    .join("\n");
+  const lines = view.lines
+    .map(
+      (l) => `<div class="card" data-line="${esc(l.line)}"><h3>${esc(l.line)}</h3>
+<ul class="kv"><li>Trabajos: <b>${l.jobs}</b></li><li>Entregas: <b>${l.deliveries}</b></li><li>Pull requests abiertos: <b>${l.openPullRequests}</b></li>
+<li>Último trabajo: ${l.last ? `<a href="/job/${esc(l.last.id)}">${esc(l.last.name)}</a> <span class="badge">${esc(STATUS_TEXT[l.last.status])}</span>` : "ninguno"}</li></ul></div>`,
+    )
+    .join("\n");
+  return page(
+    "Monitor",
+    `<div class="card"><h1>Monitor</h1><p class="muted">Lo que la fábrica ya tiene guardado, sin escribir nada. Se actualiza solo.</p>${periods}</div>
+<h2>Fábrica</h2>${totals}<h2>Agentes</h2><div class="monitor">${agents}</div><h2>Líneas</h2><div class="monitor">${lines || `<p class="muted">No hay líneas.</p>`}</div>`,
+    { nonce, refresh: true, active: "/monitor" },
   );
 }

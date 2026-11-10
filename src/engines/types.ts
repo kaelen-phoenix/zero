@@ -34,6 +34,8 @@ export interface EngineResult {
   costUsd?: number;
   /** The model that answered according to the engine, when it reports one; it may differ from the requested model. */
   model?: string;
+  /** Tokens the call used, when the engine reports them. */
+  tokens?: { input: number; output: number };
   /** The engine's own session id, when it reports one (for transcript and cost lookups). */
   sessionId?: string;
   /** How the engine's account is billed and how much of its plan is used, when it reports it. */
