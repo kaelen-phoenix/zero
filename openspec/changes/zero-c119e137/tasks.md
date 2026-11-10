@@ -2,12 +2,12 @@
 
 ## 1. Etapa 1: Pedido en texto y registro de la corrida
 
-- [ ] 1.1 Write the OpenSpec change (proposal, tasks, specs/agent-packages/spec.md delta) and run `npx openspec validate --all`
-- [ ] 1.2 In src/line/packages.ts export `stationOnDemandRequestKey(pkg, name)` (`...:on-demand:request`) and `stationRunKey(pkg, name)` (`...:on-demand:run`, JSON `{requestedAt, request?, startedAt?, state: 'running'|'ended', outcome?: 'done'|'failed'|'timeout'|'stopped', finishedAt?, error?}`)
-- [ ] 1.3 Change requestStationRun(ctx, ref, now, request?) in src/app.ts: clean the request (replace the station's declared secret values with REDACTED, `publicText` with the lines' repos, trim, cut to 4000; move or export the `withoutSecrets` helper so both modules share it), store it in stationOnDemandRequestKey only when non-empty, and return `requestedAt` in the ok result
-- [ ] 1.4 Extend StationHook's slot type to `{ onDemand: true; request?: string }`. In runStation's on-demand branch, read the request before clearing, delete both keys in clear, and call hook with `{ onDemand: true, ...(request && { request }) }`
-- [ ] 1.5 Add an optional `ended(outcome, error?)` callback to StationTurn. runTurn calls it once with done / failed (pass threw, or module import, export or config failure) / timeout / stopped (outer abort). The on-demand turn writes the run record: `running` with startedAt at mark (idempotent, since mark can run twice), then the outcome with finishedAt and the error (secrets replaced, publicText, 600 chars)
-- [ ] 1.6 Tests in test/package-on-demand.test.ts: request passed cleaned and cut; no-text shape unchanged; record running/done/failed/timeout; request cleared after the run; ctx exposes no station-run request; then `npm run typecheck` and the focused tests
+- [x] 1.1 Write the OpenSpec change (proposal, tasks, specs/agent-packages/spec.md delta) and run `npx openspec validate --all`
+- [x] 1.2 In src/line/packages.ts export `stationOnDemandRequestKey(pkg, name)` (`...:on-demand:request`) and `stationRunKey(pkg, name)` (`...:on-demand:run`, JSON `{requestedAt, request?, startedAt?, state: 'running'|'ended', outcome?: 'done'|'failed'|'timeout'|'stopped', finishedAt?, error?}`)
+- [x] 1.3 Change requestStationRun(ctx, ref, now, request?) in src/app.ts: clean the request (replace the station's declared secret values with REDACTED, `publicText` with the lines' repos, trim, cut to 4000; move or export the `withoutSecrets` helper so both modules share it), store it in stationOnDemandRequestKey only when non-empty, and return `requestedAt` in the ok result
+- [x] 1.4 Extend StationHook's slot type to `{ onDemand: true; request?: string }`. In runStation's on-demand branch, read the request before clearing, delete both keys in clear, and call hook with `{ onDemand: true, ...(request && { request }) }`
+- [x] 1.5 Add an optional `ended(outcome, error?)` callback to StationTurn. runTurn calls it once with done / failed (pass threw, or module import, export or config failure) / timeout / stopped (outer abort). The on-demand turn writes the run record: `running` with startedAt at mark (idempotent, since mark can run twice), then the outcome with finishedAt and the error (secrets replaced, publicText, 600 chars)
+- [x] 1.6 Tests in test/package-on-demand.test.ts: request passed cleaned and cut; no-text shape unchanged; record running/done/failed/timeout; request cleared after the run; ctx exposes no station-run request; then `npm run typecheck` and the focused tests
 
 ## 2. Etapa 2: CLI y chat esperan el inicio
 

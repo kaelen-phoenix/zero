@@ -26,7 +26,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
+import { stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
@@ -1550,14 +1550,15 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-export type StationRunResult = { ok: true; text: string } | { ok: false; reason: string };
+/** `requestedAt` is the pending request's time, the one its run record will carry. */
+export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string };
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
  * station; the daemon still waits for an idle factory and keeps every gate.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date()): StationRunResult {
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
   if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
   const [, pkg, name] = match as unknown as [string, string, string];
@@ -1573,8 +1574,15 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
-  ctx.store.setKv(key, now.toISOString());
-  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.` };
+  // Cleaned like a station's own request: it reaches third-party code.
+  const text = request === undefined ? "" : stationText(request, ctx, station);
+  const requestKey = stationOnDemandRequestKey(pkg, name);
+  // The text goes first: the daemon reads it only once the request itself is there.
+  if (text) ctx.store.setKv(requestKey, text);
+  else ctx.store.deleteKv(requestKey);
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(key, requestedAt);
+  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.`, requestedAt };
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */
