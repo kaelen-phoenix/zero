@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -84,9 +84,10 @@ Fábrica:
   zero package update [nombre] [--yes]
                                  Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
-  zero package run <paquete>/<estación>
+  zero package run <paquete>/<estación> [--pedido "<texto>"]
                                  Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
-                                 (solo si su manifiesto declara onDemand: true)
+                                 (solo si su manifiesto declara onDemand: true), con un pedido en texto si querés;
+                                 responde cuando la corrida empezó (o, pasados 2 minutos, que sigue pendiente)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
@@ -96,6 +97,9 @@ Fábrica:
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
+
+/** How long `zero package run` waits for the daemon to start the run before saying it is still pending. */
+const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -119,6 +123,7 @@ async function main(argv: string[]): Promise<number> {
       conservar: { type: "boolean" },
       label: { type: "string" },
       station: { type: "string" },
+      pedido: { type: "string" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -382,13 +387,14 @@ Informe: ${r.report}`);
         }
         if (action === "run") {
           if (!name) throw new Error("Indicá la estación: zero package run <paquete>/<estación>");
-          const r = requestStationRun(ctx, name);
+          const r = requestStationRun(ctx, name, new Date(), values.pedido);
           if (!r.ok) {
             console.log(r.reason);
             return 1;
           }
           console.log(r.text);
           if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+          console.log((await waitStationStart(ctx, name, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
           return 0;
         }
         if (action !== "remove") break;

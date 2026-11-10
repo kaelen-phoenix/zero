@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, onDemandState, planSummary, resetTime, STATUS_TEXT } from "../format.js";
+import { budgetLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
@@ -165,6 +165,7 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/report", "Informe mensual", `<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>`],
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
+  ["/packages", "Paquetes", `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`],
 ];
 
 /** Where the packages' tabs go in the side menu; `send` in server.ts fills it, since pages do not get the context. Escaped text can never contain it. */
@@ -237,6 +238,34 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
           ? `<div class="card"><ul class="jobs">${view.items.map(item).join("")}</ul></div>`
           : `<div class="card muted">No hay elementos${view.category ? " en esa categoría" : ""}.</div>`;
   return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
+}
+
+/** One station of a package: its state, its last on-demand run and, when it takes them, the form to ask for one. */
+function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean): string {
+  const ref = `${pkg}/${s.name}`;
+  const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
+  const pending = s.onDemandPendingSince
+    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
+    : "";
+  const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
+  const form = onDemand
+    ? `<form method="post" action="/packages/run"><input type="hidden" name="station" value="${esc(ref)}"><label for="p-${esc(ref)}">Pedido (opcional)</label><textarea id="p-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Pedir ahora</button></form>`
+    : "";
+  return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}</div>`;
+}
+
+/** The "Paquetes" tab: each loaded package's stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
+export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string): string {
+  const packages = list.packages
+    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`))).join("") : `<p class="muted">Sin estaciones.</p>`}`)
+    .join("");
+  const problems = list.problems.length ? `<div class="card bad"><h2>Problemas</h2><ul>${list.problems.map((p) => `<li>${esc(p.package)}: ${esc(p.reason)}</li>`).join("")}</ul></div>` : "";
+  return page(
+    "Paquetes",
+    `<div class="card"><h1>Paquetes</h1><p class="muted">Las estaciones de los paquetes instalados. Las que aceptan corridas a demanda corren una vez en la próxima pasada, sin esperar a los trabajos en cola, con tu pedido si escribís uno.</p></div>
+${list.packages.length ? packages : `<div class="card muted">No hay paquetes instalados.</div>`}${problems}`,
+    { nonce, flash, refresh: true, active: "/packages" },
+  );
 }
 
 /** The only page without a session: exchanges the key in the link's fragment for a cookie, clears it from the address bar and goes back to the page the link pointed at. */

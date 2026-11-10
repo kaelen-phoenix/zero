@@ -68,14 +68,14 @@ export interface StationContext {
 export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
-  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true })` for a run the person in charge asked for. */
+  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for. */
   pass?: unknown;
   scheduled?: unknown;
   parseConfig?: unknown;
 }
 
-/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`. */
-type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true }) => unknown;
+/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus the person in charge's `request` when there is one. */
+type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
@@ -113,6 +113,38 @@ export function onDemandRecord(ctx: FactoryContext, pkg: string, name: string): 
   }
 }
 
+/** The text the person in charge sent with a pending on-demand run, already cleaned; absent without one. */
+export const stationOnDemandRequestKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:request`;
+
+/** How an on-demand run ended. */
+export type StationRunOutcome = "done" | "failed" | "timeout" | "stopped";
+
+/** The last on-demand run of a station, JSON in `stationRunKey`. */
+export interface StationRunRecord {
+  /** The `stationOnDemandKey` value it answered. */
+  requestedAt: string;
+  request?: string;
+  startedAt?: string;
+  state: "running" | "ended";
+  outcome?: StationRunOutcome;
+  finishedAt?: string;
+  error?: string;
+}
+
+/** Where the state and outcome of a station's last on-demand run are kept. */
+export const stationRunKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:run`;
+
+/** The last on-demand run of a station, if one was recorded. */
+export function readStationRun(ctx: FactoryContext, pkg: string, name: string): StationRunRecord | undefined {
+  const raw = ctx.store.getKv(stationRunKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as StationRunRecord;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The last local day (`YYYY-MM-DD`) a time of a station's `schedule` ran; out of reach of `ctx.state`. */
 export const stationScheduleKey = (pkg: string, name: string, at: string) => `${stationKey({ package: pkg, name })}:schedule:${at}`;
 
@@ -120,7 +152,7 @@ const two = (n: number) => String(n).padStart(2, "0");
 const localDay = (d: Date) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 
 /** Text out of a station without the values of what it declared. */
-function withoutSecrets(text: string, ctx: FactoryContext, station: PackageStation): string {
+export function withoutSecrets(text: string, ctx: FactoryContext, station: PackageStation): string {
   return station.secrets.reduce((out, name) => {
     const value = ctx.secrets.get(name);
     return value ? out.replaceAll(value, REDACTED) : out;
@@ -128,6 +160,11 @@ function withoutSecrets(text: string, ctx: FactoryContext, station: PackageStati
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** Text for or from a station as it may be kept: no declared secret, no local path, trimmed and cut. */
+export function stationText(text: string, ctx: FactoryContext, station: PackageStation, max = CHARS_PER_REQUEST): string {
+  return publicText(withoutSecrets(text, ctx, station), ctx.config.lines.map((l) => l.repo)).text.trim().slice(0, max);
+}
 
 /** A job's text as a station may read it: no secret, path or id. */
 function jobText(text: string, job: Job, repos: string[]): string {
@@ -239,8 +276,7 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
       const day = startOfDay(now).toISOString();
       const used = requestsUsed(ctx.store.getKv(quotaKey), day);
       if (used >= station.requests.perLinePerDay) return { reason: `ya pidió ${used} de ${station.requests.perLinePerDay} trabajos de hoy en la línea "${line}"` };
-      const repos = ctx.config.lines.map((l) => l.repo);
-      const clean = publicText(withoutSecrets(text, ctx, station), repos).text.trim().slice(0, CHARS_PER_REQUEST);
+      const clean = stationText(text, ctx, station);
       if (!clean) return { reason: "el pedido está vacío" };
       const { job } = requestWork(ctx, { text: clean, line, source: { kind: "package", package: station.package, station: station.name } });
       ctx.store.setKv(quotaKey, JSON.stringify({ day, count: used + 1 }));
@@ -301,8 +337,8 @@ interface StationTurn {
   optional: boolean;
   /** Runs when the module cannot be imported, lacks the export or refuses its config. */
   failed?(): void;
-  /** Runs once when a started call ends, however it ended. */
-  ended?(outcome: Exclude<OnDemandOutcome, "not-run">): void;
+  /** Runs once when the turn ends, however it ended; `error` is raw, to be cleaned before it is kept. */
+  ended?(outcome: StationRunOutcome, error?: string): void;
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
@@ -331,7 +367,12 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
 
 async function runOwnTurn(ctx: FactoryContext, station: PackageStation, turn: StationTurn, outer?: AbortSignal): Promise<void> {
   const key = stationKey(station);
-  let started = false;
+  let over = false;
+  const ended = (outcome: StationRunOutcome, error?: string) => {
+    if (over) return;
+    over = true;
+    turn.ended?.(outcome, error);
+  };
   const controller = new AbortController();
   const abort = () => controller.abort();
   outer?.addEventListener("abort", abort, { once: true });
@@ -342,12 +383,14 @@ async function runOwnTurn(ctx: FactoryContext, station: PackageStation, turn: St
     } catch (err) {
       warnOnce(`${key}: no corre porque su módulo no se pudo importar: ${withoutSecrets(errorText(err), ctx, station)}`);
       turn.failed?.();
+      ended("failed", `su módulo no se pudo importar: ${errorText(err)}`);
       return;
     }
     const hook = mod[turn.hook];
     if (typeof hook !== "function") {
       if (!turn.optional) warnOnce(`${key}: no corre porque su módulo no exporta una función ${turn.hook}`);
       turn.failed?.();
+      ended("failed", `su módulo no exporta una función ${turn.hook}`);
       return;
     }
     let config: unknown = station.entry.config;
@@ -357,12 +400,12 @@ async function runOwnTurn(ctx: FactoryContext, station: PackageStation, turn: St
       } catch (err) {
         warnOnce(`${key}: no corre porque su configuración no es válida: ${withoutSecrets(errorText(err), ctx, station)}`);
         turn.failed?.();
+        ended("failed", `su configuración no es válida: ${errorText(err)}`);
         return;
       }
     }
     // Before running, so a pass that crashes the process or hangs waits for its next period like any other.
     turn.mark();
-    started = true;
     log.info(`${turn.label} start`);
     await turn.call(hook as StationHook, config, controller.signal);
     log.info(`${turn.label} done`);
@@ -375,21 +418,19 @@ async function runOwnTurn(ctx: FactoryContext, station: PackageStation, turn: St
     if (controller.signal.aborted) done("shutdown");
     else controller.signal.addEventListener("abort", () => done("shutdown"), { once: true });
   });
-  let outcome: Exclude<OnDemandOutcome, "not-run"> = "ok";
   try {
     const end = await Promise.race([work.then(() => "done" as const), expired, shutdown]);
     if (end === "timeout") {
       // A module that hangs while importing would otherwise be retried on every idle pass.
       turn.mark();
-      started = true;
-      outcome = "timeout";
       log.warn(`${turn.label}: superó su tiempo de ${station.timeoutMinutes} minutos`);
-    } else if (end === "shutdown") outcome = "stopped";
+      ended("timeout", `superó su tiempo de ${station.timeoutMinutes} minutos`);
+    } else if (end === "shutdown") ended("stopped", "la fábrica se apagó");
+    else ended("done");
   } catch (err) {
-    outcome = "failed";
     log.warn(`${turn.label}: falló`, { error: withoutSecrets(errorText(err), ctx, station) });
+    ended("failed", errorText(err));
   } finally {
-    if (started) turn.ended?.(outcome);
     clearTimeout(timer);
     outer?.removeEventListener("abort", abort);
     // Whatever it left running is told to stop; it runs in this process, so nothing else can stop it.
@@ -407,18 +448,19 @@ const pendingOnDemand = (ctx: FactoryContext, station: PackageStation) => statio
  */
 async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
   const onDemandKey = stationOnDemandKey(station.package, station.name);
+  const requestKey = stationOnDemandRequestKey(station.package, station.name);
+  const runKey = stationRunKey(station.package, station.name);
   const recordKey = stationOnDemandLastKey(station.package, station.name);
   const clock = () => (ctx.now ?? (() => new Date()))().toISOString();
-  let record: OnDemandRecord | undefined;
-  const take = () => {
-    const asked = ctx.store.getKv(onDemandKey) ?? now.toISOString();
+  const asked = ctx.store.getKv(onDemandKey) ?? now.toISOString();
+  const request = ctx.store.getKv(requestKey) || undefined;
+  const base = { requestedAt: asked, ...(request && { request }) };
+  let startedAt: string | undefined;
+  const clear = () => {
     ctx.store.deleteKv(onDemandKey);
-    return asked;
+    ctx.store.deleteKv(requestKey);
   };
-  const write = (next: OnDemandRecord) => {
-    record = next;
-    ctx.store.setKv(recordKey, JSON.stringify(next));
-  };
+  const write = (record: OnDemandRecord) => ctx.store.setKv(recordKey, JSON.stringify(record));
   await runTurn(
     ctx,
     station,
@@ -428,14 +470,25 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
       label: `${stationKey(station)} a demanda`,
       // Called again when time runs out; the run started only once.
       mark: () => {
-        if (!record) write({ asked: take(), startedAt: clock() });
+        clear();
+        if (startedAt) return;
+        startedAt = clock();
+        write({ asked, startedAt });
+        ctx.store.setKv(runKey, JSON.stringify({ ...base, startedAt, state: "running" } satisfies StationRunRecord));
       },
       optional: false,
-      failed: () => write({ asked: take(), endedAt: clock(), outcome: "not-run" }),
-      ended: (outcome) => {
-        if (record) write({ ...record, endedAt: clock(), outcome });
+      failed: () => {
+        clear();
+        write({ asked, endedAt: clock(), outcome: "not-run" });
       },
-      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true }),
+      ended: (outcome, error) => {
+        const finishedAt = clock();
+        if (startedAt) write({ asked, startedAt, endedAt: finishedAt, outcome: outcome === "done" ? "ok" : outcome });
+        const record: StationRunRecord = { ...base, ...(startedAt && { startedAt }), state: "ended", outcome, finishedAt };
+        if (error) record.error = stationText(error, ctx, station, CHARS_PER_TEXT);
+        ctx.store.setKv(runKey, JSON.stringify(record));
+      },
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true, ...(request && { request }) }),
     },
     outer,
   );

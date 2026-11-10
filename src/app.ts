@@ -26,7 +26,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { onDemandRecord, stationLastKey, stationOnDemandKey, type OnDemandRecord } from "./line/packages.js";
+import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
@@ -322,9 +322,11 @@ export interface FactoryStatus {
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
-  onDemand: { station: string; since: string }[];
+  onDemand: { station: string; since: string; request?: string }[];
   /** The last on-demand run of each station, when it started or ended in the last 24 hours or is still running. */
   onDemandRuns: OnDemandRun[];
+  /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
+  stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
   daemon: DaemonInfo;
@@ -363,7 +365,9 @@ export function onDemandRuns(ctx: FactoryContext, since: Date, now: Date): OnDem
 function pendingOnDemand(ctx: FactoryContext): FactoryStatus["onDemand"] {
   return (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
     const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
-    return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
+    if (since === undefined) return [];
+    const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
+    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
   });
 }
 
@@ -414,6 +418,10 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     packages: ctx.config.loadedPackages?.problems ?? [],
     onDemand: pendingOnDemand(ctx),
     onDemandRuns: onDemandRuns(ctx, new Date(now.getTime() - 86_400_000), now),
+    stationRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+      const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
+      return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
+    }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -1478,6 +1486,10 @@ export interface PackageStationView {
   lastRun?: string;
   /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
   onDemandPendingSince?: string;
+  /** The text sent with the pending on-demand run, when there is one. */
+  onDemandRequest?: string;
+  /** The station's last on-demand run: running, or how it ended. */
+  lastOnDemand?: StationRunRecord;
 }
 
 /** A package's tab as the panel's menu links it. */
@@ -1566,12 +1578,16 @@ export function packageList(ctx: FactoryContext): PackageList {
         stations: p.stations.map((name) => {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
+          const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
+          const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
           return {
             name,
             allowed: Boolean(station),
             missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
+            ...(pendingRequest && { onDemandRequest: pendingRequest }),
+            ...(lastOnDemand && { lastOnDemand }),
           };
         }),
       };
@@ -1579,14 +1595,15 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-export type StationRunResult = { ok: true; text: string } | { ok: false; reason: string };
+/** `requestedAt` is the pending request's time, the one its run record will carry. */
+export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string };
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
  * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date()): StationRunResult {
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
   if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
   const [, pkg, name] = match as unknown as [string, string, string];
@@ -1602,8 +1619,50 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
-  ctx.store.setKv(key, now.toISOString());
-  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.` };
+  // Cleaned like a station's own request: it reaches third-party code.
+  const text = request === undefined ? "" : stationText(request, ctx, station);
+  const requestKey = stationOnDemandRequestKey(pkg, name);
+  // The text goes first: the daemon reads it only once the request itself is there.
+  if (text) ctx.store.setKv(requestKey, text);
+  else ctx.store.deleteKv(requestKey);
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(key, requestedAt);
+  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+export interface StationWait {
+  timeoutMs: number;
+  pollMs?: number;
+  /** Tests inject it; by default a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Waits until the daemon starts the on-demand run asked for at `requestedAt`
+ * (its run record carries that time and a `startedAt`), or the limit passes.
+ * Shared by the CLI and the chat, so both answer the same way.
+ */
+export async function waitStationStart(ctx: FactoryContext, ref: string, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const [pkg = "", name = ""] = ref.trim().split("/");
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readStationRun(ctx, pkg, name);
+    if (run?.requestedAt === requestedAt && run.startedAt) {
+      return { started: true, text: `La corrida a demanda de ${pkg}/${name} empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero status.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre en la próxima pasada del daemon.` };
+}
+
+function hourMinute(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */
