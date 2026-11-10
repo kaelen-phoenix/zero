@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "../config.js";
 import { claudeEngine } from "./claude.js";
-import { antigravityEngine, codexEngine, customEngine, unsandboxedCodexEngine } from "./cli.js";
+import { antigravityEngine, codexEngine, customEngine, opencodeEngine, unsandboxedCodexEngine } from "./cli.js";
 import type { Engine } from "./types.js";
 
 export type { Access, Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
@@ -9,6 +9,7 @@ const BUILT_IN: Record<string, Engine> = {
   claude: claudeEngine,
   codex: codexEngine,
   antigravity: antigravityEngine,
+  opencode: opencodeEngine,
 };
 
 export const BUILT_IN_ENGINES = Object.keys(BUILT_IN);

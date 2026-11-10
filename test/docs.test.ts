@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { packagesPass, scheduledPass } from "../src/line/packages.js";
 import { SecretStore, memoryKeyring } from "../src/keychain.js";
 import { factoryConfig } from "../src/packages.js";
+import { TabDataSchema } from "../src/package-tabs.js";
 import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -39,6 +40,15 @@ describe("README in English and Spanish", () => {
     for (const readme of [en, es]) {
       for (const word of ["ChatGPT", "CODEX_API_KEY", "OPENAI_API_KEY", "usdPerNight", "reservePercent"]) expect(readme).toContain(word);
     }
+  });
+
+  it("document the OpenCode and ACP engines and no longer list them as coming", () => {
+    for (const text of [en, es]) {
+      expect(text).toContain("engine: opencode");
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("protocol: acp");
+    }
+    expect(section(en, "## Next steps")).not.toMatch(/ACP|OpenCode/);
+    expect(section(es, "## Próximas etapas")).not.toMatch(/ACP|OpenCode/);
   });
 
   it("document Codex without its sandbox in both languages", () => {
@@ -83,7 +93,7 @@ describe("README in English and Spanish", () => {
     expect(levels(en)).toEqual(levels(es));
   });
 
-  it("document the Linear intake in both, and leave only Jira on the roadmap", () => {
+  it("document the Linear intake in both, and leave no tracker on the roadmap", () => {
     for (const [text, heading, roadmap] of [
       [en, "## Linear issues", "## Next steps"],
       [es, "## Issues de Linear", "## Próximas etapas"],
@@ -94,7 +104,7 @@ describe("README in English and Spanish", () => {
       expect(blocks(linear).some((b) => b.info === "sh" && b.body.includes("zero secret set LINEAR_API_KEY"))).toBe(true);
       expect(linear).toContain("zero approve");
       const next = section(text, roadmap);
-      expect(next).toContain("Jira");
+      expect(next).not.toMatch(/jira/i);
       expect(next).not.toMatch(/linear/i);
     }
   });
@@ -170,6 +180,20 @@ describe("documentation up to date", () => {
       expect(body).toContain("otlp:");
       expect(section(text, next)).not.toContain("OTLP");
     }
+  });
+
+  it("documents Jira issues as available in both READMEs, with the same code blocks", () => {
+    const sections = [[es, "## Issues de Jira", "## Próximas etapas"], [en, "## Jira issues", "## Next steps"]] as const;
+    const found = sections.map(([text, heading, next]) => {
+      const body = section(text, heading);
+      for (const word of ["jira:", "site:", "project:", "JIRA_EMAIL", "JIRA_API_TOKEN", "zero secret set"]) expect(body, word).toContain(word);
+      const upcoming = section(text, next);
+      expect(upcoming).not.toMatch(/linear/i);
+      expect(upcoming).not.toMatch(/jira/i);
+      return blocks(body).map((b) => ({ info: b.info, body: normalize(b.body) }));
+    });
+    expect(found[0]!.length).toBeGreaterThanOrEqual(2);
+    expect(found[0]).toEqual(found[1]);
   });
 
   it("shows a complete custom agent in both READMEs", () => {
@@ -288,6 +312,20 @@ describe("agent packages", () => {
     }
   });
 
+  it.each(HEADINGS)("documents panel tabs with a manifest and data that load (%#)", async (text, heading) => {
+    const body = section(text, heading);
+    for (const word of ["tabs", "package-data", "ctx.dataDir", "categoria", "http", "1 MiB", "500", "#k="]) expect(body, word).toContain(word);
+    const found = blocks(body);
+    const tabs = found.find((b) => b.info === "yaml" && b.body.startsWith("tabs:"))!.body;
+    const dir = tempDir("zero-example-");
+    writeTree(dir, { "zero-package.yaml": `interface: 1\nname: hello\nversion: 1.0.0\n${tabs}` });
+    const ctx = testFactory({ packages: [{ path: dir }] });
+    ctx.config = await factoryConfig(ctx.home);
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs.map((t) => t.name)).toEqual(["news"]);
+    expect(TabDataSchema.safeParse(JSON.parse(found.find((b) => b.info === "json" && b.body.includes('"items"'))!.body)).success).toBe(true);
+  });
+
   it.each(HEADINGS)("has an example that works when copied (%#)", async (text, heading) => {
     const found = blocks(section(text, heading));
     const manifest = found.find((b) => b.info === "yaml" && b.body.includes("interface: 1"))!.body;
@@ -404,6 +442,17 @@ describe("what the factory produces", () => {
     const agents = read("AGENTS.md");
     for (const word of ["allowedArtifacts", "operationArtifacts", "saveReport"]) expect(agents).toContain(word);
     expect(agents.split("## Conventions")[1]).toContain("stays only in ZERO_HOME");
+  });
+});
+
+describe("work copy cleanup", () => {
+  it("is explained in the same bullet of both READMEs", () => {
+    const bullet = (text: string, start: string) => text.split("\n").find((l) => l.startsWith(start))!;
+    const enBullet = bullet(en, "- **It never overwrites your work.**");
+    const esBullet = bullet(es, "- **Nunca pisa tu trabajo.**");
+    expect(enBullet).toContain("retried in the background");
+    expect(esBullet).toContain("se reintenta en segundo plano");
+    for (const b of [enBullet, esBullet]) expect(b).toContain("`zero status`");
   });
 });
 

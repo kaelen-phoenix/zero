@@ -144,6 +144,62 @@ describe("proposals as GitHub issues", () => {
     expect(body).toContain("Costo estimado: $0.50");
   });
 
+  it("publishes images and resource tags as text, in the title, the body and the paths", async () => {
+    const ctx = factory();
+    ctx.store.createProposal({ ...idea, line: "demo", title: "T ![t](https://sitio.example/t)", why: "![x](https://sitio.example/?d=1)", change: '<iframe src="https://sitio.example/f">', paths: ["![p](https://sitio.example/p)"] });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    const { title, body } = gh.ops("createIssue")[0]!;
+    for (const text of [title!, body!]) {
+      expect(text).not.toContain("![");
+      expect(text).not.toContain("<iframe");
+    }
+    expect(body).toContain("https://sitio.example/?d=1");
+    expect(body).toContain("https://sitio.example/f");
+  });
+
+  it("makes media inert after the scrub, which could bring it together", async () => {
+    const ctx = factory();
+    const repo = ctx.config.lines[0]!.repo;
+    const p = ctx.store.createProposal({ ...idea, line: "demo", why: `!${repo}/[x](https://sitio.example/a)`, change: `<${repo}/img src=https://sitio.example/b>` });
+    const body = proposalIssueBody(p, ctx.config.lines[0]!, ctx.config);
+    expect(body.toLowerCase()).not.toContain(repo.toLowerCase());
+    expect(body).not.toContain("![");
+    expect(body).not.toContain("<img");
+  });
+
+  it("leaves the source issue's URL whole", () => {
+    const ctx = factory();
+    const p = ctx.store.createProposal({ ...idea, line: "demo", sourceIssue: { number: 12, url: "https://github.com/o/r/issues/12?a=1&b=2" } });
+    expect(proposalIssueBody(p, ctx.config.lines[0]!, ctx.config)).toContain("https://github.com/o/r/issues/12?a=1&b=2");
+  });
+
+  it("publishes a rejection's reason without live media, still quoting its URLs", async () => {
+    const ctx = factory();
+    const p = ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    await rejectProposal(ctx, p.id, '![x](https://sitio.example/?d=1)\n<img\nsrc="https://sitio.example/?d=2">');
+    await syncProposalIssues(ctx, () => gh.api);
+    const body = gh.ops("comment", 5)[0]!.body!;
+    expect(body).not.toContain("![");
+    expect(body).not.toContain("<img");
+    expect(body).toContain("https://sitio.example/?d=1");
+    expect(body).toContain("https://sitio.example/?d=2");
+  });
+
+  it("still says the factory took the proposal as work when approved", async () => {
+    const ctx = factory();
+    const p = ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    const { job } = approveProposal(ctx, p.id);
+    await syncProposalIssues(ctx, () => gh.api);
+    const body = gh.ops("comment", 5)[0]!.body!;
+    expect(body).toContain("la fábrica la tomó como trabajo");
+    expect(body).toContain(job.id);
+  });
+
   it("tells the issue about an approval once, labels it, and the intake opens no second job", async () => {
     const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo: githubRepo(), integrate: "pull-request", issues: { label: "zero" } }] });
     const p = ctx.store.createProposal({ ...idea, line: "demo" });

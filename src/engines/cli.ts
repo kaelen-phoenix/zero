@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CustomEngine } from "../config.js";
+import { killTree } from "../leftovers.js";
 import { spawnTarget } from "../shell.js";
+import { acpEngine } from "./acp.js";
 import { toStrictSchema, withoutOptionalNulls } from "./codex-schema.js";
 import type { Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
@@ -12,6 +14,8 @@ export interface Invocation {
   args: string[];
   /** Sent on stdin when the CLI reads the prompt from there. */
   stdin?: string;
+  /** Variables for this call alone, over the request's `env`. */
+  env?: Record<string, string>;
 }
 
 interface ProcessResult {
@@ -25,18 +29,19 @@ interface ProcessResult {
 export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number, signal?: AbortSignal, env?: Record<string, string>): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const target = spawnTarget(bin, cwd);
-    const child = spawn(target.bin, args, { cwd: target.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env && { env: { ...process.env, ...env } }) });
+    // A process group of its own outside Windows: a cut call takes down what the engine started too.
+    const child = spawn(target.bin, args, { cwd: target.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32", ...(env && { env: { ...process.env, ...env } }) });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let cancelled = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree(child);
     }, timeoutMs);
     const cancel = () => {
       cancelled = true;
-      child.kill("SIGKILL");
+      killTree(child);
     };
     if (signal?.aborted) cancel();
     signal?.addEventListener("abort", cancel, { once: true });
@@ -94,7 +99,8 @@ interface ExecuteHooks {
 }
 
 async function execute(name: string, inv: Invocation, req: EngineRequest, hooks: ExecuteHooks = {}): Promise<EngineResult> {
-  const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal, req.env);
+  const env = inv.env ? { ...req.env, ...inv.env } : req.env;
+  const r = await runProcess(inv, req.cwd, req.timeoutMs, req.signal, env);
   if (r.cancelled) return { ok: false, text: `${name} cancelled` };
   const result = await outcome(name, r, req, hooks);
   const quota = await hooks.quota?.(r, result.ok);
@@ -207,12 +213,22 @@ export function codexWindows(stdout: string, now = new Date()): QuotaWindow[] {
   return found;
 }
 
+/** What OpenAI answers when an API key has no credit left. */
+export const CODEX_OUT_OF_CREDIT = /insufficient_quota|you exceeded your current quota/i;
+
+/** Whether a failed call was refused for lack of credit: its stderr or its last error event says so. */
+export function codexOutOfCredit(stdout: string, stderr: string): boolean {
+  return CODEX_OUT_OF_CREDIT.test(stderr) || CODEX_OUT_OF_CREDIT.test(codexError(stdout) ?? "");
+}
+
 /**
  * What a run tells about the plan. Only plans report usage windows, so windows
  * without any word on the session still mean a subscription; a failed call with
- * a window used up counts as refused by the plan.
+ * a window used up counts as refused by the plan, and a failed call refused for
+ * lack of credit, outside a known subscription, as an API key that ran out.
  */
-export function codexQuota(session: QuotaReport["billing"] | undefined, windows: QuotaWindow[], ok: boolean): QuotaReport | undefined {
+export function codexQuota(session: QuotaReport["billing"] | undefined, windows: QuotaWindow[], ok: boolean, outOfCredit = false): QuotaReport | undefined {
+  if (!ok && outOfCredit && session !== "subscription") return { billing: "api", windows: [], limited: true };
   const billing = session ?? (windows.length ? "subscription" : undefined);
   if (!billing) return undefined;
   if (billing === "api") return { billing, windows: [] };
@@ -277,7 +293,7 @@ async function runCodex(req: EngineRequest, sandbox: "on" | "off"): Promise<Engi
       // The answer is the last message; stdout is only the fallback when that file cannot be read.
       output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
       failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
-      quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok),
+      quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok, !ok && codexOutOfCredit(r.stdout, r.stderr)),
     });
     return req.schema && result.ok ? withStructuredOutput(req.schema, result) : result;
   } finally {
@@ -326,6 +342,97 @@ export const antigravityEngine: Engine = {
   run: (req) => execute("antigravity", antigravityInvocation(req), req),
 };
 
+// ── OpenCode ─────────────────────────────────────────────────────────────────
+
+const OPENCODE_STDIN_INSTRUCTION = AGY_STDIN_INSTRUCTION;
+/** How deep an event is searched for `providerID` and `modelID`. */
+const OPENCODE_MODEL_MAX_DEPTH = 16;
+
+/** OpenCode's permissions for a call: nothing is allowed on read-only access, and the web stays with zero's own stations. */
+export function opencodePermissions(access: EngineRequest["access"]): Record<string, string> {
+  return access === "write" ? { edit: "allow", bash: "allow", webfetch: "deny" } : { edit: "deny", bash: "deny", webfetch: "deny" };
+}
+
+export function opencodeInvocation(req: EngineRequest): Invocation {
+  const prompt = fullPrompt(req);
+  const onStdin = prompt.length > AGY_MAX_ARG_PROMPT;
+  return {
+    bin: "opencode",
+    args: ["run", "--format", "json", ...(req.model ? ["--model", req.model] : []), onStdin ? OPENCODE_STDIN_INSTRUCTION : prompt],
+    stdin: onStdin ? prompt : undefined,
+    // Inline configuration: no file of the workspace or the owner's is touched.
+    env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: opencodePermissions(req.access) }) },
+  };
+}
+
+const partOf = (e: JsonObject): JsonObject | undefined => (isObject(e.part) ? e.part : undefined);
+
+/** The text of the last step: earlier steps are the agent's work in progress. */
+export function opencodeAnswer(stdout: string): string {
+  const events = codexEvents(stdout);
+  const lastStep = events.findLastIndex((e) => e.type === "step_start");
+  return events
+    .slice(lastStep + 1)
+    .flatMap((e) => {
+      const text = e.type === "text" ? partOf(e)?.text : undefined;
+      return typeof text === "string" ? [text] : [];
+    })
+    .join("");
+}
+
+export function opencodeCost(stdout: string): number | undefined {
+  const costs = codexEvents(stdout).flatMap((e) => {
+    const cost = e.type === "step_finish" ? partOf(e)?.cost : undefined;
+    return typeof cost === "number" && Number.isFinite(cost) ? [cost] : [];
+  });
+  return costs.length ? costs.reduce((a, b) => a + b, 0) : undefined;
+}
+
+function nestedModel(value: unknown, depth = 0): string | undefined {
+  if (!isObject(value) || depth > OPENCODE_MODEL_MAX_DEPTH) return undefined;
+  let found = typeof value.providerID === "string" && typeof value.modelID === "string" ? `${value.providerID}/${value.modelID}` : undefined;
+  for (const child of Object.values(value)) found = nestedModel(child, depth + 1) ?? found;
+  return found;
+}
+
+/** `<providerID>/<modelID>` from the last event that names both. */
+export function opencodeModel(stdout: string): string | undefined {
+  let found: string | undefined;
+  for (const event of codexEvents(stdout)) found = nestedModel(event) ?? found;
+  return found;
+}
+
+/** What the last `error` event says. */
+export function opencodeError(stdout: string): string | undefined {
+  const messages = codexEvents(stdout).flatMap((e) => {
+    if (e.type !== "error") return [];
+    const error = isObject(e.error) ? e.error : undefined;
+    const data = error && isObject(error.data) ? error.data : undefined;
+    const message = data?.message ?? error?.message ?? e.message;
+    return typeof message === "string" && message.trim() ? [message] : [];
+  });
+  return messages.at(-1);
+}
+
+async function runOpencode(req: EngineRequest): Promise<EngineResult> {
+  let stdout = "";
+  const result = await execute("opencode", opencodeInvocation(req), req, {
+    output: (r) => ((stdout = r.stdout), opencodeAnswer(r.stdout)),
+    failure: (r) => ((stdout = r.stdout), r.stderr.trim() ? r.stderr : (opencodeError(r.stdout) ?? r.stdout)),
+  });
+  const costUsd = opencodeCost(stdout);
+  const model = opencodeModel(stdout);
+  return { ...result, ...(costUsd !== undefined && { costUsd }), ...(model && { model }) };
+}
+
+/** `opencode run`, on whatever provider OpenCode is signed in to. It reports no plan windows; read-only access is enforced by zero's workspace guard. */
+export const opencodeEngine: Engine = {
+  name: "opencode",
+  nativeSchema: false,
+  unsandboxed: true,
+  run: runOpencode,
+};
+
 // ── Any other CLI, declared in zero.config.json ──────────────────────────────
 
 export function customInvocation(def: CustomEngine, req: EngineRequest): Invocation {
@@ -346,6 +453,7 @@ export function customInvocation(def: CustomEngine, req: EngineRequest): Invocat
 }
 
 export function customEngine(name: string, def: CustomEngine): Engine {
+  if (def.protocol === "acp") return acpEngine(name, def);
   return {
     name,
     nativeSchema: false,

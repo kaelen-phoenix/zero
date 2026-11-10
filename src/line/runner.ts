@@ -8,15 +8,15 @@ import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, 
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
 import { signText, withTrailer } from "../signature.js";
-import { git, sh, spawnGit, type ShellResult } from "../shell.js";
+import { git, sh, spawnGit, tryGit, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import type { PullRequestsFactory } from "../tracker.js";
-import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
-import { askOwner, describeDelivery, finalizeJob, STOPPED_BY_YOU, type LedgerDeps } from "./finish.js";
+import { conflictMarkers, openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
+import { askOwner, describeDelivery, finalizeJob, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
 import { integrate } from "./integrate.js";
-import { decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
+import { asksBeforeUpdate, decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
 import {
   capabilityExists,
@@ -33,6 +33,7 @@ import {
   type Spec,
 } from "./spec.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
+import { localCommands, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
@@ -55,15 +56,21 @@ type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
 
-/** `quota`: the subscription plan refused a call; the job waits in the queue until the plan renews. */
+/** `quota`: an engine ran out of plan quota or API credit; the job waits in the queue until it renews. */
 class Interrupted extends Error {
   constructor(readonly why: StopReason | "quota") {
     super(`interrupted: ${why}`);
   }
 }
 
-/** The first preparation of a work copy failed. Never retried: a resumed job finds the copy made and skips setup. */
+/** The first preparation of a work copy failed, after its one new try. The job is not resumed: it would find the copy made and skip setup. */
 class SetupFailed extends Error {}
+
+/** How many times the first preparation of a work copy is tried: a setup that fails once is often the machine (no memory, the network) and not the repository. */
+const SETUP_TRIES = 2;
+
+/** Merging the base into a pull request's branch did not give the conflicts to resolve; the update ends. */
+class RefreshFailed extends Error {}
 
 /** How many times one job goes back to the queue after a network cut, in its whole life. */
 const MAX_NETWORK_RETRIES = 2;
@@ -133,7 +140,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   const lineDeps: RunnerDeps = { ...deps, runAgent: box ? box.agentRunner(config) : deps.runAgent };
   const shell: Shell = box
     ? (command, cwd, o) => box.shell(command, { cwd, mount: "rw", jobId, station: o.station, timeoutMs: o.timeoutMs, signal: o.signal, trace: { tracer, jobId, parentId: o.parentId } })
-    : (command, cwd, o) => sh(command, cwd, o);
+    : // On this machine the commands of every job take turns (`commandConcurrency`); the time limit counts from the start of the command, not of the wait.
+      async (command, cwd, o) => (await localCommands.run(config.commandConcurrency, () => sh(command, cwd, o), o.signal)) ?? { code: 1, output: "cancelado antes de empezar", timedOut: false };
 
   const reload = () => (job = store.getJob(jobId)!);
   const check = () => {
@@ -149,6 +157,22 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   try {
     const copy = (opened = await prepareWorkCopy(deps, job, line, isolation, shell));
     job = reload();
+
+    const taken = prRefresh(store, jobId);
+    if (taken && !taken.started) {
+      const baseCommit = git(["rev-parse", "--verify", `${copy.base}^{commit}`], copy.cwd);
+      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), taken.head, baseCommit);
+      if (merge.outcome === "up-to-date") return await fail(`La rama ya contiene ${copy.base}: no hay nada que mezclar.`);
+      if (merge.outcome === "refused") return await fail(`No se pudo mezclar ${copy.base}: ${merge.reason}`);
+      if (merge.outcome === "merged") {
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, resolved: true });
+        // Nothing to build: it goes back through verify and the reviews, without spending an attempt.
+        job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
+      } else {
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });
+        job = store.updateJob(jobId, { checkpoint: "spec", station: "build", feedback: conflictFeedback(copy, merge.paths) });
+      }
+    }
 
     if (job.checkpoint === "none") {
       const outcome = await specStation(lineDeps, job, line, copy, signal, addCost, learn);
@@ -174,6 +198,9 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     // Verify ran before the reviews and may have been long ago: an approval or a restart resumes here, and an agent's commit leaves nothing uncommitted to notice.
     const artifacts = changeArtifacts(copy, line.allowedArtifacts, ownSpecDir(jobId));
     if (artifacts.length) return await fail(`No se integró. ${artifactFeedback(artifacts)}`);
+    const refresh = prRefresh(store, jobId);
+    const refreshProblem = refresh && updateProblem(copy, refresh);
+    if (refreshProblem) return await fail(refreshProblem);
     if (!job.approvals.integrate) {
       const held = nightShiftHold(deps, line, job, copy);
       if (held) {
@@ -182,7 +209,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         // Never integrated without a human: a timeout rejects it, whatever approvals.onTimeout says.
         return askOwner(deps, job, { kind: "before-integrate", text: held }, { onTimeout: "reject" });
       }
-      if (decide(level, "before-integrate") === "ask") {
+      if (refresh ? asksBeforeUpdate(level, Boolean(refresh.approved)) : decide(level, "before-integrate") === "ask") {
         return askOwner(deps, job, { kind: "before-integrate", text: `El trabajo "${spec.title}" pasó la verificación y la revisión. ¿Lo integro?` });
       }
     }
@@ -198,8 +225,10 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         scratchDir: join(deps.home.worktrees, line.name),
         author: commitAuthor(config, line),
         pullRequests: deps.pullRequests,
+        ...(refresh && job!.delivery && { existing: { delivery: job!.delivery, head: refresh.head } }),
       });
     });
+    if (!result.ok && refresh) return await fail(result.reason);
     if (!result.ok) {
       return askOwner(deps, reload(), { kind: "integration-blocked", text: `${result.reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
     }
@@ -209,14 +238,37 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
       if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: STOPPED_BY_YOU });
-      if (why === "quota") log.info("subscription plan used up; job back in the queue until it renews", { job: jobId });
+      if (why === "quota") log.info("engine quota or credit used up; job back in the queue until it renews", { job: jobId });
       return store.updateJob(jobId, { status: "queued" });
     }
+    if (err instanceof RefreshFailed) return fail(err.message);
     const requeued = isTransientNetworkError(err) ? requeueAfterCut(deps, jobId, opened, err) : undefined;
     if (requeued) return requeued;
     log.error("job crashed", { job: jobId, error: err instanceof Error ? err.stack : String(err) });
     return fail(`Error inesperado: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+const saveRefresh = (deps: RunnerDeps, jobId: string, mark: PrRefresh) => deps.store.setKv(prRefreshKey(jobId), JSON.stringify(mark));
+
+const mergeMessage = (deps: RunnerDeps, line: LineConfig, jobId: string, copy: WorkCopy) => withTrailer(`zero(${jobId}): mezcla de ${copy.base}`, lineSignature(deps.config, line));
+
+/** Paths as the agent may have named them, fit to show. */
+const listPaths = (paths: string[]) => paths.map((p) => `- ${p.replace(/[\p{Cc}\p{Cf}]/gu, "?")}`).join("\n");
+
+function conflictFeedback(copy: WorkCopy, paths: string[]): string {
+  return `Mezclar ${copy.base} en la rama de este trabajo dio conflictos, y la mezcla ya está en curso en la copia de trabajo. Resolvé estos archivos conservando la intención de los dos lados, sin dejar marcadores de conflicto, y sin correr \`git merge\`, abortarla ni commitear:\n${listPaths(paths)}`;
+}
+
+/** Why what is about to be pushed to a pull request cannot go: left-over markers, or a branch that lost the base commit it merged or the tip it had. */
+function updateProblem(copy: WorkCopy, refresh: PrRefresh): string | undefined {
+  // Only what is committed gets pushed, so that is what gets looked at.
+  copy.discardChanges();
+  const left = conflictMarkers(copy.cwd, refresh.paths ?? []);
+  if (left.length) return `No se subió la actualización: quedaron marcadores de conflicto en:\n${listPaths(left)}`;
+  const contains = (rev: string) => tryGit(["merge-base", "--is-ancestor", rev, "HEAD"], copy.cwd) !== undefined;
+  if (!contains(refresh.head) || !refresh.baseCommit || !contains(refresh.baseCommit)) return `No se subió la actualización: la rama ya no contiene a ${copy.base} y a la punta anterior del pull request.`;
+  return undefined;
 }
 
 /**
@@ -259,25 +311,36 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
     return open(exclude);
   }
-  try {
-    const bare = await open([]);
-    deps.store.updateJob(job.id, { worktree: path, branch, base });
-    if (line.setup.length) {
-      await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
-        for (const command of line.setup) {
-          const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
-          span.set({ "process.command_line": command, "process.exit.code": r.code });
-          if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
-        }
-      });
+  for (let tries = 1; ; tries++) {
+    try {
+      const bare = await open([]);
+      deps.store.updateJob(job.id, { worktree: path, branch, base });
+      if (line.setup.length) {
+        await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation, "zero.setup.try": tries } }, async (span) => {
+          for (const command of line.setup) {
+            const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
+            span.set({ "process.command_line": command, "process.exit.code": r.code });
+            if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
+          }
+        });
+      }
+      git(["checkout", "-q", "--", "."], bare.cwd);
+      const exclude = untrackedPaths(bare.cwd);
+      await mkdir(join(deps.home.jobs, job.id), { recursive: true });
+      await writeFile(excludeFile, JSON.stringify(exclude));
+      return await open(exclude);
+    } catch (err) {
+      const failed = new SetupFailed(err instanceof Error ? err.message : String(err), { cause: err });
+      if (tries >= SETUP_TRIES) throw failed;
+      // One more go from a fresh copy: the half-made one would make a later run skip setup.
+      log.warn("setup failed; trying once more in a fresh copy", { job: job.id, line: line.name, error: failed.message.slice(0, 500) });
+      try {
+        removeWorkCopy(line.repo, path);
+      } catch {
+        throw failed;
+      }
+      if (existsSync(path)) throw failed;
     }
-    git(["checkout", "-q", "--", "."], bare.cwd);
-    const exclude = untrackedPaths(bare.cwd);
-    await mkdir(join(deps.home.jobs, job.id), { recursive: true });
-    await writeFile(excludeFile, JSON.stringify(exclude));
-    return await open(exclude);
-  } catch (err) {
-    throw new SetupFailed(err instanceof Error ? err.message : String(err), { cause: err });
   }
 }
 
@@ -330,7 +393,7 @@ const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.bi
 function goesOn(deps: RunnerDeps, run: AgentRun<unknown>, station: Who, switched: number): boolean {
   if (!run.quota?.limited || switched >= chainOf(deps, station).length - 1) return false;
   const next = choose(deps, station);
-  if (next.available) log.info("subscription plan used up; going on with a replacement", { station: nameOf(station), engine: next.engine });
+  if (next.available) log.info("engine quota or credit used up; going on with a replacement", { station: nameOf(station), engine: next.engine });
   return next.available;
 }
 
@@ -563,11 +626,27 @@ async function buildLoop(
       store.updateJob(jobId, { feedback, station: "build" });
       attemptSpan.end("error", { "error.message": feedback.slice(0, 300) });
     };
+    // This attempt resolves the conflicts of merging the base. Every engine call gets the merge started again from the tip, whatever the last one left.
+    const mark = prRefresh(store, jobId);
+    const conflicted = !resuming && mark?.paths && mark.baseCommit && !mark.resolved ? { ...mark, paths: mark.paths, baseCommit: mark.baseCommit } : undefined;
+    const startMerge = () => {
+      if (!conflicted) return;
+      // The same two commits, so the same conflicts: the mark's paths stay true however far the base's ref has moved.
+      const merge = copy.mergeBase(mergeMessage(deps, line, jobId, copy), conflicted.head, conflicted.baseCommit);
+      if (merge.outcome === "conflict") return;
+      attemptSpan.end("error", { "error.message": "merge did not conflict again" });
+      throw new RefreshFailed(`No se pudo volver a empezar la mezcla de ${copy.base}: ${merge.outcome === "refused" ? merge.reason : merge.outcome}`);
+    };
+    const dropMerge = (head: string) => {
+      copy.discardChanges();
+      git(["reset", "-q", "--hard", head], copy.cwd);
+    };
 
     if (!resuming) {
       job = store.updateJob(jobId, { attempt, station: "build" });
       const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) => {
         for (let switched = 0; ; switched++) {
+          startMerge();
           const choice = choose(deps, "build");
           const r = await deps.runAgent({
             station: "build",
@@ -602,7 +681,7 @@ async function buildLoop(
         // The plan cut the call short: this attempt does not count, and the build is redone after the renewal.
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1 });
-        attemptSpan.end("error", { "error.message": "subscription plan used up" });
+        attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
         quotaStop(run);
       }
       if (run.budgetLimited) {
@@ -613,10 +692,27 @@ async function buildLoop(
         return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
       }
       if (!run.ok) {
-        failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`);
+        failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths)}` : ""}`);
         continue;
       }
+      if (conflicted) {
+        const left = conflictMarkers(copy.cwd, conflicted.paths);
+        if (left.length) {
+          dropMerge(conflicted.head);
+          failAttempt(`Quedaron marcadores de conflicto, así que no se commiteó nada y la mezcla se empieza de nuevo. Archivos con marcadores:\n${listPaths(left)}\n\n${conflictFeedback(copy, conflicted.paths)}`);
+          continue;
+        }
+      }
       copy.commitAll(withTrailer(`zero(${jobId}): ${stage ? `etapa ${stageNo} de ${stages.length}, ` : ""}intento ${attempt}`, lineSignature(config, line)));
+      if (conflicted) {
+        // The agent may have aborted the merge or redone it its own way: without the base in, the branch gets no further.
+        if (tryGit(["merge-base", "--is-ancestor", conflicted.baseCommit, "HEAD"], copy.cwd) === undefined) {
+          dropMerge(conflicted.head);
+          failAttempt(`La mezcla no se completó: la rama no contiene a ${copy.base}. No corras \`git merge\`, no la abortes ni commitees.\n\n${conflictFeedback(copy, conflicted.paths)}`);
+          continue;
+        }
+        saveRefresh(deps, jobId, { ...conflicted, resolved: true });
+      }
       if (!changedCode().length) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
         continue;
@@ -678,7 +774,7 @@ async function buildLoop(
         if (run.quota?.limited) {
           // The plan cut the call short: the attempt and the station stay, so only this agent runs again after the renewal.
           copy.discardChanges();
-          attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
           quotaStop(run);
         }
         if (run.budgetLimited) {
@@ -717,6 +813,7 @@ async function buildLoop(
         jobId,
         parentId: span.id,
         signal,
+        timeoutFor: (command) => verifyTimeoutMs(store, line, command, nowOf(deps)),
         run: (command, o) => shell(command, copy.cwd, { ...o, station: "verify" }),
       }),
     );
@@ -827,7 +924,7 @@ async function buildLoop(
             tryNo--;
             continue;
           }
-          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "subscription plan used up" });
+          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
           quotaStop(run);
           if (signal.aborted || (run.ok && run.output)) {
             if (!run.output) return undefined;

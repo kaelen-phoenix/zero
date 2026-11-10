@@ -22,7 +22,7 @@ A production line that turns the owner's requests into delivered changes. Its ag
 - Each note has:
   - `topic`: a short title.
   - `findings`: what you found and why it matters for this line, concrete enough to act on (skill or tool name, station, what it would gain).
-  - `sources`: the absolute http(s) URLs you read. A note without sources is discarded.
+  - `sources`: the absolute http(s) URLs you read. A note without sources is discarded. Zero removes each URL's query string and fragment, so prefer URLs that identify the page by their path.
   - `serves`: which part of the line it would help (a station, the verify step, the factory itself).
   - `maturity`: how mature and reliable it is (stable, beta, experimental; maintained or not; who publishes it).
 - Write `topic`, `findings`, `serves` and `maturity` in Spanish: the owner reads them.
