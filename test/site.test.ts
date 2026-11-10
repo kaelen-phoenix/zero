@@ -227,6 +227,16 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["delegate", "trust"]) expect(en).toContain(word);
   });
 
+  it("la sinopsis dice, después de la delegación, que zero libera tiempo para las personas", () => {
+    const synopsis = section("synopsis");
+    const time = translatable(synopsis).find((t) => t.key === "synopsis.time");
+    expect(time?.inner.trim()).toBe("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.");
+    expect(time!.inner).toContain("las personas");
+    expect(synopsis.indexOf('data-i18n="synopsis.loop"')).toBeGreaterThanOrEqual(0);
+    expect(synopsis.indexOf('data-i18n="synopsis.time"')).toBeGreaterThan(synopsis.indexOf('data-i18n="synopsis.loop"'));
+    expect(loadSite().EN["synopsis.time"]).toBe("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.");
+  });
+
   it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
     const autonomy = section("autonomy");
     const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);
@@ -297,8 +307,9 @@ describe("sitio del proyecto: contenido", () => {
     expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
     expect(loadSite().EN["soon"]).toBe("coming");
-    const line = html.split("\n").find((l) => l.includes("Instalador") && l.includes('class="soon"'));
-    expect(line, "Instalador").toBeDefined();
+    const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
+    for (const item of ["next.engines", "next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -307,6 +318,26 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["next.otlp"]).toBeUndefined();
     expect(/<p data-i18n="workflow\.trace">([^<]*)<\/p>/.exec(html)![1]).toContain("OTLP");
     expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
+  });
+
+  it("da los pedidos desde Linear como disponibles y Jira sigue en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && /linear/i.test(l))).toEqual([]);
+    expect(lines.some((l) => l.includes('class="soon"') && l.includes("Jira"))).toBe(true);
+    const linear = lines.filter((l) => l.includes('data-i18n="next.linear"'));
+    expect(linear).toHaveLength(1);
+    expect(linear[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["ready"]).toBe("available");
+    expect(loadSite().EN["next.linear"]).toContain("Linear");
+    expect(loadSite().EN["next.intake"]).not.toContain("Linear");
+  });
+
+  it("da el simulacro de regeneración como disponible, no en camino", () => {
+    const lines = html.split("\n");
+    const regen = lines.filter((l) => l.includes('data-i18n="next.regen"'));
+    expect(regen).toHaveLength(1);
+    expect(regen[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("next.regen"))).toEqual([]);
   });
 });
 
@@ -372,6 +403,27 @@ describe("sitio del proyecto: instalación y flujo", () => {
     }
     expect(install).toMatch(/<button type="button" class="copy" data-copy="install-code"/);
     expect(html).toMatch(/<div id="announce"[^>]*aria-live="polite"/);
+  });
+
+  it("muestra el instalador en un solo paso para cada sistema, cada bloque con su botón de copiar", () => {
+    const install = section("install");
+    const code = (id: string) => new RegExp(`<pre><code id="${id}">([\\s\\S]*?)</code></pre>`).exec(install)![1]!.replace(/&amp;/g, "&");
+    expect(code("install-unix")).toBe("curl -fsSL https://zerointheloop.com/install.sh | sh");
+    expect(code("install-windows")).toBe("irm https://zerointheloop.com/install.ps1 | iex");
+    const blocks = [...install.matchAll(/<pre><code id="([^"]+)">/g)].map((m) => m[1]!);
+    expect(blocks).toEqual(["install-unix", "install-windows", "install-code"]);
+    for (const id of blocks) expect(install).toContain(`<button type="button" class="copy" data-copy="${id}"`);
+    expect(install).not.toContain('class="soon"');
+  });
+
+  it("traduce cada texto de la sección de instalación", () => {
+    const en = loadSite().EN;
+    const keys = [...section("install").matchAll(/data-i18n="([^"]+)"/g)].map((m) => m[1]!);
+    expect(keys).toContain("install.oneStep");
+    expect(keys).toContain("install.manual");
+    for (const key of keys) expect(en[key], key).toBeTruthy();
+    expect(en["install.installer"]).toBeUndefined();
+    expect(en["next.installer"]).toBeUndefined();
   });
 
   it("el botón de copiar escribe el texto del bloque en el portapapeles y lo anuncia", async () => {
@@ -997,7 +1049,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });

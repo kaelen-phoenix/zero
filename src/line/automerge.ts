@@ -4,13 +4,20 @@ import type { LineConfig } from "../config.js";
 import { GithubHalted, isRateLimit } from "../github-quota.js";
 import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
+import { spawnGit, tryGit } from "../shell.js";
 import type { Job } from "../state/store.js";
+import { prRefreshKey, type PrRefresh } from "./finish.js";
 
 /**
  * Merges the pull requests of lines with `autoMerge` once GitHub says they
  * are ready: every check finished well and there are no conflicts. Polled by
  * the daemon, like the issue intake, so the owner's machine needs no public
- * address. A pull request that is not ready is left as it is.
+ * address. A pull request that is not ready is left as it is, except one in
+ * conflict with its base: while its tip is still the factory's and has not been
+ * tried, its job goes back to the queue to merge the base in (`takeBack`, then
+ * the mark in finish.ts and the runner). `MergeState.resolving` keeps that tip,
+ * so each tip is taken back at most once, and a job that could not update it
+ * ends delivered again and is told about here like any other blocked one.
  */
 
 export interface PullRequestState {
@@ -105,6 +112,8 @@ export interface MergeState {
   reported?: string;
   /** While blocked: what it looked like, and when its checks are worth asking for again. */
   backoff?: { sha: string; mergeable: boolean | null; why: string; delayMs: number; nextChecksAt: string };
+  /** The last pull request tip whose job went back to the queue to merge the base in. */
+  resolving?: string;
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -133,11 +142,35 @@ export function watchedJobs(ctx: FactoryContext): Job[] {
 
 const EXPIRED = "pasaron 14 días sin poder fundirlo";
 
+/**
+ * Puts the job of a pull request in conflict back in the queue to merge the
+ * base in, or returns false when it is not the factory's to touch or there is
+ * nothing left to try. State is saved first: should the rest not happen, the
+ * tip counts as tried and the pull request is only told about it.
+ */
+function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void): boolean {
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line?.autoMerge || !job.spec || job.attempt >= line.maxAttempts || state.resolving === head) return false;
+  if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return false;
+  const fetched = spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 120_000 });
+  if (fetched.status !== 0) {
+    log.warn("cannot fetch the base branch; pull request left as it is", { job: job.id, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
+    return false;
+  }
+  save({ reported: state.reported, status: "waiting", why: "actualizándolo con la rama base", resolving: head });
+  ctx.store.setKv(prRefreshKey(job.id), JSON.stringify({ head, ...(job.approvals.integrate && { approved: true }) } satisfies PrRefresh));
+  // Approving the earlier code does not cover what the merge brings in.
+  const { integrate: _approved, ...approvals } = job.approvals;
+  ctx.store.updateJob(job.id, { status: "queued", checkpoint: "review", station: "integrate", finishedAt: null, stopRequested: false, base: `${line.remote}/${line.baseBranch}`, approvals });
+  log.info("pull request in conflict; job back in the queue to update it", { job: job.id, head });
+  return true;
+}
+
 async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number) {
   const key = mergeKey(job.id);
   const raw = ctx.store.getKv(key);
   const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
-  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify(next));
+  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ resolving: state.resolving, ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const since = now - Date.parse(job.finishedAt ?? job.updatedAt);
 
@@ -148,6 +181,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
     return save({ ...state, status: "blocked", why: unchanged.why });
   }
+  if (pr.open && !pr.merged && pr.mergeable === false && since <= WATCH_MS && takeBack(ctx, job, pr.headSha, state, save)) return;
   const decision = mergeDecision(pr, pr.open ? await gh.checks(pr.headSha) : [], since);
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { quotaAttrs } from "../src/agent.js";
 import { factoryStatus, requestWork } from "../src/app.js";
-import { budgetState } from "../src/budget.js";
+import { budgetState, pickEngine } from "../src/budget.js";
 import { parseFactory } from "../src/config.js";
 import { claudeQuota } from "../src/engines/claude.js";
 import type { QuotaReport } from "../src/engines/index.js";
@@ -89,6 +89,43 @@ describe("budget", () => {
     call(tracer, 6, { billing: "api", windows: [] });
     call(tracer, 4);
     expect(budgetState(store, config({ usdPerDay: 10 }), new Date("2026-10-29T15:05:00Z"))).toMatchObject({ billing: "api", reached: true, spentUsd: 10 });
+  });
+
+  it("pauses a per-use engine for a while after its key ran out of credit", () => {
+    const store = testStore();
+    call(new Tracer(store, at("2026-10-29T15:00:00Z")), 0, { billing: "api", windows: [], limited: true });
+    expect(budgetState(store, config(), new Date("2026-10-29T15:05:00Z"))).toMatchObject({
+      billing: "api",
+      reached: true,
+      until: "2026-10-29T15:15:00.000Z",
+      reason: expect.stringContaining("la clave de API se quedó sin saldo"),
+    });
+    expect(budgetState(store, config(), new Date("2026-10-29T15:16:00Z")).reached).toBe(false);
+  });
+
+  it("pauses codex for a while after its API key ran out of credit", () => {
+    const store = testStore();
+    call(new Tracer(store, at("2026-10-29T15:00:00Z")), 0, { billing: "api", windows: [], limited: true }, "codex");
+    const cfg = parseFactory("engine: codex\nlines: []\n");
+    expect(budgetState(store, cfg, new Date("2026-10-29T15:05:00Z"))).toMatchObject({
+      reached: true,
+      until: "2026-10-29T15:15:00.000Z",
+      reason: expect.stringContaining("la clave de API se quedó sin saldo"),
+    });
+    expect(budgetState(store, cfg, new Date("2026-10-29T15:16:00Z")).reached).toBe(false);
+  });
+
+  it("keeps the daily cap after the out-of-credit pause and hands the station to the fallback", () => {
+    const capped = testStore();
+    call(new Tracer(capped, at("2026-10-29T15:00:00Z")), 10, { billing: "api", windows: [] });
+    expect(budgetState(capped, config({ usdPerDay: 10 }), new Date("2026-10-29T15:05:00Z"))).toMatchObject({ reached: true, reason: expect.stringContaining("se alcanzó el límite de gasto del día") });
+
+    const store = testStore();
+    call(new Tracer(store, at("2026-10-29T15:00:00Z")), 0, { billing: "api", windows: [], limited: true });
+    const now = new Date("2026-10-29T15:05:00Z");
+    const cfg = parseFactory("engine: claude\nfallback: [codex]\nlines: []\n");
+    expect(budgetState(store, cfg, now)).toMatchObject({ reached: false, replacements: [{ engine: "claude", with: "codex" }] });
+    expect(pickEngine(store, cfg, "build", now)).toMatchObject({ engine: "codex", replaces: "claude" });
   });
 
   it("bills calls made before engines reported their plan like the engine's latest reading", () => {
@@ -179,5 +216,16 @@ describe("production line on a subscription", () => {
     const done = await runJob(job.id, { ...ctx, runAgent: agents.runner });
     expect(done).toMatchObject({ status: "delivered", attempt: 1 });
     expect(agents.count.spec).toBe(1);
+  });
+
+  it("does not spend an attempt when the API key runs out of credit", async () => {
+    const ctx = setup();
+    const noCredit: QuotaReport = { billing: "api", windows: [], limited: true };
+    const agents = fakeAgents({ spec: () => ({ quota: plan() }), build: () => ({ ok: false, text: "Credit balance is too low", quota: noCredit }) });
+    const { job } = requestWork(ctx, { text: "x" });
+
+    const parked = await runJob(job.id, { ...ctx, runAgent: agents.runner });
+    expect(parked).toMatchObject({ status: "queued", attempt: 0, checkpoint: "spec" });
+    expect(budgetState(ctx.store, ctx.config)).toMatchObject({ reached: true, reason: expect.stringContaining("sin saldo") });
   });
 });

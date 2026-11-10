@@ -246,7 +246,7 @@ describe("proposals as GitHub issues", () => {
   });
 
   it("never says the owner approved what the night shift took on its own", async () => {
-    const ctx = factory();
+    const ctx = factory([{ name: "demo", repo: githubRepo(), nightShift: { autonomy: "build" } }]);
     const p = ctx.store.createProposal({ ...idea, line: "demo" });
     const gh = fakeGitHub();
     await syncProposalIssues(ctx, () => gh.api);
@@ -259,6 +259,23 @@ describe("proposals as GitHub issues", () => {
     expect(comment!.body).toContain("hasta que la persona responsable la apruebe");
     expect(comment!.body).toContain("build");
     expect(comment!.body).toContain(job.id);
+    expect(comment!.body).toContain("autonomía de la propuesta");
+    expect(comment!.body).not.toContain("autonomía de la línea");
+    expect(comment!.body).not.toContain("research.autonomy");
+  });
+
+  it("says where the proposal's autonomy comes from when research.autonomy limits it", async () => {
+    const ctx = testFactory({ level: "L2", isolation: "worktree", research: { autonomy: "build" }, lines: [{ name: "demo", repo: githubRepo(), integrate: "pull-request", nightShift: { autonomy: "auto" } }] });
+    const note = ctx.store.createResearchNote({ line: "demo", topic: "t", findings: "x", sources: ["https://example.com"], serves: "s", maturity: "m" });
+    const p = ctx.store.createProposal({ ...idea, line: "demo", researchNote: note.id });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    const { job } = requestWork(ctx, { text: idea.title, line: "demo", source: { kind: "night-shift", proposal: p.id, autonomy: "build" } });
+    ctx.store.updateProposal(p.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
+    await syncProposalIssues(ctx, () => gh.api);
+    const [comment] = gh.ops("comment", 5);
+    for (const t of ["autonomía de la propuesta", "`build`", "`auto`", "nota de investigación", "research.autonomy", job.id]) expect(comment!.body).toContain(t);
+    expect(comment!.body).not.toContain("autonomía de la línea");
   });
 
   it("comments the owner's reason on a rejection and closes the issue, once", async () => {

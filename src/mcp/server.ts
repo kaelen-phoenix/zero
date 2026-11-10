@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -45,11 +45,15 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         text: z.string().describe("What the owner wants, in their words."),
         line: z.string().optional().describe("Project (line) name; optional when the factory has a single line."),
         kind: z.enum(["request", "spec"]).optional().describe("'spec' when the owner pasted a written specification."),
+        priority: z
+          .enum(["baja", "media", "alta", "urgente"])
+          .optional()
+          .describe("Priority; default 'media'. 'alta' goes ahead of the queue. Use 'urgente' (for example a security patch) only when the owner explicitly asks for it."),
       },
     },
-    ({ text: request, line, kind }) =>
+    ({ text: request, line, kind, priority }) =>
       withFactory(home, async (ctx) => {
-        const result = requestWork(ctx, { text: request, line, kind });
+        const result = requestWork(ctx, { text: request, line, kind, priority });
         const started = autoStart && (await ensureDaemon(ctx));
         return formatRequest(result) + (started ? "\nLa fábrica estaba apagada: la encendí." : "");
       }),
@@ -137,6 +141,22 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         const r = requestFromResearchNote(ctx, id);
         const started = autoStart && (await ensureDaemon(ctx));
         return `${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+      }),
+  );
+
+  server.registerTool(
+    "zero_package_run",
+    {
+      title: "Correr una estación de un paquete",
+      description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
+      inputSchema: { station: z.string().describe("The station, as <package>/<station>.") },
+    },
+    ({ station }) =>
+      withFactory(home, async (ctx) => {
+        const r = requestStationRun(ctx, station);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
       }),
   );
 

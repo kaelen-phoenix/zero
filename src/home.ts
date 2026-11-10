@@ -20,6 +20,8 @@ export interface FactoryHome {
   packages: string;
   /** Saved reports: what the factory produces stays here, never in a repository. */
   reports: string;
+  /** Regeneration drills (see line/drill.ts): each one's copy and report, never in a repository. */
+  drills: string;
 }
 
 /** The official image sets ZERO_CONTAINER=1: no system keychain, and no falling back to local copies without the owner's say. */
@@ -40,5 +42,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     bin: join(abs, "bin"),
     packages: join(abs, "packages"),
     reports: join(abs, "reports"),
+    drills: join(abs, "drills"),
   };
 }

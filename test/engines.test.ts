@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { extractJson } from "../src/agent.js";
 import { FactorySchema } from "../src/config.js";
-import { antigravityEngine, antigravityInvocation, codexAnswer, codexEvents, codexInvocation, codexLoginBilling, codexWindows, customEngine, customInvocation, finalText, fullPrompt } from "../src/engines/cli.js";
+import { antigravityEngine, antigravityInvocation, codexAnswer, codexEvents, codexInvocation, codexLoginBilling, codexOutOfCredit, codexQuota, codexWindows, customEngine, customInvocation, finalText, fullPrompt } from "../src/engines/cli.js";
 import { resolveEngine, type EngineRequest } from "../src/engines/index.js";
 
 const req = (over: Partial<EngineRequest> = {}): EngineRequest => ({
@@ -54,6 +54,31 @@ describe("codex events", () => {
     for (let i = 0; i < 50_000; i++) event = `{"a":${event}}`;
     expect(codexWindows(event)).toEqual([]);
     expect(codexWindows('{"a":{"rate_limits":{"primary":{"used_percent":10}}}}')).toMatchObject([{ name: "primary", label: "primary" }]);
+  });
+});
+
+describe("codex quota", () => {
+  // What the engine's quota hook decides from a finished call.
+  const quota = (session: "api" | "subscription" | undefined, ok: boolean, stdout: string, stderr = "", windows = codexWindows(stdout)) =>
+    codexQuota(session, windows, ok, !ok && codexOutOfCredit(stdout, stderr));
+  const failed = (message: string) => `{"type":"turn.started"}\n${JSON.stringify({ type: "turn.failed", error: { message } })}\n`;
+  const noCredit = { billing: "api", windows: [], limited: true };
+
+  it("an API key out of credit is limited, from the last error event or stderr", () => {
+    expect(quota("api", false, failed("stream error: insufficient_quota: You exceeded your current quota, please check your plan and billing details"))).toEqual(noCredit);
+    expect(quota("api", false, "sin eventos", "ERROR: You exceeded your current quota, please check your plan and billing details.")).toEqual(noCredit);
+    expect(quota(undefined, false, '{"type":"error","message":"insufficient_quota"}\n')).toEqual(noCredit);
+    expect(quota("api", false, failed("INSUFFICIENT_QUOTA"))).toEqual(noCredit);
+  });
+
+  it("other results report as before", () => {
+    expect(quota("api", false, failed("stream disconnected before completion"))).toEqual({ billing: "api", windows: [] });
+    const answer = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "el error insufficient_quota se maneja así" } });
+    expect(quota("api", true, `${answer}\n`)).toEqual({ billing: "api", windows: [] });
+    const exhausted = [{ name: "primary", label: "5 horas", utilization: 1, status: "exhausted" as const }];
+    expect(quota("subscription", false, failed("usage limit reached"), "", exhausted)).toEqual({ billing: "subscription", windows: exhausted, limited: true });
+    expect(quota("subscription", false, failed("insufficient_quota"), "", [])).toEqual({ billing: "subscription", windows: [] });
+    expect(quota(undefined, false, failed("stream disconnected before completion"), "", [])).toBeUndefined();
   });
 });
 

@@ -755,3 +755,92 @@ describe("a pull request that may already exist", () => {
     expect(methods).toEqual(["GET", "PATCH"]);
   });
 });
+
+describe("the dependency check", () => {
+  const lockWith = (name: string, version: string) =>
+    JSON.stringify({ name: "demo", lockfileVersion: 3, packages: { "": { name: "demo", dependencies: { [name]: `^${version}` } }, [`node_modules/${name}`]: { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz` } } });
+  const addDependency = (name: string, version: string) => (req: { cwd: string }) =>
+    writeTree(req.cwd, { "package.json": JSON.stringify({ name: "demo", dependencies: { [name]: `^${version}` } }), "package-lock.json": lockWith(name, version) });
+  const lineWith = (checkDependencies: boolean) => {
+    const repo = gitRepo();
+    const now = () => new Date("2026-11-07T12:00:00Z");
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, verify: [passes], checkDependencies }] }, now);
+    return { repo, ctx };
+  };
+  /** OSV answers `mal` for every query; deps.dev lists `versions` for every package. */
+  const fakeFetch = (opts: { mal?: string; versions?: { version: string; publishedAt: string }[]; fail?: boolean } = {}) => {
+    const urls: string[] = [];
+    const impl = async (input: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(input));
+      if (opts.fail) throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      if (String(input).includes("osv.dev")) {
+        const { queries } = JSON.parse(String(init?.body)) as { queries: unknown[] };
+        return Response.json({ results: queries.map(() => ({ vulns: opts.mal ? [{ id: opts.mal }] : [] })) });
+      }
+      return Response.json({ versions: (opts.versions ?? [{ version: "0.1.0", publishedAt: "2020-01-01T00:00:00Z" }, { version: "1.0.0", publishedAt: "2020-02-01T00:00:00Z" }]).map((v) => ({ versionKey: { version: v.version }, publishedAt: v.publishedAt })) });
+    };
+    return { fetch: impl as typeof fetch, urls };
+  };
+
+  it("asks nothing on a line that did not turn it on", async () => {
+    const { ctx } = lineWith(false);
+    const agents = fakeAgents({ build: addDependency("left-pad", "1.3.0") });
+    const f = fakeFetch({ mal: "MAL-2026-1" });
+    const { job } = requestWork(ctx, { text: "agregá left-pad" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: f.fetch }))).toMatchObject({ status: "delivered" });
+    expect(f.urls).toEqual([]);
+    expect(agents.count.review).toBe(1);
+  });
+
+  it("sends a malware advisory back to build before review and security", async () => {
+    const { ctx } = lineWith(true);
+    const agents = fakeAgents({ build: (req, call) => addDependency(call === 1 ? "evil-pkg" : "left-pad", "1.0.0")(req) });
+    let calls = 0;
+    const evil = fakeFetch({ mal: "MAL-2026-1234" });
+    const clean = fakeFetch();
+    const routed = ((input: string | URL | Request, init?: RequestInit) => (++calls <= 2 ? evil.fetch(input, init) : clean.fetch(input, init))) as typeof fetch;
+    const { job } = requestWork(ctx, { text: "agregá una dependencia" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: routed }))).toMatchObject({ status: "delivered", attempt: 2 });
+    expect(agents.count).toMatchObject({ build: 2, review: 1, security: 1 });
+    const second = agents.calls.filter((c) => c.station === "build")[1]!;
+    expect(second.prompt).toContain("MAL-2026-1234");
+    expect(second.prompt).toContain("evil-pkg");
+    expect(trace(ctx, job.id)).toContain("zero.dependencies");
+  });
+
+  it("gives a recent version to the security prompt alone", async () => {
+    const { ctx } = lineWith(true);
+    const agents = fakeAgents({ build: addDependency("fresh-pkg", "2.0.0") });
+    const f = fakeFetch({ versions: [{ version: "1.0.0", publishedAt: "2025-01-01T00:00:00Z" }, { version: "2.0.0", publishedAt: "2026-11-05T12:00:00Z" }] });
+    const { job } = requestWork(ctx, { text: "agregá fresh-pkg" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: f.fetch }))).toMatchObject({ status: "delivered", attempt: 1 });
+    const prompt = (station: string) => agents.calls.find((c) => c.station === station)!.prompt;
+    expect(prompt("security")).toMatch(/fresh-pkg@2\.0\.0: recent version/);
+    expect(prompt("review")).not.toContain("fresh-pkg@2.0.0: recent");
+    expect(prompt("review")).not.toContain("Dependency check by zero");
+  });
+
+  it("goes on without network, marking the packages unverified, and does not requeue the job", async () => {
+    const { ctx } = lineWith(true);
+    const agents = fakeAgents({ build: addDependency("left-pad", "1.3.0") });
+    const f = fakeFetch({ fail: true });
+    const { job } = requestWork(ctx, { text: "agregá left-pad" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: f.fetch }))).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(f.urls.length).toBeGreaterThan(0);
+    expect(ctx.store.getKv(networkRetryKey(job.id))).toBeUndefined();
+    expect(agents.count.review).toBe(1);
+    expect(agents.calls.find((c) => c.station === "security")!.prompt).toContain("left-pad@1.3.0: no verificado");
+    expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.dependencies")!.attrs).toMatchObject({ "zero.dependencies.unverified": "left-pad@1.3.0", "zero.dependencies.failed": false });
+  });
+
+  it("tells security about a lock it could not parse instead of passing it as empty", async () => {
+    const { ctx } = lineWith(true);
+    const agents = fakeAgents({ build: (req: { cwd: string }) => writeTree(req.cwd, { "package-lock.json": "{ broken" }) });
+    const f = fakeFetch();
+    const { job } = requestWork(ctx, { text: "tocá el lock" });
+    expect(await runJob(job.id, deps(ctx, agents.runner, { fetch: f.fetch }))).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(f.urls).toEqual([]);
+    expect(agents.calls.find((c) => c.station === "security")!.prompt).toContain("manifest package-lock.json: no verificado");
+    expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.dependencies")!.attrs).toMatchObject({ "zero.dependencies.unverified": "manifest package-lock.json" });
+  });
+});

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.js";
 import { answer, requestWork, type FactoryContext } from "../src/app.js";
-import { claudeResult } from "../src/engines/claude.js";
+import { claudeResult, claudeThrown } from "../src/engines/claude.js";
 import type { EngineResult, QuotaReport } from "../src/engines/index.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { log } from "../src/log.js";
@@ -29,6 +29,23 @@ function factory(over: Record<string, unknown> = {}, now?: () => Date) {
 const sdkResult = (over: Record<string, unknown>) => ({ type: "result", session_id: "s1", total_cost_usd: 0.42, ...over }) as unknown as SDKResultMessage;
 
 describe("Claude result mapping", () => {
+  const noCredit = { billing: "api", windows: [], limited: true };
+  const plan: QuotaReport = { billing: "subscription", windows: [] };
+
+  it("marks an API key out of credit as a refused call, whatever quota came in", () => {
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "Credit balance is too low" }), plan)).toMatchObject({ ok: false, quota: noCredit });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["Credit balance is too low · Add funds"] }))).toMatchObject({ ok: false, quota: noCredit });
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "something else broke" })).quota?.limited).not.toBe(true);
+  });
+
+  it("marks a thrown out-of-credit error the same way", () => {
+    const thrown = claudeThrown(new Error("Credit balance is too low"));
+    expect(thrown).toMatchObject({ ok: false, text: expect.stringContaining("Credit balance is too low"), quota: noCredit });
+    const other = claudeThrown(new Error("socket hang up"));
+    expect(other).toMatchObject({ ok: false, text: "socket hang up" });
+    expect(other.quota?.limited).not.toBe(true);
+  });
+
   it("marks a call stopped by its dollar cap", () => {
     expect(claudeResult(sdkResult({ subtype: "error_max_budget_usd", errors: [] }))).toMatchObject({ ok: false, budgetLimited: true, costUsd: 0.42 });
   });

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { approveProposal, rejectProposal, type FactoryContext } from "../app.js";
-import type { Autonomy, FactoryConfig, LineConfig } from "../config.js";
+import { lineAutonomy, type Autonomy, type FactoryConfig, type LineConfig } from "../config.js";
 import { proposalAutonomy } from "../line/scout.js";
 import { log } from "../log.js";
 import { redact } from "../secrets.js";
@@ -74,15 +74,20 @@ async function publish(ctx: FactoryContext, line: LineConfig, proposal: Proposal
   return { ...proposal, issueNumber: issue.number, issueUrl: issue.url };
 }
 
-/** Who approved: the owner, or the night shift on its own under the line's autonomy, never presented as the owner. */
-function approvalText(ctx: FactoryContext, proposal: Proposal): string {
+/** Who approved: the owner, or the night shift on its own under the proposal's autonomy, never presented as the owner. */
+function approvalText(ctx: FactoryContext, line: LineConfig, proposal: Proposal): string {
   const job = `\`${proposal.jobId ?? "?"}\``;
   if (ctx.store.getKv(fromGitHubKey(proposal.id))) return `Propuesta aprobada desde GitHub con la etiqueta de trabajo: la fábrica la tomó como trabajo ${job}.`;
   if (proposal.decidedBy !== "night-shift") return `La persona responsable aprobó esta propuesta: la fábrica la tomó como trabajo ${job}.`;
   const source = proposal.jobId ? ctx.store.getJob(proposal.jobId)?.source : undefined;
   const autonomy = source?.kind === "night-shift" ? source.autonomy : undefined;
   const after = autonomy === "auto" ? "se integra sola si pasa todas las estaciones" : "no se integra hasta que la persona responsable la apruebe";
-  return `El turno nocturno tomó esta propuesta por su cuenta como trabajo ${job} (autonomía de la línea: \`${autonomy ?? "?"}\`): ${after}.`;
+  const ofLine = lineAutonomy(ctx.config, line);
+  // The proposal's autonomy may be stricter than the line's (research.autonomy): say where the limit comes from.
+  const limit = autonomy && autonomy !== ofLine
+    ? ` La línea tiene autonomía \`${ofLine}\`${proposal.researchNote ? ", pero la propuesta nace de una nota de investigación y `research.autonomy` la limita" : ""}.`
+    : "";
+  return `El turno nocturno tomó esta propuesta por su cuenta como trabajo ${job} (autonomía de la propuesta: \`${autonomy ?? "?"}\`): ${after}.${limit}`;
 }
 
 /** Labels the issue with the line's work label, recording the job first so the intake never opens a second one for it. */
@@ -92,7 +97,7 @@ async function tellApproved(ctx: FactoryContext, line: LineConfig, repository: s
   ctx.store.setKv(key, JSON.stringify({ job: proposal.jobId, reported: "queued", labeledAt: "" } satisfies IssueState));
   // Idempotent first: a failed comment is retried without labeling twice.
   await gh.addLabels(proposal.issueNumber, [label]);
-  await gh.comment(proposal.issueNumber, inertMedia(scrub(approvalText(ctx, proposal), line)));
+  await gh.comment(proposal.issueNumber, inertMedia(scrub(approvalText(ctx, line, proposal), line)));
   ctx.store.markProposalIssueTold(proposal.id, "approved");
 }
 
