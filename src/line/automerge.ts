@@ -352,8 +352,13 @@ export function readOutage(ctx: FactoryContext, repository: string): ChecksOutag
 
 /** What a pull request held by an outage says, in local time. */
 export function outageWhy(repository: string, outage: ChecksOutage): string {
-  const d = new Date(outage.since);
-  return `entorno caído en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())} (checks: ${outage.checks.join(", ")})`;
+  return outageText(repository, outage.since, outage.checks);
+}
+
+/** «entorno caído en <repo> desde HH:MM (checks: a, b)», the one wording of an outage everywhere it is shown. */
+export function outageText(repository: string, since: string, checks: string[]): string {
+  const d = new Date(since);
+  return `entorno caído en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())} (checks: ${checks.join(", ")})`;
 }
 
 /** Records the outage of a repository, or widens the one under way, with these failures. */

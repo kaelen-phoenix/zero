@@ -1,7 +1,10 @@
 import type { Octokit } from "@octokit/rest";
 import { afterEach, describe, expect, it } from "vitest";
 import { checksOutageKey, checksRecoveredKey, githubMerges, mergeKey, pollMerges, type Check, type ChecksOutage, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
+import { briefing, factoryStatus } from "../src/app.js";
+import { formatStatus } from "../src/format.js";
 import { finalizeJob } from "../src/line/finish.js";
+import { overviewPage } from "../src/panel/html.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
 afterEach(cleanup);
@@ -364,5 +367,58 @@ describe("the GitHub adapter", () => {
       { name: "lint", done: false, ok: false },
       { name: "vercel", done: true, ok: false, at: "2026-11-10T11:05:00Z" },
     ]);
+  });
+});
+
+describe("telling an outage", () => {
+  async function down() {
+    const f = await factoryWith([10, 11]);
+    const prs = { 10: pull("a", running), 11: pull("b", running) };
+    const gh = fakeGitHub(prs, { checks: passed("e2e", "2026-11-10T09:00:00Z") });
+    await pollMerges(f.ctx, () => gh.api);
+    prs[10] = pull("a", red("e2e", "2026-11-10T11:30:00Z", 1));
+    f.clock.ms += MINUTE;
+    await pollMerges(f.ctx, () => gh.api);
+    prs[11] = pull("b", red("e2e", "2026-11-10T11:50:00Z", 2));
+    f.clock.ms += MINUTE;
+    await pollMerges(f.ctx, () => gh.api);
+    expect(f.outage()).toBeDefined();
+    expect(gh.did).toEqual([]);
+    return f;
+  }
+  const line = `Entorno caído en kaelen/demo desde ${hhmm("2026-11-10T11:30:00Z")} (checks: e2e)`;
+
+  it("is one line in zero status, with the pull requests it holds left out", async () => {
+    const { ctx } = await down();
+    const s = factoryStatus(ctx);
+    expect(s.outages).toEqual([{ repository: "kaelen/demo", since: "2026-11-10T11:30:00Z", checks: ["e2e"], pulls: ["https://github.com/kaelen/demo/pull/10", "https://github.com/kaelen/demo/pull/11"] }]);
+    expect(s.merges).toEqual([]);
+    const text = formatStatus(s);
+    expect(text).toContain(`${line} · 2 pull requests esperan`);
+    expect(text).not.toContain("NO SE FUNDE: fallaron los checks e2e");
+    expect(text).not.toContain("Fusión automática");
+  });
+
+  it("is one line in the panel", async () => {
+    const { ctx } = await down();
+    const html = overviewPage(factoryStatus(ctx), ["demo"], "nonce");
+    expect(html).toContain(line);
+    expect(html).not.toContain("Fusión automática");
+  });
+
+  it("is one line in the briefing, not one per pull request", async () => {
+    const { ctx } = await down();
+    const body = (await briefing(ctx)).body;
+    expect(body).toContain(line);
+    expect(body).not.toContain("**Sin fundir**");
+  });
+
+  it("leaves a pull request that is not held as it was", async () => {
+    const { ctx, jobs } = await down();
+    ctx.store.setKv(mergeKey(jobs[11]!), JSON.stringify({ status: "blocked", why: "otra cosa" } satisfies MergeState));
+    const s = factoryStatus(ctx);
+    expect(s.outages[0]!.pulls).toEqual(["https://github.com/kaelen/demo/pull/10"]);
+    expect(formatStatus(s)).toContain("NO SE FUNDE: otra cosa");
+    expect(formatStatus(s)).toContain(`${line} · 1 pull request espera`);
   });
 });

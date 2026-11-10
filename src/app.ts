@@ -25,7 +25,7 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
+import { checksOutageKey, mergeKey, pullRequestOf, watchedJobs, type ChecksOutage, type MergeState } from "./line/automerge.js";
 import { readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
@@ -312,6 +312,8 @@ export interface FactoryStatus {
   securityAlerts: LineAlerts[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
+  /** Environment outages under way, one per repository; the pull requests they hold are left out of `merges`. */
+  outages: Outage[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -361,10 +363,42 @@ export function securityAlerts(ctx: FactoryContext): LineAlerts[] {
   });
 }
 
+export interface Outage {
+  repository: string;
+  since: string;
+  checks: string[];
+  /** The pull requests it holds. */
+  pulls: string[];
+}
+
+/** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
+function mergeViews(ctx: FactoryContext) {
+  const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
+  const outages = new Map<string, Outage>();
+  const merges = watchedJobs(ctx).map((job) => {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
+    const url = job.delivery!.url!;
+    const repository = pullRequestOf(url)?.repository;
+    const outage = repository ? known.get(repository) : undefined;
+    const heldBy = outage && state.status === "blocked" && state.outage === outage.since ? repository : undefined;
+    if (heldBy) {
+      const o = outages.get(heldBy) ?? { repository: heldBy, since: outage!.since, checks: outage!.checks, pulls: [] };
+      o.pulls.push(url);
+      outages.set(heldBy, o);
+    }
+    return { job: job.id, url, status: state.status === "blocked" ? ("blocked" as const) : ("waiting" as const), why: state.why, heldBy };
+  });
+  // An outage whose pull requests are not marked yet still says so; it is forgotten once none is left.
+  for (const [repository, o] of known) if (!outages.has(repository)) outages.set(repository, { repository, since: o.since, checks: o.checks, pulls: [] });
+  return { merges, outages: [...outages.values()] };
+}
+
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
   const box = currentBox(ctx);
+  const { merges, outages } = mergeViews(ctx);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -374,11 +408,8 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     linear: ctx.config.lines.flatMap((l) => (l.linear ? [{ line: l.name, team: l.linear.team, label: l.linear.label, problem: ctx.store.getKv(linearProblemKey(l.name)) }] : [])),
     jira: ctx.config.lines.flatMap((l) => (l.jira ? [{ line: l.name, site: l.jira.site, project: l.jira.project, label: l.jira.label, problem: ctx.store.getKv(jiraProblemKey(l.name)) }] : [])),
     securityAlerts: securityAlerts(ctx),
-    merges: watchedJobs(ctx).map((job) => {
-      const raw = ctx.store.getKv(mergeKey(job.id));
-      const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
-      return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
-    }),
+    merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
+    outages,
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -477,7 +508,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const to = (ctx.now ?? (() => new Date()))();
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
-  const unmerged = factoryStatus(ctx).merges.filter((m) => m.status === "blocked");
+  const status = factoryStatus(ctx);
+  const unmerged = status.merges.filter((m) => m.status === "blocked");
   const autonomous = (j: Job) => j.source?.kind === "night-shift" && Boolean(j.source.autonomy);
   const finished = ctx.store
     .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
@@ -495,7 +527,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, status.outages);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */

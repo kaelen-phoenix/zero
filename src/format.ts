@@ -3,6 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
+import { outageText } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
@@ -258,6 +259,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
+  for (const o of s.outages) out.push(outageLine(o));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
@@ -320,4 +322,11 @@ export function formatEgress(r: EgressReport): string {
   out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
   out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
+}
+
+/** One line per environment outage: «Entorno caído en <repo> desde HH:MM (checks: a, b) · N pull requests esperan». */
+export function outageLine(o: FactoryStatus["outages"][number]): string {
+  const text = outageText(o.repository, o.since, o.checks);
+  const waiting = o.pulls.length ? ` · ${o.pulls.length} ${o.pulls.length === 1 ? "pull request espera" : "pull requests esperan"}` : "";
+  return `${text[0]!.toUpperCase()}${text.slice(1)}${waiting}`;
 }
