@@ -149,6 +149,27 @@ export interface VerifyOptions {
 }
 
 /**
+ * Whether the output of a failed command reads like trouble of the machine and not of the change: a test that ran
+ * out of its own time (a busy machine), no memory, a file something else holds, a worker that died, a network cut.
+ * Such a failure is worth one more run before the build agent is asked to fix code that may be fine.
+ */
+export function machineTrouble(output: string): boolean {
+  return MACHINE_TROUBLE.test(output);
+}
+
+const MACHINE_TROUBLE = new RegExp(
+  [
+    String.raw`(?:Test|Hook) timed out in \d+ ?ms`, // vitest
+    String.raw`Exceeded timeout of \d+ ?ms`, // jest
+    String.raw`[Tt]imeout of \d+ ?ms exceeded`, // playwright, mocha
+    "heap out of memory",
+    "cannot allocate memory",
+    String.raw`\b(?:ENOMEM|EBUSY|EMFILE|ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b`,
+    "Worker exited unexpectedly",
+  ].join("|"),
+);
+
+/**
  * The verify station is run by zero itself, never by an agent: operation
  * output first (nobody is asked about a change that fails anyway), then
  * protected paths, then test tampering, then the line's commands.
@@ -165,10 +186,17 @@ export async function verifyChange(copy: WorkCopy, opts: VerifyOptions): Promise
   if (tampering.length) return { ok: false, kind: "failed", feedback: `La verificación rechazó el cambio:\n- ${tampering.join("\n- ")}\nNo elimines ni desactives tests; arreglá el código para que pasen.` };
 
   for (const command of opts.commands) {
-    const span = opts.tracer.start(VERIFY_COMMAND_SPAN, { jobId: opts.jobId, parentId: opts.parentId, attrs: { "process.command_line": command } });
     const timeoutMs = opts.timeoutFor?.(command) ?? opts.timeoutMs ?? DEFAULT_VERIFY_MINUTES * 60_000;
-    const r = opts.run ? await opts.run(command, { timeoutMs, signal: opts.signal, parentId: span.id }) : await sh(command, copy.cwd, { timeoutMs, signal: opts.signal });
-    span.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut, "zero.timeout_ms": timeoutMs, ...(r.ms !== undefined && { "zero.run_ms": r.ms }) });
+    const once = async (again: boolean) => {
+      const span = opts.tracer.start(VERIFY_COMMAND_SPAN, { jobId: opts.jobId, parentId: opts.parentId, attrs: { "process.command_line": command, ...(again && { "zero.verify.again": true }) } });
+      const r = opts.run ? await opts.run(command, { timeoutMs, signal: opts.signal, parentId: span.id }) : await sh(command, copy.cwd, { timeoutMs, signal: opts.signal });
+      const machine = r.code !== 0 && !r.timedOut && machineTrouble(r.output);
+      span.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut, "zero.timeout_ms": timeoutMs, ...(r.ms !== undefined && { "zero.run_ms": r.ms }), ...(machine && { "zero.verify.machine": true }) });
+      return { r, machine };
+    };
+    let { r, machine } = await once(false);
+    // A failure that reads like the machine and not the change is run once more before it costs an attempt.
+    if (machine && !opts.signal?.aborted) ({ r } = await once(true));
     if (r.code !== 0) {
       // A limit reached says so with its size and where it is set: the tests may be fine and the machine slow.
       const why = r.timedOut
