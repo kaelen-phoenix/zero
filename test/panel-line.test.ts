@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { productionLine, requestWork, type FactoryContext } from "../src/app.js";
 import { askOwner } from "../src/line/finish.js";
 import { log } from "../src/log.js";
-import { lineView } from "../src/panel/html.js";
+import { linePage, lineView } from "../src/panel/html.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer, type PanelOptions } from "../src/panel/server.js";
 import { newId, type JobPatch } from "../src/state/store.js";
@@ -120,6 +120,12 @@ const rowOf = (html: string, id: string) => {
   expect(start).toBeGreaterThan(-1);
   return html.slice(start, html.indexOf("</article>", start));
 };
+/** The lane holding a job's card: the last lane opened before it. */
+const laneOf = (html: string, id: string) => {
+  const start = html.indexOf(`id="job-${id}"`);
+  expect(start).toBeGreaterThan(-1);
+  return [...html.slice(0, start).matchAll(/data-lane="(\w+)"/g)].at(-1)![1];
+};
 const states = (html: string, id: string) => Object.fromEntries(Object.entries(stations(html, id)).map(([k, v]) => [k, v.text]));
 
 describe("production line view", () => {
@@ -158,8 +164,9 @@ describe("production line view", () => {
     expect(row).toMatch(/class="why">tests rojos</);
     expect(row).toContain("fallido");
     expect(row).toContain("Se agotaron los 3 intentos");
-    expect(row).toContain("piece out bad");
-    expect(html).toContain(`class="card row final" id="job-${j.id}"`);
+    expect(laneOf(html, j.id)).toBe("out");
+    expect(row).toContain(`class="chip" data-status="failed"`);
+    expect(html).toContain(`class="card job final" id="job-${j.id}"`);
   });
 
   it("marks the station where the last attempt stopped when verify reported instead of throwing", () => {
@@ -174,7 +181,7 @@ describe("production line view", () => {
     expect(s.build!.state).toBe("done");
   });
 
-  it("shows a retry: attempt 2 of 3, the error that caused it, and the piece back in build", () => {
+  it("shows a retry: attempt 2 of 3, the error that caused it, and the card back in build", () => {
     const ctx = factory();
     const j = job(ctx, "x", { status: "running", station: "build", attempt: 2, feedback: "detalle largo" });
     span(ctx, j.id, "zero.station.spec", { status: "ok" });
@@ -187,8 +194,8 @@ describe("production line view", () => {
     const row = rowOf(html, j.id);
     expect(row).toContain("intento 2 de 3");
     expect(row).toContain("falló verify");
-    expect(row).toContain("piece back");
-    expect(row).toContain("--pos:2");
+    expect(html).toContain(`class="card job back" id="job-${j.id}"`);
+    expect(laneOf(html, j.id)).toBe("build");
     expect(states(html, j.id)).toMatchObject({ spec: "lista", build: "activa", verify: "pendiente" });
   });
 
@@ -214,7 +221,7 @@ describe("production line view", () => {
     expect(s.setup!.state).toBe("pending");
   });
 
-  it("takes the piece off the belt when delivered, with the pull request", () => {
+  it("takes the card off the line when delivered, with the pull request", () => {
     const ctx = factory();
     const j = job(ctx, "x", { status: "running", station: "integrate", attempt: 1 });
     span(ctx, j.id, "zero.station.spec", { status: "ok" });
@@ -225,7 +232,8 @@ describe("production line view", () => {
     expect(row).toContain("entregado");
     expect(row).toContain('href="https://github.com/o/r/pull/7"');
     expect(row).toContain("sin fundir todavía");
-    expect(row).toContain("piece out ok");
+    expect(laneOf(html, j.id)).toBe("out");
+    expect(row).toContain(`class="chip" data-status="delivered"`);
     expect(states(html, j.id)).toMatchObject({ spec: "lista", integrate: "lista", build: "pendiente" });
     expect(html).not.toMatch(/data-state="active"/);
   });
@@ -481,5 +489,94 @@ describe("production line stream", () => {
     expect(body).toContain('addEventListener("visibilitychange"');
     expect(body).not.toMatch(/\beval\(|new Function/);
     expect([...html.matchAll(/<[a-z][^>]*>/gi)].some((t) => /\son[a-z]+\s*=/i.test(t[0]))).toBe(false);
+  });
+});
+
+/** The panel's stylesheet, as every page carries it. */
+const css = (html = linePage(productionLine(factory()), "n")) => /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+/** The rules of a stylesheet as [selector, declarations], with each @media block's rules kept apart. */
+const rules = (sheet: string) => [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => [m[1]!.trim(), m[2]!] as const);
+const mediaBlock = (sheet: string, query: RegExp) => {
+  const out: string[] = [];
+  for (const m of sheet.matchAll(/@media ([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)) if (query.test(m[1]!)) out.push(m[2]!);
+  return out.join("\n");
+};
+
+describe("production line board", () => {
+  it("has eight lanes in order, each card in exactly one lane", () => {
+    const ctx = factory();
+    const queued = job(ctx, "a");
+    const building = job(ctx, "b", { status: "running", station: "build", attempt: 1 });
+    const waiting = job(ctx, "c", { status: "running", station: "integrate", attempt: 1 });
+    askOwner(ctx, ctx.store.getJob(waiting.id)!, { kind: "before-integrate", text: "¿Lo integro?" });
+    const delivered = job(ctx, "d");
+    ctx.store.finishJob(delivered.id, "delivered", { delivery: { mode: "branch", branch: "zero/d" } });
+    const failed = job(ctx, "e");
+    ctx.store.finishJob(failed.id, "failed", { reason: "no" });
+    const html = lineView(productionLine(ctx));
+    expect(html).toContain(`<div class="board" data-part="board">`);
+    expect([...html.matchAll(/<section class="lane" data-lane="(\w+)"/g)].map((m) => m[1])).toEqual(["setup", "spec", "build", "verify", "review", "security", "integrate", "out"]);
+    for (const [j, lane] of [[queued, "setup"], [building, "build"], [waiting, "integrate"], [delivered, "out"], [failed, "out"]] as const) {
+      expect(html.split(`id="job-${j.id}"`)).toHaveLength(2);
+      expect(laneOf(html, j.id)).toBe(lane);
+    }
+    for (const [lane, n] of [["setup", 1], ["spec", 0], ["build", 1], ["integrate", 1], ["out", 2]] as const) expect(html).toContain(`data-lane="${lane}" data-count="${n}"`);
+    expect(html).toMatch(/data-lane="build"[^>]*><header class="lane-head"[^>]*><span class="ic"><svg[^>]*>[\s\S]*?<\/svg><\/span><span class="ln">Construcción<\/span><span class="n">1<\/span>/);
+    expect(html).toContain(`<span class="ln">Salida</span>`);
+    expect(rowOf(html, waiting.id)).toContain(`class="chip" data-status="waiting"`);
+    expect(stations(html, waiting.id).integrate!.state).toBe("waiting");
+    expect(rowOf(html, building.id)).toMatch(new RegExp(`^id="job-${building.id}" data-status="running" data-sig="[0-9a-f]{16}"`));
+    expect(html).toContain(`<article class="card job" id="job-${building.id}"`);
+  });
+
+  it("keeps an empty board, with every lane at zero, when the factory is free", () => {
+    const html = lineView(productionLine(factory()));
+    expect(html).toContain("La fábrica está libre");
+    expect(html.match(/data-count="0"/g)).toHaveLength(8);
+    expect(html).not.toContain("<article");
+  });
+
+  it("moves the card to its new lane from one fragment to the next", () => {
+    const ctx = factory();
+    const j = job(ctx, "x", { status: "running", station: "build", attempt: 1 });
+    const first = lineView(productionLine(ctx));
+    ctx.store.updateJob(j.id, { station: "verify" });
+    const second = lineView(productionLine(ctx));
+    expect(laneOf(first, j.id)).toBe("build");
+    expect(laneOf(second, j.id)).toBe("verify");
+    expect(second).toContain(`data-lane="build" data-count="0"`);
+    expect(second).toContain(`data-lane="verify" data-count="1"`);
+  });
+
+  it("fits the screen's width: eight shrinking columns, lanes scrolling on their own, stacked on a phone", () => {
+    const sheet = css();
+    const all = rules(sheet);
+    const board = all.filter(([sel]) => /(^|[\s,])\.board\b/.test(sel));
+    expect(board.some(([, d]) => /grid-template-columns:\s*repeat\(\s*8\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/.test(d))).toBe(true);
+    for (const [sel, d] of all.filter(([sel]) => /\.(board|lane)\b/.test(sel))) {
+      expect(d, sel).not.toMatch(/overflow-x:\s*auto/);
+      expect(d, sel).not.toMatch(/min-width:\s*[1-9]/);
+    }
+    expect(all.some(([sel, d]) => sel === ".lane" && /overflow-y:\s*auto/.test(d))).toBe(true);
+    const phone = mediaBlock(sheet, /max-width: \d+px/);
+    expect(phone).toMatch(/\.board \{[^}]*grid-template-columns:\s*1fr/);
+    expect(phone).toMatch(/\.lane\[data-count="0"\] \{[^}]*display:\s*none/);
+  });
+
+  it("uses one status token for a job status and its station state", () => {
+    const all = rules(css());
+    const token = (selector: string) => all.filter(([sel]) => sel.split(",").map((s) => s.trim()).includes(selector)).map(([, d]) => /var\((--st-[\w-]+)\)/.exec(d)?.[1]);
+    expect(token(`[data-status="failed"]`)).toEqual(token(`[data-state="error"]`));
+    expect(token(`[data-status="failed"]`)[0]).toBe("--st-bad");
+    expect(token(`[data-status="delivered"]`)).toEqual(token(`[data-state="done"]`));
+    expect(token(`[data-status="delivered"]`)[0]).toBe("--st-ok");
+    for (const status of ["queued", "running", "waiting", "stopped"]) expect(token(`[data-status="${status}"]`)[0]).toMatch(/^--st-/);
+  });
+
+  it("moves cards between lanes in its script, keeping open details", () => {
+    const html = linePage(productionLine(factory()), "n");
+    const body = /<script nonce="n">([\s\S]*?)<\/script>/.exec(html)![1]!;
+    for (const piece of ["data-lane", "dataset.sig", "dataset.count", ".open", 'fetch("/line?fragment=1"', "EventSource"]) expect(body).toContain(piece);
+    expect(body).toMatch(/setInterval\([\s\S]*, 5000\)/);
   });
 });
