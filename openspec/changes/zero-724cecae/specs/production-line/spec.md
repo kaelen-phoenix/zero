@@ -39,6 +39,17 @@ The daemon SHALL retry each pending cleanup in a background pass, at most once p
 - **WHEN** the recorded work-copy path no longer exists on disk and the cleanup pass runs with the real removal
 - **THEN** the `cleanup:J` record is deleted
 
+### Requirement: La limpieza no toca un trabajo que volvió a trabajar
+The cleanup pass MUST NOT remove the recorded work copy while its job is queued, running or waiting again (a delivered job taken back to update its pull request works in the same folder), and the automatic merge SHALL NOT take a job back while it has a pending cleanup.
+
+#### Scenario: Trabajo retomado con limpieza pendiente
+- **WHEN** a `cleanup:J` record exists and job J is queued, running or waiting
+- **THEN** the cleanup pass does not call the removal and keeps the record, and once J is finished again the next pass removes the copy and deletes the record
+
+#### Scenario: Pull request en conflicto con limpieza pendiente
+- **WHEN** a watched pull request is in conflict and its job has a `cleanup:J` record
+- **THEN** the job stays delivered and is not put back in the queue until the record is gone
+
 ### Requirement: Limpiezas pendientes en zero status
 `factoryStatus` SHALL list the pending cleanups (job id and path), and `formatStatus` SHALL show a line starting with `Limpiezas pendientes:` with their count only while there is at least one.
 

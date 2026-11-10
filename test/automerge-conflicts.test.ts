@@ -6,6 +6,7 @@ import { answer, requestWork, stop } from "../src/app.js";
 import type { AgentRequest, AgentRun } from "../src/agent.js";
 import type { QuotaReport } from "../src/engines/index.js";
 import { mergeKey, pollMerges, watchedJobs, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
+import { cleanupKey } from "../src/line/cleanup.js";
 import { prRefreshKey } from "../src/line/finish.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { conflictMarkers, workCopyAt } from "../src/workspace.js";
@@ -453,6 +454,22 @@ describe("what is not pushed", () => {
     const { job } = await stop(f.ctx, f.job.id);
     expect(job).toMatchObject({ status: "delivered", delivery: f.delivery });
     expect(f.localTip()).toBe(f.head);
+  });
+
+  it("waits while the job's last work copy is still pending removal, then takes it back", async () => {
+    const f = await delivered();
+    f.moveBase();
+    f.ctx.store.setKv(cleanupKey(f.job.id), JSON.stringify({ repo: f.repo, path: "/some/copy", error: "EBUSY", since: new Date().toISOString() }));
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    expect(f.merge().resolving).toBeUndefined();
+
+    f.ctx.store.deleteKv(cleanupKey(f.job.id));
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ ...f.merge(), backoff: undefined } satisfies MergeState));
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("queued");
+    expect(f.merge().resolving).toBe(f.head);
   });
 
   it("gives up when the merge finds nothing to do", async () => {

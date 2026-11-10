@@ -126,6 +126,24 @@ describe("the cleanup pass", () => {
     expect(ctx.store.getKv(cleanupKey(id))).toBeUndefined();
   });
 
+  it("leaves alone the copy of a job that is at work again in that folder", async () => {
+    const { ctx, repo } = factory();
+    const id = pending(ctx, repo, "/some/copy");
+    // A delivered job taken back to update its pull request works in the same folder again.
+    for (const status of ["queued", "running", "waiting"] as const) {
+      ctx.store.updateJob(id, { status, finishedAt: null });
+      const remove = vi.fn();
+      await cleanupPass(ctx, remove);
+      expect(remove, status).not.toHaveBeenCalled();
+      expect(ctx.store.getKv(cleanupKey(id)), status).toBeDefined();
+    }
+    ctx.store.finishJob(id, "delivered", {});
+    const remove = vi.fn();
+    await cleanupPass(ctx, remove);
+    expect(remove).toHaveBeenCalledWith(repo, "/some/copy");
+    expect(ctx.store.getKv(cleanupKey(id))).toBeUndefined();
+  });
+
   it("skips records that are not JSON", async () => {
     const { ctx } = factory();
     ctx.store.setKv(cleanupKey("broken"), "{not json");

@@ -1,5 +1,5 @@
 import { log } from "../log.js";
-import type { Store } from "../state/store.js";
+import { FINAL_STATUSES, type Store } from "../state/store.js";
 import { removeWorkCopy } from "../workspace.js";
 
 /** A work copy that could not be removed when its job ended, retried by the daemon. */
@@ -39,7 +39,9 @@ export function pendingCleanups(store: Store): { job: string; cleanup: PendingCl
 
 /**
  * Tries again every pending cleanup: a removed (or already gone, which the real removal skips) copy loses its
- * record, one that fails again keeps it with the new error. Jobs are never touched.
+ * record, one that fails again keeps it with the new error. Jobs are never touched, and neither is the copy of a
+ * job that is at work again in that same folder (a delivered job taken back to update its pull request): its
+ * next end removes it.
  */
 export async function cleanupPass(ctx: { store: Store }, remove: (repo: string, path: string) => void = removeWorkCopy): Promise<void> {
   let pending: ReturnType<typeof pendingCleanups>;
@@ -50,6 +52,8 @@ export async function cleanupPass(ctx: { store: Store }, remove: (repo: string, 
     return;
   }
   for (const { job, cleanup } of pending) {
+    const owner = ctx.store.getJob(job);
+    if (owner && !FINAL_STATUSES.includes(owner.status)) continue;
     try {
       remove(cleanup.repo, cleanup.path);
     } catch (err) {
