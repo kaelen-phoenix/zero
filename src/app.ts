@@ -8,7 +8,7 @@ import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js"
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
-import { budgetState, type BudgetState } from "./budget.js";
+import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
@@ -33,7 +33,7 @@ import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { tryGit } from "./shell.js";
-import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
+import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
@@ -574,6 +574,187 @@ export function researchView(ctx: FactoryContext, now = new Date()): ResearchLin
     const own = notes.filter((n) => n.line === line);
     return { line, notes: own, business: own.filter((n) => n.business), technical: own.filter((n) => !n.business) };
   });
+}
+
+/** The monitor's time filter: since local midnight, or the last 7 or 30 days. */
+export type MonitorPeriod = "hoy" | "7" | "30";
+
+/** The period a `periodo` parameter asks for; anything else is 7 days. */
+export const parsePeriod = (value: string | null | undefined): MonitorPeriod => (value === "hoy" || value === "30" ? value : "7");
+
+export interface MonitorAgent {
+  name: string;
+  /** Input plus output tokens; absent when no call of the period reported them. */
+  tokens?: number;
+  costUsd: number;
+  workedMs: number;
+  calls: number;
+  /** Calls ended `ok` over those that ended; absent when none ended. */
+  successRate?: number;
+  /** Distinct delivered jobs it worked on. */
+  deliveries: number;
+  engines: string[];
+  models: string[];
+  lines: string[];
+}
+
+export interface MonitorLine {
+  line: string;
+  jobs: number;
+  deliveries: number;
+  last?: { id: string; name: string; status: JobStatus };
+  openPullRequests: number;
+}
+
+export interface MonitorView {
+  period: MonitorPeriod;
+  since: string;
+  /** Jobs created per local day of the period, oldest first. */
+  days: { day: string; jobs: number }[];
+  /** Jobs created per week, only for the 30-day period. */
+  weeks?: { week: string; jobs: number }[];
+  created: number;
+  delivered: number;
+  failed: number;
+  stopped: number;
+  queued: number;
+  /** `running` and `waiting` jobs now. */
+  running: number;
+  successRate?: number;
+  avgJobMs?: number;
+  stations: { station: string; avgMs: number; count: number }[];
+  avgAttempts?: number;
+  plans: PlanWindow[];
+  /** Really billed this calendar month, per engine. */
+  monthUsd: { engine: string; usd: number }[];
+  tokens?: number;
+  agents: MonitorAgent[];
+  lines: MonitorLine[];
+}
+
+/** The fixed agents the monitor always shows, even without activity. */
+const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research"];
+const OPEN_PR_GONE = new Set<MergeState["status"]>(["merged", "closed", "expired"]);
+
+const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const spanMs = (s: SpanRow) => (s.end ? Math.max(0, Date.parse(s.end) - Date.parse(s.start)) : 0);
+const average = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : undefined);
+const spanTokens = (s: SpanRow) => {
+  const input = s.attrs["gen_ai.usage.input_tokens"];
+  const output = s.attrs["gen_ai.usage.output_tokens"];
+  if (typeof input !== "number" && typeof output !== "number") return undefined;
+  return (Number(input) || 0) + (Number(output) || 0);
+};
+const sumTokens = (spans: SpanRow[]) => {
+  const counted = spans.map(spanTokens).filter((n): n is number => n !== undefined);
+  return counted.length ? counted.reduce((a, b) => a + b, 0) : undefined;
+};
+
+/**
+ * The panel's "Monitor" tab: factory totals, plan use, month spend, one card
+ * per agent and per line, for a period. Read-only: built from jobs, spans and
+ * kv as they are, without asking GitHub or writing anything.
+ */
+export function monitorView(ctx: FactoryContext, period: MonitorPeriod, now = new Date()): MonitorView {
+  const since = period === "hoy" ? startOfDay(now) : new Date(now.getTime() - Number(period) * 86_400_000);
+  const after = (iso: string | undefined) => iso !== undefined && Date.parse(iso) >= since.getTime() && Date.parse(iso) <= now.getTime();
+  // LIMIT -1 is no limit in SQLite: the monitor counts every job.
+  const jobs = ctx.store.listJobs({ limit: -1 });
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const created = jobs.filter((j) => after(j.createdAt));
+  const finished = jobs.filter((j) => FINAL_STATUSES.includes(j.status) && after(j.finishedAt));
+  const count = (status: JobStatus) => finished.filter((j) => j.status === status).length;
+  const delivered = count("delivered");
+  const failed = count("failed");
+
+  const days: MonitorView["days"] = [];
+  for (let d = startOfDay(since); d <= now; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) days.push({ day: dayKey(d), jobs: 0 });
+  for (const j of created) {
+    const day = days.find((d) => d.day === dayKey(new Date(j.createdAt)));
+    if (day) day.jobs++;
+  }
+  const weeks = period === "30" ? Array.from({ length: Math.ceil(days.length / 7) }, (_, i) => {
+    const chunk = days.slice(i * 7, i * 7 + 7);
+    return { week: chunk[0]!.day, jobs: chunk.reduce((n, d) => n + d.jobs, 0) };
+  }) : undefined;
+
+  const spans = ctx.store.spansSinceAny(since).filter((s) => Date.parse(s.start) <= now.getTime());
+  const agentSpans = spans.filter((s) => s.name === AGENT_SPAN);
+  const stationSpans = spans.filter((s) => s.name.startsWith("zero.station.") && s.end && !s.attrs["zero.skipped"]);
+  const stationNames = [...new Set(stationSpans.map((s) => s.name.slice("zero.station.".length)))];
+
+  const month = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthSpans = ctx.store.spansSince(AGENT_SPAN, month);
+  const engines = [...new Set([ctx.config.engine, ...monthSpans.map((s) => String(s.attrs["zero.engine"] ?? "")).filter(Boolean)])];
+
+  const card = (name: string, own: SpanRow[]): MonitorAgent => {
+    const ended = own.filter((s) => s.status);
+    const jobsOf = [...new Set(own.map((s) => s.jobId).filter((id): id is string => !!id))].map((id) => byId.get(id)).filter((j): j is Job => !!j);
+    const tokens = sumTokens(own);
+    return {
+      name,
+      ...(tokens !== undefined && { tokens }),
+      costUsd: own.reduce((sum, s) => sum + (Number(s.attrs["zero.cost.usd"]) || 0), 0),
+      workedMs: own.reduce((sum, s) => sum + spanMs(s), 0),
+      calls: own.length,
+      ...(ended.length > 0 && { successRate: ended.filter((s) => s.status === "ok").length / ended.length }),
+      deliveries: jobsOf.filter((j) => j.status === "delivered").length,
+      engines: [...new Set(own.map((s) => String(s.attrs["zero.engine"] ?? "")).filter(Boolean))],
+      models: [...new Set(own.map((s) => String(s.attrs["gen_ai.response.model"] ?? s.attrs["gen_ai.request.model"] ?? "")).filter(Boolean))],
+      lines: [...new Set(jobsOf.map((j) => j.line))],
+    };
+  };
+  const agentNames = [
+    ...new Set([
+      ...MONITOR_AGENTS,
+      ...ctx.config.lines.flatMap((l) => lineAgents(ctx.config, l).map((a) => a.name)),
+      ...agentSpans.map((s) => String(s.attrs["gen_ai.agent.name"] ?? "")).filter(Boolean),
+    ]),
+  ];
+  const avgJobMs = average(finished.filter((j) => j.status !== "stopped").map((j) => Date.parse(j.finishedAt!) - Date.parse(j.createdAt)));
+  const tokens = sumTokens(agentSpans);
+
+  return {
+    period,
+    since: since.toISOString(),
+    days,
+    ...(weeks && { weeks }),
+    created: created.length,
+    delivered,
+    failed,
+    stopped: count("stopped"),
+    queued: jobs.filter((j) => j.status === "queued").length,
+    running: jobs.filter((j) => j.status === "running" || j.status === "waiting").length,
+    ...(delivered + failed > 0 && { successRate: delivered / (delivered + failed) }),
+    ...(avgJobMs !== undefined && { avgJobMs }),
+    stations: stationNames.map((station) => {
+      const own = stationSpans.filter((s) => s.name === `zero.station.${station}`);
+      return { station, avgMs: average(own.map(spanMs))!, count: own.length };
+    }),
+    ...(finished.length > 0 && { avgAttempts: average(finished.map((j) => j.attempt))! }),
+    plans: budgetState(ctx.store, ctx.config, now).windows,
+    monthUsd: engines.map((engine) => ({ engine, usd: billedUsd(ctx.store, monthSpans.filter((s) => s.attrs["zero.engine"] === engine), now) })),
+    ...(tokens !== undefined && { tokens }),
+    agents: agentNames.map((name) =>
+      // verify is no agent: its card comes from the station's own spans.
+      card(name, name === "verify" ? spans.filter((s) => s.name === "zero.station.verify" && !s.attrs["zero.skipped"]) : agentSpans.filter((s) => s.attrs["gen_ai.agent.name"] === name)),
+    ),
+    lines: ctx.config.lines.map((l) => {
+      const own = jobs.filter((j) => j.line === l.name);
+      const last = own.at(-1);
+      return {
+        line: l.name,
+        jobs: created.filter((j) => j.line === l.name).length,
+        deliveries: finished.filter((j) => j.line === l.name && j.status === "delivered").length,
+        ...(last && { last: { id: last.id, name: jobName(last), status: last.status } }),
+        openPullRequests: own.filter((j) => {
+          if (j.status !== "delivered" || j.delivery?.mode !== "pull-request") return false;
+          const state = JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "null") as MergeState | null;
+          return !state || !OPEN_PR_GONE.has(state.status);
+        }).length,
+      };
+    }),
+  };
 }
 
 /** The request text of the job a proposal becomes. */

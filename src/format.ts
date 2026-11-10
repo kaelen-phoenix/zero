@@ -10,7 +10,7 @@ import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
 
-const STATUS_TEXT: Record<Job["status"], string> = {
+export const STATUS_TEXT: Record<Job["status"], string> = {
   queued: "en cola",
   running: "trabajando",
   waiting: "esperando tu respuesta",

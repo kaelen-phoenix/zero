@@ -573,6 +573,11 @@ export class Store {
     return (this.db.prepare("SELECT * FROM spans WHERE name = ? AND start >= ? ORDER BY start").all(name, since.toISOString()) as Row[]).map(toSpan);
   }
 
+  /** Every span that started since `since`, whatever its name, in start order. */
+  spansSinceAny(since: Date): SpanRow[] {
+    return (this.db.prepare("SELECT * FROM spans WHERE start >= ? ORDER BY start, rowid").all(since.toISOString()) as Row[]).map(toSpan);
+  }
+
   /** Runs `fn` in one write transaction: other processes wait, so a read-then-write cannot interleave. */
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");

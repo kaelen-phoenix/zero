@@ -262,6 +262,7 @@ With the factory running, the panel shows:
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
 - each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
+- the "Monitor" tab: factory totals (jobs per day, delivered, failed, queued and running, success rate, average time per job and per station, attempts per job), subscription use, the month's spend per engine and tokens, one card per agent (calls, tokens, cost, time, success rate, deliveries, engines, models and lines) and one per line (jobs, deliveries, last job, open pull requests), drawn in SVG inside the panel, filtered by today, 7 or 30 days, read-only and refreshed on its own;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
 From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.

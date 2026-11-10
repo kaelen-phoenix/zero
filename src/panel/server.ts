@@ -1,10 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage, reportPage, researchPage } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, page, proposalsPage, reportPage, researchPage } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -200,6 +200,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/monitor") return send(res, 200, monitorPage(monitorView(ctx, parsePeriod(url.searchParams.get("periodo")), ctx.now?.()), nonce), nonce);
       if (path === "/report") {
         const line = url.searchParams.get("line") || undefined;
         const month = url.searchParams.get("mes") || undefined;
