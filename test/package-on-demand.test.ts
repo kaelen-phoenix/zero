@@ -5,11 +5,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
+import { ANDON_KEY, briefing, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { onDemandPass, packagesPass, stationLastKey, stationOnDemandKey, stationOnDemandLastKey } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
+import { overviewPage } from "../src/panel/html.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { factoryConfig } from "../src/packages.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
@@ -395,6 +396,118 @@ describe("seeing a pending request", () => {
     const status = factoryStatus(ctx);
     expect(status.onDemand).toEqual([]);
     expect(formatStatus(status, now)).not.toContain("Corridas a demanda pendientes");
+  });
+});
+
+describe("seeing demand runs", () => {
+  const now = new Date(2026, 10, 7, 12, 0);
+  const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+  const recent = (s: string) => s.split("\n").filter((l) => l.startsWith("Corridas a demanda recientes: "));
+
+  async function at(record?: Record<string, unknown>) {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    ctx.now = () => now;
+    if (record) ctx.store.setKv(lastRun, JSON.stringify(record));
+    return ctx;
+  }
+
+  it("zero status shows a run that ended fine", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns).toEqual([{ station: "hello/nota", asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" }]);
+    const lines = recent(formatStatus(status, now));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("hello/nota");
+    expect(lines[0]).toContain("terminó bien");
+  });
+
+  it("zero status shows a run under way", async () => {
+    const ctx = await at({ asked: ago(2), startedAt: ago(1) });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain("corriendo desde");
+  });
+
+  it("zero status says a run past its time with no end has no result", async () => {
+    const ctx = await at({ asked: ago(200), startedAt: ago(180) });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns[0]).toMatchObject({ stale: true });
+    expect(recent(formatStatus(status, now))[0]).toContain("sin resultado");
+  });
+
+  it.each([
+    ["failed", "falló"],
+    ["timeout", "superó su tiempo"],
+    ["stopped", "se cortó al apagar la fábrica"],
+  ])("zero status tells outcome %s", async (outcome, text) => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain(text);
+  });
+
+  it("zero status tells a run that could not run", async () => {
+    const ctx = await at({ asked: ago(15), endedAt: ago(10), outcome: "not-run" });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain("no pudo correr");
+  });
+
+  it("hides a record that ended 2 days ago", async () => {
+    const ctx = await at({ asked: ago(2 * 1440 + 5), startedAt: ago(2 * 1440 + 3), endedAt: ago(2 * 1440), outcome: "ok" });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns).toEqual([]);
+    expect(formatStatus(status, now)).not.toContain("Corridas a demanda recientes");
+  });
+
+  it("keeps the pending list unchanged next to a recorded run", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    requestStationRun(ctx, "hello/nota", now);
+    const status = factoryStatus(ctx);
+    expect(status.onDemand).toEqual([{ station: "hello/nota", since: now.toISOString() }]);
+    expect(formatStatus(status, now)).toContain("Corridas a demanda pendientes: ");
+  });
+
+  it("the status reads the record onDemandPass wrote", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    await onDemandPass(ctx, fakeAgents({}).runner, now);
+    expect(factoryStatus(ctx).onDemandRuns).toEqual([expect.objectContaining({ station: "hello/nota", outcome: "ok" })]);
+  });
+
+  it("the panel shows a pending run", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    const html = overviewPage(factoryStatus(ctx), ["web"], "n");
+    expect(html).toContain("hello/nota");
+    expect(html).toContain("pendiente");
+  });
+
+  it("the panel shows a failed run", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "failed" });
+    const html = overviewPage(factoryStatus(ctx), ["web"], "n");
+    expect(html).toContain("hello/nota");
+    expect(html).toContain("falló");
+  });
+
+  it("the panel says nothing about demand runs without any", async () => {
+    const ctx = await at();
+    expect(overviewPage(factoryStatus(ctx), ["web"], "n")).not.toContain("a demanda");
+  });
+
+  it("the briefing lists a run of the day", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    const b = (await briefing(ctx, 1)).body;
+    expect(b).toContain("## Corridas a demanda");
+    expect(b).toContain("hello/nota");
+    expect(b).toContain("terminó bien");
+  });
+
+  it("the briefing lists a pending run", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    const b = (await briefing(ctx, 1)).body;
+    expect(b).toContain("## Corridas a demanda");
+    expect(b).toMatch(/- hello\/nota: pendiente/);
+  });
+
+  it("the briefing has no section without runs in the period", async () => {
+    const ctx = await at({ asked: ago(2 * 1440 + 5), startedAt: ago(2 * 1440 + 3), endedAt: ago(2 * 1440), outcome: "ok" });
+    expect((await briefing(ctx, 1)).body).not.toContain("Corridas a demanda");
   });
 });
 

@@ -85,7 +85,7 @@ Fábrica:
                                  Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero package run <paquete>/<estación>
-                                 Pide correr una vez la estación apenas la fábrica esté libre, sin esperar su período
+                                 Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
                                  (solo si su manifiesto declara onDemand: true)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]

@@ -9,8 +9,8 @@
 
 ## 2. Etapa 2: Status, panel and briefing show pending and finished runs; docs
 
-- [ ] 2.1 app.ts: `FactoryStatus.onDemandRuns` (24 h window, stale flag) and the new requestStationRun text; format.ts state helper and the `Corridas a demanda recientes:` line.
-- [ ] 2.2 panel html.ts overviewPage: pending and recent demand runs, escaped.
-- [ ] 2.3 briefing.ts: trailing `onDemand` argument and `## Corridas a demanda` section; app.ts `briefing()` feeds it.
-- [ ] 2.4 Update the CLI help, the MCP tool description, README.md/README.es.md and AGENTS.md.
-- [ ] 2.5 Tests for status/format, overviewPage and briefing; run focused tests including docs and wording tests, plus typecheck and `npx openspec validate --all`.
+- [x] 2.1 app.ts: `FactoryStatus.onDemandRuns` (24 h window, stale flag) and the new requestStationRun text; format.ts state helper and the `Corridas a demanda recientes:` line.
+- [x] 2.2 panel html.ts overviewPage: pending and recent demand runs, escaped.
+- [x] 2.3 briefing.ts: trailing `onDemand` argument and `## Corridas a demanda` section; app.ts `briefing()` feeds it.
+- [x] 2.4 Update the CLI help, the MCP tool description, README.md/README.es.md and AGENTS.md.
+- [x] 2.5 Tests for status/format, overviewPage and briefing; run focused tests including docs and wording tests, plus typecheck and `npx openspec validate --all`.
