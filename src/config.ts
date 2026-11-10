@@ -247,6 +247,19 @@ export type PackageEntry = z.output<typeof PackageEntrySchema>;
 export const COMMIT_AUTHORS = ["zero", "owner"] as const;
 export type CommitAuthor = (typeof COMMIT_AUTHORS)[number];
 
+/** A Jira Cloud site: an https origin with no credentials or path, kept without its trailing slash. */
+const JiraSiteSchema = z
+  .string()
+  .refine((raw) => {
+    try {
+      const u = new URL(raw);
+      return u.protocol === "https:" && !u.username && !u.password && (u.pathname === "/" || u.pathname === "") && !u.search && !u.hash && !raw.includes("@");
+    } catch {
+      return false;
+    }
+  }, "an https address with no credentials or path, such as https://acme.atlassian.net")
+  .transform((raw) => new URL(raw).origin);
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -266,6 +279,11 @@ export const LineSchema = z.object({
    * Strict: the key never goes here, only in the secret LINEAR_API_KEY.
    */
   linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
+  /** Take the issues of a Jira Cloud project carrying this label as requests. Strict: its credentials live in the secret store, never here. */
+  jira: z
+    .object({ site: JiraSiteSchema, project: z.string().regex(/^[A-Z][A-Z0-9_]+$/, "a Jira project key, such as ABC"), label: z.string().min(1).default("zero") })
+    .strict()
+    .optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */

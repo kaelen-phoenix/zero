@@ -222,6 +222,29 @@ Without the key the factory does not call Linear, and `zero status` and the pane
 - **On delivery it completes the issue:** it moves it to one of the team's completed states. On `pull-request` lines that happens when the pull request opens. If Linear fails, it tries again on the next check without repeating the comment.
 - **To request it again** after the job finished, remove the label and put it back. It does not read later comments on Linear issues.
 
+## Jira issues
+
+A line can also take as requests the issues of a Jira Cloud project that carry a label. You add the `jira` block to the line in the factory file and save the account's email and an API token in the secret store, never in the file (the factory refuses a `jira` block with any other key):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+You give an issue of the project the `zero` label, and the factory checks every minute and turns it into a job.
+- **It only takes issues created and labeled by people with permission to edit issues in the project**, and only if nobody without that permission changed their summary or description, because that text becomes instructions for the agents. Otherwise it says why in a comment on the issue. The account of the token needs permission to browse users to check this; if the check fails, `zero status` shows the problem and the issue waits.
+- **It comments on the issue** when it takes it, when it needs you and how it ended. It does not read the issue's comments: you answer from the panel, the chat or `zero approve`.
+- **When it delivers, it moves the issue to a done status** with one of its transitions. If the workflow has none, the issue stays as it is and `zero status` says so.
+- **To request it again** after the job finished, remove the label and put it back.
+
+`zero status` and the panel show a `Issues de Jira:` line for each line with its project, its label and any problem, such as missing credentials.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -363,6 +386,7 @@ lines:
     verify: ["npm test"]  # everything must pass before the review
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
     commitAuthor: owner       # optional: this line's commit author, over the global one
     stations:                 # optional: skills an agent adds only on this line
@@ -852,4 +876,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.
+Private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.

@@ -302,15 +302,15 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["stars", "estrellas", "testimonio", "testimonial", "clientes satisfechos", "customers", "usuarios activos", "descargas"]) expect(text).not.toContain(word);
   });
 
-  it("marca como en camino lo de las próximas etapas", () => {
+  it("marca como en camino solo lo que falta de las próximas etapas", () => {
     const soon = [...html.matchAll(/<span class="soon" data-i18n="soon">([^<]*)<\/span>/g)];
-    // Los motores ACP/OpenCode ya están: lo único que sigue en camino son los pedidos desde Jira.
-    expect(soon.length).toBeGreaterThanOrEqual(1);
     for (const s of soon) expect(s[1]).toBe("en camino");
-    expect(loadSite().EN["soon"]).toBe("coming");
+    // Hoy no queda nada en camino, así que su traducción tampoco: vuelve con el próximo ítem pendiente.
+    expect(loadSite().EN["soon"] !== undefined).toBe(soon.length > 0);
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    // Los motores ACP/OpenCode, Linear, Jira, el simulacro y el instalador ya están: ninguno sigue en camino.
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.engines", "next.linear", "next.intake", "next.regen"]) expect(lines.filter((l) => l.includes(`data-i18n="${item}"`)), item).toEqual([]);
   });
 
   it("da los motores ACP y OpenCode como disponibles, no en camino", () => {
@@ -318,6 +318,21 @@ describe("sitio del proyecto: contenido", () => {
     const engines = html.split("\n").filter((l) => l.includes('data-i18n="next.engines"'));
     expect(engines).toHaveLength(1);
     expect(engines[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+  });
+
+  it("da los pedidos desde Jira como disponibles, no en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("Jira"))).toEqual([]);
+    const intake = lines.filter((l) => l.includes('data-i18n="next.intake"'));
+    expect(intake).toHaveLength(1);
+    expect(/data-i18n="next\.intake">([^<]*)</.exec(intake[0]!)![1]).toBe("Pedidos desde Jira");
+    expect(intake[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["next.intake"]).toBe("Requests from Jira");
+    const request = /<p data-i18n="workflow\.request">([^<]*)<\/p>/.exec(html)![1]!;
+    for (const tracker of ["GitHub", "Linear", "Jira"]) {
+      expect(request).toContain(tracker);
+      expect(loadSite().EN["workflow.request"]).toContain(tracker);
+    }
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -328,10 +343,9 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
   });
 
-  it("da los pedidos desde Linear como disponibles y Jira sigue en camino", () => {
+  it("da los pedidos desde Linear como disponibles, no en camino", () => {
     const lines = html.split("\n");
     expect(lines.filter((l) => l.includes('class="soon"') && /linear/i.test(l))).toEqual([]);
-    expect(lines.some((l) => l.includes('class="soon"') && l.includes("Jira"))).toBe(true);
     const linear = lines.filter((l) => l.includes('data-i18n="next.linear"'));
     expect(linear).toHaveLength(1);
     expect(linear[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
