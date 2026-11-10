@@ -2,10 +2,10 @@
 
 ## 1. Etapa 1: Configuración, registros y sección del informe
 
-- [ ] 1.1 Add the optional strict `services` section to `LineSchema` with config tests.
-- [ ] 1.2 Create src/billing/ types, reader interface, registry and kv keys (no adapters yet).
-- [ ] 1.3 Extend `LineReport`, `monthlyReport` and the Markdown/HTML renderers with the Servicios section and the factory + services total, reading only stored kv records; lines without services render unchanged.
-- [ ] 1.4 Tests in test/report.test.ts and test/config.test.ts; run them focused plus typecheck.
+- [x] 1.1 Add the optional strict `services` section to `LineSchema` with config tests.
+- [x] 1.2 Create src/billing/ types, reader interface, registry and kv keys (no adapters yet).
+- [x] 1.3 Extend `LineReport`, `monthlyReport` and the Markdown/HTML renderers with the Servicios section and the factory + services total, reading only stored kv records; lines without services render unchanged.
+- [x] 1.4 Tests in test/report.test.ts and test/config.test.ts; run them focused plus typecheck.
 
 ## 2. Etapa 2: Adaptadores de GitHub, Vercel y Supabase
 

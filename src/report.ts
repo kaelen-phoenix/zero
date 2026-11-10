@@ -1,3 +1,4 @@
+import { BILLING_SERVICES, MISSING_TEXT, type BillingRecord, type BillingService } from "./billing/records.js";
 import { scrubLocal } from "./line/research.js";
 import { esc } from "./panel/html.js";
 import type { Job, SpanRow } from "./state/store.js";
@@ -43,11 +44,33 @@ export interface ReportTotals {
   subscriptionUsd: number;
 }
 
+export interface ReportService {
+  name: string;
+  /** Absent: "sin dato". */
+  costUsd?: number;
+  figures: [string, string][];
+  source: string;
+  /** AAAA-MM-DD, local time; absent when it was never read. */
+  readAt?: string;
+  /** Why there is no figure or no cost, in words. */
+  missing?: string;
+}
+
+export interface ReportGrandTotal {
+  /** The factory's month cost plus every known service cost. */
+  usd: number;
+  /** Services left out for lack of a cost. */
+  missing: string[];
+}
+
 export interface LineReport {
   line: string;
   month: string;
   jobs: ReportJob[];
   totals: ReportTotals;
+  /** Only for a line that declares services. */
+  services?: ReportService[];
+  total?: ReportGrandTotal;
 }
 
 export interface MonthlyReport {
@@ -176,6 +199,25 @@ export interface LineReportInput {
   allRepos: string[];
   /** owner/repo when the line's remote is on GitHub. */
   repository?: string;
+  /** The services the line declares, with the month's stored record when there is one. */
+  services?: { service: BillingService; record?: BillingRecord }[];
+}
+
+const NO_RECORD = "todavía no se leyó";
+
+function reportService(entry: { service: BillingService; record?: BillingRecord }, clean: (text: string) => string): ReportService {
+  const info = BILLING_SERVICES[entry.service];
+  const r = entry.record;
+  if (!r) return { name: info.label, figures: [], source: info.source, missing: NO_RECORD };
+  const missing = r.reason ? MISSING_TEXT[r.reason] : r.costUsd === undefined ? MISSING_TEXT["sin-costo"] : undefined;
+  return {
+    name: info.label,
+    ...(r.costUsd === undefined ? {} : { costUsd: r.costUsd }),
+    figures: r.figures.map((f): [string, string] => [clean(f.label), clean(f.value)]),
+    source: clean(r.source),
+    readAt: localDay(r.readAt),
+    ...(missing ? { missing } : {}),
+  };
 }
 
 export function buildLineReport(input: LineReportInput): LineReport {
@@ -198,7 +240,11 @@ export function buildLineReport(input: LineReportInput): LineReport {
       summary: clean(storedSummary(j)).trim() || NO_SUMMARY,
       link: deliveryLink(j, input.repository, clean),
     }));
-  return { line: clean(input.line), month: input.month, jobs, totals };
+  const report: LineReport = { line: clean(input.line), month: input.month, jobs, totals };
+  if (!input.services?.length) return report;
+  const services = input.services.map((s) => reportService(s, clean));
+  const known = services.reduce((sum, s) => sum + (s.costUsd ?? 0), 0);
+  return { ...report, services, total: { usd: totals.costUsd + known, missing: services.filter((s) => s.costUsd === undefined).map((s) => s.name) } };
 }
 
 function duration(ms: number): string {
@@ -223,6 +269,27 @@ const totalRows = (t: ReportTotals): [string, string][] => [
   ["Tiempo", duration(t.ms)],
   ["Costo del mes", costText(t)],
 ];
+const NO_DATA = "sin dato";
+
+/** A service in one line of text: its cost, figures, source and read date. */
+function serviceText(s: ReportService): string {
+  const cost = s.costUsd === undefined ? `${NO_DATA}${s.missing ? ` (${s.missing})` : ""}` : usd(s.costUsd);
+  const parts = [`${s.name}: ${cost}`, ...s.figures.map(([k, v]) => `${k}: ${v}`), `Fuente: ${s.source}`, s.readAt ? `leído el ${s.readAt}` : "sin lectura"];
+  return parts.join(" · ");
+}
+
+const GRAND_TOTAL = "Total del mes (fábrica + servicios)";
+
+function grandTotalText(l: LineReport): string {
+  const t = l.total!;
+  const parts = [usd(t.usd)];
+  if (l.totals.subscriptionUsd >= 0.005) parts.push(`incluye ${usd(l.totals.subscriptionUsd)} estimados con suscripción que no se cobraron`);
+  if (t.missing.length) parts.push(`sin dato: ${t.missing.join(", ")}`);
+  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join("; ")})` : parts[0]!;
+}
+
+const SERVICES_NOTE = "Cada servicio se lee una vez por día; las cifras del mes en curso llegan hasta la fecha de lectura.";
+
 const INFORMATIVE = (t: ReportTotals) => `Aparte, como información y no como trabajo hecho: fallidos: ${t.failed}, detenidos: ${t.stopped}.`;
 const SUMS_NOTE = "Intentos, tiempo y costo suman todos los trabajos terminados en el mes, incluidos los fallidos y los detenidos. El tiempo va del pedido al cierre e incluye las esperas.";
 const NOTHING = "No hubo trabajos entregados en este mes.";
@@ -243,6 +310,9 @@ export function reportMarkdown(l: LineReport): string {
     totalRows(l.totals).map(([k, v]) => `- ${k}: ${v}`).join("\n"),
     INFORMATIVE(l.totals),
     SUMS_NOTE,
+    ...(l.services
+      ? ["## Servicios", [...l.services.map((s) => `- ${mdText(serviceText(s))}`), `- ${mdText(`${GRAND_TOTAL}: ${grandTotalText(l)}`)}`].join("\n"), SERVICES_NOTE]
+      : []),
   ].join("\n\n");
 }
 
@@ -263,7 +333,14 @@ ${jobs.length ? `<ul>${jobs.join("")}</ul>` : `<p>${NOTHING}</p>`}
 <h2>Totales</h2>
 <ul>${totalRows(l.totals).map(([k, v]) => `<li>${esc(k)}: ${esc(v)}</li>`).join("")}</ul>
 <p>${esc(INFORMATIVE(l.totals))}</p>
-<p>${esc(SUMS_NOTE)}</p>`;
+<p>${esc(SUMS_NOTE)}</p>${
+    l.services
+      ? `
+<h2>Servicios</h2>
+<ul>${l.services.map((s) => `<li>${esc(serviceText(s))}</li>`).join("")}<li><b>${esc(GRAND_TOTAL)}</b>: ${esc(grandTotalText(l))}</li></ul>
+<p>${esc(SERVICES_NOTE)}</p>`
+      : ""
+  }`;
 }
 
 /** A document that stands alone: no scripts, no outside resources, ready to send. */

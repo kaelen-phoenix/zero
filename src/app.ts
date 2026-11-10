@@ -35,6 +35,7 @@ import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { tryGit } from "./shell.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
@@ -545,7 +546,8 @@ export function monthlyReport(ctx: FactoryContext, input: { line?: string; month
       const config = ctx.config.lines.find((l) => l.name === name);
       const jobs = finished.filter((j) => j.line === name);
       const repository = config && jobs.some((j) => j.delivery?.commit) ? lineRepository(config) : undefined;
-      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository });
+      const services = lineServices(config).map((service) => ({ service, record: parseBillingRecord(ctx.store.getKv(billingKey(name, service, month)), service, month) }));
+      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services });
     }),
   };
 }
