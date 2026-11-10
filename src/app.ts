@@ -23,7 +23,7 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
+import { cleanStationText, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationOnDemandRunKey, type OnDemandRun } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { formatEgressSites, jobName, jobOrigin } from "./format.js";
@@ -269,8 +269,10 @@ export interface FactoryStatus {
   skills: SkillProblem[];
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
-  /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
-  onDemand: { station: string; since: string }[];
+  /** On-demand station runs asked for and not run yet, as `<package>/<station>`; `request` when one carries a text. */
+  onDemand: { station: string; since: string; request?: true }[];
+  /** On-demand runs going on, or ended in the last 24 hours. */
+  onDemandRuns: OnDemandRunView[];
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -281,6 +283,19 @@ export interface FactoryStatus {
   queued: Job[];
   waiting: Job[];
   recent: Job[];
+}
+
+export type OnDemandRunView = { station: string } & Pick<OnDemandRun, "outcome" | "startedAt" | "finishedAt" | "error">;
+
+/** A station's last on-demand turn, if one was recorded and still reads. */
+function readOnDemandRun(ctx: FactoryContext, pkg: string, name: string): OnDemandRun | undefined {
+  const raw = ctx.store.getKv(stationOnDemandRunKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as OnDemandRun;
+  } catch {
+    return undefined;
+  }
 }
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
@@ -306,7 +321,16 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     packages: ctx.config.loadedPackages?.problems ?? [],
     onDemand: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
       const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
-      return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
+      if (since === undefined) return [];
+      const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name)) !== undefined;
+      return [{ station: `${s.package}/${s.name}`, since, ...(request && { request: true as const }) }];
+    }),
+    onDemandRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+      const run = s.onDemand ? readOnDemandRun(ctx, s.package, s.name) : undefined;
+      if (!run) return [];
+      if (run.outcome !== "running" && !(run.finishedAt && now.getTime() - Date.parse(run.finishedAt) <= 86_400_000)) return [];
+      const { outcome, startedAt, finishedAt, error } = run;
+      return [{ station: `${s.package}/${s.name}`, outcome, ...(startedAt && { startedAt }), ...(finishedAt && { finishedAt }), ...(error !== undefined && { error }) }];
     }),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -1151,6 +1175,8 @@ export interface PackageStationView {
   lastRun?: string;
   /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
   onDemandPendingSince?: string;
+  /** The last on-demand turn, if any; only on `onDemand` stations. */
+  onDemandLastRun?: OnDemandRun;
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
@@ -1195,12 +1221,14 @@ export function packageList(ctx: FactoryContext): PackageList {
         stations: p.stations.map((name) => {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
+          const lastRun = station?.onDemand ? readOnDemandRun(ctx, p.name, name) : undefined;
           return {
             name,
             allowed: Boolean(station),
             missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
+            ...(lastRun && { onDemandLastRun: lastRun }),
           };
         }),
       };
@@ -1208,17 +1236,23 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-export type StationRunResult = { ok: true; text: string } | { ok: false; reason: string };
+/** `at`: when it was asked for, ISO 8601, as the pending key and the run record keep it. */
+export type StationRunResult = { ok: true; text: string; at: string } | { ok: false; reason: string };
+
+const stationRef = (ref: string) => /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim()) as [string, string, string] | null;
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
- * station; the daemon still waits for an idle factory and keeps every gate.
+ * station; the daemon still waits for an idle factory and keeps every gate. Only the
+ * person in charge's interfaces (CLI and chat) call it: `request` is their text, which
+ * the station gets cleaned as `request`.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date()): StationRunResult {
-  const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
+export function requestStationRun(ctx: FactoryContext, ref: string, opts: { request?: string; now?: Date } | Date = {}): StationRunResult {
+  const { request, now = new Date() } = opts instanceof Date ? { now: opts } : opts;
+  const match = stationRef(ref);
   if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
-  const [, pkg, name] = match as unknown as [string, string, string];
+  const [, pkg, name] = match;
   const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
   const known = loaded.packages.find((p) => p.name === pkg);
   if (!known) return { ok: false, reason: `no hay un paquete instalado que se llame "${pkg}"` };
@@ -1231,8 +1265,37 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
-  ctx.store.setKv(key, now.toISOString());
-  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.` };
+  const clean = request === undefined ? undefined : cleanStationText(ctx, station, request);
+  if (clean === "") return { ok: false, reason: "el pedido está vacío: escribí qué querés que haga la estación" };
+  const at = now.toISOString();
+  if (clean !== undefined) ctx.store.setKv(stationOnDemandRequestKey(pkg, name), clean);
+  ctx.store.setKv(key, at);
+  return { ok: true, at, text: `Corrida a demanda de ${pkg}/${name} pedida${clean !== undefined ? " con tu pedido" : ""}: corre una vez apenas la fábrica esté libre.` };
+}
+
+/** Whether the requested on-demand run started (or could not run), or is still waiting. */
+export type StationRunStart = { state: "started" | "ended"; run: OnDemandRun } | { state: "pending" };
+
+/**
+ * Waits for the run asked for at `at` to start, reading its record: `started` once it
+ * has a start, `ended` when it ended without one (it could not run), `pending` when the
+ * wait is over first. It never throws for a run that does not come.
+ */
+export async function waitStationRunStart(ctx: FactoryContext, ref: string, at: string, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<StationRunStart> {
+  const match = stationRef(ref);
+  if (!match) return { state: "pending" };
+  const [, pkg, name] = match;
+  const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
+  for (;;) {
+    const run = readOnDemandRun(ctx, pkg, name);
+    if (run?.requestedAt === at) {
+      if (run.startedAt) return { state: "started", run };
+      if (run.outcome !== "running") return { state: "ended", run };
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return { state: "pending" };
+    await new Promise((done) => setTimeout(done, Math.min(opts.pollMs ?? 1000, left)));
+  }
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */

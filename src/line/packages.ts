@@ -16,6 +16,7 @@ import { PACKAGE_AGENT_PREFIX, periodStart, scoutSpent } from "./scout.js";
 
 const CHARS_PER_TEXT = 600;
 const CHARS_PER_REQUEST = 4000;
+const CHARS_PER_ERROR = 300;
 /** How late a time of a station's `schedule` may still run. */
 const SCHEDULE_REACH_MS = 2 * 60 * 60_000;
 
@@ -65,14 +66,17 @@ export interface StationContext {
 export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
-  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true })` for a run the person in charge asked for. */
+  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for. */
   pass?: unknown;
   scheduled?: unknown;
   parseConfig?: unknown;
 }
 
-/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`. */
-type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true }) => unknown;
+/**
+ * A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus
+ * `request` when the person in charge wrote one: their text, cleaned and at most 4000 characters.
+ */
+type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
@@ -81,6 +85,24 @@ export const stationLastKey = (pkg: string, name: string) => `${stationKey({ pac
 
 /** When the person in charge asked for a run of a station's `pass` outside its period, ISO 8601; at most one pending per station. */
 export const stationOnDemandKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand`;
+
+/** The text the person in charge sent with the pending on-demand run, already cleaned; out of reach of `ctx.state`. */
+export const stationOnDemandRequestKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand:request`;
+
+/** The record of the last on-demand turn, as JSON `OnDemandRun`; out of reach of `ctx.state`. */
+export const stationOnDemandRunKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand:run`;
+
+/** How an on-demand turn went, or that it is still going. */
+export interface OnDemandRun {
+  /** The pending request it consumed, ISO 8601. */
+  requestedAt: string;
+  /** Whether it carried a text. */
+  request: boolean;
+  startedAt?: string;
+  finishedAt?: string;
+  outcome: "running" | "done" | "failed" | "timeout" | "interrupted";
+  error?: string;
+}
 
 /** The last local day (`YYYY-MM-DD`) a time of a station's `schedule` ran; out of reach of `ctx.state`. */
 export const stationScheduleKey = (pkg: string, name: string, at: string) => `${stationKey({ package: pkg, name })}:schedule:${at}`;
@@ -94,6 +116,11 @@ function withoutSecrets(text: string, ctx: FactoryContext, station: PackageStati
     const value = ctx.secrets.get(name);
     return value ? out.replaceAll(value, REDACTED) : out;
   }, text);
+}
+
+/** Text written for or by a station as the line may read it: no declared secret, token or local path, at most 4000 characters. */
+export function cleanStationText(ctx: FactoryContext, station: PackageStation, text: string): string {
+  return publicText(withoutSecrets(text, ctx, station), ctx.config.lines.map((l) => l.repo)).text.trim().slice(0, CHARS_PER_REQUEST);
 }
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -208,8 +235,7 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
       const day = startOfDay(now).toISOString();
       const used = requestsUsed(ctx.store.getKv(quotaKey), day);
       if (used >= station.requests.perLinePerDay) return { reason: `ya pidió ${used} de ${station.requests.perLinePerDay} trabajos de hoy en la línea "${line}"` };
-      const repos = ctx.config.lines.map((l) => l.repo);
-      const clean = publicText(withoutSecrets(text, ctx, station), repos).text.trim().slice(0, CHARS_PER_REQUEST);
+      const clean = cleanStationText(ctx, station, text);
       if (!clean) return { reason: "el pedido está vacío" };
       const { job } = requestWork(ctx, { text: clean, line, source: { kind: "package", package: station.package, station: station.name } });
       ctx.store.setKv(quotaKey, JSON.stringify({ day, count: used + 1 }));
@@ -265,8 +291,10 @@ interface StationTurn {
   mark(): void;
   /** Whether a module without the export is normal for this station. */
   optional: boolean;
-  /** Runs when the module cannot be imported, lacks the export or refuses its config. */
-  failed?(): void;
+  /** Runs when the module cannot be imported, lacks the export or refuses its config, with why. */
+  failed?(reason: string): void;
+  /** How the turn ended, unless `failed` ran: after `mark`, or after time ran out before it. */
+  ended?(end: "done" | "failed" | "timeout" | "interrupted", error?: string): void;
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
@@ -282,19 +310,26 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
   const controller = new AbortController();
   const abort = () => controller.abort();
   outer?.addEventListener("abort", abort, { once: true });
+  let skipped = false;
+  const failed = (reason: string) => {
+    skipped = true;
+    turn.failed?.(reason);
+  };
   const work = (async () => {
     let mod: StationModule;
     try {
       mod = (await import(/* @vite-ignore */ pathToFileURL(station.module).href)) as StationModule;
     } catch (err) {
-      warnOnce(`${key}: no corre porque su módulo no se pudo importar: ${withoutSecrets(errorText(err), ctx, station)}`);
-      turn.failed?.();
+      const reason = `su módulo no se pudo importar: ${withoutSecrets(errorText(err), ctx, station)}`;
+      warnOnce(`${key}: no corre porque ${reason}`);
+      failed(reason);
       return;
     }
     const hook = mod[turn.hook];
     if (typeof hook !== "function") {
-      if (!turn.optional) warnOnce(`${key}: no corre porque su módulo no exporta una función ${turn.hook}`);
-      turn.failed?.();
+      const reason = `su módulo no exporta una función ${turn.hook}`;
+      if (!turn.optional) warnOnce(`${key}: no corre porque ${reason}`);
+      failed(reason);
       return;
     }
     let config: unknown = station.entry.config;
@@ -302,8 +337,9 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
       try {
         config = await mod.parseConfig(config);
       } catch (err) {
-        warnOnce(`${key}: no corre porque su configuración no es válida: ${withoutSecrets(errorText(err), ctx, station)}`);
-        turn.failed?.();
+        const reason = `su configuración no es válida: ${withoutSecrets(errorText(err), ctx, station)}`;
+        warnOnce(`${key}: no corre porque ${reason}`);
+        failed(reason);
         return;
       }
     }
@@ -328,8 +364,11 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
       turn.mark();
       log.warn(`${turn.label}: superó su tiempo de ${station.timeoutMinutes} minutos`);
     }
+    if (!skipped) turn.ended?.(end === "shutdown" ? "interrupted" : end);
   } catch (err) {
-    log.warn(`${turn.label}: falló`, { error: withoutSecrets(errorText(err), ctx, station) });
+    const error = withoutSecrets(errorText(err), ctx, station);
+    log.warn(`${turn.label}: falló`, { error });
+    if (!skipped) turn.ended?.("failed", error);
   } finally {
     clearTimeout(timer);
     outer?.removeEventListener("abort", abort);
@@ -342,9 +381,20 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
 /** A station's `pass`, once its `everyMinutes` are over, or right away when the person in charge asked for it. */
 async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
   const onDemandKey = stationOnDemandKey(station.package, station.name);
-  if (station.onDemand && ctx.store.getKv(onDemandKey) !== undefined) {
+  const requestedAt = station.onDemand ? ctx.store.getKv(onDemandKey) : undefined;
+  if (requestedAt !== undefined) {
     // Its own turn: the period stays as it was, and the request goes right before the call so it never runs twice.
-    const clear = () => ctx.store.deleteKv(onDemandKey);
+    const requestKey = stationOnDemandRequestKey(station.package, station.name);
+    const runKey = stationOnDemandRunKey(station.package, station.name);
+    const request = ctx.store.getKv(requestKey);
+    const clock = () => (ctx.now ?? (() => new Date()))().toISOString();
+    const record = (run: Omit<OnDemandRun, "requestedAt" | "request">) => ctx.store.setKv(runKey, JSON.stringify({ requestedAt, request: request !== undefined, ...run } satisfies OnDemandRun));
+    const clear = () => {
+      ctx.store.deleteKv(onDemandKey);
+      ctx.store.deleteKv(requestKey);
+    };
+    const errorOf = (text: string) => cleanStationText(ctx, station, text).slice(0, CHARS_PER_ERROR);
+    let startedAt: string | undefined;
     await runTurn(
       ctx,
       station,
@@ -352,10 +402,21 @@ async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: P
       {
         hook: "pass",
         label: `${stationKey(station)} a demanda`,
-        mark: clear,
+        // Only while the request is pending: the second call, when time ran out, leaves an ended record alone.
+        mark: () => {
+          if (ctx.store.getKv(onDemandKey) === undefined) return;
+          clear();
+          startedAt = clock();
+          record({ startedAt, outcome: "running" });
+        },
         optional: false,
-        failed: clear,
-        call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true }),
+        failed: (reason) => {
+          clear();
+          record({ finishedAt: clock(), outcome: "failed", error: errorOf(reason) });
+        },
+        ended: (outcome, error) => record({ ...(startedAt && { startedAt }), finishedAt: clock(), outcome, ...(error !== undefined && { error: errorOf(error) }) }),
+        call: (hook, config, signal) =>
+          hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), request !== undefined ? { onDemand: true, request } : { onDemand: true }),
       },
       outer,
     );

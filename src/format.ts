@@ -4,6 +4,7 @@ import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
+import type { OnDemandRun } from "./line/packages.js";
 import type { Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
@@ -125,6 +126,17 @@ export function formatAgents(lists: LineAgentList[]): string {
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
+/** How an on-demand turn went, with its time. */
+function onDemandRunText(r: Pick<OnDemandRun, "outcome" | "startedAt" | "finishedAt" | "error">, now: Date): string {
+  const at = r.finishedAt ?? r.startedAt;
+  const when = at ? ` (${resetTime(at, now)})` : "";
+  if (r.outcome === "running") return `en curso${r.startedAt ? ` desde ${resetTime(r.startedAt, now)}` : ""}`;
+  if (r.outcome === "done") return `terminó bien${when}`;
+  if (r.outcome === "timeout") return `superó su tiempo${when}`;
+  if (r.outcome === "interrupted") return `se interrumpió${when}`;
+  return `falló: ${r.error ?? "sin detalle"}${when}`;
+}
+
 export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
@@ -138,7 +150,7 @@ export function formatPackages(l: PackageList, now = new Date()): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}`);
+      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.onDemandLastRun ? ` · última corrida a demanda: ${onDemandRunText(s.onDemandLastRun, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -206,7 +218,10 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
-  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? ", con pedido" : ""})`).join(", ")}`);
+  for (const r of s.onDemandRuns) if (r.outcome === "running") out.push(`Corrida a demanda en curso: ${r.station} (desde ${resetTime(r.startedAt ?? r.finishedAt ?? now.toISOString(), now)})`);
+  const ended = s.onDemandRuns.filter((r) => r.outcome !== "running");
+  if (ended.length) out.push(`Últimas corridas a demanda: ${ended.map((r) => `${r.station} ${onDemandRunText(r, now)}`).join(", ")}`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));

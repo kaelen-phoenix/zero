@@ -5,13 +5,13 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, waitStationRunStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { resetTime, formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -82,9 +82,10 @@ Fábrica:
   zero package update [nombre] [--yes]
                                  Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
-  zero package run <paquete>/<estación>
+  zero package run <paquete>/<estación> [--pedido "<texto>"]
                                  Pide correr una vez la estación apenas la fábrica esté libre, sin esperar su período
-                                 (solo si su manifiesto declara onDemand: true)
+                                 (solo si su manifiesto declara onDemand: true), con tu pedido si lo escribís; espera
+                                 hasta 2 minutos a que empiece
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
@@ -115,6 +116,7 @@ async function main(argv: string[]): Promise<number> {
       usd: { type: "string" },
       label: { type: "string" },
       station: { type: "string" },
+      pedido: { type: "string" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -373,13 +375,17 @@ Informe: ${r.report}`);
         }
         if (action === "run") {
           if (!name) throw new Error("Indicá la estación: zero package run <paquete>/<estación>");
-          const r = requestStationRun(ctx, name);
+          const r = requestStationRun(ctx, name, { request: values.pedido });
           if (!r.ok) {
             console.log(r.reason);
             return 1;
           }
           console.log(r.text);
           if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+          const start = await waitStationRunStart(ctx, name, r.at, { timeoutMs: 120_000, pollMs: 1000 });
+          if (start.state === "started") console.log(`La corrida empezó a las ${resetTime(start.run.startedAt!)}.`);
+          else if (start.state === "ended") console.log(`La corrida no pudo correr: ${start.run.error ?? "sin detalle"}`);
+          else console.log("La corrida sigue pendiente: la fábrica todavía no está libre. Seguila en `zero status`.");
           return 0;
         }
         if (action !== "remove") break;

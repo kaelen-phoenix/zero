@@ -144,12 +144,15 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     "zero_package_run",
     {
       title: "Correr una estación de un paquete",
-      description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
-      inputSchema: { station: z.string().describe("The station, as <package>/<station>.") },
+      description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it. `request` carries the owner's own text for the station (cleaned and cut to 4000 characters); it returns once the request is recorded, without waiting for the run.",
+      inputSchema: {
+        station: z.string().describe("The station, as <package>/<station>."),
+        request: z.string().optional().describe("What the owner asks the station to do in this run, in their own words; only text the owner wrote."),
+      },
     },
-    ({ station }) =>
+    ({ station, request }) =>
       withFactory(home, async (ctx) => {
-        const r = requestStationRun(ctx, station);
+        const r = requestStationRun(ctx, station, { request });
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
         return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;

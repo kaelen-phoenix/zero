@@ -5,9 +5,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
+import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, waitStationRunStart, type FactoryContext, type FactoryStatus, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
-import { packagesPass, stationLastKey, stationOnDemandKey } from "../src/line/packages.js";
+import { packagesPass, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationOnDemandRunKey, type OnDemandRun } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
@@ -308,7 +308,9 @@ describe("interfaces", () => {
 
   it("lists zero package run in the usage", async () => {
     const ctx = await factory(stationPackage().dir);
-    expect(zero(ctx, "help").output).toContain("zero package run <paquete>/<estación>");
+    const output = zero(ctx, "help").output;
+    expect(output).toContain("zero package run <paquete>/<estación>");
+    expect(output).toContain("--pedido");
   }, 60_000);
 
   it("zero_package_run tells the refusal", async () => {
@@ -321,5 +323,191 @@ describe("interfaces", () => {
     const r = (await client.callTool({ name: "zero_package_run", arguments: { station: "hello/nota" } })) as { content: { text: string }[] };
     expect(r.content[0]!.text).toContain("onDemand");
     expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+
+  it("zero_package_run stores the request text", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const server = createZeroMcpServer(ctx.home, { autoStart: false });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(b);
+    const r = (await client.callTool({ name: "zero_package_run", arguments: { station: "hello/nota", request: "hola" } })) as { content: { text: string }[] };
+    expect(r.content[0]!.text).toContain("pedida");
+    expect(ctx.store.getKv(requestKey)).toBe("hola");
+    expect(ctx.store.getKv(key)).toBeDefined();
+  });
+});
+
+const requestKey = stationOnDemandRequestKey("hello", "nota");
+const runKey = stationOnDemandRunKey("hello", "nota");
+const runOf = (ctx: FactoryContext) => JSON.parse(ctx.store.getKv(runKey) ?? "null") as OnDemandRun | null;
+
+describe("a request with text", () => {
+  it("is cleaned of the station's secrets and cut to 4000 characters", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, secrets: ["NOTA_TOKEN"] }).dir);
+    ctx.secrets.set("NOTA_TOKEN", "s3cr3t-value");
+    const r = requestStationRun(ctx, "hello/nota", { request: "usá s3cr3t-value " + "x".repeat(5000) });
+    expect(r).toMatchObject({ ok: true, at: expect.any(String) });
+    const stored = ctx.store.getKv(requestKey)!;
+    expect(stored.length).toBeLessThanOrEqual(4000);
+    expect(stored).not.toContain("s3cr3t-value");
+    expect(stored.startsWith("usá")).toBe(true);
+    expect(r.ok && r.at).toBe(ctx.store.getKv(key));
+  });
+
+  it("refuses a blank request and records nothing", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    expect(requestStationRun(ctx, "hello/nota", { request: " " })).toMatchObject({ ok: false, reason: expect.stringContaining("vacío") });
+    expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(ctx.store.getKv(requestKey)).toBeUndefined();
+  });
+
+  it("writes no request key without text", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    expect(requestStationRun(ctx, "hello/nota").ok).toBe(true);
+    expect(ctx.store.getKv(requestKey)).toBeUndefined();
+  });
+
+  it("reaches pass as request, and both keys are gone afterwards", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota", { request: "resumí lo de ayer" });
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    expect(calls().map((c) => JSON.parse(c) as unknown)).toEqual([{ onDemand: true, request: "resumí lo de ayer" }]);
+    expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(ctx.store.getKv(requestKey)).toBeUndefined();
+    expect(runOf(ctx)).toMatchObject({ request: true, outcome: "done" });
+  });
+
+  it("is cleared with the pending key when the module cannot run", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export async function scheduled() {}` }).dir);
+    requestStationRun(ctx, "hello/nota", { request: "algo" });
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(ctx.store.getKv(requestKey)).toBeUndefined();
+  });
+
+  it("cannot be forged through ctx.state", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(ctx, arg) { ctx.state.set("on-demand", "x"); ctx.state.set("on-demand:request", "x"); note(JSON.stringify(arg ?? null)); }` });
+    const ctx = await factory(dir);
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(ctx.store.getKv(requestKey)).toBeUndefined();
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    expect(calls()).toEqual(["null"]);
+  });
+});
+
+describe("the on-demand run record", () => {
+  it("is done with its times once pass resolves", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const run = runOf(ctx)!;
+    expect(run).toMatchObject({ outcome: "done", request: false, startedAt: expect.any(String), finishedAt: expect.any(String) });
+    expect(run.requestedAt).toBe(r.ok && r.at);
+  });
+
+  it("is failed with the error when pass throws, without the station's secrets", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const { dir } = stationPackage({ onDemand: true, secrets: ["NOTA_TOKEN"], module: `export async function pass(ctx) { throw new Error("boom " + ctx.secrets.get("NOTA_TOKEN") + " " + "y".repeat(500)); }` });
+    const ctx = await factory(dir);
+    ctx.secrets.set("NOTA_TOKEN", "s3cr3t-value");
+    requestStationRun(ctx, "hello/nota");
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const run = runOf(ctx)!;
+    expect(run).toMatchObject({ outcome: "failed", error: expect.stringContaining("boom"), startedAt: expect.any(String) });
+    expect(run.error).not.toContain("s3cr3t-value");
+    expect(run.error!.length).toBeLessThanOrEqual(300);
+  });
+
+  it("is failed without a start when the module exports no pass", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export async function scheduled() {}` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const run = runOf(ctx)!;
+    expect(run).toMatchObject({ outcome: "failed", error: expect.stringContaining("pass") });
+    expect(run.startedAt).toBeUndefined();
+  });
+
+  it("is interrupted when the outer signal aborts", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export async function pass(ctx) { await new Promise((done) => ctx.signal.addEventListener("abort", done)); }` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    const controller = new AbortController();
+    const pass = packagesPass(ctx, fakeAgents({}).runner, new Date(), { signal: controller.signal });
+    await vi.waitFor(() => expect(runOf(ctx)?.outcome).toBe("running"));
+    controller.abort();
+    await pass;
+    expect(runOf(ctx)).toMatchObject({ outcome: "interrupted", startedAt: expect.any(String) });
+  });
+
+  it("waitStationRunStart sees the start", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    const waiting = waitStationRunStart(ctx, "hello/nota", r.at, { timeoutMs: 10_000, pollMs: 5 });
+    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    expect(await waiting).toMatchObject({ state: "started", run: { startedAt: expect.any(String), requestedAt: r.at } });
+  });
+
+  it("waitStationRunStart reports still pending when nothing runs", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    await expect(waitStationRunStart(ctx, "hello/nota", r.at, { timeoutMs: 50, pollMs: 5 })).resolves.toEqual({ state: "pending" });
+  });
+});
+
+describe("seeing requested, running and ended runs", () => {
+  const at = new Date(2026, 10, 7, 10, 5);
+  const now = new Date(2026, 10, 7, 12, 0);
+  const record = (ctx: FactoryContext, run: OnDemandRun) => ctx.store.setKv(runKey, JSON.stringify(run));
+  const statusAt = (ctx: FactoryContext, when: Date): FactoryStatus => {
+    ctx.now = () => when;
+    return factoryStatus(ctx);
+  };
+
+  it("marks a pending request with text", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    requestStationRun(ctx, "hello/nota", { request: "hola", now: at });
+    const status = factoryStatus(ctx);
+    expect(status.onDemand).toEqual([{ station: "hello/nota", since: at.toISOString(), request: true }]);
+    expect(formatStatus(status, now)).toContain("hello/nota (desde 10:05, con pedido)");
+  });
+
+  it("shows a running turn", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    record(ctx, { requestedAt: at.toISOString(), request: false, startedAt: at.toISOString(), outcome: "running" });
+    const status = statusAt(ctx, now);
+    expect(status.onDemandRuns).toEqual([{ station: "hello/nota", outcome: "running", startedAt: at.toISOString() }]);
+    expect(formatStatus(status, now).split("\n")).toContain("Corrida a demanda en curso: hello/nota (desde 10:05)");
+  });
+
+  it("shows a turn that ended within a day", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    record(ctx, { requestedAt: at.toISOString(), request: true, startedAt: at.toISOString(), finishedAt: new Date(now.getTime() - 3_600_000).toISOString(), outcome: "failed", error: "boom" });
+    const line = formatStatus(statusAt(ctx, now), now).split("\n").find((l) => l.startsWith("Últimas corridas a demanda: "));
+    expect(line).toContain("hello/nota");
+    expect(line).toContain("boom");
+  });
+
+  it("hides a turn that ended two days ago", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    record(ctx, { requestedAt: at.toISOString(), request: false, startedAt: at.toISOString(), finishedAt: new Date(now.getTime() - 2 * 86_400_000).toISOString(), outcome: "done" });
+    const status = statusAt(ctx, now);
+    expect(status.onDemandRuns).toEqual([]);
+    expect(formatStatus(status, now)).not.toContain("Últimas corridas a demanda");
+  });
+
+  it("zero package list shows the last run", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const run: OnDemandRun = { requestedAt: at.toISOString(), request: false, startedAt: at.toISOString(), finishedAt: at.toISOString(), outcome: "done" };
+    record(ctx, run);
+    const list = packageList(ctx);
+    expect(list.packages[0]!.stations[0]!.onDemandLastRun).toEqual(run);
+    expect(formatPackages(list, now)).toContain(" · última corrida a demanda: terminó bien (10:05)");
   });
 });
