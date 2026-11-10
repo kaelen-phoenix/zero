@@ -19,6 +19,7 @@ const BUILT_IN: Record<string, Requirement | null> = {
     hint: "Codex necesita una clave dentro de la caja: guardala con `zero secret set OPENAI_API_KEY`",
   },
   antigravity: null,
+  opencode: null,
 };
 
 /** The engines the factory's stations and every line's custom agents use, their replacements included. */

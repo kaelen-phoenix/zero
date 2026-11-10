@@ -304,12 +304,20 @@ describe("sitio del proyecto: contenido", () => {
 
   it("marca como en camino lo de las próximas etapas", () => {
     const soon = [...html.matchAll(/<span class="soon" data-i18n="soon">([^<]*)<\/span>/g)];
-    expect(soon.length).toBeGreaterThanOrEqual(2);
+    // Los motores ACP/OpenCode ya están: lo único que sigue en camino son los pedidos desde Jira.
+    expect(soon.length).toBeGreaterThanOrEqual(1);
     for (const s of soon) expect(s[1]).toBe("en camino");
     expect(loadSite().EN["soon"]).toBe("coming");
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.engines", "next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+  });
+
+  it("da los motores ACP y OpenCode como disponibles, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes("next.engines") && l.includes('class="soon"'))).toEqual([]);
+    const engines = html.split("\n").filter((l) => l.includes('data-i18n="next.engines"'));
+    expect(engines).toHaveLength(1);
+    expect(engines[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -826,7 +834,7 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
   it("lista los motores y clientes de hoy, y nada más", () => {
     const compat = section("compatibility");
     const items = [...compat.matchAll(/data-item="([^"]+)"/g)].map((m) => m[1]);
-    expect(items).toEqual(["claude", "codex", "antigravity", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
+    expect(items).toEqual(["claude", "codex", "antigravity", "opencode", "acp", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
     for (const name of ["Claude", "Codex", "Antigravity", "CLI propio", "Claude Code", "OpenCode", "Terminal"]) expect(compat).toContain(name);
     for (const other of ["Gemini", "Cursor", "Copilot", "Windsurf", "Aider", "ChatGPT"]) expect(compat).not.toContain(other);
   });
@@ -1049,7 +1057,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "ACP", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });

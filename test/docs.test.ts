@@ -42,6 +42,15 @@ describe("README in English and Spanish", () => {
     }
   });
 
+  it("document the OpenCode and ACP engines and no longer list them as coming", () => {
+    for (const text of [en, es]) {
+      expect(text).toContain("engine: opencode");
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("protocol: acp");
+    }
+    expect(section(en, "## Next steps")).not.toMatch(/ACP|OpenCode/);
+    expect(section(es, "## Próximas etapas")).not.toMatch(/ACP|OpenCode/);
+  });
+
   it("document Codex without its sandbox in both languages", () => {
     for (const text of [en, es]) {
       expect(blocks(text).map((b) => b.body).join("\n")).toContain("codex: { sandbox: off }");
