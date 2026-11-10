@@ -38,7 +38,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
 - **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
-- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
+- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity, OpenCode, any agent that speaks ACP (Agent Client Protocol) or any CLI declared in the configuration, and a different one per station if you want.
 
 ## Autonomy levels
 
@@ -338,7 +338,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   mode: blocklist         # blocklist: everything goes out except what is suspicious or blocked · allowlist: only what is allowed
   allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
   block: []
-engine: claude            # default engine: claude · codex · antigravity · or your own
+engine: claude            # default engine: claude · codex · antigravity · opencode · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
 commandConcurrency: 1     # setup and verify commands running on this machine at once, across jobs; the rest wait their turn
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
@@ -357,6 +357,7 @@ stations:                 # engine, model and time limit per station (optional)
   build: { skills: [pdf] }       # skills from your Claude Code (personal or from plugins; `plugin:skill` if the name repeats)
 engines:                  # any other agent CLI, no code needed; ending without printing anything counts as a failure
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+  gemini-acp: { command: ["gemini", "--experimental-acp"], protocol: acp }   # an agent that speaks ACP: the prompt goes over the protocol
 lines:
   - name: tienda
     repo: ~/code/tienda
@@ -404,6 +405,21 @@ codex: { sandbox: off }
 Outside the box, zero then starts Codex with `--sandbox danger-full-access` and no approval prompts, and keeps read-only stations read-only itself: around each such call it compares the working folder and its repository (tracked and untracked files, index, HEAD, branches and tags, the repository's `config` and `hooks`). If anything changed, zero puts back only what differs, without touching work you had not saved, and fails the call with a notice naming the files. It also undoes anything else that changes the folder or its checked-out branch during the call, such as your own edits or commits in that same checkout (`git reflog` still finds them); what it discarded stays in a temporary folder named in the log. The factory stays out of the way: a job does not start in a repository under such a call, and a background call waits for the job running in its repository. Other refs are not rewound when the call cannot be blamed for them: in a job's work copy everything except that copy's own branch, and everywhere the factory's `zero/*` branches, branches checked out in another worktree and new tags (any fetch brings them). Those are only logged. When the isolation box is ready (`isolation: container`), Codex runs inside it with its usual flags, background passes included, and `zero status` says so; otherwise `zero status` warns that it runs without its sandbox.
 
 What this does not cover outside the box: files ignored by git and not tracked, the refs just mentioned, the rest of the machine (Codex can read and write anywhere you can, including the factory's own folder) and access to the internet.
+
+### OpenCode and ACP engines
+
+`engine: opencode` drives the OpenCode CLI (`opencode run --format json`) with whatever provider you signed in to; `model` is OpenCode's `provider/model`. Any agent that speaks the Agent Client Protocol (ACP) over stdio, such as `gemini --experimental-acp`, `opencode acp` or an ACP adapter for Claude or Codex, is declared in `engines` with `protocol: acp`:
+
+```yaml
+engines:
+  gemini-acp:
+    command: ["gemini", "--experimental-acp"]
+    protocol: acp
+    modelArgs: ["-m", "{model}"]
+    hosts: [generativelanguage.googleapis.com]
+```
+
+zero sends the prompt over the protocol, never on the command line, so an ACP entry cannot use `{prompt}`. Read-only stations stay read-only because zero itself checks the working folder around each call and puts back anything that changed, as for Codex without its sandbox; on top of that, OpenCode gets permissions that deny editing, commands and the web, and zero refuses an ACP agent's permission requests for anything other than reading, searching or thinking. Ending without an answer counts as a failure. Both report the model that answered and the cost when the agent says so, but neither reports plan usage windows, so their spend counts against the dollar caps (`usdPerDay`, `usdPerJob`). OpenCode cannot work inside the isolation box yet; an ACP engine gets its `secrets` there like any engine of your own.
 
 ### Fallback engines (`fallback`)
 
@@ -576,6 +592,7 @@ export async function scheduled(ctx, { at }) {
 | `ctx.state.get(name)`, `ctx.state.set(name, value)` | Saved between passes, separately for each station |
 | `ctx.deliveredJobs(since)` | Line, title, summary and date of delivered jobs, without job ids, branches or local paths |
 | `ctx.requestJob({ line, text })` | Asks the factory for a job. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.dataDir` | The package's data folder, `~/.zero/package-data/<package>`, already created; its panel tabs read from here |
 
 `ctx.runAgent` records each call as `package:<package>/<station>`, picks the engine from the entry's chain and shares the `limits.usdPerNight` cap on pay-per-use. With no engine or no cap left, it returns `ok: false` without calling anyone.
 
@@ -584,6 +601,38 @@ export async function scheduled(ctx, { at }) {
 **Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
 **On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The request waits for the same gates as any idle-time pass: no jobs queued or running, the andon off, budget left and its declared secrets saved; until then it stays pending, and the daemon picks it up on its next idle turn. `ctx.runAgent` still shares the `limits.usdPerNight` cap. An on-demand run does not move the station's period, and that pass does not also run its regular turn. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log. The command exits 1 when refused, and starts the factory if it was off.
+
+**Panel tabs.** With `tabs`, a package adds read-only tabs of its own to the browser panel. Each one shows a JSON file that the package's stations write in its data folder, `~/.zero/package-data/<package>`, which they receive already created as `ctx.dataDir`. No package code runs in the panel, and tabs need no `allowCode`: the panel only reads that file and checks it against a schema. Each tab's `name` follows the rule of the package's other names and cannot repeat, and `data` must be a relative `.json` path that stays inside the data folder; otherwise the whole package stays out.
+
+```yaml
+tabs:
+  - name: news                     # its address: /packages/hello/news
+    title: News                    # up to 60 characters, shown in the panel's menu
+    data: news.json                # relative to ~/.zero/package-data/hello
+    categories: [release, security] # optional: the filter's options
+```
+
+The file holds an object with `items`, a list of at most 500 elements. Only `title` is required (up to 300 characters); `description` takes up to 2000, and `url`, `category` and `date` are optional text:
+
+```json
+{
+  "items": [
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+  ]
+}
+```
+
+```js
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export async function scheduled(ctx) {
+  const items = [{ title: "Version 2.0", url: "https://example.com/v2", category: "release" }];
+  writeFileSync(join(ctx.dataDir, "news.json"), JSON.stringify({ items }));
+}
+```
+
+Each tab appears in the menu of every panel page and has its own address, `/packages/<package>/<tab>`, which asks for the panel's session like the other pages. To share it, add the panel key to that address (`/packages/hello/news#k=…`): after signing in the panel stays on that tab instead of the overview. The filter uses the `categoria` parameter, with the manifest's `categories` as options or, without them, those the elements use. Since this is a third party's data, all its text is escaped, and a `url` only becomes a link when it is an absolute `http` or `https` address, opened in a new tab; any other one (`javascript:`, `data:`, relative) shows the element without a link. A missing file shows that there is no data yet; one over 1 MiB, that is not JSON, does not pass the schema or whose real path leaves the data folder (through a link, for example) shows a warning and none of its elements.
 
 **How to install one:**
 
@@ -807,4 +856,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.
