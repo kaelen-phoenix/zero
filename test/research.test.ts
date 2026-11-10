@@ -242,6 +242,20 @@ describe("notes zero keeps", () => {
     expect(sanitizeNotes([note("Mixta", { sources: ["https://example.com/a", "javascript:alert(1)"] })], line)[0]!.sources).toEqual(["https://example.com/a"]);
   });
 
+  it("keeps sources without query string or fragment", () => {
+    expect(sanitizeNotes([note("Query", { sources: ["https://example.com/a?d=secreto&x=1#parte"] })], line)[0]!.sources).toEqual(["https://example.com/a"]);
+    expect(sanitizeNotes([note("Limpia", { sources: ["https://example.com/a/b"] })], line)[0]!.sources).toEqual(["https://example.com/a/b"]);
+  });
+
+  it("still drops a note whose only sources are not on the web, query or not", () => {
+    expect(sanitizeNotes([note("Mala", { sources: ["file:///C:/x?d=1", "javascript:alert(1)"] })], line)).toEqual([]);
+  });
+
+  it("counts as one the sources that end up equal", () => {
+    const sources = ["https://example.com/a?x=1", "https://example.com/a?x=2", "https://example.com/a#b", "https://example.com/a"];
+    expect(sanitizeNotes([note("Iguales", { sources })], line)[0]!.sources).toEqual(["https://example.com/a"]);
+  });
+
   it("removes local paths", () => {
     const findings = "Ver C:\\Users\\owner\\secret y /work/tienda/src/app.ts, /home/owner/x, /c/Users/owner/y, file:///tmp/z; docs en https://example.com/home/a";
     const [kept] = sanitizeNotes([note("Rutas", { findings })], line);
