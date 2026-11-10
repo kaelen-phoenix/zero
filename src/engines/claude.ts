@@ -138,10 +138,25 @@ const CREDIT_TEXT = "Credit balance is too low";
 /** An API key out of credit: the engine waits instead of failing the work. */
 const NO_CREDIT: QuotaReport = { billing: "api", windows: [], limited: true };
 
+/**
+ * The plan refused the call and says so only in its text (`You've hit your session limit · resets 5am`): it
+ * comes without a rejected rate-limit event when the plan was used up outside the factory (the person in
+ * charge's own sessions), so nothing else tells zero. Read only from failed calls, never from an answer.
+ */
+const PLAN_LIMIT = /\bhit your (?:[\w-]+ )?limit\b|\busage limit reached\b/i;
+
+/** The quota of a failed call whose text says the plan or the credit ran out; otherwise the one it came with. */
+export function refusedQuota(text: string, quota?: QuotaReport): QuotaReport | undefined {
+  if (text.includes(CREDIT_TEXT)) return NO_CREDIT;
+  if (PLAN_LIMIT.test(text)) return { billing: "subscription", windows: quota?.windows ?? [], limited: true };
+  return quota;
+}
+
 /** What a thrown SDK error (neither cancelled nor timed out) means for zero. */
 export function claudeThrown(err: unknown): EngineResult {
   const text = err instanceof Error ? err.message : String(err);
-  return { ok: false, text, ...(text.includes(CREDIT_TEXT) && { quota: NO_CREDIT }) };
+  const quota = refusedQuota(text);
+  return { ok: false, text, ...(quota && { quota }) };
 }
 
 /** The model that cost the most in a result's `modelUsage` (the first one on a tie); undefined when there is none. */
@@ -162,10 +177,10 @@ export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): Eng
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
-    if (errors.some((e) => String(e).includes(CREDIT_TEXT))) quota = NO_CREDIT;
+    quota = refusedQuota(errors.map(String).join("\n"), quota);
     return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
-  if (result.is_error && typeof result.result === "string" && result.result.includes(CREDIT_TEXT)) quota = NO_CREDIT;
+  if (result.is_error && typeof result.result === "string") quota = refusedQuota(result.result, quota);
   return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
 }
