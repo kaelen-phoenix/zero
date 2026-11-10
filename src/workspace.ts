@@ -2,6 +2,8 @@ import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommitAuthor } from "./config.js";
+import { killLeftovers } from "./leftovers.js";
+import { log } from "./log.js";
 import { git, spawnGit, tryGit } from "./shell.js";
 
 /**
@@ -182,13 +184,23 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
 }
 
 export function removeWorkCopy(repo: string, path: string) {
-  if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
-  tryGit(["worktree", "prune"], repo);
-  // Clones (box copies) are not worktrees: remove them directly.
-  if (existsSync(path)) {
-    rmSync(path, { recursive: true, force: true, maxRetries: 3 });
-    // A worktree whose `remove` failed (a locked file) leaves its entry until the folder is gone.
+  const remove = () => {
+    if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
     tryGit(["worktree", "prune"], repo);
+    // Clones (box copies) are not worktrees: remove them directly.
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+      // A worktree whose `remove` failed (a locked file) leaves its entry until the folder is gone.
+      tryGit(["worktree", "prune"], repo);
+    }
+  };
+  try {
+    remove();
+  } catch (err) {
+    // A folder that cannot be removed is usually held by something a job left running in it (a dev server, the rest of a killed command).
+    if (!killLeftovers(path)) throw err;
+    log.warn("processes left running in a work copy were killed to remove it", { path });
+    remove();
   }
 }
 

@@ -68,6 +68,8 @@ export type JobSource =
     }
   /** A Linear issue of a line with `linear`; `id` is Linear's, `identifier` the one people read (ENG-7). */
   | { kind: "linear-issue"; team: string; id: string; identifier: string; url: string }
+  /** A labeled issue of a Jira project. */
+  | { kind: "jira-issue"; site: string; key: string; url: string }
   /**
    * A proposal of the scout station: approved by the owner (no autonomy), or
    * taken by the night shift on its own under the line's `build` or `auto` autonomy.

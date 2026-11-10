@@ -193,6 +193,8 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla, lo deja abierto y lo avisa una vez en el pull request; si se arregla con un push, lo funde en la revisión siguiente. Si el pull request tiene conflictos con la rama base, la fábrica primero intenta actualizarlo: mezcla la base en la rama del trabajo, nunca con rebase ni force-push, resuelve los conflictos como un intento más dentro de `maxAttempts`, vuelve a verificar y revisar, y sube al mismo pull request, sin commitear nunca marcadores de conflicto. Lo hace una sola vez por punta y no toca un pull request con commits ajenos: si la punta difiere de su rama local o la rama remota se movió, no sube nada. Si no puede actualizarlo, el pull request queda como estaba y recibe el aviso de siempre una vez. Si nada cambió, vuelve a mirar sus checks con esperas crecientes, de 5 minutos hasta 1 hora, así que un check que se reintenta sobre el mismo commit puede tardar hasta esa hora en notarse. `zero status` y el panel muestran los que esperan.
 
+Antes de dejar un pull request trabado por checks fallidos, la fábrica prueba lo que suele arreglarlo sin tocar el código. Si la rama quedó atrás de su base (los checks corrieron contra una base vieja: después llegó un arreglo a la base, o cambió un workflow), funde la base en la rama desde GitHub, nunca con rebase ni force-push, y espera los checks nuevos. Lo hace con un pull request por repositorio a la vez, porque un CI que comparte un ambiente cancela las corridas que se acumulan, y como mucho 3 veces por pull request. Si la rama está al día, vuelve a correr las corridas fallidas de GitHub Actions, una vez por commit: una corrida cancelada o un test que falló una vez sin que sea culpa del código. Recién si eso no alcanza lo avisa en el pull request y lo deja abierto.
+
 Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
 
 ### Autor de los commits
@@ -222,6 +224,29 @@ Sin la clave la fábrica no llama a Linear, y `zero status` y el panel muestran 
 - **Al entregar completa el issue:** lo pasa a uno de los estados de completado del equipo. En las líneas `pull-request` eso pasa cuando se abre el pull request. Si Linear falla, lo vuelve a intentar en la revisión siguiente sin repetir el comentario.
 - **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta. No lee los comentarios posteriores en los issues de Linear.
 
+## Issues de Jira
+
+Una línea también puede tomar como pedidos los issues de un proyecto de Jira Cloud que tengan una etiqueta. Agregás el bloque `jira` a la línea en el archivo de la fábrica y guardás el correo de la cuenta y un token de API en el almacén de secretos, nunca en el archivo (la fábrica rechaza un bloque `jira` con cualquier otra clave):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+Le ponés la etiqueta `zero` a un issue del proyecto, y la fábrica lo revisa cada minuto y lo convierte en un trabajo.
+- **Solo toma issues creados y etiquetados por personas con permiso para editar issues en el proyecto**, y solo si nadie sin ese permiso cambió su título o su descripción, porque ese texto se convierte en instrucciones para los agentes. Si no, explica por qué con un comentario en el issue. La cuenta del token necesita permiso para ver usuarios para revisarlo; si la consulta falla, `zero status` muestra el problema y el issue espera.
+- **Comenta en el issue** cuando lo toma, cuando te necesita y cómo terminó. No lee los comentarios del issue: respondés desde el panel, el chat o `zero approve`.
+- **Al entregar, pasa el issue a un estado terminado** con una de sus transiciones. Si el flujo no tiene ninguna, el issue queda como está y `zero status` lo avisa.
+- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
+
+`zero status` y el panel muestran una línea `Issues de Jira:` por cada línea con su proyecto, su etiqueta y cualquier problema, como credenciales faltantes.
+
 ## zero, tu CI y tus herramientas de calidad
 
 zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
@@ -235,7 +260,7 @@ pedido
   → despliegue de la plataforma
 ```
 
-- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar.
+- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar. Cada comando tiene un tiempo límite: `verifyTimeoutMinutes` de la línea (20 por defecto), y nunca menos que el doble de lo que tardó la más lenta de sus últimas 5 corridas aprobadas en esa línea, así una suite que crece o una máquina lenta no hacen fallar trabajos cuyos tests pasan. Los comandos de setup y verify de distintos trabajos se turnan en tu máquina (`commandConcurrency`), un setup que falla se prueba una vez más en una copia nueva, y un comando cortado por su límite se mata con todo lo que había arrancado.
 - **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
 - **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
@@ -338,6 +363,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · opencode · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+commandConcurrency: 1     # comandos de setup y verify que corren a la vez en esta máquina, entre todos los trabajos; el resto espera su turno
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai, ChatGPT en Codex) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
@@ -361,8 +387,10 @@ lines:
     baseBranch: main
     setup: ["npm ci"]     # se ejecuta en cada copia nueva
     verify: ["npm test"]  # todo debe pasar antes de la revisión
+    verifyTimeoutMinutes: 20  # opcional: minutos que puede tardar cada comando de verify; zero lo sube al doble de su corrida aprobada más lenta
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # opcional: issues de Jira con la etiqueta "zero"; credenciales con zero secret set
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
     commitAuthor: owner       # opcional: el autor de los commits de esta línea, sobre el global
     stations:                 # opcional: skills que un agente suma solo en esta línea
@@ -852,4 +880,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Entradas desde Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.
+Red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.

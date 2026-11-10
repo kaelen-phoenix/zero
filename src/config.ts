@@ -247,6 +247,19 @@ export type PackageEntry = z.output<typeof PackageEntrySchema>;
 export const COMMIT_AUTHORS = ["zero", "owner"] as const;
 export type CommitAuthor = (typeof COMMIT_AUTHORS)[number];
 
+/** A Jira Cloud site: an https origin with no credentials or path, kept without its trailing slash. */
+const JiraSiteSchema = z
+  .string()
+  .refine((raw) => {
+    try {
+      const u = new URL(raw);
+      return u.protocol === "https:" && !u.username && !u.password && (u.pathname === "/" || u.pathname === "") && !u.search && !u.hash && !raw.includes("@");
+    } catch {
+      return false;
+    }
+  }, "an https address with no credentials or path, such as https://acme.atlassian.net")
+  .transform((raw) => new URL(raw).origin);
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -256,6 +269,8 @@ export const LineSchema = z.object({
   setup: z.array(z.string()).default([]),
   /** Must all pass before a change goes to review. */
   verify: z.array(z.string()).default([]),
+  /** Minutes each verify command may take (20 when absent). Zero raises it on its own to twice what the slowest recent passing run took. */
+  verifyTimeoutMinutes: z.number().positive().optional(),
   integrate: z.enum(["merge", "branch", "pull-request"]).default("merge"),
   remote: z.string().default("origin"),
   maxAttempts: z.number().int().min(1).default(3),
@@ -266,6 +281,11 @@ export const LineSchema = z.object({
    * Strict: the key never goes here, only in the secret LINEAR_API_KEY.
    */
   linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
+  /** Take the issues of a Jira Cloud project carrying this label as requests. Strict: its credentials live in the secret store, never here. */
+  jira: z
+    .object({ site: JiraSiteSchema, project: z.string().regex(/^[A-Z][A-Z0-9_]+$/, "a Jira project key, such as ABC"), label: z.string().min(1).default("zero") })
+    .strict()
+    .optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */
@@ -320,6 +340,8 @@ export const FactorySchema = z
     fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
     concurrency: z.number().int().min(1).default(2),
+    /** Setup and verify commands running on this machine at once, across jobs (the box has its own limits). The rest wait their turn. */
+    commandConcurrency: z.number().int().min(1).default(1),
     limits: z
       .object({
         /** 0 = only free engines. */

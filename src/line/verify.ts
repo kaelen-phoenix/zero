@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import { sh, tryGit, type ShellResult } from "../shell.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import type { ChangedFile, WorkCopy } from "../workspace.js";
+import { DEFAULT_VERIFY_MINUTES, VERIFY_COMMAND_SPAN } from "./pace.js";
 
 const TEST_FILE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]*\.py$|Tests?\.(java|kt|cs)$/;
 
@@ -141,6 +142,8 @@ export interface VerifyOptions {
   parentId: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** The time limit of each command, when it depends on the command (see `verifyTimeoutMs`); `timeoutMs` otherwise. */
+  timeoutFor?: (command: string) => number;
   /** Where commands run: on this machine by default, or in the isolation box. */
   run?: (command: string, opts: { timeoutMs: number; signal?: AbortSignal; parentId: string }) => Promise<ShellResult>;
 }
@@ -162,12 +165,15 @@ export async function verifyChange(copy: WorkCopy, opts: VerifyOptions): Promise
   if (tampering.length) return { ok: false, kind: "failed", feedback: `La verificación rechazó el cambio:\n- ${tampering.join("\n- ")}\nNo elimines ni desactives tests; arreglá el código para que pasen.` };
 
   for (const command of opts.commands) {
-    const span = opts.tracer.start("zero.verify.command", { jobId: opts.jobId, parentId: opts.parentId, attrs: { "process.command_line": command } });
-    const timeoutMs = opts.timeoutMs ?? 20 * 60_000;
+    const span = opts.tracer.start(VERIFY_COMMAND_SPAN, { jobId: opts.jobId, parentId: opts.parentId, attrs: { "process.command_line": command } });
+    const timeoutMs = opts.timeoutFor?.(command) ?? opts.timeoutMs ?? DEFAULT_VERIFY_MINUTES * 60_000;
     const r = opts.run ? await opts.run(command, { timeoutMs, signal: opts.signal, parentId: span.id }) : await sh(command, copy.cwd, { timeoutMs, signal: opts.signal });
-    span.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut });
+    span.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut, "zero.timeout_ms": timeoutMs, ...(r.ms !== undefined && { "zero.run_ms": r.ms }) });
     if (r.code !== 0) {
-      const why = r.timedOut ? "superó el tiempo límite" : `terminó con código ${r.code}`;
+      // A limit reached says so with its size and where it is set: the tests may be fine and the machine slow.
+      const why = r.timedOut
+        ? `superó el tiempo límite de ${Math.round(timeoutMs / 60_000)} minutos (si el comando necesita más en esta máquina, el límite es \`verifyTimeoutMinutes\` de la línea, en el archivo de la fábrica)`
+        : `terminó con código ${r.code}`;
       return { ok: false, kind: "failed", feedback: `\`${command}\` ${why}:\n${r.output.slice(-MAX_FEEDBACK)}` };
     }
   }

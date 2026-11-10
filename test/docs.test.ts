@@ -93,7 +93,7 @@ describe("README in English and Spanish", () => {
     expect(levels(en)).toEqual(levels(es));
   });
 
-  it("document the Linear intake in both, and leave only Jira on the roadmap", () => {
+  it("document the Linear intake in both, and leave no tracker on the roadmap", () => {
     for (const [text, heading, roadmap] of [
       [en, "## Linear issues", "## Next steps"],
       [es, "## Issues de Linear", "## Próximas etapas"],
@@ -104,7 +104,7 @@ describe("README in English and Spanish", () => {
       expect(blocks(linear).some((b) => b.info === "sh" && b.body.includes("zero secret set LINEAR_API_KEY"))).toBe(true);
       expect(linear).toContain("zero approve");
       const next = section(text, roadmap);
-      expect(next).toContain("Jira");
+      expect(next).not.toMatch(/jira/i);
       expect(next).not.toMatch(/linear/i);
     }
   });
@@ -180,6 +180,20 @@ describe("documentation up to date", () => {
       expect(body).toContain("otlp:");
       expect(section(text, next)).not.toContain("OTLP");
     }
+  });
+
+  it("documents Jira issues as available in both READMEs, with the same code blocks", () => {
+    const sections = [[es, "## Issues de Jira", "## Próximas etapas"], [en, "## Jira issues", "## Next steps"]] as const;
+    const found = sections.map(([text, heading, next]) => {
+      const body = section(text, heading);
+      for (const word of ["jira:", "site:", "project:", "JIRA_EMAIL", "JIRA_API_TOKEN", "zero secret set"]) expect(body, word).toContain(word);
+      const upcoming = section(text, next);
+      expect(upcoming).not.toMatch(/linear/i);
+      expect(upcoming).not.toMatch(/jira/i);
+      return blocks(body).map((b) => ({ info: b.info, body: normalize(b.body) }));
+    });
+    expect(found[0]!.length).toBeGreaterThanOrEqual(2);
+    expect(found[0]).toEqual(found[1]);
   });
 
   it("shows a complete custom agent in both READMEs", () => {

@@ -193,6 +193,8 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails, it leaves it open and says so once on the pull request; if a push fixes it, it merges it on the next check. If the pull request has conflicts with the base branch, the factory first tries to update it: it merges the base into the job's branch, never with a rebase or a force-push, resolves any conflicts as one more attempt within `maxAttempts`, verifies and reviews again, and pushes to the same pull request, never committing conflict markers. It only does this once per tip, and it never touches a pull request with commits that are not its own: when the tip differs from its local branch or the remote branch moved, nothing is pushed. If it cannot update it, the pull request stays as it was and gets the usual notice once. When nothing changed, it looks at the checks again with growing waits, from 5 minutes up to 1 hour, so a check rerun on the same commit can take up to that hour to be noticed. `zero status` and the panel show the ones waiting.
 
+Before leaving a pull request blocked by failed checks, the factory tries what usually fixes it without touching the code. If the branch is behind its base (the checks ran against an older base: a fix reached the base since, or a workflow changed), it merges the base in on GitHub, never a rebase or a forced push, and waits for the new checks. It does that for one pull request per repository at a time, since CI that shares an environment cancels the runs that pile up, and at most 3 times per pull request. If the branch is up to date, it runs the failed GitHub Actions runs again, once per commit: a cancelled run or a test that failed once for no reason of the code. Only when that does not help does it say so on the pull request and leave it open.
+
 The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
 
 ### Commit author
@@ -222,6 +224,29 @@ Without the key the factory does not call Linear, and `zero status` and the pane
 - **On delivery it completes the issue:** it moves it to one of the team's completed states. On `pull-request` lines that happens when the pull request opens. If Linear fails, it tries again on the next check without repeating the comment.
 - **To request it again** after the job finished, remove the label and put it back. It does not read later comments on Linear issues.
 
+## Jira issues
+
+A line can also take as requests the issues of a Jira Cloud project that carry a label. You add the `jira` block to the line in the factory file and save the account's email and an API token in the secret store, never in the file (the factory refuses a `jira` block with any other key):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+You give an issue of the project the `zero` label, and the factory checks every minute and turns it into a job.
+- **It only takes issues created and labeled by people with permission to edit issues in the project**, and only if nobody without that permission changed their summary or description, because that text becomes instructions for the agents. Otherwise it says why in a comment on the issue. The account of the token needs permission to browse users to check this; if the check fails, `zero status` shows the problem and the issue waits.
+- **It comments on the issue** when it takes it, when it needs you and how it ended. It does not read the issue's comments: you answer from the panel, the chat or `zero approve`.
+- **When it delivers, it moves the issue to a done status** with one of its transitions. If the workflow has none, the issue stays as it is and `zero status` says so.
+- **To request it again** after the job finished, remove the label and put it back.
+
+`zero status` and the panel show a `Issues de Jira:` line for each line with its project, its label and any problem, such as missing credentials.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -235,7 +260,7 @@ request
   → the platform's deploy
 ```
 
-- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **Local verification first.** zero runs the line's verification locally before delivering anything. Each command has a time limit: `verifyTimeoutMinutes` of the line (20 by default), and never less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a slow machine does not fail jobs whose tests pass. Setup and verify commands of different jobs take turns on your machine (`commandConcurrency`), a setup that fails is tried once more in a fresh copy, and a command cut by its limit is killed with everything it started.
 - **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
 - **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
 - **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
@@ -338,6 +363,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   block: []
 engine: claude            # default engine: claude · codex · antigravity · opencode · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
+commandConcurrency: 1     # setup and verify commands running on this machine at once, across jobs; the rest wait their turn
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
@@ -361,8 +387,10 @@ lines:
     baseBranch: main
     setup: ["npm ci"]     # runs in every new copy
     verify: ["npm test"]  # everything must pass before the review
+    verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
     commitAuthor: owner       # optional: this line's commit author, over the global one
     stations:                 # optional: skills an agent adds only on this line
@@ -852,4 +880,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.
+Private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.

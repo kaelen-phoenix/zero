@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { CustomEngine } from "../config.js";
+import { killTree } from "../leftovers.js";
 import { spawnTarget } from "../shell.js";
 import { fullPrompt } from "./cli.js";
 import type { Engine, EngineRequest, EngineResult } from "./types.js";
@@ -58,7 +59,7 @@ class RpcError extends Error {}
 async function runAcp(name: string, def: CustomEngine, req: EngineRequest): Promise<EngineResult> {
   const inv = acpInvocation(def, req);
   const target = spawnTarget(inv.bin, req.cwd);
-  const child = spawn(target.bin, inv.args, { cwd: target.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(req.env && { env: { ...process.env, ...req.env } }) });
+  const child = spawn(target.bin, inv.args, { cwd: target.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32", ...(req.env && { env: { ...process.env, ...req.env } }) });
   const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
 
   let stderr = "";
@@ -182,7 +183,7 @@ async function runAcp(name: string, def: CustomEngine, req: EngineRequest): Prom
     req.signal?.removeEventListener("abort", cancel);
     // The agent is never left running: the call ends with its answer.
     child.stdin.end();
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) killTree(child);
     if (child.pid !== undefined) await closed;
   }
   return { ...result, ...(model && { model }), ...(costUsd !== undefined && { costUsd }) };
