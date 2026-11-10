@@ -4,6 +4,7 @@ import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
+import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
@@ -150,6 +151,17 @@ export function formatAgents(lists: LineAgentList[]): string {
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
+const RUN_OUTCOME: Record<StationRunOutcome, string> = { done: "terminó bien", failed: "falló", timeout: "superó su tiempo", stopped: "se cortó porque la fábrica se apagó" };
+
+/** An on-demand run as a person reads it: en curso, or how and when it ended, with its request and error. */
+export function describeStationRun(r: StationRunRecord, now = new Date()): string {
+  const state =
+    r.state === "running"
+      ? `en curso desde ${resetTime(r.startedAt ?? r.requestedAt, now)}`
+      : `${RUN_OUTCOME[r.outcome ?? "failed"]}${r.finishedAt ? ` (${resetTime(r.finishedAt, now)})` : ""}${r.error ? `: ${r.error}` : ""}`;
+  return `${state}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
+}
+
 export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
@@ -163,7 +175,7 @@ export function formatPackages(l: PackageList, now = new Date()): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}`);
+      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -243,7 +255,8 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
-  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
+  for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
