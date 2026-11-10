@@ -36,9 +36,9 @@ El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en
   - las rutas protegidas no se tocan;
   - los hallazgos de las revisiones que citan archivos o líneas inexistentes se descartan;
   - lo que la fábrica produce trabajando no entra a un repositorio (ver [Lo que queda en tu máquina](#lo-que-queda-en-tu-máquina)).
-- **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta.
+- **Nunca pisa tu trabajo.** Cada pedido trabaja en su propia copia (`git worktree`) y su propia rama. Solo integra en tu rama si tu copia está limpia; si no, te consulta. Si al terminar un trabajo no se puede borrar su copia de trabajo (una carpeta bloqueada en Windows), el trabajo conserva su resultado: la limpieza se reintenta en segundo plano y aparece en `zero status` hasta que la copia se borra.
 - **Tiempo para las personas.** zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.
-- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
+- **Agnóstico al motor.** Claude (Agent SDK), Codex, Antigravity, OpenCode, cualquier agente que hable ACP (Agent Client Protocol) o cualquier CLI declarado en la configuración, y uno distinto por estación si querés.
 
 ## Niveles de autonomía
 
@@ -154,6 +154,24 @@ docker compose -f compose.yaml -f docker/compose.box.yaml up -d
 
 Las pruebas de zero no ejercitan esta instalación de punta a punta, solo revisan estos archivos: no corrieron la imagen, los login de los CLI ni la caja por el socket. Ver [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
 
+## Prioridades de los trabajos
+
+Cada trabajo tiene una prioridad: `baja`, `media` (la de siempre), `alta` o `urgente`. La fábrica toma siempre primero la de mayor prioridad y, dentro de la misma, el trabajo más viejo.
+
+- **baja**: solo cuando no hay nada más en cola ni corriendo. Los trabajos propios del turno nocturno y los que pide un paquete arrancan acá.
+- **media**: en orden de llegada.
+- **alta**: pasa adelante de todo lo que está en cola, sin frenar lo que ya corre.
+- **urgente**: para casos como un parche de seguridad. Solo vos podés elegirla (un issue de GitHub, el turno nocturno o un paquete no pueden), y a lo sumo un urgente corre a la vez. Pausar los trabajos que corren para hacerle lugar todavía no está: toma el próximo lugar libre.
+
+Para que lo bajo no quede olvidado, un trabajo en cola sube un nivel por cada día completo que espera, nunca más allá de `alta`; `zero status` lo dice con `(subió por la espera)`.
+
+```sh
+zero request "parchear la vulnerabilidad del login" --prioridad urgente
+zero priority <id> alta        # cambiarla mientras el trabajo no terminó
+```
+
+`zero status`, `zero status <id>` y el chat muestran la prioridad; `zero_request` la recibe como `priority`.
+
 ## Issues de GitHub
 
 Una línea puede tomar como pedidos los issues de su repositorio de GitHub que tengan una etiqueta:
@@ -173,7 +191,9 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 ### Fusión automática
 
-Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla con un push, lo funde en la revisión siguiente. Si nada cambió, vuelve a mirar sus checks con esperas crecientes, de 5 minutos hasta 1 hora, así que un check que se reintenta sobre el mismo commit puede tardar hasta esa hora en notarse. `zero status` y el panel muestran los que esperan.
+Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla, lo deja abierto y lo avisa una vez en el pull request; si se arregla con un push, lo funde en la revisión siguiente. Si el pull request tiene conflictos con la rama base, la fábrica primero intenta actualizarlo: mezcla la base en la rama del trabajo, nunca con rebase ni force-push, resuelve los conflictos como un intento más dentro de `maxAttempts`, vuelve a verificar y revisar, y sube al mismo pull request, sin commitear nunca marcadores de conflicto. Lo hace una sola vez por punta y no toca un pull request con commits ajenos: si la punta difiere de su rama local o la rama remota se movió, no sube nada. Si no puede actualizarlo, el pull request queda como estaba y recibe el aviso de siempre una vez. Si nada cambió, vuelve a mirar sus checks con esperas crecientes, de 5 minutos hasta 1 hora, así que un check que se reintenta sobre el mismo commit puede tardar hasta esa hora en notarse. `zero status` y el panel muestran los que esperan.
+
+Antes de dejar un pull request trabado por checks fallidos, la fábrica prueba lo que suele arreglarlo sin tocar el código. Si la rama quedó atrás de su base (los checks corrieron contra una base vieja: después llegó un arreglo a la base, o cambió un workflow), funde la base en la rama desde GitHub, nunca con rebase ni force-push, y espera los checks nuevos. Lo hace con un pull request por repositorio a la vez, porque un CI que comparte un ambiente cancela las corridas que se acumulan, y como mucho 3 veces por pull request. Si la rama está al día, vuelve a correr las corridas fallidas de GitHub Actions, una vez por commit: una corrida cancelada o un test que falló una vez sin que sea culpa del código. Recién si eso no alcanza lo avisa en el pull request y lo deja abierto.
 
 Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
 
@@ -204,6 +224,29 @@ Sin la clave la fábrica no llama a Linear, y `zero status` y el panel muestran 
 - **Al entregar completa el issue:** lo pasa a uno de los estados de completado del equipo. En las líneas `pull-request` eso pasa cuando se abre el pull request. Si Linear falla, lo vuelve a intentar en la revisión siguiente sin repetir el comentario.
 - **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta. No lee los comentarios posteriores en los issues de Linear.
 
+## Issues de Jira
+
+Una línea también puede tomar como pedidos los issues de un proyecto de Jira Cloud que tengan una etiqueta. Agregás el bloque `jira` a la línea en el archivo de la fábrica y guardás el correo de la cuenta y un token de API en el almacén de secretos, nunca en el archivo (la fábrica rechaza un bloque `jira` con cualquier otra clave):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+Le ponés la etiqueta `zero` a un issue del proyecto, y la fábrica lo revisa cada minuto y lo convierte en un trabajo.
+- **Solo toma issues creados y etiquetados por personas con permiso para editar issues en el proyecto**, y solo si nadie sin ese permiso cambió su título o su descripción, porque ese texto se convierte en instrucciones para los agentes. Si no, explica por qué con un comentario en el issue. La cuenta del token necesita permiso para ver usuarios para revisarlo; si la consulta falla, `zero status` muestra el problema y el issue espera.
+- **Comenta en el issue** cuando lo toma, cuando te necesita y cómo terminó. No lee los comentarios del issue: respondés desde el panel, el chat o `zero approve`.
+- **Al entregar, pasa el issue a un estado terminado** con una de sus transiciones. Si el flujo no tiene ninguna, el issue queda como está y `zero status` lo avisa.
+- **Para pedirlo de nuevo** cuando el trabajo terminó, sacale y volvele a poner la etiqueta.
+
+`zero status` y el panel muestran una línea `Issues de Jira:` por cada línea con su proyecto, su etiqueta y cualquier problema, como credenciales faltantes.
+
 ## zero, tu CI y tus herramientas de calidad
 
 zero hace el trabajo de las personas en el circuito: especificar, programar, probar en local, revisar e integrar, pero no reemplaza a GitHub Actions ni a ningún otro CI/CD, ni al análisis estático, la cobertura, los quality gates o el escaneo de dependencias y de secretos (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Esas herramientas siguen siendo la autoridad, y zero trabaja con ellas:
@@ -217,7 +260,7 @@ pedido
   → despliegue de la plataforma
 ```
 
-- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar.
+- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar. Cada comando tiene un tiempo límite: `verifyTimeoutMinutes` de la línea (20 por defecto), y nunca menos que el doble de lo que tardó la más lenta de sus últimas 5 corridas aprobadas en esa línea, así una suite que crece o una máquina lenta no hacen fallar trabajos cuyos tests pasan. Los comandos de setup y verify de distintos trabajos se turnan en tu máquina (`commandConcurrency`), un setup que falla se prueba una vez más en una copia nueva, un comando de verify cuya falla parece de la máquina y no del cambio (un test que superó su propio tiempo, falta de memoria, un archivo trabado, un corte de red) se corre una vez más antes de gastar un intento, y un comando cortado por su límite se mata con todo lo que había arrancado.
 - **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
 - **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
@@ -244,6 +287,7 @@ Con la fábrica en marcha, el panel muestra:
 - las salidas a internet y el informe;
 - las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
 - las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes);
+- la pestaña "Monitor": totales de la fábrica (trabajos por día, entregados, fallidos, en cola y en curso, tasa de éxito, tiempo promedio por trabajo y por estación, intentos por trabajo), uso de la suscripción, gasto del mes por motor y tokens, una tarjeta por agente (llamadas, tokens, costo, tiempo, tasa de éxito, entregas, motores, modelos y líneas) y una por línea (trabajos, entregas, último trabajo, pull requests abiertos), dibujados en SVG dentro del panel, con filtro por hoy, 7 o 30 días, solo lectura y con actualización automática;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
 Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
@@ -317,8 +361,9 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   mode: blocklist         # blocklist: sale todo salvo lo sospechoso y lo bloqueado · allowlist: solo lo permitido
   allow: []               # p. ej. nas.local, registry.local:8443 (un sitio incluye sus subdominios)
   block: []
-engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
+engine: claude            # motor por defecto: claude · codex · antigravity · opencode · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+commandConcurrency: 1     # comandos de setup y verify que corren a la vez en esta máquina, entre todos los trabajos; el resto espera su turno
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai, ChatGPT en Codex) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
@@ -335,14 +380,17 @@ stations:                 # motor, modelo y tiempo límite por estación (opcion
   build: { skills: [pdf] }       # skills de tu Claude Code (personales o de plugins; `plugin:skill` si el nombre se repite)
 engines:                  # cualquier otro CLI de agentes, sin código; terminar sin imprimir nada cuenta como fallo
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+  gemini-acp: { command: ["gemini", "--experimental-acp"], protocol: acp }   # un agente que habla ACP: el pedido va por el protocolo
 lines:
   - name: tienda
     repo: ~/code/tienda
     baseBranch: main
     setup: ["npm ci"]     # se ejecuta en cada copia nueva
     verify: ["npm test"]  # todo debe pasar antes de la revisión
+    verifyTimeoutMinutes: 20  # opcional: minutos que puede tardar cada comando de verify; zero lo sube al doble de su corrida aprobada más lenta
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # opcional: issues de Jira con la etiqueta "zero"; credenciales con zero secret set
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
     commitAuthor: owner       # opcional: el autor de los commits de esta línea, sobre el global
     stations:                 # opcional: skills que un agente suma solo en esta línea
@@ -381,6 +429,21 @@ codex: { sandbox: off }
 Fuera de la caja, zero lanza entonces Codex con `--sandbox danger-full-access` y sin pedir aprobaciones, y se encarga él de que las estaciones de lectura no escriban: en cada una de esas llamadas compara la carpeta de trabajo y su repositorio antes y después (archivos versionados y sin seguimiento, índice, HEAD, ramas y etiquetas, `config` y `hooks` del repositorio). Si algo cambió, zero vuelve atrás solo lo que difiere, sin tocar el trabajo que no habías guardado, y marca la llamada como fallida con un aviso que nombra los archivos. También deshace cualquier otra cosa que cambie la carpeta o su rama durante la llamada, como tus propias ediciones o commits en esa misma copia (`git reflog` todavía los encuentra); lo descartado queda en una carpeta temporal que figura en el log. La fábrica no se cruza: un trabajo no arranca en un repositorio con una de esas llamadas en curso, y una llamada de fondo espera al trabajo que corre en su repositorio. Las demás referencias no se vuelven atrás cuando no se le pueden atribuir a la llamada: en la copia de trabajo de un trabajo, todas menos la rama de esa copia, y en cualquier caso las ramas `zero/*` de la fábrica, las ramas abiertas en otro worktree y las etiquetas nuevas (las trae cualquier fetch). Esas solo quedan en el log. Cuando la caja de aislamiento está lista (`isolation: container`), Codex corre dentro de ella con sus banderas de siempre, también en las pasadas de fondo, y `zero status` lo dice; si no, `zero status` avisa que corre sin su sandbox.
 
 Lo que esto no cubre fuera de la caja: los archivos ignorados por git y sin seguimiento, las referencias recién nombradas, el resto de la máquina (Codex puede leer y escribir donde vos podés, incluida la carpeta de la fábrica) y la salida a internet.
+
+### Motores OpenCode y ACP
+
+`engine: opencode` maneja el CLI de OpenCode (`opencode run --format json`) con el proveedor en el que hayas iniciado sesión; `model` es el `proveedor/modelo` de OpenCode. Cualquier agente que hable Agent Client Protocol (ACP) por stdio, como `gemini --experimental-acp`, `opencode acp` o un adaptador ACP para Claude o Codex, se declara en `engines` con `protocol: acp`:
+
+```yaml
+engines:
+  gemini-acp:
+    command: ["gemini", "--experimental-acp"]
+    protocol: acp
+    modelArgs: ["-m", "{model}"]
+    hosts: [generativelanguage.googleapis.com]
+```
+
+zero manda el pedido por el protocolo, nunca en la línea de comandos, así que una entrada ACP no puede usar `{prompt}`. Las estaciones de solo lectura siguen siendo de solo lectura porque zero mismo revisa la carpeta de trabajo alrededor de cada llamada y vuelve atrás lo que haya cambiado, como con Codex sin su sandbox; además, OpenCode recibe permisos que le niegan editar, correr comandos y usar la web, y zero rechaza los pedidos de permiso de un agente ACP para cualquier cosa que no sea leer, buscar o pensar. Terminar sin respuesta cuenta como fallo. Los dos informan el modelo que respondió y el costo cuando el agente lo dice, pero ninguno informa ventanas de uso de un plan, así que su gasto cuenta contra los topes en dólares (`usdPerDay`, `usdPerJob`). OpenCode todavía no puede trabajar dentro de la caja de aislamiento; un motor ACP recibe ahí sus `secrets` como cualquier motor propio.
 
 ### Motores de reemplazo (`fallback`)
 
@@ -553,6 +616,7 @@ export async function scheduled(ctx, { at }) {
 | `ctx.state.get(nombre)`, `ctx.state.set(nombre, valor)` | Se guarda entre pasadas, por separado para cada estación |
 | `ctx.deliveredJobs(desde)` | Línea, título, resumen y fecha de los trabajos entregados, sin identificadores de trabajo, ramas ni rutas locales |
 | `ctx.requestJob({ line, text })` | Le pide un trabajo a la fábrica. Devuelve `{ id }`, o `{ reason }` si no se puede; nunca lanza |
+| `ctx.dataDir` | La carpeta de datos del paquete, `~/.zero/package-data/<paquete>`, ya creada; de acá leen sus pestañas del panel |
 
 `ctx.runAgent` registra cada llamada como `package:<paquete>/<estación>`, elige el motor de la cadena de la entrada y comparte el tope `limits.usdPerNight` en el pago por uso. Sin motor o sin tope restante devuelve `ok: false` sin llamar a nadie.
 
@@ -561,6 +625,38 @@ export async function scheduled(ctx, { at }) {
 **Pasadas con horario.** Con `schedule` (una lista de horas locales `HH:MM`, sin repetir), zero llama a `scheduled(ctx, { at })` del módulo en cada una de esas horas en vez de a `pass`; `at` es la hora tal como la escribe el manifiesto y `ctx.now` la hora real de la pasada. Corren aunque haya trabajos en cola o en marcha y aunque se haya agotado el presupuesto, porque no pueden usar un modelo: `ctx.runAgent` lanza un error y no llama a ningún motor. Sí tienen `ctx.secrets`, `ctx.state` (los mismos valores que `pass`), `ctx.log` y `ctx.lines`, y el resto de `ctx` funciona igual. Cada hora corre como máximo una vez por día local y cuenta como usada antes de la llamada, así que la que falla o supera `timeoutMinutes` no se repite ese día. Una hora que no pudo correr (la fábrica estaba apagada, el andon activo o faltaba un secreto declarado) corre después solo si no pasaron más de 2 horas, de la más vieja a la más nueva, y si no espera al día siguiente; con el andon activo no arranca ninguna. `pass` sigue con su propio ritmo en el tiempo libre, así que una estación puede exportar una, la otra o las dos. Las dos pueden correr a la vez y comparten `ctx.state`: tenelo en cuenta al escribir la estación.
 
 **Corridas a demanda.** A una estación cuyo manifiesto declara `onDemand: true` (por defecto es false) le podés pedir que corra una vez sin esperar sus `everyMinutes`: `zero package run <paquete>/<estación>`, o la herramienta `zero_package_run` del chat. zero llama a su `pass(ctx, { onDemand: true })`, con el mismo `ctx` de siempre, así la estación distingue tu pedido de su turno normal, que no recibe segundo argumento. El pedido espera las mismas condiciones que cualquier pasada del tiempo libre: nada en cola o en marcha, el andon apagado, presupuesto disponible y sus secretos declarados guardados; mientras tanto queda pendiente, y el daemon lo toma en su siguiente turno libre. `ctx.runAgent` sigue compartiendo el tope de `limits.usdPerNight`. Una corrida a demanda no mueve el período de la estación, y en esa pasada no corre además su turno normal. Hay como máximo una corrida pendiente por estación: si la pedís de nuevo antes de que corra, se rechaza. También recibís el motivo, y no se registra nada, cuando la estación no es `<paquete>/<estación>`, el paquete o la estación no existen, la estación no puede correr (por ejemplo, sin `allowCode`), no declara `onDemand: true`, el andon está activo o se agotó el presupuesto. Un módulo que no se puede importar, no tiene `pass` o cuyo `parseConfig` lanza un error descarta el pedido, y el motivo queda en el log. El comando sale con 1 cuando se rechaza, y enciende la fábrica si estaba apagada.
+
+**Pestañas del panel.** Con `tabs`, un paquete suma pestañas propias, de solo lectura, al panel del navegador. Cada una muestra un archivo JSON que las estaciones del paquete escriben en su carpeta de datos, `~/.zero/package-data/<paquete>`, que reciben ya creada como `ctx.dataDir`. En el panel no corre código del paquete, y las pestañas no necesitan `allowCode`: el panel solo lee ese archivo y lo valida con un esquema. El `name` de cada pestaña sigue la regla de los demás nombres del paquete y no se puede repetir, y `data` tiene que ser una ruta `.json` relativa que no salga de la carpeta de datos; si no, el paquete entero queda afuera.
+
+```yaml
+tabs:
+  - name: news                     # su dirección: /packages/hello/news
+    title: News                    # hasta 60 caracteres, en el menú del panel
+    data: news.json                # relativa a ~/.zero/package-data/hello
+    categories: [release, security] # opcional: las opciones del filtro
+```
+
+El archivo tiene un objeto con `items`, una lista de hasta 500 elementos. Solo `title` es obligatorio (hasta 300 caracteres); `description` admite hasta 2000, y `url`, `category` y `date` son textos opcionales:
+
+```json
+{
+  "items": [
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+  ]
+}
+```
+
+```js
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export async function scheduled(ctx) {
+  const items = [{ title: "Version 2.0", url: "https://example.com/v2", category: "release" }];
+  writeFileSync(join(ctx.dataDir, "news.json"), JSON.stringify({ items }));
+}
+```
+
+Cada pestaña aparece en el menú de todas las páginas del panel y tiene su propia dirección, `/packages/<paquete>/<pestaña>`, que pide la sesión del panel como las demás páginas. Para compartirla, sumale la clave del panel a esa dirección (`/packages/hello/news#k=…`): después de ingresar, el panel queda en esa pestaña y no en el resumen. El filtro usa el parámetro `categoria`, con las `categories` del manifiesto como opciones o, si no las declara, las que usan los elementos. Como son datos de terceros, todo su texto se escapa, y una `url` solo se vuelve link si es una dirección absoluta `http` o `https`, que se abre en una pestaña nueva; cualquier otra (`javascript:`, `data:`, relativa) muestra el elemento sin link. Un archivo que falta muestra que todavía no hay datos; uno de más de 1 MiB, que no es JSON, que no cumple el esquema o cuya ruta real sale de la carpeta de datos (por ejemplo, por un enlace) muestra un aviso y ninguno de sus elementos.
 
 **Cómo instalar uno:**
 
@@ -688,7 +784,7 @@ No investigues frameworks de frontend que no sean React.
 
 Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La nota recuerda qué skill la escribió. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy", con las notas de negocio y las técnicas por separado, bajo "Negocio" y "Técnica") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat), o el botón "Pedir trabajo" de la pestaña "Investigación" del panel, que muestra las notas de los últimos 30 días de cada línea, separadas en "Negocio" y "Técnica", cada una con la skill que la escribió. `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
 
-En las líneas de GitHub cada nota se publica también como issue en el repo de la línea, con la etiqueta `zero:investigacion` (la fábrica la crea si falta) y nunca con `zero`, así que no se convierte en trabajo sola. El issue trae lo encontrado, para qué serviría, su madurez, las fuentes, el id de la nota y cómo pedir un trabajo (`zero research request <id>`). Antes de publicar, zero tapa secretos y rutas de tu PC y desactiva las menciones (@usuario) para no avisarle a nadie. Si GitHub falla, lo reintenta en la pasada siguiente.
+En las líneas de GitHub cada nota se publica también como issue en el repo de la línea, con la etiqueta `zero:investigacion` (la fábrica la crea si falta) y nunca con `zero`, así que no se convierte en trabajo sola. El issue trae lo encontrado, para qué serviría, su madurez, las fuentes, el id de la nota y cómo pedir un trabajo (`zero research request <id>`). Antes de publicar, zero tapa secretos y rutas de tu PC y desactiva las menciones (@usuario) para no avisarle a nadie. Las imágenes Markdown y las etiquetas que cargan recursos (`img`, `picture`, `source`, `video`, `audio`, `iframe`) se publican como texto, en notas, propuestas y comentarios de propuesta, y las fuentes de una nota se guardan sin query string ni fragmento. Esto reduce la exposición pero no garantiza nada: un dato todavía puede viajar en la ruta de una URL, y los enlaces normales siguen, aunque requieren un clic. Si GitHub falla, lo reintenta en la pasada siguiente.
 
 Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
 
@@ -784,4 +880,4 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Entradas desde Jira · red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · motores ACP/OpenCode · ccusage · MCP gobernado para los agentes de las estaciones.
+Red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.

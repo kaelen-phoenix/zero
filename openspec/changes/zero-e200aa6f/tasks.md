@@ -1,0 +1,16 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 Crear el cambio OpenSpec `openspec/changes/zero-e200aa6f/` (proposal.md, tasks.md, specs/agent-packages/spec.md con `## ADDED Requirements`) y validar con `npx openspec validate --all`.
+- [x] 1.2 src/home.ts: agregar `packageData: join(abs, "package-data")` a `FactoryHome` y a `factoryHome`.
+- [x] 1.3 src/packages.ts: agregar `ManifestTabSchema` (strict: name con NAME, title de 1 a 60, data con ruta relativa `.json` sin `..` usando `pathProblem`, y categories opcional sin repetidos) y `tabs` con default `[]` en `ManifestSchema`. Rechazar nombres repetidos con `Refused` y exportar `packageDataDir(home, name)`.
+- [x] 1.4 src/config.ts: agregar `tabs: PackageTab[]` (`{ name, title, data, categories? }`) a `LoadedPackage` y llenarlo en `loadPackages`. Las pestañas no dependen de `allowCode`.
+- [x] 1.5 src/line/packages.ts: agregar `dataDir` a `StationContext`, con la carpeta creada (`mkdirSync` recursive) en `stationContext`, tanto en `pass` como en `scheduled`.
+- [x] 1.6 Nuevo src/package-tabs.ts (puro + fs): `TabDataSchema` zod (items ≤500; title 1..300; description ≤2000; url, category y date opcionales) y `readTabData(dataDir, tab)`, que devuelve `{ state: 'missing' | 'invalid' | 'ok', items }`. Primero hace realpath y verifica que el archivo esté dentro con `isInside`, después revisa que el tamaño sea ≤1 MiB con stat antes de leerlo, y luego hace JSON.parse y safeParse. Agregar `safeUrl(u)`, que devuelve la URL solo con protocolo http: o https:.
+- [x] 1.7 src/app.ts: agregar `packageTabs(ctx)` (lista `{ package, name, title, href }` desde `ctx.config.loadedPackages`) y `packageTabView(ctx, pkg, tab, category?)`, que devuelve undefined si no existe y si no la vista con el estado, las opciones de categoría y los elementos filtrados.
+- [x] 1.8 src/panel/html.ts: hacer que `page` acepte pestañas extra en el menú (por ejemplo, `opts.tabs` o una marca que `send` reemplaza en server.ts) para que todas las páginas con menú muestren los links escapados. Agregar `packageTabPage(view, nonce)`, con un formulario GET de categoría, la lista escapada y los links con `target=_blank rel="noopener noreferrer"` solo vía `safeUrl`. En `loginPage`, conservar la ruta actual (que empiece con `/` y no con `//`) en `replaceState` y en `location.replace` después del ingreso.
+- [x] 1.9 src/panel/server.ts: agregar la ruta GET `^/packages/([a-z0-9][a-z0-9-]*)/([a-z0-9][a-z0-9-]*)$`, que responde 404 si `packageTabView` no la encuentra. Sin ruta POST.
+- [x] 1.10 Tests: en test/packages.test.ts, la validación de `tabs` (válida, sin tabs, ruta `..`/absoluta, repetida, clave desconocida) y `ctx.dataDir`. En un test/panel-package-tabs.test.ts nuevo: menú, 200 con datos, ausente, inválido (JSON roto, sin title, >1 MiB), enlace fuera de la carpeta (saltarlo si el sistema no deja crear enlaces), escape de HTML, `href` solo http/https, filtro `categoria`, 401 sin sesión, 404 inexistente, POST 404 y el script de `loginPage` conservando la ruta.
+- [x] 1.11 Documentar en README.md y README.es.md (sección Agent packages / Paquetes de agentes) con la misma estructura y los mismos bloques, sin nombrar paquetes concretos, y actualizar la línea de `src/packages.ts`/`src/panel/` en AGENTS.md.
+- [x] 1.12 Correr `npm run typecheck`, `npm test` y `npx openspec validate --all`.

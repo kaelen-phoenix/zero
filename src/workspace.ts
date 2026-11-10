@@ -1,8 +1,10 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { CommitAuthor } from "./config.js";
-import { git, tryGit } from "./shell.js";
+import { killLeftovers } from "./leftovers.js";
+import { log } from "./log.js";
+import { git, spawnGit, tryGit } from "./shell.js";
 
 /**
  * The factory's git identity. It is always the committer of what the factory
@@ -38,14 +40,19 @@ export interface ChangedFile {
   path: string;
 }
 
+/** How merging the base into a job's branch went. `conflict` leaves the merge in progress. */
+export type MergeOutcome = { outcome: "up-to-date" } | { outcome: "merged" } | { outcome: "conflict"; paths: string[] } | { outcome: "refused"; reason: string };
+
 /** A job's own copy of the line's repository, on its own branch. */
 export interface WorkCopy {
   cwd: string;
   branch: string;
   base: string;
   hasChanges(): boolean;
-  /** Commits everything; returns false when there was nothing to commit. */
+  /** Commits everything, concluding a merge in progress even when it changes nothing; returns false when there was nothing to commit. */
   commitAll(message: string): boolean;
+  /** Merges the base into the branch, never rewriting it. With `tip`, first goes back to that commit, dropping everything else. With `commit`, merges that commit of the base instead of wherever its ref is now. */
+  mergeBase(message: string, tip?: string, commit?: string): MergeOutcome;
   /** Drops uncommitted changes, including new files (ignored files such as node_modules are kept). */
   discardChanges(): void;
   /** Files changed on the branch relative to the base. */
@@ -63,6 +70,16 @@ export function untrackedPaths(cwd: string): string[] {
     .split("\n")
     .filter((l) => l.startsWith("?? "))
     .map((l) => l.slice(3).replace(/^"|"$/g, ""));
+}
+
+const CONFLICT_MARKER = /^(?:<{7}|\|{7}|>{7})(?: |\r?$)/m;
+
+/** Which of these paths still hold conflict markers. Regular files only; a bare `=======` is valid Markdown and does not count. */
+export function conflictMarkers(cwd: string, paths: string[]): string[] {
+  return paths.filter((path) => {
+    const file = join(cwd, path);
+    return lstatSync(file, { throwIfNoEntry: false })?.isFile() && CONFLICT_MARKER.test(readFileSync(file, "latin1"));
+  });
 }
 
 /**
@@ -120,9 +137,24 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
     hasChanges: () => git(["status", "--porcelain", ...scope], cwd).length > 0,
     commitAll(message) {
       git(["add", "-A", ...scope], cwd);
-      if (!git(["diff", "--cached", "--name-only"], cwd)) return false;
+      const merging = tryGit(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], cwd) !== undefined;
+      if (!merging && !git(["diff", "--cached", "--name-only"], cwd)) return false;
       git([...FACTORY_IDENTITY, "commit", "-q", "-m", message], cwd, identity && authorEnv(identity.author, identity.repo));
       return true;
+    },
+    mergeBase(message, tip, commit) {
+      if (tip) {
+        git(["reset", "-q", "--hard", tip], cwd);
+        git(["clean", "-fdq", ...scope], cwd);
+      }
+      const before = git(["rev-parse", "HEAD"], cwd);
+      const env = identity && authorEnv(identity.author, identity.repo);
+      const r = spawnGit([...FACTORY_IDENTITY, "merge", "--no-edit", "-m", message, commit ?? base], cwd, env && { env });
+      if (r.status === 0) return { outcome: git(["rev-parse", "HEAD"], cwd) === before ? "up-to-date" : "merged" };
+      const paths = (tryGit(["diff", "--name-only", "--diff-filter=U", "-z"], cwd) ?? "").split("\0").filter(Boolean);
+      if (paths.length) return { outcome: "conflict", paths };
+      tryGit(["merge", "--abort"], cwd);
+      return { outcome: "refused", reason: (r.stderr || r.stdout || String(r.error ?? "")).trim().slice(0, 500) };
     },
     discardChanges() {
       git(["reset", "-q", "--hard", "HEAD"], cwd);
@@ -152,10 +184,24 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
 }
 
 export function removeWorkCopy(repo: string, path: string) {
-  if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
-  tryGit(["worktree", "prune"], repo);
-  // Clones (box copies) are not worktrees: remove them directly.
-  if (existsSync(path)) rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+  const remove = () => {
+    if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
+    tryGit(["worktree", "prune"], repo);
+    // Clones (box copies) are not worktrees: remove them directly.
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+      // A worktree whose `remove` failed (a locked file) leaves its entry until the folder is gone.
+      tryGit(["worktree", "prune"], repo);
+    }
+  };
+  try {
+    remove();
+  } catch (err) {
+    // A folder that cannot be removed is usually held by something a job left running in it (a dev server, the rest of a killed command).
+    if (!killLeftovers(path)) throw err;
+    log.warn("processes left running in a work copy were killed to remove it", { path });
+    remove();
+  }
 }
 
 /** Where a branch is checked out, if anywhere (the owner's copy or another worktree). */
