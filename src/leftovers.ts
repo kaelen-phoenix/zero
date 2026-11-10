@@ -55,12 +55,56 @@ interface WindowsRow {
   pp: number;
   c?: string | null;
   e?: string | null;
+  d?: string | null;
 }
+
+/**
+ * Windows tells a process's command line and executable, but not its working directory, and that is what locks a
+ * folder: a shell an agent left waiting in a loop names the folder nowhere else. It is read from the process
+ * itself (its PEB, 64-bit only); a process that cannot be opened simply has none.
+ */
+const WINDOWS_CWD = `
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ZeroCwd {
+  [StructLayout(LayoutKind.Sequential)]
+  struct PBI { public IntPtr Reserved1; public IntPtr Peb; public IntPtr R2a; public IntPtr R2b; public IntPtr Pid; public IntPtr R3; }
+  [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int cls, ref PBI pbi, int len, out int ret);
+  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+  [DllImport("kernel32.dll")] static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int size, out IntPtr read);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  public static string Of(int pid) {
+    if (IntPtr.Size != 8) return null;
+    IntPtr h = OpenProcess(0x0410, false, pid);
+    if (h == IntPtr.Zero) return null;
+    try {
+      PBI pbi = new PBI(); int ret; IntPtr read;
+      if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(pbi), out ret) != 0) return null;
+      byte[] p = new byte[8];
+      if (!ReadProcessMemory(h, IntPtr.Add(pbi.Peb, 0x20), p, 8, out read)) return null;
+      IntPtr pp = (IntPtr)BitConverter.ToInt64(p, 0);
+      byte[] us = new byte[16];
+      if (!ReadProcessMemory(h, IntPtr.Add(pp, 0x38), us, 16, out read)) return null;
+      int len = BitConverter.ToUInt16(us, 0);
+      if (len <= 0 || len > 65534) return null;
+      byte[] s = new byte[len];
+      if (!ReadProcessMemory(h, (IntPtr)BitConverter.ToInt64(us, 8), s, len, out read)) return null;
+      return Encoding.Unicode.GetString(s);
+    } catch { return null; } finally { CloseHandle(h); }
+  }
+}`;
 
 function windowsProcesses(): RunningProcess[] {
   // The listing comes back as JSON and is filtered here: nothing of the folder name reaches the command.
-  const script = "Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ p = $_.ProcessId; pp = $_.ParentProcessId; c = $_.CommandLine; e = $_.ExecutablePath } } | ConvertTo-Json -Compress";
-  const r = spawnSync(join(windowsTools(), "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$cwd = $false",
+    `try { Add-Type -TypeDefinition @'${WINDOWS_CWD}\n'@ -ErrorAction Stop; $cwd = $true } catch { }`,
+    "Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ p = $_.ProcessId; pp = $_.ParentProcessId; c = $_.CommandLine; e = $_.ExecutablePath; d = $(if ($cwd) { [ZeroCwd]::Of([int]$_.ProcessId) }) } } | ConvertTo-Json -Compress",
+  ].join("\n");
+  // Encoded, so no quoting of the script depends on how the command line is parsed.
+  const r = spawnSync(join(windowsTools(), "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 60_000,
@@ -68,7 +112,7 @@ function windowsProcesses(): RunningProcess[] {
   });
   if (r.status !== 0 || !r.stdout) return [];
   const rows = JSON.parse(r.stdout) as WindowsRow[] | WindowsRow;
-  return (Array.isArray(rows) ? rows : [rows]).map((x) => ({ pid: x.p, parent: x.pp, text: [x.c ?? "", x.e ?? ""] }));
+  return (Array.isArray(rows) ? rows : [rows]).map((x) => ({ pid: x.p, parent: x.pp, text: [x.c ?? "", x.e ?? "", x.d ?? ""] }));
 }
 
 function linuxProcesses(): RunningProcess[] {
@@ -103,7 +147,7 @@ function psProcesses(): RunningProcess[] {
 }
 
 export type ProcessLister = () => RunningProcess[];
-const systemProcesses: ProcessLister = () => (process.platform === "win32" ? windowsProcesses() : process.platform === "linux" ? linuxProcesses() : psProcesses());
+export const systemProcesses: ProcessLister = () => (process.platform === "win32" ? windowsProcesses() : process.platform === "linux" ? linuxProcesses() : psProcesses());
 
 /** The processes running from a folder, leaving out this process and its ancestors. Pure over the listing. */
 export function leftoversIn(folder: string, procs: RunningProcess[], self = process.pid, windows = process.platform === "win32"): number[] {
