@@ -1,10 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -64,6 +64,7 @@ function returnTo(path: string): string {
   if (path.startsWith("/proposals")) return "/proposals";
   if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
+  if (path.startsWith("/packages")) return "/packages";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -239,6 +240,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       // Read-only pages: they have no POST route, so a POST to them falls through to the 404 below.
       if (path === "/about") return send(res, 200, aboutPage(await factoryGuide(ctx), nonce), nonce);
       if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce), nonce);
+      if (path === "/packages") {
+        const onDemand = (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.onDemand).map((s) => `${s.package}/${s.name}`);
+        return send(res, 200, packagesPage(packageList(ctx), onDemand, nonce, flash), nonce);
+      }
       const tab = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)$/.exec(path);
       if (tab) {
         const view = packageTabView(ctx, tab[1]!, tab[2]!, url.searchParams.get("categoria") || undefined);
@@ -319,6 +324,11 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       const r = requestFromResearchNote(ctx, id);
       return back(res, "/research", `Trabajo pedido: ${r.job.id}. ${r.next}`);
+    }
+    if (path === "/packages/run") {
+      // Only the person in charge gets here: the session was checked above.
+      const r = requestStationRun(ctx, form.get("station") ?? "", new Date(), form.get("pedido") ?? undefined);
+      return back(res, "/packages", r.ok ? r.text : r.reason);
     }
     if (path === "/egress/rule") {
       const action = form.get("action");

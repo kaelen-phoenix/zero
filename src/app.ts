@@ -26,7 +26,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText } from "./line/packages.js";
+import { readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
@@ -322,7 +322,9 @@ export interface FactoryStatus {
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
-  onDemand: { station: string; since: string }[];
+  onDemand: { station: string; since: string; request?: string }[];
+  /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
+  stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
   daemon: DaemonInfo;
@@ -384,7 +386,13 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     packages: ctx.config.loadedPackages?.problems ?? [],
     onDemand: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
       const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
-      return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
+      if (since === undefined) return [];
+      const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
+      return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
+    }),
+    stationRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+      const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
+      return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
@@ -1449,6 +1457,10 @@ export interface PackageStationView {
   lastRun?: string;
   /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
   onDemandPendingSince?: string;
+  /** The text sent with the pending on-demand run, when there is one. */
+  onDemandRequest?: string;
+  /** The station's last on-demand run: running, or how it ended. */
+  lastOnDemand?: StationRunRecord;
 }
 
 /** A package's tab as the panel's menu links it. */
@@ -1537,12 +1549,16 @@ export function packageList(ctx: FactoryContext): PackageList {
         stations: p.stations.map((name) => {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
+          const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
+          const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
           return {
             name,
             allowed: Boolean(station),
             missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
+            ...(pendingRequest && { onDemandRequest: pendingRequest }),
+            ...(lastOnDemand && { lastOnDemand }),
           };
         }),
       };

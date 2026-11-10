@@ -18,8 +18,8 @@
 
 ## 3. Etapa 3: Estado, panel y documentación
 
-- [ ] 3.1 In factoryStatus, add the optional `request` to `onDemand` entries only when present, and add `stationRuns` (one entry per onDemand station with a run record: station, state, outcome, request, times, error). Show them in formatStatus (en curso / último resultado lines)
-- [ ] 3.2 Add `packageList`'s station view fields for the last run record (optional, omitted when absent)
-- [ ] 3.3 Panel: in src/panel/html.ts add `packagesPage` (stations with state, last outcome, and the "Pedir ahora" form with an optional `pedido` textarea for onDemand stations, all text through esc) and a NAV entry "Paquetes". In src/panel/server.ts add GET /packages and POST /packages/run calling requestStationRun, redirecting 303 to /packages with the message, and map `/packages` in returnTo
-- [ ] 3.4 Panel tests: the form shows only for onDemand stations, an authenticated POST records the request, a refusal redirects to /packages, and a POST without a session records nothing
-- [ ] 3.5 Document `--pedido`, `run.request`, the chat field, the panel button and the status lines in README.md and README.es.md with the same structure and code blocks, and update the on-demand paragraph of AGENTS.md. Run `npm run typecheck`, the focused tests and test/docs.test.ts and test/wording.test.ts
+- [x] 3.1 In factoryStatus, add the optional `request` to `onDemand` entries only when present, and add `stationRuns` (one entry per onDemand station with a run record: station, state, outcome, request, times, error). Show them in formatStatus (en curso / último resultado lines)
+- [x] 3.2 Add `packageList`'s station view fields for the last run record (optional, omitted when absent)
+- [x] 3.3 Panel: in src/panel/html.ts add `packagesPage` (stations with state, last outcome, and the "Pedir ahora" form with an optional `pedido` textarea for onDemand stations, all text through esc) and a NAV entry "Paquetes". In src/panel/server.ts add GET /packages and POST /packages/run calling requestStationRun, redirecting 303 to /packages with the message, and map `/packages` in returnTo
+- [x] 3.4 Panel tests: the form shows only for onDemand stations, an authenticated POST records the request, a refusal redirects to /packages, and a POST without a session records nothing
+- [x] 3.5 Document `--pedido`, `run.request`, the chat field, the panel button and the status lines in README.md and README.es.md with the same structure and code blocks, and update the on-demand paragraph of AGENTS.md. Run `npm run typecheck`, the focused tests and test/docs.test.ts and test/wording.test.ts
