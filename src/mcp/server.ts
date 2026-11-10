@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -32,9 +32,11 @@ async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promi
  * The chat is the front door and the control room: every tool returns at
  * once and only reads or writes the factory's state; the daemon does the work.
  */
-export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean } = {}): McpServer {
+export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean; stationWaitMs?: number } = {}): McpServer {
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
+  // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
+  const stationWaitMs = opts.stationWaitMs ?? 30_000;
 
   server.registerTool(
     "zero_request",
@@ -149,14 +151,18 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     {
       title: "Correr una estación de un paquete",
       description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
-      inputSchema: { station: z.string().describe("The station, as <package>/<station>.") },
+      inputSchema: {
+        station: z.string().describe("The station, as <package>/<station>."),
+        request: z.string().optional().describe("Optional request text from the owner for this run; the station receives it cleaned of secrets and local paths."),
+      },
     },
-    ({ station }) =>
+    ({ station, request }) =>
       withFactory(home, async (ctx) => {
-        const r = requestStationRun(ctx, station);
+        const r = requestStationRun(ctx, station, new Date(), request);
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
-        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+        const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
       }),
   );
 

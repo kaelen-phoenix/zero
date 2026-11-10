@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
+import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, waitStationStart, type FactoryContext, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { onDemandPending, packagesPass, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationRunKey } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
@@ -437,5 +437,74 @@ describe("interfaces", () => {
     const r = (await client.callTool({ name: "zero_package_run", arguments: { station: "hello/nota" } })) as { content: { text: string }[] };
     expect(r.content[0]!.text).toContain("onDemand");
     expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+});
+
+describe("waiting for the run to start", () => {
+  const noSleep = async () => {};
+
+  it("answers started once the run record carries the request and a startedAt", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    let polls = 0;
+    const sleep = async () => {
+      polls++;
+      if (polls === 2) ctx.store.setKv(stationRunKey("hello", "nota"), JSON.stringify({ requestedAt: r.requestedAt, startedAt: new Date().toISOString(), state: "running" }));
+    };
+    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 1000, pollMs: 100, sleep });
+    expect(w.started).toBe(true);
+    expect(w.text).toContain("empezó");
+  });
+
+  it("does not take an earlier run's record for this one", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    ctx.store.setKv(stationRunKey("hello", "nota"), JSON.stringify({ requestedAt: "2026-01-01T00:00:00.000Z", startedAt: "2026-01-01T00:00:01.000Z", state: "ended", outcome: "done" }));
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 300, pollMs: 100, sleep: noSleep });
+    expect(w).toMatchObject({ started: false, text: expect.stringContaining("pendiente") });
+  });
+
+  it("answers pending when nothing starts within the limit", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    const sleep = vi.fn(noSleep);
+    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 500, pollMs: 100, sleep });
+    expect(w.started).toBe(false);
+    expect(w.text).toContain("sigue pendiente");
+    expect(sleep).toHaveBeenCalledTimes(5);
+  });
+
+  it("starts for real when the packages pass runs it", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    const r = requestStationRun(ctx, "hello/nota");
+    if (!r.ok) throw new Error(r.reason);
+    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 1000, pollMs: 100, sleep: () => packagesPass(ctx, fakeAgents({}).runner, new Date()) });
+    expect(w.started).toBe(true);
+  });
+
+  it("zero_package_run passes the request and tells whether it started", async () => {
+    const { dir } = stationPackage({ onDemand: true, secrets: ["NOTA_TOKEN"] });
+    const ctx = await factory(dir);
+    const server = createZeroMcpServer(ctx.home, { autoStart: false, stationWaitMs: 0 });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(b);
+    const r = (await client.callTool({ name: "zero_package_run", arguments: { station: "hello/nota", request: "  revisar precios  " } })) as { content: { text: string }[] };
+    expect(r.content[0]!.text).toContain("sigue pendiente");
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(stationOnDemandRequestKey("hello", "nota"))).toBe("revisar precios");
+  });
+
+  it("the CLI takes --pedido, passes it and waits two minutes", () => {
+    const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toMatch(/^  zero package run <paquete>\/<estación> \[--pedido "<texto>"\]$/m);
+    expect(cli).toContain("pedido: { type: \"string\" }");
+    expect(cli).toContain("requestStationRun(ctx, name, new Date(), values.pedido)");
+    expect(cli).toContain("const STATION_WAIT_MS = 120_000;");
+    expect(cli).toMatch(/waitStationStart\(ctx, name, r\.requestedAt, \{ timeoutMs: STATION_WAIT_MS \}\)/);
   });
 });

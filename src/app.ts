@@ -26,7 +26,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText } from "./line/packages.js";
+import { readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
@@ -1583,6 +1583,41 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   const requestedAt = now.toISOString();
   ctx.store.setKv(key, requestedAt);
   return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.`, requestedAt };
+}
+
+export interface StationWait {
+  timeoutMs: number;
+  pollMs?: number;
+  /** Tests inject it; by default a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Waits until the daemon starts the on-demand run asked for at `requestedAt`
+ * (its run record carries that time and a `startedAt`), or the limit passes.
+ * Shared by the CLI and the chat, so both answer the same way.
+ */
+export async function waitStationStart(ctx: FactoryContext, ref: string, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const [pkg = "", name = ""] = ref.trim().split("/");
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readStationRun(ctx, pkg, name);
+    if (run?.requestedAt === requestedAt && run.startedAt) {
+      return { started: true, text: `La corrida a demanda de ${pkg}/${name} empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero status.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre apenas la fábrica esté libre.` };
+}
+
+function hourMinute(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */

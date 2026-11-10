@@ -11,10 +11,10 @@
 
 ## 2. Etapa 2: CLI y chat esperan el inicio
 
-- [ ] 2.1 Add `waitStationStart(ctx, ref, requestedAt, { timeoutMs, pollMs, sleep? })` in src/app.ts: re-read the run record from the store until its requestedAt equals the given one and it has startedAt (started), or the limit passes (pending). Return the text to show
-- [ ] 2.2 In src/cli.ts add a `pedido` string option. `zero package run` passes it, ensures the daemon, waits through waitStationStart (2 minutes) and prints the result. Update the usage text
-- [ ] 2.3 In src/mcp/server.ts add an optional `request` to zero_package_run and wait 30 s with the same function
-- [ ] 2.4 Tests for waitStationStart (started and pending, with an injected sleep and short limits) and for the MCP/CLI request reaching the store
+- [x] 2.1 Add `waitStationStart(ctx, ref, requestedAt, { timeoutMs, pollMs, sleep? })` in src/app.ts: re-read the run record from the store until its requestedAt equals the given one and it has startedAt (started), or the limit passes (pending). Return the text to show
+- [x] 2.2 In src/cli.ts add a `pedido` string option. `zero package run` passes it, ensures the daemon, waits through waitStationStart (2 minutes) and prints the result. Update the usage text
+- [x] 2.3 In src/mcp/server.ts add an optional `request` to zero_package_run and wait 30 s with the same function
+- [x] 2.4 Tests for waitStationStart (started and pending, with an injected sleep and short limits) and for the MCP/CLI request reaching the store
 
 ## 3. Etapa 3: Estado, panel y documentación
 
