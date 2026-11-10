@@ -36,7 +36,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - protected paths are not touched;
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
-- **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you. If a work copy cannot be removed when a job ends (a locked folder on Windows), the job keeps its result: the cleanup is retried in the background and shows in `zero status` until the copy is gone.
 - **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity, OpenCode, any agent that speaks ACP (Agent Client Protocol) or any CLI declared in the configuration, and a different one per station if you want.
 
@@ -348,6 +348,7 @@ Measures whether a line's specifications are enough to rebuild part of its code.
 ```sh
 zero simulacro tienda pagos --archivos "src/pagos/**"              # cap: limits.usdPerJob
 zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap for this drill
+zero simulacro tienda pagos --archivos "src/pagos/**" --conservar # keeps the copy to look at it
 ```
 
 - It works in a separate copy in `ZERO_HOME/drills/<id>/copy`, cloned from the line's base branch. The line's repository is only read: same branches, worktrees, HEAD and working state. The copy gets a fresh history with a single commit, so the agent cannot find the removed files in it.
@@ -355,6 +356,7 @@ zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap
 - The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy, up to 20 minutes each.
 - The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
 - The report, in Spanish, is `ZERO_HOME/drills/<id>/informe.md`, next to `resultado.json` with the same data: line, capability, base commit, removed and rebuilt files, result, cost, each command with its exit code and the end of its output, and what the spec did not say and had to be guessed. The command prints its path. If `ZERO_HOME/drills` falls inside a line's repository or the current folder's, zero refuses, as with saved reports.
+- When the drill ends, the copy is deleted (even if the agent failed) and only `informe.md` and `resultado.json` stay; the report says so. With `--conservar` the copy stays whole in `ZERO_HOME/drills/<id>/copy` so you can look at it, and the report names its path. If the deletion fails, the result does not change: it is only logged as a warning.
 - It refuses before spending anything when the andon is on or the budget ran out, and when the line has no `verify` commands. In this version it only runs on this machine: with `isolation: container` it refuses.
 
 ## What stays on your machine

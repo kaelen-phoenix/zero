@@ -20,6 +20,7 @@ import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageData
 import { readTabData, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
+import { pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
@@ -298,6 +299,8 @@ export interface FactoryStatus {
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
   onDemand: { station: string; since: string }[];
+  /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
+  cleanups: { job: string; path: string; since: string }[];
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -359,6 +362,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
       return since !== undefined ? [{ station: `${s.package}/${s.name}`, since }] : [];
     }),
+    cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -555,6 +559,8 @@ export interface DrillRequest {
   patterns: string[];
   /** Spend cap of the agent call; `limits.usdPerJob` when absent. */
   usd?: number;
+  /** Keep the working copy (`--conservar`); it is deleted at the end otherwise. */
+  keep?: boolean;
 }
 
 /**
@@ -562,7 +568,7 @@ export interface DrillRequest {
  * specification in a copy under `<ZERO_HOME>/drills` and runs the line's tests
  * against it. Every refusal comes before anything is created or spent.
  */
-export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; cwd?: string } = {}): Promise<DrillResult> {
+export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; removeCopy?: DrillDeps["removeCopy"]; cwd?: string } = {}): Promise<DrillResult> {
   const line = ctx.config.lines.find((l) => l.name === input.line);
   if (!line) throw new Error(`No hay una línea llamada "${input.line}". Líneas: ${ctx.config.lines.map((l) => l.name).join(", ") || "(ninguna)"}.`);
   if (ctx.config.isolation === "container") {
@@ -584,7 +590,7 @@ export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest
   const files = drillFiles(line, input.patterns);
   if (!files.length) throw new Error(`Ningún archivo de código de la rama ${line.baseBranch} coincide con ${input.patterns.join(", ") || "(sin patrones)"}: los tests y lo que está bajo openspec/ nunca se quitan. Indicá qué quitar con --archivos.`);
   const runAgent = deps.runAgent ?? createAgentRunner(ctx.config, { secrets: ctx.secrets });
-  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now }, { line, capability: input.capability, files, usd });
+  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now, removeCopy: deps.removeCopy }, { line, capability: input.capability, files, usd, keep: input.keep });
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */

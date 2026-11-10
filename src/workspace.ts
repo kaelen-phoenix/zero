@@ -188,7 +188,11 @@ export function removeWorkCopy(repo: string, path: string) {
     if (existsSync(path)) tryGit(["worktree", "remove", "--force", path], repo);
     tryGit(["worktree", "prune"], repo);
     // Clones (box copies) are not worktrees: remove them directly.
-    if (existsSync(path)) rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+      // A worktree whose `remove` failed (a locked file) leaves its entry until the folder is gone.
+      tryGit(["worktree", "prune"], repo);
+    }
   };
   try {
     remove();
