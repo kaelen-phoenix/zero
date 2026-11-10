@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -7,7 +7,7 @@ import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, type FactoryContext, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
-import { packagesPass, stationLastKey, stationOnDemandKey } from "../src/line/packages.js";
+import { onDemandPass, packagesPass, stationLastKey, stationOnDemandKey, stationOnDemandLastKey } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
@@ -46,6 +46,7 @@ async function factory(dir: string, over: Record<string, unknown> = {}, allowCod
 }
 
 const key = stationOnDemandKey("hello", "nota");
+const lastRun = stationOnDemandLastKey("hello", "nota");
 
 describe("declaring onDemand in the manifest", () => {
   it("carries true to the loaded station", async () => {
@@ -116,60 +117,76 @@ describe("asking for an on-demand run", () => {
   });
 });
 
-describe("the daemon runs a pending request", () => {
+describe("onDemandPass runs a pending request", () => {
+  const pass = () => fakeAgents({}).runner;
+  const record = (ctx: FactoryContext) => JSON.parse(ctx.store.getKv(lastRun)!) as Record<string, unknown>;
+
   it("runs before its period, once, with { onDemand: true }, leaving the period as it was", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     const last = new Date(Date.now() - 60_000).toISOString();
     ctx.store.setKv(stationLastKey("hello", "nota"), last);
     expect(requestStationRun(ctx, "hello/nota").ok).toBe(true);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
     expect(ctx.store.getKv(key)).toBeUndefined();
     expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBe(last);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toHaveLength(1);
   });
 
-  it("does not also run the regular turn in the same pass", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true });
-    const ctx = await factory(dir);
-    requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
-    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true }), "null"]);
-  });
-
-  it("calls a regular pass with no second argument", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(...args) { note(String(args.length) + ":" + String(args[1])); }` });
-    const ctx = await factory(dir);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual(["1:undefined"]);
-  });
-
-  it("waits for the andon, then runs", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true });
-    const ctx = await factory(dir);
-    requestStationRun(ctx, "hello/nota");
-    ctx.store.setKv(ANDON_KEY, "on");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([]);
-    expect(ctx.store.getKv(key)).toBeDefined();
-    ctx.store.setKv(ANDON_KEY, "off");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
-  });
-
-  it("waits for queued jobs", async () => {
+  it("runs with a queued job", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
     requestWork(ctx, { text: "algo", line: "web" });
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+    expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+
+  it("runs with a running job", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    const { job } = requestWork(ctx, { text: "algo", line: "web" });
+    ctx.store.updateJob(job.id, { status: "running" });
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+  });
+
+  it("calls nothing without a pending request", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+  });
+
+  it("waits for the andon, then runs, recording nothing meanwhile", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    ctx.store.setKv(ANDON_KEY, "on");
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+    ctx.store.setKv(ANDON_KEY, "off");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+  });
+
+  it("waits for the budget", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir, { limits: { usdPerDay: 1 } });
+    requestStationRun(ctx, "hello/nota");
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "build", "zero.engine": "claude", "zero.billing": "api" } }).end("ok", { "zero.cost.usd": 5 });
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
   });
 
   it("waits for a missing secret", async () => {
@@ -177,9 +194,10 @@ describe("the daemon runs a pending request", () => {
     const { dir, calls } = stationPackage({ onDemand: true, secrets: ["NOTA_TOKEN"] });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
   });
 
   it("keeps the night cap on ctx.runAgent", async () => {
@@ -193,20 +211,54 @@ describe("the daemon runs a pending request", () => {
     ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "scout" } }).end("ok", { "zero.cost.usd": 0.3 });
     requestStationRun(ctx, "hello/nota");
     const agents = fakeAgents({});
-    await packagesPass(ctx, agents.runner, new Date());
+    await onDemandPass(ctx, agents.runner, new Date());
     expect(agents.calls).toEqual([]);
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ ok: false, text: expect.stringContaining("limits.usdPerNight") });
   });
 
-  it("clears the request of a module without pass and warns", async () => {
+  it("records a run that ended fine", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    requestStationRun(ctx, "hello/nota");
+    const asked = ctx.store.getKv(key);
+    await onDemandPass(ctx, pass(), new Date());
+    const r = record(ctx);
+    expect(r).toMatchObject({ asked, outcome: "ok", startedAt: expect.any(String), endedAt: expect.any(String) });
+    expect(Date.parse(r.endedAt as string)).toBeGreaterThanOrEqual(Date.parse(r.startedAt as string));
+  });
+
+  it("records a pass that threw", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export async function pass() { throw new Error("mal"); }` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(record(ctx)).toMatchObject({ outcome: "failed", startedAt: expect.any(String), endedAt: expect.any(String) });
+  });
+
+  it("records a pass cut by shutdown", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export function pass() { return new Promise(() => {}); }` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    const stop = new AbortController();
+    const done = onDemandPass(ctx, pass(), new Date(), { signal: stop.signal });
+    await vi.waitFor(() => expect(ctx.store.getKv(lastRun)).toBeDefined());
+    expect(record(ctx).endedAt).toBeUndefined();
+    stop.abort();
+    await done;
+    expect(record(ctx)).toMatchObject({ outcome: "stopped", startedAt: expect.any(String), endedAt: expect.any(String) });
+  });
+
+  it("clears the request of a module without pass, warns and records it as not run", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     const { dir, calls } = stationPackage({ onDemand: true, module: `export async function scheduled() { note("scheduled"); }` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const asked = ctx.store.getKv(key);
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeUndefined();
     expect(warn.mock.calls.some(([m]) => String(m).includes("hello/nota") && String(m).includes("pass"))).toBe(true);
+    const r = record(ctx);
+    expect(r).toMatchObject({ asked, outcome: "not-run" });
+    expect(r.startedAt).toBeUndefined();
   });
 
   it("clears the request when parseConfig throws", async () => {
@@ -214,16 +266,76 @@ describe("the daemon runs a pending request", () => {
     const { dir, calls } = stationPackage({ onDemand: true, module: `export function parseConfig() { throw new Error("mal"); }\n${DEFAULT_MODULE}` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(record(ctx)).toMatchObject({ outcome: "not-run" });
   });
 
-  it("is picked up by the daemon within its throttle", async () => {
+  it("waits while the station's regular pass is running, then runs", async () => {
+    const gate = join(tempDir(), "gate.txt");
+    const { dir, calls } = stationPackage({
+      onDemand: true,
+      module: `import { existsSync } from "node:fs";
+export async function pass(ctx, arg) {
+  note(JSON.stringify(arg ?? null));
+  if (!arg) while (!existsSync(${JSON.stringify(gate)})) await new Promise((r) => setTimeout(r, 10));
+}`,
+    });
+    const ctx = await factory(dir);
+    const regular = packagesPass(ctx, pass(), new Date());
+    await vi.waitFor(() => expect(calls()).toEqual(["null"]));
+    requestStationRun(ctx, "hello/nota");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["null"]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+    writeFileSync(gate, "");
+    await regular;
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["null", JSON.stringify({ onDemand: true })]);
+  });
+});
+
+describe("the idle pass and the daemon", () => {
+  const pass = () => fakeAgents({}).runner;
+
+  it("the idle pass leaves a pending request alone, and runs the regular turn after it", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
+    await onDemandPass(ctx, pass(), new Date());
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true }), "null"]);
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeDefined();
+  });
+
+  it("calls a regular pass with no second argument", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(...args) { note(String(args.length) + ":" + String(args[1])); }` });
+    const ctx = await factory(dir);
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["1:undefined"]);
+  });
+
+  it("the daemon picks it up", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
     await runDaemon(ctx, { once: true, pollMs: 5, packages: true, panel: false, agentRunner: () => fakeAgents({}).runner });
+    expect(calls()).toContain(JSON.stringify({ onDemand: true }));
+  });
+
+  it("the daemon runs it without scout or research while a low-priority job waits its turn", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    requestWork(ctx, { text: "primero", line: "web", priority: "alta" });
+    requestWork(ctx, { text: "después", line: "web", priority: "baja" });
+    await runDaemon(ctx, { once: true, pollMs: 5, packages: true, scout: false, research: false, panel: false, agentRunner: () => fakeAgents({}).runner });
     expect(calls()).toContain(JSON.stringify({ onDemand: true }));
   });
 });

@@ -85,6 +85,34 @@ export const stationLastKey = (pkg: string, name: string) => `${stationKey({ pac
 /** When the person in charge asked for a run of a station's `pass` outside its period, ISO 8601; at most one pending per station. */
 export const stationOnDemandKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand`;
 
+/** Where a station's last on-demand run is kept, as an `OnDemandRecord`. */
+export const stationOnDemandLastKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand:last`;
+
+/** How an on-demand run ended: `not-run` when its module could not be imported, had no `pass` or refused its config. */
+export type OnDemandOutcome = "ok" | "failed" | "timeout" | "stopped" | "not-run";
+
+/** A station's last on-demand run; times in ISO 8601. */
+export interface OnDemandRecord {
+  /** When the person in charge asked for it. */
+  asked: string;
+  /** When the call started; absent for a run that could not start. */
+  startedAt?: string;
+  endedAt?: string;
+  outcome?: OnDemandOutcome;
+}
+
+/** A station's last on-demand run, if one was recorded and can be read. */
+export function onDemandRecord(ctx: FactoryContext, pkg: string, name: string): OnDemandRecord | undefined {
+  const raw = ctx.store.getKv(stationOnDemandLastKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    const record = JSON.parse(raw) as OnDemandRecord;
+    return typeof record?.asked === "string" ? record : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The last local day (`YYYY-MM-DD`) a time of a station's `schedule` ran; out of reach of `ctx.state`. */
 export const stationScheduleKey = (pkg: string, name: string, at: string) => `${stationKey({ package: pkg, name })}:schedule:${at}`;
 
@@ -273,10 +301,15 @@ interface StationTurn {
   optional: boolean;
   /** Runs when the module cannot be imported, lacks the export or refuses its config. */
   failed?(): void;
+  /** Runs once when a started call ends, however it ended. */
+  ended?(outcome: Exclude<OnDemandOutcome, "not-run">): void;
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
-/** One station's turn; it never throws, and an end by time leaves its signal aborted and the pass behind. */
+/** Stations with a turn under way in this process; the daemon is the only process that runs them. */
+const busyStations = new Set<string>();
+
+/** One station's turn; it never throws, and an end by time leaves its signal aborted and the pass behind. A busy station is left alone. */
 async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, turn: StationTurn, outer?: AbortSignal): Promise<void> {
   const key = stationKey(station);
   const missing = station.secrets.filter((s) => !ctx.secrets.has(s));
@@ -284,7 +317,21 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
     warnOnce(`${key}: no corre porque faltan los secretos ${missing.join(", ")}`);
     return;
   }
+  if (busyStations.has(key)) {
+    log.info(`${turn.label}: la estación ya está corriendo; espera a la próxima pasada`);
+    return;
+  }
+  busyStations.add(key);
+  try {
+    await runOwnTurn(ctx, station, turn, outer);
+  } finally {
+    busyStations.delete(key);
+  }
+}
 
+async function runOwnTurn(ctx: FactoryContext, station: PackageStation, turn: StationTurn, outer?: AbortSignal): Promise<void> {
+  const key = stationKey(station);
+  let started = false;
   const controller = new AbortController();
   const abort = () => controller.abort();
   outer?.addEventListener("abort", abort, { once: true });
@@ -315,6 +362,7 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
     }
     // Before running, so a pass that crashes the process or hangs waits for its next period like any other.
     turn.mark();
+    started = true;
     log.info(`${turn.label} start`);
     await turn.call(hook as StationHook, config, controller.signal);
     log.info(`${turn.label} done`);
@@ -327,16 +375,21 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
     if (controller.signal.aborted) done("shutdown");
     else controller.signal.addEventListener("abort", () => done("shutdown"), { once: true });
   });
+  let outcome: Exclude<OnDemandOutcome, "not-run"> = "ok";
   try {
     const end = await Promise.race([work.then(() => "done" as const), expired, shutdown]);
     if (end === "timeout") {
       // A module that hangs while importing would otherwise be retried on every idle pass.
       turn.mark();
+      started = true;
+      outcome = "timeout";
       log.warn(`${turn.label}: superó su tiempo de ${station.timeoutMinutes} minutos`);
-    }
+    } else if (end === "shutdown") outcome = "stopped";
   } catch (err) {
+    outcome = "failed";
     log.warn(`${turn.label}: falló`, { error: withoutSecrets(errorText(err), ctx, station) });
   } finally {
+    if (started) turn.ended?.(outcome);
     clearTimeout(timer);
     outer?.removeEventListener("abort", abort);
     // Whatever it left running is told to stop; it runs in this process, so nothing else can stop it.
@@ -345,28 +398,66 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
   }
 }
 
-/** A station's `pass`, once its `everyMinutes` are over, or right away when the person in charge asked for it. */
-async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
+/** Whether the person in charge asked for a run of this station that has not started yet. */
+const pendingOnDemand = (ctx: FactoryContext, station: PackageStation) => station.onDemand && ctx.store.getKv(stationOnDemandKey(station.package, station.name)) !== undefined;
+
+/**
+ * A run the person in charge asked for, in its own turn: the period stays as it was, and the request goes right before
+ * the call so it never runs twice. The record of the run is written with it, and again when the call ends.
+ */
+async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
   const onDemandKey = stationOnDemandKey(station.package, station.name);
-  if (station.onDemand && ctx.store.getKv(onDemandKey) !== undefined) {
-    // Its own turn: the period stays as it was, and the request goes right before the call so it never runs twice.
-    const clear = () => ctx.store.deleteKv(onDemandKey);
-    await runTurn(
-      ctx,
-      station,
-      now,
-      {
-        hook: "pass",
-        label: `${stationKey(station)} a demanda`,
-        mark: clear,
-        optional: false,
-        failed: clear,
-        call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true }),
+  const recordKey = stationOnDemandLastKey(station.package, station.name);
+  const clock = () => (ctx.now ?? (() => new Date()))().toISOString();
+  let record: OnDemandRecord | undefined;
+  const take = () => {
+    const asked = ctx.store.getKv(onDemandKey) ?? now.toISOString();
+    ctx.store.deleteKv(onDemandKey);
+    return asked;
+  };
+  const write = (next: OnDemandRecord) => {
+    record = next;
+    ctx.store.setKv(recordKey, JSON.stringify(next));
+  };
+  await runTurn(
+    ctx,
+    station,
+    now,
+    {
+      hook: "pass",
+      label: `${stationKey(station)} a demanda`,
+      // Called again when time runs out; the run started only once.
+      mark: () => {
+        if (!record) write({ asked: take(), startedAt: clock() });
       },
-      outer,
-    );
-    return;
+      optional: false,
+      failed: () => write({ asked: take(), endedAt: clock(), outcome: "not-run" }),
+      ended: (outcome) => {
+        if (record) write({ ...record, endedAt: clock(), outcome });
+      },
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true }),
+    },
+    outer,
+  );
+}
+
+/**
+ * The runs the person in charge asked for, whatever the line is doing: they wait for no job, take no job's place and
+ * start none themselves. Only the andon, the budget and a missing secret hold a request back, which then stays pending.
+ * One at a time; a failure or a hang stays in the log and in the run's record, and the next one still runs.
+ */
+export async function onDemandPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
+  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+    if (!pendingOnDemand(ctx, station)) continue;
+    if (opts.signal?.aborted) return;
+    if (ctx.store.getKv(ANDON_KEY) === "on") return;
+    if (budgetState(ctx.store, ctx.config, now).reached) return;
+    await runOnDemand(ctx, runAgent, station, now, opts.signal);
   }
+}
+
+/** A station's `pass`, once its `everyMinutes` are over. */
+async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
   const lastKey = stationLastKey(station.package, station.name);
   const last = ctx.store.getKv(lastKey);
   if (last && now.getTime() - Date.parse(last) < station.everyMinutes * 60_000) return;
@@ -443,12 +534,13 @@ export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { sign
 
 /** Whether some loaded station has a run asked for by the person in charge still pending. */
 export function onDemandPending(ctx: FactoryContext): boolean {
-  return (ctx.config.loadedPackages?.stations ?? []).some((s) => s.onDemand && ctx.store.getKv(stationOnDemandKey(s.package, s.name)) !== undefined);
+  return (ctx.config.loadedPackages?.stations ?? []).some((s) => pendingOnDemand(ctx, s));
 }
 
 /**
  * The installed packages' stations, one at a time and each at most once per its
- * `everyMinutes` (or once more when asked for on demand), only while the factory has nothing else to do. A failure or a
+ * `everyMinutes`, only while the factory has nothing else to do. A station with an on-demand
+ * run pending waits for `onDemandPass` instead of also running its regular turn. A failure or a
  * hang stays in the log and the next station still runs.
  */
 export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
@@ -457,6 +549,7 @@ export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, n
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.listJobs({ status: ["queued", "running"], limit: 1 }).length) return;
     if (budgetState(ctx.store, ctx.config, now).reached) return;
+    if (pendingOnDemand(ctx, station)) continue;
     await runStation(ctx, runAgent, station, now, opts.signal);
   }
 }
