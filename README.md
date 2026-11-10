@@ -175,6 +175,8 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if a push fixes it, it merges it on the next check. When nothing changed, it looks at the checks again with growing waits, from 5 minutes up to 1 hour, so a check rerun on the same commit can take up to that hour to be noticed. `zero status` and the panel show the ones waiting.
 
+Before leaving a pull request blocked by failed checks, the factory tries what usually fixes it without touching the code. If the branch is behind its base (the checks ran against an older base: a fix reached the base since, or a workflow changed), it merges the base in on GitHub, never a rebase or a forced push, and waits for the new checks. It does that for one pull request per repository at a time, since CI that shares an environment cancels the runs that pile up, and at most 3 times per pull request. If the branch is up to date, it runs the failed GitHub Actions runs again, once per commit: a cancelled run or a test that failed once for no reason of the code. Only when that does not help does it say so on the pull request and leave it open.
+
 The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
 
 ### Commit author
@@ -217,7 +219,7 @@ request
   → the platform's deploy
 ```
 
-- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **Local verification first.** zero runs the line's verification locally before delivering anything. Each command has a time limit: `verifyTimeoutMinutes` of the line (20 by default), and never less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a slow machine does not fail jobs whose tests pass. Setup and verify commands of different jobs take turns on your machine (`commandConcurrency`), a setup that fails is tried once more in a fresh copy, and a command cut by its limit is killed with everything it started.
 - **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
 - **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
 - **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
@@ -319,6 +321,7 @@ egress:                   # the box's internet egress (all of it goes through ze
   block: []
 engine: claude            # default engine: claude · codex · antigravity · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
+commandConcurrency: 1     # setup and verify commands running on this machine at once, across jobs; the rest wait their turn
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
@@ -341,6 +344,7 @@ lines:
     baseBranch: main
     setup: ["npm ci"]     # runs in every new copy
     verify: ["npm test"]  # everything must pass before the review
+    verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     autoMerge: false          # with pull-request: the factory merges when all checks pass

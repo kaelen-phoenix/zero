@@ -242,6 +242,8 @@ export const LineSchema = z.object({
   setup: z.array(z.string()).default([]),
   /** Must all pass before a change goes to review. */
   verify: z.array(z.string()).default([]),
+  /** Minutes each verify command may take (20 when absent). Zero raises it on its own to twice what the slowest recent passing run took. */
+  verifyTimeoutMinutes: z.number().positive().optional(),
   integrate: z.enum(["merge", "branch", "pull-request"]).default("merge"),
   remote: z.string().default("origin"),
   maxAttempts: z.number().int().min(1).default(3),
@@ -306,6 +308,8 @@ export const FactorySchema = z
     fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
     concurrency: z.number().int().min(1).default(2),
+    /** Setup and verify commands running on this machine at once, across jobs (the box has its own limits). The rest wait their turn. */
+    commandConcurrency: z.number().int().min(1).default(1),
     limits: z
       .object({
         /** 0 = only free engines. */

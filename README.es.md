@@ -175,6 +175,8 @@ En las líneas que entregan por `pull-request`, cada trabajo arranca desde la ra
 
 Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde sus pull requests. Los revisa cada minuto y funde cada uno cuando todos sus checks de GitHub terminaron bien y no tiene conflictos; después borra la rama y avisa en el issue. Si un check falla o hay conflictos, lo deja abierto y lo avisa una vez en el pull request; si se arregla con un push, lo funde en la revisión siguiente. Si nada cambió, vuelve a mirar sus checks con esperas crecientes, de 5 minutos hasta 1 hora, así que un check que se reintenta sobre el mismo commit puede tardar hasta esa hora en notarse. `zero status` y el panel muestran los que esperan.
 
+Antes de dejar un pull request trabado por checks fallidos, la fábrica prueba lo que suele arreglarlo sin tocar el código. Si la rama quedó atrás de su base (los checks corrieron contra una base vieja: después llegó un arreglo a la base, o cambió un workflow), funde la base en la rama desde GitHub, nunca con rebase ni force-push, y espera los checks nuevos. Lo hace con un pull request por repositorio a la vez, porque un CI que comparte un ambiente cancela las corridas que se acumulan, y como mucho 3 veces por pull request. Si la rama está al día, vuelve a correr las corridas fallidas de GitHub Actions, una vez por commit: una corrida cancelada o un test que falló una vez sin que sea culpa del código. Recién si eso no alcanza lo avisa en el pull request y lo deja abierto.
+
 Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
 
 ### Autor de los commits
@@ -217,7 +219,7 @@ pedido
   → despliegue de la plataforma
 ```
 
-- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar.
+- **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar. Cada comando tiene un tiempo límite: `verifyTimeoutMinutes` de la línea (20 por defecto), y nunca menos que el doble de lo que tardó la más lenta de sus últimas 5 corridas aprobadas en esa línea, así una suite que crece o una máquina lenta no hacen fallar trabajos cuyos tests pasan. Los comandos de setup y verify de distintos trabajos se turnan en tu máquina (`commandConcurrency`), un setup que falla se prueba una vez más en una copia nueva, y un comando cortado por su límite se mata con todo lo que había arrancado.
 - **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
 - **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
@@ -319,6 +321,7 @@ egress:                   # salidas a internet de la caja (todas pasan por la pu
   block: []
 engine: claude            # motor por defecto: claude · codex · antigravity · o uno propio
 concurrency: 2            # trabajos a la vez (cada línea hace uno a la vez)
+commandConcurrency: 1     # comandos de setup y verify que corren a la vez en esta máquina, entre todos los trabajos; el resto espera su turno
 commitAuthor: zero        # zero · owner (tu identidad de git config como autor; zero sigue como committer)
 limits:                   # con una suscripción (claude.ai, ChatGPT en Codex) el límite es el cupo real del plan: 5 horas y semana
   reservePercent: 0       # parte de cada cupo que la fábrica te deja libre (0 = usa todo el plan)
@@ -341,6 +344,7 @@ lines:
     baseBranch: main
     setup: ["npm ci"]     # se ejecuta en cada copia nueva
     verify: ["npm test"]  # todo debe pasar antes de la revisión
+    verifyTimeoutMinutes: 20  # opcional: minutos que puede tardar cada comando de verify; zero lo sube al doble de su corrida aprobada más lenta
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan

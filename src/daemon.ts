@@ -26,7 +26,7 @@ import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { signedIssues, signedMerges } from "./signature.js";
-import { log } from "./log.js";
+import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
@@ -96,6 +96,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * configured concurrency, resuming anything a previous run left unfinished.
  */
 export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): Promise<void> {
+  // A log line that cannot be written (no memory, a full disk) must never stop the factory.
+  guardLogStreams();
   // First of all: a daemon that does not hold the lock must not change anything, not even the shutdown request meant for the one that does.
   const lock = acquireDaemonLock(ctx.home);
   if (!lock) {

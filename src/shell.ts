@@ -1,20 +1,25 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, dirname, extname, isAbsolute, join } from "node:path";
+import { killTree } from "./leftovers.js";
 
 export interface ShellResult {
   code: number;
   output: string;
   timedOut: boolean;
+  /** How long the command itself ran, when the runner measures it: waiting for a turn does not count. */
+  ms?: number;
 }
 
-/** Runs a shell command, capturing stdout and stderr together. */
+/** Runs a shell command, capturing stdout and stderr together. A time limit or an abort kills it with everything it started. */
 export function sh(command: string, cwd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ShellResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, windowsHide: true });
+    // A process group of its own outside Windows, so the whole tree can be killed at once.
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32" });
+    const started = Date.now();
     let output = "";
     let timedOut = false;
-    const kill = () => child.kill("SIGKILL");
+    const kill = () => killTree(child);
     const timer = opts.timeoutMs ? setTimeout(() => ((timedOut = true), kill()), opts.timeoutMs) : undefined;
     opts.signal?.addEventListener("abort", kill, { once: true });
     child.stdout.on("data", (d) => (output += d));
@@ -23,7 +28,7 @@ export function sh(command: string, cwd: string, opts: { timeoutMs?: number; sig
     child.on("close", (code) => {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", kill);
-      resolve({ code: code ?? 1, output, timedOut });
+      resolve({ code: code ?? 1, output, timedOut, ms: Date.now() - started });
     });
   });
 }

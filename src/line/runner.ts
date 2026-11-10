@@ -13,7 +13,7 @@ import type { Job, Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import type { PullRequestsFactory } from "../tracker.js";
-import { openCloneCopy, openWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
+import { openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, STOPPED_BY_YOU, type LedgerDeps } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
@@ -32,6 +32,7 @@ import {
   type Spec,
 } from "./spec.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
+import { localCommands, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
@@ -61,8 +62,11 @@ class Interrupted extends Error {
   }
 }
 
-/** The first preparation of a work copy failed. Never retried: a resumed job finds the copy made and skips setup. */
+/** The first preparation of a work copy failed, after its one new try. The job is not resumed: it would find the copy made and skip setup. */
 class SetupFailed extends Error {}
+
+/** How many times the first preparation of a work copy is tried: a setup that fails once is often the machine (no memory, the network) and not the repository. */
+const SETUP_TRIES = 2;
 
 /** How many times one job goes back to the queue after a network cut, in its whole life. */
 const MAX_NETWORK_RETRIES = 2;
@@ -132,7 +136,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
   const lineDeps: RunnerDeps = { ...deps, runAgent: box ? box.agentRunner(config) : deps.runAgent };
   const shell: Shell = box
     ? (command, cwd, o) => box.shell(command, { cwd, mount: "rw", jobId, station: o.station, timeoutMs: o.timeoutMs, signal: o.signal, trace: { tracer, jobId, parentId: o.parentId } })
-    : (command, cwd, o) => sh(command, cwd, o);
+    : // On this machine the commands of every job take turns (`commandConcurrency`); the time limit counts from the start of the command, not of the wait.
+      async (command, cwd, o) => (await localCommands.run(config.commandConcurrency, () => sh(command, cwd, o), o.signal)) ?? { code: 1, output: "cancelado antes de empezar", timedOut: false };
 
   const reload = () => (job = store.getJob(jobId)!);
   const check = () => {
@@ -258,25 +263,36 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
     const exclude = existsSync(excludeFile) ? (JSON.parse(readFileSync(excludeFile, "utf8")) as string[]) : [];
     return open(exclude);
   }
-  try {
-    const bare = await open([]);
-    deps.store.updateJob(job.id, { worktree: path, branch, base });
-    if (line.setup.length) {
-      await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation } }, async (span) => {
-        for (const command of line.setup) {
-          const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
-          span.set({ "process.command_line": command, "process.exit.code": r.code });
-          if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
-        }
-      });
+  for (let tries = 1; ; tries++) {
+    try {
+      const bare = await open([]);
+      deps.store.updateJob(job.id, { worktree: path, branch, base });
+      if (line.setup.length) {
+        await deps.tracer.within("zero.setup", { jobId: job.id, parentId: deps.tracer.jobSpanId(job.id), attrs: { "zero.isolation": isolation, "zero.setup.try": tries } }, async (span) => {
+          for (const command of line.setup) {
+            const r = await shell(command, bare.cwd, { timeoutMs: 20 * 60_000, parentId: span.id, station: "setup" });
+            span.set({ "process.command_line": command, "process.exit.code": r.code });
+            if (r.code !== 0) throw new Error(`setup \`${command}\` terminó con código ${r.code}: ${r.output.slice(-2000)}`);
+          }
+        });
+      }
+      git(["checkout", "-q", "--", "."], bare.cwd);
+      const exclude = untrackedPaths(bare.cwd);
+      await mkdir(join(deps.home.jobs, job.id), { recursive: true });
+      await writeFile(excludeFile, JSON.stringify(exclude));
+      return await open(exclude);
+    } catch (err) {
+      const failed = new SetupFailed(err instanceof Error ? err.message : String(err), { cause: err });
+      if (tries >= SETUP_TRIES) throw failed;
+      // One more go from a fresh copy: the half-made one would make a later run skip setup.
+      log.warn("setup failed; trying once more in a fresh copy", { job: job.id, line: line.name, error: failed.message.slice(0, 500) });
+      try {
+        removeWorkCopy(line.repo, path);
+      } catch {
+        throw failed;
+      }
+      if (existsSync(path)) throw failed;
     }
-    git(["checkout", "-q", "--", "."], bare.cwd);
-    const exclude = untrackedPaths(bare.cwd);
-    await mkdir(join(deps.home.jobs, job.id), { recursive: true });
-    await writeFile(excludeFile, JSON.stringify(exclude));
-    return await open(exclude);
-  } catch (err) {
-    throw new SetupFailed(err instanceof Error ? err.message : String(err), { cause: err });
   }
 }
 
@@ -708,6 +724,7 @@ async function buildLoop(
         jobId,
         parentId: span.id,
         signal,
+        timeoutFor: (command) => verifyTimeoutMs(store, line, command, nowOf(deps)),
         run: (command, o) => shell(command, copy.cwd, { ...o, station: "verify" }),
       }),
     );
