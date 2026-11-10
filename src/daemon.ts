@@ -7,6 +7,7 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
+import { LINEAR_SECRET, linearIssues, pollLinear, type LinearApi } from "./intake/linear.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
@@ -15,12 +16,13 @@ import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
 import { factoryConfig } from "./packages.js";
+import { effectivePriority, priorityRank } from "./priority.js";
 import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
-import { packagesPass, scheduledPass } from "./line/packages.js";
+import { onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -45,6 +47,8 @@ export interface DaemonOptions {
   boxExecutor?: (config: FactoryConfig, status: BoxStatus) => BoxExecutor;
   /** GitHub for the issue intake; tests inject a fake. */
   issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
+  /** Linear for the Linear intake, per line (undefined without a key); tests inject a fake. */
+  linear?: (line: LineConfig) => LinearApi | undefined;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
@@ -72,6 +76,12 @@ const realIssues = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
 const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
   return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+/** The real Linear adapter, with the key from the secret store; pollLinear signs its comments. */
+const realLinear = (ctx: FactoryContext) => () => {
+  const key = ctx.secrets.get(LINEAR_SECRET);
+  return key ? linearIssues(key) : undefined;
 };
 
 interface Running {
@@ -185,6 +195,16 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         intake = undefined;
       });
   };
+  // Linear issues are read the same way, outside the GitHub meter and its pauses.
+  let linearAt = 0;
+  let linearIntake: Promise<void> | undefined;
+  const takeLinear = () => {
+    if (linearIntake || !ctx.config.lines.some((l) => l.linear) || Date.now() - linearAt < (opts.once ? 0 : INTAKE_MS)) return;
+    linearAt = Date.now();
+    linearIntake = pollLinear(ctx, opts.linear ?? realLinear(ctx))
+      .catch((err) => log.warn("linear intake failed", { error: String(err) }))
+      .finally(() => (linearIntake = undefined));
+  };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
   let publishing: Promise<void> | undefined;
@@ -259,7 +279,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
-    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
+    // A run the person in charge asked for does not wait for the throttle.
+    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && (Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS) || onDemandPending(ctx));
     if (!scouts && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
@@ -309,6 +330,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         mergeReady();
         findReverts();
       }
+      takeLinear();
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -327,13 +349,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
-        for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
+        const at = now();
+        const queued = ownerFirst(store.listJobs({ status: ["queued"] }), at);
+        for (const job of queued) {
           if (job.stopRequested) {
             await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
-          // The night shift's own jobs and the packages' never go ahead of other work: one at a time, and only while no other job is queued or running.
-          if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
+          const runningJobs = [...running.keys()].map((id) => store.getJob(id)).filter((j): j is Job => j !== undefined);
+          if (waitsItsTurn(job, runningJobs, store.listJobs({ status: ["queued", "running"] }), at)) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
@@ -375,6 +399,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
+    await linearIntake;
     await publishing;
     await merging;
     await checkingReverts;
@@ -406,12 +431,23 @@ export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder:
   return runHere(engine, req, trace, station);
 };
 
-/** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
-const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";
+/** Whether a queued job must wait although its line is free: `running` are the daemon's running jobs, `active` every queued or running job in the store. */
+export function waitsItsTurn(job: Job, running: Job[], active: Job[], now: Date = new Date()): boolean {
+  const level = effectivePriority(job, now);
+  // Low priority (by default the night shift's own jobs and the packages') never goes ahead of other work: one at a time, and only while nothing else is queued or running.
+  if (level === "baja") return running.length > 0 || active.some((j) => j.status === "running" || priorityRank(effectivePriority(j, now)) > priorityRank(level));
+  // At most one urgent job runs at a time; the next one waits without holding other lines back.
+  if (level === "urgente") return running.some((j) => effectivePriority(j, now) === "urgente");
+  return false;
+}
 
-/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own and the packages' after. */
-export function ownerFirst(jobs: Job[]): Job[] {
-  return [...jobs.filter((j) => !lowPriority(j)), ...jobs.filter(lowPriority)];
+/** Queued jobs in the order the daemon considers them: highest effective priority first, the oldest first within one (stable on ties). */
+export function ownerFirst(jobs: Job[], now: Date = new Date()): Job[] {
+  const created = (j: Job) => (j.createdAt ? Date.parse(j.createdAt) || 0 : 0);
+  return jobs
+    .map((job, i) => ({ job, i, rank: priorityRank(effectivePriority(job, now)) }))
+    .sort((a, b) => b.rank - a.rank || created(a.job) - created(b.job) || a.i - b.i)
+    .map((e) => e.job);
 }
 
 /** Questions nobody answered in time get their default answer. */

@@ -51,13 +51,30 @@ const ARTIFACT_SHAPES: { shape: RegExp; why: string }[] = [
   { shape: /\.(db|db-wal|db-shm|db-journal|sqlite|sqlite3)$/i, why: "base de datos" },
   { shape: /\.log$/i, why: "log" },
   { shape: /(^|\/)(zero\.factory\.yaml|daemon\.lock|secrets\.enc)$/i, why: "archivo de ZERO_HOME" },
-  { shape: /(^|\/)\.zero\/(townhall|worktrees|jobs|gate|bin|packages|reports)\//i, why: "carpeta de ZERO_HOME" },
+  { shape: /(^|\/)\.zero\/(townhall|worktrees|jobs|gate|bin|packages|reports|drills)\//i, why: "carpeta de ZERO_HOME" },
   { shape: /(^|\/)plus-[^/]+\//i, why: "carpeta plus-* de la operación" },
   { shape: /(^|\/)(reports?|informes?)\/(.*\/)?[^/]+\.(md|html|htm|pdf|csv|json|xlsx|txt|xml)$/i, why: "informe generado" },
   { shape: /(^|\/)(informe|briefing)-[^/]*\.(md|html|pdf)$/i, why: "informe generado" },
 ];
 
-const MEDIA = /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|heic|svg|ico|mp4|m4v|mov|webm|mkv|avi)$/i;
+/** What a regeneration drill writes next to its copy of the repository: `drills/<id>/informe.md` and `resultado.json`. */
+const DRILL_OUTPUT = /^(?:(.*)\/)?(informe\.md|resultado\.json)$/i;
+const DRILL_FOLDER = /(^|\/)drills\/[^/]+$/i;
+
+/** Lower-cased folders whose added files are a drill's: `drills/<id>/` holding its output, and folders holding the whole pair. */
+function drillFolders(paths: string[]): { drills: string[]; pairs: Set<string> } {
+  const seen = new Map<string, Set<string>>();
+  for (const path of paths) {
+    const m = DRILL_OUTPUT.exec(path.toLowerCase());
+    if (!m) continue;
+    const dir = m[1] ?? "";
+    seen.set(dir, (seen.get(dir) ?? new Set()).add(m[2]!));
+  }
+  const dirs = [...seen.keys()];
+  return { drills: dirs.filter((d) => DRILL_FOLDER.test(d)).map((d) => `${d}/`), pairs: new Set(dirs.filter((d) => seen.get(d)!.size === 2)) };
+}
+
+const MEDIA =/\.(png|jpe?g|gif|webp|avif|bmp|tiff?|heic|svg|ico|mp4|m4v|mov|webm|mkv|avi)$/i;
 
 export interface OperationArtifact {
   path: string;
@@ -72,11 +89,21 @@ export interface OperationArtifact {
 export function operationArtifacts(files: ChangedFile[], opts: { allowed: string[]; ownSpecDir?: string; referenced: (path: string) => boolean }): OperationArtifact[] {
   const globs = opts.allowed.map((g) => g.toLowerCase());
   const found: OperationArtifact[] = [];
+  // Drill output is told by its siblings, so allowed paths still count here.
+  const { drills, pairs } = drillFolders(files.filter((f) => f.status === "A").map((f) => f.path));
+  const drill = (path: string) => {
+    const lower = path.toLowerCase();
+    const m = DRILL_OUTPUT.exec(lower);
+    return drills.some((d) => lower.startsWith(d)) || (m !== null && pairs.has(m[1] ?? ""));
+  };
   for (const { status, path } of files) {
     if (status !== "A" || globs.some((g) => posix.matchesGlob(path.toLowerCase(), g))) continue;
     // The job's own specification, whatever its capability is called (`specs/reports/spec.md`).
     if (opts.ownSpecDir && path.startsWith(opts.ownSpecDir) && /\.md$/i.test(path)) continue;
-    const why = ARTIFACT_SHAPES.find((a) => a.shape.test(path))?.why ?? (MEDIA.test(path) && !opts.referenced(path) ? "imagen o video que nada del repositorio menciona" : undefined);
+    const why =
+      ARTIFACT_SHAPES.find((a) => a.shape.test(path))?.why ??
+      (drill(path) ? "simulacro de regeneración" : undefined) ??
+      (MEDIA.test(path) && !opts.referenced(path) ? "imagen o video que nada del repositorio menciona" : undefined);
     if (why) found.push({ path, why });
   }
   return found;
