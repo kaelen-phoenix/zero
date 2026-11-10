@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { packagesPass, scheduledPass } from "../src/line/packages.js";
 import { SecretStore, memoryKeyring } from "../src/keychain.js";
 import { factoryConfig } from "../src/packages.js";
+import { TabDataSchema } from "../src/package-tabs.js";
 import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -295,6 +296,20 @@ describe("agent packages", () => {
       expect(body, heading).not.toMatch(/community|enterprise|premium|commercial|comercial|edition|edición/i);
       expect(body, heading).toMatch(/third-party|terceros/);
     }
+  });
+
+  it.each(HEADINGS)("documents panel tabs with a manifest and data that load (%#)", async (text, heading) => {
+    const body = section(text, heading);
+    for (const word of ["tabs", "package-data", "ctx.dataDir", "categoria", "http", "1 MiB", "500", "#k="]) expect(body, word).toContain(word);
+    const found = blocks(body);
+    const tabs = found.find((b) => b.info === "yaml" && b.body.startsWith("tabs:"))!.body;
+    const dir = tempDir("zero-example-");
+    writeTree(dir, { "zero-package.yaml": `interface: 1\nname: hello\nversion: 1.0.0\n${tabs}` });
+    const ctx = testFactory({ packages: [{ path: dir }] });
+    ctx.config = await factoryConfig(ctx.home);
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs.map((t) => t.name)).toEqual(["news"]);
+    expect(TabDataSchema.safeParse(JSON.parse(found.find((b) => b.info === "json" && b.body.includes('"items"'))!.body)).success).toBe(true);
   });
 
   it.each(HEADINGS)("has an example that works when copied (%#)", async (text, heading) => {

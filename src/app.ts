@@ -16,7 +16,8 @@ import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
-import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { readTabData, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
@@ -1352,6 +1353,50 @@ export interface PackageStationView {
   lastRun?: string;
   /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
   onDemandPendingSince?: string;
+}
+
+/** A package's tab as the panel's menu links it. */
+export interface PackageTabLink {
+  package: string;
+  name: string;
+  title: string;
+  href: string;
+}
+
+/** The tabs of the loaded packages, in the file's order. */
+export function packageTabs(ctx: FactoryContext): PackageTabLink[] {
+  return (ctx.config.loadedPackages?.packages ?? []).flatMap((p) =>
+    p.tabs.map((t) => ({ package: p.name, name: t.name, title: t.title, href: `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}` })),
+  );
+}
+
+export interface PackageTabView extends PackageTabLink {
+  /** `missing`: the package wrote nothing yet; `invalid`: what it wrote does not pass the schema or the folder's limits. */
+  state: TabData["state"];
+  /** The manifest's categories, or else those of the items. */
+  categories: string[];
+  /** The chosen category; absent: all of them. */
+  category?: string;
+  items: TabItem[];
+}
+
+/** A package tab's data, read only through its schema; undefined when the package did not load or does not declare it. */
+export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, category?: string): PackageTabView | undefined {
+  const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
+  const t = p?.tabs.find((x) => x.name === tab);
+  if (!p || !t) return undefined;
+  const data = readTabData(packageDataDir(ctx.home, p.name), t);
+  const categories = t.categories ?? [...new Set(data.items.flatMap((i) => (i.category ? [i.category] : [])))];
+  return {
+    package: p.name,
+    name: t.name,
+    title: t.title,
+    href: `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}`,
+    state: data.state,
+    categories,
+    ...(category && { category }),
+    items: category ? data.items.filter((i) => i.category === category) : data.items,
+  };
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {

@@ -588,6 +588,7 @@ export async function scheduled(ctx, { at }) {
 | `ctx.state.get(name)`, `ctx.state.set(name, value)` | Saved between passes, separately for each station |
 | `ctx.deliveredJobs(since)` | Line, title, summary and date of delivered jobs, without job ids, branches or local paths |
 | `ctx.requestJob({ line, text })` | Asks the factory for a job. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.dataDir` | The package's data folder, `~/.zero/package-data/<package>`, already created; its panel tabs read from here |
 
 `ctx.runAgent` records each call as `package:<package>/<station>`, picks the engine from the entry's chain and shares the `limits.usdPerNight` cap on pay-per-use. With no engine or no cap left, it returns `ok: false` without calling anyone.
 
@@ -596,6 +597,38 @@ export async function scheduled(ctx, { at }) {
 **Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
 **On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The request waits for the same gates as any idle-time pass: no jobs queued or running, the andon off, budget left and its declared secrets saved; until then it stays pending, and the daemon picks it up on its next idle turn. `ctx.runAgent` still shares the `limits.usdPerNight` cap. An on-demand run does not move the station's period, and that pass does not also run its regular turn. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log. The command exits 1 when refused, and starts the factory if it was off.
+
+**Panel tabs.** With `tabs`, a package adds read-only tabs of its own to the browser panel. Each one shows a JSON file that the package's stations write in its data folder, `~/.zero/package-data/<package>`, which they receive already created as `ctx.dataDir`. No package code runs in the panel, and tabs need no `allowCode`: the panel only reads that file and checks it against a schema. Each tab's `name` follows the rule of the package's other names and cannot repeat, and `data` must be a relative `.json` path that stays inside the data folder; otherwise the whole package stays out.
+
+```yaml
+tabs:
+  - name: news                     # its address: /packages/hello/news
+    title: News                    # up to 60 characters, shown in the panel's menu
+    data: news.json                # relative to ~/.zero/package-data/hello
+    categories: [release, security] # optional: the filter's options
+```
+
+The file holds an object with `items`, a list of at most 500 elements. Only `title` is required (up to 300 characters); `description` takes up to 2000, and `url`, `category` and `date` are optional text:
+
+```json
+{
+  "items": [
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+  ]
+}
+```
+
+```js
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export async function scheduled(ctx) {
+  const items = [{ title: "Version 2.0", url: "https://example.com/v2", category: "release" }];
+  writeFileSync(join(ctx.dataDir, "news.json"), JSON.stringify({ items }));
+}
+```
+
+Each tab appears in the menu of every panel page and has its own address, `/packages/<package>/<tab>`, which asks for the panel's session like the other pages. To share it, add the panel key to that address (`/packages/hello/news#k=…`): after signing in the panel stays on that tab instead of the overview. The filter uses the `categoria` parameter, with the manifest's `categories` as options or, without them, those the elements use. Since this is a third party's data, all its text is escaped, and a `url` only becomes a link when it is an absolute `http` or `https` address, opened in a new tab; any other one (`javascript:`, `data:`, relative) shows the element without a link. A missing file shows that there is no data yet; one over 1 MiB, that is not JSON, does not pass the schema or whose real path leaves the data folder (through a link, for example) shows a warning and none of its elements.
 
 **How to install one:**
 
