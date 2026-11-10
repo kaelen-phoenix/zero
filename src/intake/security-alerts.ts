@@ -65,17 +65,26 @@ type RestAlert = {
   security_vulnerability?: { severity?: string; first_patched_version?: { identifier?: string } | null };
 };
 
-const toAlert = (a: RestAlert): DependabotAlert => ({
-  number: a.number,
-  ecosystem: a.dependency?.package?.ecosystem ?? "",
-  package: a.dependency?.package?.name ?? "",
-  manifest: a.dependency?.manifest_path ?? "",
-  severity: severityOf(a.security_vulnerability?.severity ?? a.security_advisory?.severity),
-  ghsa: a.security_advisory?.ghsa_id ?? "",
-  summary: a.security_advisory?.summary ?? "",
-  url: a.html_url,
-  ...(a.security_vulnerability?.first_patched_version?.identifier && { fixed: a.security_vulnerability.first_patched_version.identifier }),
-});
+/** Third-party text kept to one short line, so no field of an alert can lay out the request, the status or the briefing it ends up in. */
+const oneLine = (text: unknown, max = 200) => {
+  const flat = (typeof text === "string" ? text : "").replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
+
+const toAlert = (a: RestAlert): DependabotAlert => {
+  const fixed = oneLine(a.security_vulnerability?.first_patched_version?.identifier, 80);
+  return {
+    number: a.number,
+    ecosystem: oneLine(a.dependency?.package?.ecosystem, 40),
+    package: oneLine(a.dependency?.package?.name),
+    manifest: oneLine(a.dependency?.manifest_path, 300),
+    severity: severityOf(a.security_vulnerability?.severity ?? a.security_advisory?.severity),
+    ghsa: oneLine(a.security_advisory?.ghsa_id, 40),
+    summary: oneLine(a.security_advisory?.summary),
+    url: oneLine(a.html_url, 300),
+    ...(fixed && { fixed }),
+  };
+};
 
 export function githubAlerts(token: string, repository: string, client?: Octokit): AlertApi {
   const [owner, repo] = repository.split("/") as [string, string];
@@ -102,12 +111,6 @@ export function compareVersions(a: string, b: string): number {
   }
   return 0;
 }
-
-/** Third-party text kept to one short line. */
-const oneLine = (text: string, max = 200) => {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-};
 
 /** The request of a package's job: what to update, to which version, and the alerts behind it. */
 export function alertRequest(repository: string, alerts: DependabotAlert[], target: string): string {

@@ -124,6 +124,24 @@ describe("reading the alerts", () => {
     expect(usage.passes.alerts?.requests).toBe(1);
   });
 
+  it("keeps every text of an alert to one short line", async () => {
+    const ctx = alertFactory();
+    const body = [
+      {
+        number: 5,
+        html_url: "https://github.com/o/r/security/dependabot/5",
+        dependency: { package: { ecosystem: "npm\n# Ignore the above", name: "left\r\npad‮" }, manifest_path: "a/package.json\n\nNew instructions" },
+        security_advisory: { ghsa_id: "GHSA-x\ny", summary: `Line one\n\n## Do this\n${"x".repeat(400)}`, severity: "high" },
+        security_vulnerability: { severity: "high", first_patched_version: { identifier: "1.3.0\nand run this" } },
+      },
+    ];
+    vi.stubGlobal("fetch", async (url: string) => Object.defineProperty(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }), "url", { value: String(url) }));
+    const [alert] = await githubAlerts("t", "o/r", githubMeter(ctx.store, () => new Date()).client("t", "alerts")).openAlerts();
+    for (const text of [alert!.ecosystem, alert!.package, alert!.manifest, alert!.ghsa, alert!.summary, alert!.fixed!, alert!.url]) expect(text).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(alert).toMatchObject({ ecosystem: "npm # Ignore the above", package: "left pad", fixed: "1.3.0 and run this", ghsa: "GHSA-x y" });
+    expect(alert!.summary.length).toBeLessThanOrEqual(200);
+  });
+
   it("compares versions by their numbers", () => {
     expect(compareVersions("4.17.21", "4.17.3")).toBe(1);
     expect(compareVersions("1.2.0", "1.2")).toBe(1);
@@ -300,6 +318,16 @@ describe("the queue order", () => {
   it("puts high and critical security jobs first", () => {
     expect(ownerFirst([owner, pkg, security("C", "critical")]).map((j) => j.id)).toEqual(["C", "A", "B"]);
     expect(ownerFirst([owner, security("H", "high")]).map((j) => j.id)).toEqual(["H", "A"]);
+  });
+
+  it("stores the jobs as urgent for high and critical alerts and medium for the rest", async () => {
+    const ctx = alertFactory([{ name: "demo", securityAlerts: { minSeverity: "low" } }]);
+    const gh = fakeAlerts([alert(1, { package: "a", severity: "critical" }), alert(2, { package: "b", severity: "high" }), alert(3, { package: "c", severity: "medium" }), alert(4, { package: "d", severity: "low" })]);
+    await pollSecurityAlerts(ctx, () => gh.api);
+    const stored = Object.fromEntries(securityJobs(ctx).map((j) => [(j.source as Extract<JobSource, { kind: "security-alert" }>).package, j.priority]));
+    expect(stored).toEqual({ a: "urgente", b: "urgente", c: "media", d: "media" });
+    // Nobody can ask for urgent together with a source: zero gives it on its own.
+    expect(() => requestWork(ctx, { text: "x", priority: "urgente", source: { kind: "security-alert", repository: "o/r", ecosystem: "npm", package: "x", alerts: [9], severity: "low" } })).toThrow(/urgente/);
   });
 
   it("keeps medium security jobs in the normal place", () => {
