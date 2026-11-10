@@ -1,11 +1,10 @@
-import { spawnSync } from "node:child_process";
 import { Octokit } from "@octokit/rest";
 import type { FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
 import { GithubHalted, isRateLimit } from "../github-quota.js";
 import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
-import { tryGit } from "../shell.js";
+import { spawnGit, tryGit } from "../shell.js";
 import type { Job } from "../state/store.js";
 import { prRefreshKey, type PrRefresh } from "./finish.js";
 
@@ -153,7 +152,7 @@ function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState
   const line = ctx.config.lines.find((l) => l.name === job.line);
   if (!line?.autoMerge || !job.spec || job.attempt >= line.maxAttempts || state.resolving === head) return false;
   if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return false;
-  const fetched = spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+  const fetched = spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 120_000 });
   if (fetched.status !== 0) {
     log.warn("cannot fetch the base branch; pull request left as it is", { job: job.id, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
     return false;

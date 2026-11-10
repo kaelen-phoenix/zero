@@ -37,6 +37,7 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
 - **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
 - **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
 
 ## Autonomy levels
@@ -51,6 +52,15 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
 By default the factory is configured at **L3**. L3 requires the **isolation box** to be ready (see below); while something is missing, **it works at L2 and says exactly what is missing**. Questions never block the factory: the job waits, the others keep going, and if nobody answers in time the default action applies.
 
 ## Getting started
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh     # macOS and Linux
+irm https://zerointheloop.com/install.ps1 | iex          # Windows (PowerShell)
+```
+
+One step, on macOS, Linux or Windows. The installer checks that you have Node 22 or later, npm and git, and installs none of them: if one is missing it tells you where to get it and changes nothing. Then it shows you the folder (`~/.local/share/zero`, or `%LOCALAPPDATA%\zero` on Windows; `ZERO_INSTALL_DIR` changes it), the commands it will run and where it creates the `zero` command, and asks before changing anything (the default answer is no). It does not need administrator rights: it writes only in your user folders and, on Windows, adds the command to your user PATH. It never asks for or stores a key or token; it ends by launching `zero setup` on your terminal, which takes care of engines, credentials, limits, the box and GitHub. Running it again updates the same copy.
+
+By hand, from the repository:
 
 ```sh
 git clone https://github.com/kaelen-phoenix/zero && cd zero
@@ -75,7 +85,7 @@ zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
 ```
 
-The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), and `zero_egress` and `zero_egress_block` (internet egress).
+The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), `zero_package_run` (a package station on demand), and `zero_egress` and `zero_egress_block` (internet egress).
 
 ## Install with Docker
 
@@ -171,6 +181,29 @@ The factory's passes look after your account's GitHub API quota: they repeat the
 
 By default the factory's commits are authored by `zero`, the factory's own identity. Some services only accept commits whose author is one of their accounts: Vercel's Hobby plan, for example, blocks the deploy ("GitHub couldn't verify an account for the commit"), so pull request previews fail their check and auto-merge never starts. With `commitAuthor: owner` (globally, or on a line, which wins) the spec, attempt and merge commits are authored by you: the `user.name` and `user.email` that `git config` gives in the line's repository, read when committing and never written to the factory file. zero stays the committer, so it is still visible that the factory made them. If the repository has no name or email configured, the commit is authored by zero and the job goes on. Revert detection works the same, since it looks at commit messages and SHAs, not at authors.
 
+## Linear issues
+
+A line can also take as requests the issues of a Linear team that carry a label. You add the block to the line in the factory file, with the team's key (the prefix of its issues, such as `ENG-7`):
+
+```yaml
+lines:
+  - name: web
+    repo: ~/code/web
+    linear: { team: ENG, label: zero }
+```
+
+The label defaults to `zero`. The Linear API key never goes in the factory file, which refuses it; you save it in the secret store:
+
+```sh
+zero secret set LINEAR_API_KEY
+```
+
+Without the key the factory does not call Linear, and `zero status` and the panel show an `Issues de Linear:` line with the problem.
+- **It only takes issues created and labeled by people with permission:** active members of that team who are not guests. Linear has no per-repository permission, so in a large workspace this can be more people than on GitHub. To the rest it leaves one comment saying why it does not take the issue.
+- **It comments on the issue** when it takes it, when it needs you (with the job, the deadline and how to answer from the panel or with `zero approve`), when it fails or stops, and when it delivers. Comments carry the line's signature and appear under the name of whoever owns the key.
+- **On delivery it completes the issue:** it moves it to one of the team's completed states. On `pull-request` lines that happens when the pull request opens. If Linear fails, it tries again on the next check without repeating the comment.
+- **To request it again** after the job finished, remove the label and put it back. It does not read later comments on Linear issues.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -191,6 +224,15 @@ request
 - **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
 
 Recommendation: have CI and at least one static analysis on every repository. Without them, zero has only its local verification and its own reviews.
+
+### New npm dependencies (`checkDependencies`)
+
+With `checkDependencies: true` on a line, after verify and before review zero looks at what each attempt adds to `package.json` and `package-lock.json` (in any folder) against the base, and asks about each new package, with no model and from its own process (the box's egress stays as it is). It sends OSV (`api.osv.dev`) the name and version of each new lock entry, and deps.dev (`api.deps.dev`) the name of each new package. That is why it is off by default: turning it on tells those services the names of your dependencies.
+
+- **What fails the attempt.** A malware advisory (an OSV id starting with `MAL-`), a package deps.dev does not know (it does not exist in the public npm registry) or a name that breaks npm's rules. The next attempt gets a message naming each package and why.
+- **What only informs.** A version published less than 7 days ago or a package with no earlier versions does not fail: it reaches the security station as data, which judges whether the dependency is needed and well known.
+- **Without network.** If a service does not answer within 10 seconds or answers with an error, the packages stay as not verified (in the trace, the log and the security prompt) and the line goes on.
+- **What is not asked about.** What the lock resolves outside the public npm registry (git, local files, links, other registries) and `package.json` specs that are not registry ranges. For now it covers only npm.
 
 ## Browser panel
 
@@ -236,6 +278,22 @@ zero informe tienda --mes 2026-10 --html    # saves a standalone HTML document i
 - What you share carries no secrets, no local paths and nothing from other lines. It is cleaned by patterns, so read it before sending it: a title that names another line by name stays as written.
 - The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML; each download also leaves a copy in `ZERO_HOME/reports`. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
 - Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
+
+## Regeneration drill
+
+Measures whether a line's specifications are enough to rebuild part of its code. You name the line, the capability (its spec is `openspec/specs/<capability>/spec.md` on the base branch) and the files to remove.
+
+```sh
+zero simulacro tienda pagos --archivos "src/pagos/**"              # cap: limits.usdPerJob
+zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap for this drill
+```
+
+- It works in a separate copy in `ZERO_HOME/drills/<id>/copy`, cloned from the line's base branch. The line's repository is only read: same branches, worktrees, HEAD and working state. The copy gets a fresh history with a single commit, so the agent cannot find the removed files in it.
+- Tests and everything under `openspec/` are never removed, even if the pattern names them: they are what the rebuilt code is measured against.
+- The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy, up to 20 minutes each.
+- The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
+- The report, in Spanish, is `ZERO_HOME/drills/<id>/informe.md`, next to `resultado.json` with the same data: line, capability, base commit, removed and rebuilt files, result, cost, each command with its exit code and the end of its output, and what the spec did not say and had to be guessed. The command prints its path. If `ZERO_HOME/drills` falls inside a line's repository or the current folder's, zero refuses, as with saved reports.
+- It refuses before spending anything when the andon is on or the budget ran out, and when the line has no `verify` commands. In this version it only runs on this machine: with `isolation: container` it refuses.
 
 ## What stays on your machine
 
@@ -291,6 +349,7 @@ lines:
       build: { skills: [nextjs, shadcn] }
     signature: off            # optional: this line's own signature, replaces the global one
     allowedArtifacts: ["media/**"]   # optional: paths this line versions though they look like operation output
+    checkDependencies: false  # optional: ask OSV and deps.dev about new npm dependencies before review
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.
@@ -446,6 +505,7 @@ stations:
     schedule: ["08:00", "12:00", "18:00"] # local times at which scheduled runs, even with the factory busy
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # lets ctx.requestJob open jobs; without it, it cannot
+    onDemand: true                 # lets you ask for a pass with zero package run; without it, you cannot
 ```
 
 - **Agents** run on every line as global custom agents, after the ones in your file and with the same guarantees (see Custom agents). They are never written to your file. Their names cannot repeat a fixed station, an agent of yours or another package's.
@@ -500,6 +560,8 @@ export async function scheduled(ctx, { at }) {
 
 **Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
+**On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The request waits for the same gates as any idle-time pass: no jobs queued or running, the andon off, budget left and its declared secrets saved; until then it stays pending, and the daemon picks it up on its next idle turn. `ctx.runAgent` still shares the `limits.usdPerNight` cap. An on-demand run does not move the station's period, and that pass does not also run its regular turn. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log. The command exits 1 when refused, and starts the factory if it was off.
+
 **How to install one:**
 
 ```sh
@@ -512,6 +574,7 @@ zero package add git@example.com:acme/hello-zero.git#main
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # shows the change and applies it; without a name, every package
+zero package run hello/note                  # one pass of that station as soon as the factory is free (onDemand: true)
 zero package remove hello                    # takes it out of the file; its files stay
 ```
 
@@ -545,7 +608,7 @@ nightShift:               # or `nightShift: off` to turn it off
 limits:
   usdPerNight: 1          # only for pay-per-use: plan calls do not count
 research:
-  autonomy: propose       # cap for what adds something third-party (see below)
+  autonomy: propose       # cap for everything born from a research note (see below)
 lines:
   - name: tienda
     repo: ~/code/tienda
@@ -559,10 +622,10 @@ A line's autonomy is its own (`lines[].nightShift.autonomy`) or, if it has none,
 
 Under `build` and `auto` the job follows the usual rules: if it touches something protected, goes over budget, verification stops it or the egress gate sees something suspicious, it waits for you (or fails, depending on the level) like any other job. Also:
 - **Daily cap.** At most `maxAutoJobsPerDay` automatic jobs per local day, across all lines (0 = none). Once reached, the following proposals wait for your decision.
-- **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest), those born from a business note and those touching the license, pricing, charges, payments or legal text are never promoted: they keep waiting for your decision.
+- **Earlier pending proposals.** If you move a line to `build` or `auto`, on the next night-shift pass (inside its hours and with the andon off) its pending proposals are promoted on their own, oldest first, respecting `maxAutoJobsPerDay`: they are taken as if they were new. Those born from something third-party (flagged by `scout` or touching a dependency or MCP manifest), those born from a business note and those touching the license, pricing, charges, payments or legal text are never promoted: they keep waiting for your decision. Those born from a research note also keep waiting while `research.autonomy` holds them at `propose`.
 - **What gets reverted.** If you revert on the main branch a change the night shift integrated on its own, without your approval, the factory detects it: the proposal becomes `revertida` (reverted; in the panel, the "Revertidas" group), it is noted in the line's townhall and `scout` does not propose it again. On lines with `integrate: merge` it looks for `git revert -m 1 <commit>` of the merge. On lines with `integrate: pull-request` it records the commit GitHub merged the pull request with (merge or squash) and recognizes both `git revert` of that commit and GitHub's Revert button (the pull request `Revert "…"`, whose commit says `Reverts owner/repo#N`); it looks on the local main branch and on the remote's, after a `git fetch`. It does not detect undoing by hand.
 - **Your requests go first.** An automatic night-shift job never jumps ahead of yours and does not start while another job is queued or running.
-- **Proposals born from a research note.** They are marked with the note they came from. If they add a dependency, a third-party skill, an MCP server or third-party code, `research.autonomy` governs them (`propose` by default): the more restrictive of that and the line's autonomy applies, so they wait for your decision even if the line is at `auto`. zero does not rely only on what `scout` says: it also looks at the dependency and MCP manifests (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) in the proposal and, before integrating, in the files the job changed. Writing your own skill or assigning an installed one follows the line's autonomy.
+- **Proposals born from a research note.** They are marked with the note they came from. Their origin decides: `research.autonomy` (`propose` by default) limits every one of them, whatever `scout` says about it and whether or not it adds something third-party, including writing your own skill or assigning an installed one. The more restrictive of that and the line's autonomy applies, so no proposal goes beyond its line. The cost: with the default `propose`, everything born from notes waits for your decision even if the line is at `auto`; if you want it to advance on its own, raise `research.autonomy`. Before integrating, zero also looks at the dependency and MCP manifests (package.json, lockfiles, requirements*.txt, pyproject.toml, go.mod, Cargo.toml, Gemfile, .mcp.json…) in the files the job changed.
 - **Proposals born from a business note.** Those `scout` draws from a note of a business skill (see [Research](#research)) always wait for your decision, even if the line is at `auto` or `build` and even if `research.autonomy` is `auto`.
 - **License, pricing, payments and legal text.** No autonomous proposal changes the license or adds pricing, charges, payments or legal text. `scout` flags those proposals with `commercial`, and zero also recognizes license and legal files on its own (LICENSE, LICENCE, COPYING, NOTICE, any file with `license` or `licence` in its name, TERMS, PRIVACY, EULA, `terms-of-service`, `privacy-policy` and everything inside a `legal/` folder). Those proposals wait for your decision, and if an automatic job still ends up touching one of those files, it is not integrated without you (if you do not answer, it is rejected).
 
@@ -576,7 +639,7 @@ zero proposals reject <id> --note "…"   # archives it (and stops its job if th
 
 From the chat: `zero_proposals` and `zero_proposal_decide`. In the panel, the "Propuestas" tab shows each line's proposals (pending, building, delivered, rejected and reverted) with their issue, the research note they came from, the rejection reason and the line's autonomy; it has buttons to approve (it asks for confirmation first) and to reject with a reason. A rejection's reason stays in the line's townhall, and `scout` receives the line's last 20 rejected or reverted proposals so it does not insist. On GitHub lines each proposal is also published as an issue with the `zero:propuesta` label, and the issue tells who approved it (you or the night shift on its own) or why you rejected it. The report has a "Turno nocturno" section: what was proposed, what was built on its own and waits for your ok, and what was integrated or deployed on its own.
 
-**Deciding from GitHub.** On lines at `propose`, the `zero:propuesta` issue also decides: if a person with write access to the repository gives it the line's work label (`zero`, or the one in `issues.label`), the proposal is approved and becomes a job; if a person with write access closes the issue without that label, it is rejected and the rejection is noted in the townhall like any other. A label or a close by someone without write access decides nothing. Issue intake never takes a `zero:propuesta` issue as a standalone request. On lines at `build` or `auto` the issue is only a record: neither the label nor closing decides, and it closes with the delivery (the pull request's "Closes #n", or the factory itself as completed if the delivery was a merge or a local branch).
+**Deciding from GitHub.** On lines at `propose`, the `zero:propuesta` issue also decides: if a person with write access to the repository gives it the line's work label (`zero`, or the one in `issues.label`), the proposal is approved and becomes a job; if a person with write access closes the issue without that label, it is rejected and the rejection is noted in the townhall like any other. A label or a close by someone without write access decides nothing. Issue intake never takes a `zero:propuesta` issue as a standalone request. On lines at `build` or `auto` the issue is only a record: neither the label nor closing decides, and it closes with the delivery (the pull request's "Closes #n", or the factory itself as completed if the delivery was a merge or a local branch). The exception is a proposal born from a research note that `research.autonomy` holds at `propose`: on those lines it is also decided from GitHub, in the same way.
 
 ## Research
 
@@ -590,7 +653,7 @@ A research skill can be a **business** one (pricing, licenses, comparable produc
 research:                 # or `research: off` to turn it off
   topics: ["local agent engines"]   # optional: topics of interest for every line
   perLinePerDay: 1        # notes per research skill per day (0 = off); if not enough, they take turns
-  autonomy: propose       # propose · build · auto: how far a proposal born from a note that adds something third-party goes on its own
+  autonomy: propose       # propose · build · auto: how far a proposal born from a note goes on its own
 stations:
   research: { timeoutMinutes: 15 }
 lines:
@@ -716,9 +779,9 @@ zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with
 Every AI orchestrator starts from the same assumption: code is the product and agents are workers who touch it. zero aims to turn that around. **The product is your intent; code is its consequence**, something the factory can produce again whenever needed.
 
 - **The truth lives in the specifications.** `openspec/specs/` stops being documentation and becomes the source: what the system has to do, written as requirements and scenarios. You read and edit intents, in your language, from the chat, the panel or the phone; the factory maintains the code.
-- **Regeneration drill.** To show that the specifications are enough, the factory takes a module, builds it again from scratch from its spec alone, in a separate copy, and runs the same tests. If the result behaves differently, the spec was incomplete: the factory proposes the missing scenario. The old code is never overwritten; the drill only measures and proposes. It is expensive in tokens, so it runs on request or rarely, never on every job.
+- **Regeneration drill.** To show that the specifications are enough, `zero simulacro` (see [Regeneration drill](#regeneration-drill)) takes some files, builds them again from their spec alone in a separate copy and runs the same tests, then reports what the spec did not say. The old code is never overwritten; the drill only measures. It is expensive in tokens, so it runs on request, never on every job. Next, the factory will propose the missing scenarios itself.
 - **Closed loop with the live product.** Later, production errors, analytics and user feedback come in as requests nobody had to write: intent → change → deployment → observation → new intent.
 
 ## Next steps
 
-Regeneration drill · intake from Linear and Jira · installer · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.

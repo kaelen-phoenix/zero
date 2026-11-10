@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CustomEngine } from "../config.js";
+import { spawnTarget } from "../shell.js";
 import { toStrictSchema, withoutOptionalNulls } from "./codex-schema.js";
 import type { Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
@@ -23,7 +24,8 @@ interface ProcessResult {
 
 export function runProcess({ bin, args, stdin }: Invocation, cwd: string, timeoutMs: number, signal?: AbortSignal, env?: Record<string, string>): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env && { env: { ...process.env, ...env } }) });
+    const target = spawnTarget(bin, cwd);
+    const child = spawn(target.bin, args, { cwd: target.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env && { env: { ...process.env, ...env } }) });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

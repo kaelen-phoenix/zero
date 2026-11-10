@@ -30,7 +30,7 @@ export function stricter(a: Autonomy, b: Autonomy): Autonomy {
   return RANK[a] <= RANK[b] ? a : b;
 }
 
-/** How far research-born third-party work may go on its own: `research.autonomy`, or `propose` when research is off. */
+/** How far research-born work may go on its own: `research.autonomy`, or `propose` when research is off. */
 export function researchAutonomy(config: Pick<FactoryConfig, "research">): Autonomy {
   return config.research === "off" ? "propose" : config.research.autonomy;
 }

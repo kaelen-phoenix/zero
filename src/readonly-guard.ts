@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Engine, EngineRequest, EngineResult } from "./engines/types.js";
 import { log } from "./log.js";
+import { spawnTarget } from "./shell.js";
 
 /**
  * The read-only guarantee for an engine running without its own sandbox: a
@@ -31,7 +32,9 @@ const NO_FILTERS = "* -text -ident -filter !working-tree-encoding\n";
 
 function runGit(args: string[], cwd: string, opts: { env?: NodeJS.ProcessEnv; input?: string } = {}): Promise<string> {
   return new Promise((done, fail) => {
-    const child = execFile("git", args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: GIT_MAX_OUTPUT, timeout: GIT_TIMEOUT_MS, ...(opts.env && { env: opts.env }) }, (err, stdout, stderr) => {
+    // The guarded folder is an agent's: on Windows a bare name would find a git planted there.
+    const target = spawnTarget("git", cwd);
+    const child = execFile(target.bin, args, { cwd: target.cwd, encoding: "utf8", windowsHide: true, maxBuffer: GIT_MAX_OUTPUT, timeout: GIT_TIMEOUT_MS, ...(opts.env && { env: opts.env }) }, (err, stdout, stderr) => {
       if (err) fail(new Error(`git ${args[args.length - 1]} falló: ${(stderr || err.message).trim()}`));
       else done(stdout);
     });

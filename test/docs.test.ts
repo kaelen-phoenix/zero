@@ -71,9 +71,32 @@ describe("README in English and Spanish", () => {
     expect(es).toContain("## Cómo funciona");
   });
 
+  it("state the freed-time principle in the principles of both", () => {
+    const bullets = (text: string, heading: string) =>
+      section(text, heading).split("\n").filter((line) => line.startsWith("- "));
+    expect(bullets(en, "## How it works").some((line) => line.includes("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration."))).toBe(true);
+    expect(bullets(es, "## Cómo funciona").some((line) => line.includes("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional."))).toBe(true);
+  });
+
   it("has the same heading levels in the same order", () => {
     expect(levels(en).length).toBeGreaterThan(0);
     expect(levels(en)).toEqual(levels(es));
+  });
+
+  it("document the Linear intake in both, and leave only Jira on the roadmap", () => {
+    for (const [text, heading, roadmap] of [
+      [en, "## Linear issues", "## Next steps"],
+      [es, "## Issues de Linear", "## Próximas etapas"],
+    ] as const) {
+      const linear = section(text, heading);
+      expect(linear).toContain("LINEAR_API_KEY");
+      expect(blocks(linear).some((b) => b.info === "yaml" && b.body.includes("linear: { team: ENG, label: zero }"))).toBe(true);
+      expect(blocks(linear).some((b) => b.info === "sh" && b.body.includes("zero secret set LINEAR_API_KEY"))).toBe(true);
+      expect(linear).toContain("zero approve");
+      const next = section(text, roadmap);
+      expect(next).toContain("Jira");
+      expect(next).not.toMatch(/linear/i);
+    }
   });
 
   it("has the same code blocks, with identical commands and configuration", () => {
@@ -180,12 +203,29 @@ describe("documentation up to date", () => {
     for (const text of [en, es]) expect(text.split("\n")).toContain(line);
   });
 
-  it("starts Getting started with the clone", () => {
+  it("starts Getting started with the one-step installer and keeps the clone as the manual way", () => {
+    const firsts: string[] = [];
     for (const [text, heading] of [[es, "## Empezar"], [en, "## Getting started"]] as const) {
-      const first = blocks(section(text, heading)).find((b) => b.info === "sh")!;
-      expect(first.body).toContain("git clone https://github.com/kaelen-phoenix/zero");
-      expect(first.body).toContain("npm install && npm run build");
+      const sh = blocks(section(text, heading)).filter((b) => b.info === "sh");
+      firsts.push(normalize(sh[0]!.body));
+      expect(sh[0]!.body).toContain("curl -fsSL https://zerointheloop.com/install.sh | sh");
+      expect(sh[0]!.body).toContain("irm https://zerointheloop.com/install.ps1 | iex");
+      const manual = sh.find((b) => b.body.includes("git clone https://github.com/kaelen-phoenix/zero"));
+      expect(manual, heading).toBeDefined();
+      expect(manual!.body).toContain("npm install && npm run build");
     }
+    expect(firsts[0]).toBe(firsts[1]);
+  });
+
+  it("says what the installer does and no longer lists it as a next step", () => {
+    for (const [text, heading, words] of [
+      [en, "## Getting started", ["Node 22", "npm", "git", "asks before changing anything", "administrator", "`zero setup`"]],
+      [es, "## Empezar", ["Node 22", "npm", "git", "te pregunta antes de cambiar nada", "administrador", "`zero setup`"]],
+    ] as const) {
+      for (const word of words) expect(section(text, heading), word).toContain(word);
+    }
+    expect(section(en, "## Next steps")).not.toMatch(/installer/i);
+    expect(section(es, "## Próximas etapas")).not.toMatch(/instalador/i);
   });
 });
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CommitAuthor, LineConfig, Signature } from "../config.js";
 import { factoryHome, inContainer } from "../home.js";
 import { SecretStore } from "../keychain.js";
-import { git, tryGit } from "../shell.js";
+import { git, spawnGit, tryGit } from "../shell.js";
 import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker, type PullRequestsFactory } from "../tracker.js";
@@ -28,7 +28,7 @@ export interface IntegrateOptions {
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
-  const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], { cwd: dir, encoding: "utf8", windowsHide: true, ...(env && { env }) });
+  const r = spawnGit([...FACTORY_IDENTITY, "merge", "--no-ff", "-q", "-m", message, branch], dir, env && { env });
   if (r.status === 0) return true;
   tryGit(["merge", "--abort"], dir);
   return false;
@@ -107,7 +107,7 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   if (!repository) return { ok: false, reason: `El remoto "${line.remote}" no es un repositorio de GitHub.` };
   const token = githubToken();
   if (!token) return { ok: false, reason: "Para abrir la solicitud de cambio hace falta GH_TOKEN o haber iniciado sesión con `gh auth login`." };
-  const push = spawnSync("git", ["push", "-q", "-u", line.remote, copy.branch], { cwd: line.repo, encoding: "utf8", windowsHide: true });
+  const push = spawnGit(["push", "-q", "-u", line.remote, copy.branch], line.repo);
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
   let pr: string;
   try {
@@ -121,10 +121,10 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
 
 /** Pushes the branch to the pull request it already has, without forcing and only if the remote branch is still where it was left. */
 function updatePullRequest(line: LineConfig, copy: WorkCopy, existing: NonNullable<IntegrateOptions["existing"]>): IntegrateResult {
-  const seen = spawnSync("git", ["ls-remote", line.remote, `refs/heads/${copy.branch}`], { cwd: line.repo, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+  const seen = spawnGit(["ls-remote", line.remote, `refs/heads/${copy.branch}`], line.repo, { timeout: 120_000 });
   if (seen.status !== 0) return { ok: false, reason: `No se pudo mirar la rama remota: ${(seen.stderr || String(seen.error ?? "")).trim()}` };
   if (seen.stdout.split(/\s/)[0] !== existing.head) return { ok: false, reason: `La rama remota ${copy.branch} ya no está en ${existing.head.slice(0, 8)}, así que no se subió nada.` };
-  const push = spawnSync("git", ["push", "-q", line.remote, `refs/heads/${copy.branch}:refs/heads/${copy.branch}`], { cwd: line.repo, encoding: "utf8", windowsHide: true });
+  const push = spawnGit(["push", "-q", line.remote, `refs/heads/${copy.branch}:refs/heads/${copy.branch}`], line.repo);
   if (push.status !== 0) return { ok: false, reason: `No se pudo subir la rama: ${(push.stderr || push.stdout).trim()}` };
   return { ok: true, delivery: existing.delivery };
 }

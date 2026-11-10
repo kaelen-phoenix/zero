@@ -189,6 +189,7 @@ ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><
 <p class="muted">${esc(budgetLine(s.budget))}</p>
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
 ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma los issues con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
+${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
 ${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
@@ -345,7 +346,7 @@ export function proposalsPage(data: { research: Autonomy | "off"; lines: Proposa
   return page(
     "Propuestas",
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
-<p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una investigación que agregan algo de terceros las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
+<p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
 ${data.lines.map(proposalLine).join("")}`,
     { nonce, flash, refresh: true },
   );

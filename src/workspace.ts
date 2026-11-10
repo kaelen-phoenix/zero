@@ -1,9 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommitAuthor } from "./config.js";
-import { git, tryGit } from "./shell.js";
+import { git, spawnGit, tryGit } from "./shell.js";
 
 /**
  * The factory's git identity. It is always the committer of what the factory
@@ -148,7 +147,7 @@ export function workCopyAt(cwd: string, base: string, branch: string, exclude: s
       }
       const before = git(["rev-parse", "HEAD"], cwd);
       const env = identity && authorEnv(identity.author, identity.repo);
-      const r = spawnSync("git", [...FACTORY_IDENTITY, "merge", "--no-edit", "-m", message, commit ?? base], { cwd, encoding: "utf8", windowsHide: true, ...(env && { env }) });
+      const r = spawnGit([...FACTORY_IDENTITY, "merge", "--no-edit", "-m", message, commit ?? base], cwd, env && { env });
       if (r.status === 0) return { outcome: git(["rev-parse", "HEAD"], cwd) === before ? "up-to-date" : "merged" };
       const paths = (tryGit(["diff", "--name-only", "--diff-filter=U", "-z"], cwd) ?? "").split("\0").filter(Boolean);
       if (paths.length) return { outcome: "conflict", paths };

@@ -273,13 +273,16 @@ describe("once per day", () => {
       schedule: ["08:00"],
       timeoutMinutes: 0.001,
       body: `const { writeFileSync } = await import("node:fs");
-  ctx.signal.addEventListener("abort", () => writeFileSync(${JSON.stringify(seen)}, "aborted"));
+  const told = () => writeFileSync(${JSON.stringify(seen)}, "aborted");
+  // On a busy machine its time can run out before it gets here: the signal is already aborted.
+  if (ctx.signal.aborted) told();
+  else ctx.signal.addEventListener("abort", told);
   await new Promise(() => {});`,
     });
     const good = stationPackage({ name: "buena", schedule: ["08:00"] });
     const ctx = await factory([hung.dir, good.dir]);
     await scheduledPass(ctx, at(8));
-    await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true), { timeout: 10_000 });
     expect(warn.mock.calls.some(([m]) => m.includes("colgada/nota") && m.includes("tiempo"))).toBe(true);
     expect(good.calls()).toEqual(["08:00"]);
     await scheduledPass(ctx, at(8, 1));

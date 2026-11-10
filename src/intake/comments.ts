@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
@@ -9,6 +8,7 @@ import type { LineConfig } from "../config.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { describeDelivery, reasonForOthers } from "../line/finish.js";
 import { log } from "../log.js";
+import { spawnGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
 import { TRUSTED, type IssueApi, type IssueComment, type IssueState } from "./github.js";
 import { FACTORY_MARK, issueKey } from "./keys.js";
@@ -42,9 +42,9 @@ export function whereIsTheChange(line: LineConfig, job: Job, merge?: MergeState)
   if (!d) return "The job has not delivered yet.";
   if (d.mode === "merge") {
     if (!d.commit) return "The change was merged into the owner's local base branch.";
-    spawnSync("git", ["fetch", "-q", line.remote, line.baseBranch], { cwd: line.repo, windowsHide: true, timeout: 60_000 });
+    spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 60_000 });
     const remote = `${line.remote}/${line.baseBranch}`;
-    const published = spawnSync("git", ["merge-base", "--is-ancestor", d.commit, remote], { cwd: line.repo, windowsHide: true }).status === 0;
+    const published = spawnGit(["merge-base", "--is-ancestor", d.commit, remote], line.repo).status === 0;
     return published
       ? `The change (commit ${d.commit.slice(0, 8)}) was merged into ${line.baseBranch} and is on GitHub: ${remote} contains it.`
       : `The change (commit ${d.commit.slice(0, 8)}) was merged into ${line.baseBranch} only on the owner's PC; it is NOT on GitHub (${remote} does not contain it). Nothing is published until the owner pushes ${line.baseBranch} (\`git push\` in ${line.repo}). This line integrates with \`merge\`; with \`integrate: pull-request\` the factory would publish its work on GitHub.`;

@@ -192,15 +192,14 @@ export function ownerOnly(proposal: Pick<Proposal, "business" | "commercial" | "
 
 /**
  * How far a proposal may go without the owner: the line's autonomy, restricted
- * by `research.autonomy` when it was born from a research note and adds
- * something third party (scout's flag, or a manifest among its paths).
+ * by `research.autonomy` when it was born from a research note: its origin
+ * decides, never what scout, having just read that note, declares about it.
  * Business-born, commercial and legal proposals always wait (`ownerOnly`).
  */
-export function proposalAutonomy(config: Pick<FactoryConfig, "nightShift" | "research">, line: Pick<LineConfig, "nightShift">, proposal: Pick<Proposal, "researchNote" | "thirdParty" | "paths" | "business" | "commercial">): Autonomy {
+export function proposalAutonomy(config: Pick<FactoryConfig, "nightShift" | "research">, line: Pick<LineConfig, "nightShift">, proposal: Pick<Proposal, "researchNote" | "paths" | "business" | "commercial">): Autonomy {
   if (ownerOnly(proposal)) return "propose";
   const own = lineAutonomy(config, line);
-  if (!proposal.researchNote || !(proposal.thirdParty || touchesManifest(proposal.paths))) return own;
-  return stricter(own, researchAutonomy(config));
+  return proposal.researchNote ? stricter(own, researchAutonomy(config)) : own;
 }
 
 /** Autonomous jobs the night shift may still open today, across every line. */
@@ -230,7 +229,8 @@ function takeOnItsOwn(ctx: FactoryContext, line: LineConfig, proposal: Proposal,
  * Pending proposals of lines that now run at `build` or `auto` (the owner
  * raised the autonomy after they were stored) are taken on as if they were
  * new, oldest first and within the daily cap. Third-party, business-born,
- * commercial and legal ones keep waiting for the owner, whatever the autonomy.
+ * commercial and legal ones keep waiting for the owner, whatever the autonomy;
+ * so do research-born ones held at `propose`, through `takeOnItsOwn`.
  */
 export function promotePending(ctx: FactoryContext, now: Date): number {
   let promoted = 0;

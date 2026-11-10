@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, requestFromResearchNote, rejectProposal, removeAgent, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -39,6 +39,10 @@ Uso diario (también desde el chat):
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
+  zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]
+                                 Simulacro de regeneración: en una copia aparte en ZERO_HOME/drills quita esos archivos,
+                                 los reconstruye solo desde openspec/specs/<capacidad>/spec.md (tope: --usd o limits.usdPerJob),
+                                 corre el verify de la línea y deja un informe con lo que faltaba en las especificaciones
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
@@ -78,6 +82,9 @@ Fábrica:
   zero package update [nombre] [--yes]
                                  Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
+  zero package run <paquete>/<estación>
+                                 Pide correr una vez la estación apenas la fábrica esté libre, sin esperar su período
+                                 (solo si su manifiesto declara onDemand: true)
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
@@ -105,6 +112,7 @@ async function main(argv: string[]): Promise<number> {
       days: { type: "string" },
       mes: { type: "string" },
       html: { type: "boolean" },
+      usd: { type: "string" },
       label: { type: "string" },
       station: { type: "string" },
       detach: { type: "boolean" },
@@ -269,6 +277,14 @@ async function main(argv: string[]): Promise<number> {
         console.log(values.html ? saveReport(ctx, report.lines[0]!, "html") : monthlyMarkdown(report));
         return 0;
       }
+      case "simulacro": {
+        const [line, capability] = rest;
+        if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]");
+        const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd) });
+        console.log(`Resultado: ${r.outcome}
+Informe: ${r.report}`);
+        return 0;
+      }
       case "proposals": {
         if (!rest[0]) {
           console.log(formatProposals(listProposals(ctx)));
@@ -354,6 +370,17 @@ async function main(argv: string[]): Promise<number> {
           } finally {
             ask.close();
           }
+        }
+        if (action === "run") {
+          if (!name) throw new Error("Indicá la estación: zero package run <paquete>/<estación>");
+          const r = requestStationRun(ctx, name);
+          if (!r.ok) {
+            console.log(r.reason);
+            return 1;
+          }
+          console.log(r.text);
+          if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+          return 0;
         }
         if (action !== "remove") break;
         if (!name) throw new Error("Indicá el paquete: zero package remove <nombre>");

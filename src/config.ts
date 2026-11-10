@@ -69,8 +69,8 @@ const ResearchSchema = z.union([
       /** Notes each line keeps per local day; 0 turns research off. */
       perLinePerDay: z.number().int().min(0).default(1),
       /**
-       * How far research-born proposals that add something third party (a dependency, a skill, an MCP server or code) go on
-       * their own: the stricter of this and the line's autonomy. Other research-born proposals follow the line.
+       * How far every research-born proposal goes on its own, whatever scout declares about it: the stricter of this and
+       * the line's autonomy.
        */
       autonomy: AutonomySchema.default("propose"),
     })
@@ -247,6 +247,11 @@ export const LineSchema = z.object({
   maxAttempts: z.number().int().min(1).default(3),
   /** Take GitHub issues carrying this label as requests (polled from the line's remote). Off when absent. */
   issues: z.object({ label: z.string().min(1).default("zero") }).optional(),
+  /**
+   * Take issues of this Linear team (its key, e.g. `ENG`) carrying the label as requests. Off when absent.
+   * Strict: the key never goes here, only in the secret LINEAR_API_KEY.
+   */
+  linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
   /** Per-agent additions for this line only; unknown agents are refused. */
@@ -265,6 +270,8 @@ export const LineSchema = z.object({
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
   /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
   allowedArtifacts: z.array(z.string()).default([]),
+  /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
+  checkDependencies: z.boolean().default(false),
 });
 
 export const FactorySchema = z
@@ -418,6 +425,8 @@ export interface PackageStation {
   maxTurns: number;
   /** Absent: `ctx.requestJob` refuses every request. */
   requests?: { perLinePerDay: number };
+  /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
+  onDemand: boolean;
   entry: PackageEntry;
 }
 
