@@ -5,6 +5,7 @@ import { requestWork } from "../src/app.js";
 import { killLeftovers, leftoversIn, mentionsFolder, type RunningProcess } from "../src/leftovers.js";
 import { createLimiter, verifyTimeoutMs, VERIFY_COMMAND_SPAN, type VerifyHistory } from "../src/line/pace.js";
 import { runJob } from "../src/line/runner.js";
+import { machineTrouble } from "../src/line/verify.js";
 import { guardLogStreams, log, lostLogLines } from "../src/log.js";
 import { sh } from "../src/shell.js";
 import type { SpanRow } from "../src/state/store.js";
@@ -250,5 +251,55 @@ describe("the line with a slow or failing machine", () => {
     expect(ran).toBeGreaterThan(0);
     expect(verifyTimeoutMs(ctx.store, { name: "demo", verifyTimeoutMinutes: 0.00001 }, passes, new Date())).toBe(2 * ran);
     expect(verifyTimeoutMs(ctx.store, ctx.config.lines[0]!, passes, new Date())).toBe(20 * 60_000);
+  });
+
+  it("tells a failure of the machine from a failure of the change", () => {
+    for (const text of [
+      "Error: Test timed out in 5000ms.",
+      "Error: Hook timed out in 10000ms.",
+      "thrown: \"Exceeded timeout of 5000 ms for a test.",
+      "Test timeout of 30000ms exceeded.",
+      "Error: Timeout of 2000ms exceeded.",
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+      "fatal error: runtime: cannot allocate memory",
+      "Error: EBUSY: resource busy or locked, rmdir 'C:\\x'",
+      "Error: Worker exited unexpectedly with exit code 134",
+      "npm ERR! code ECONNRESET",
+    ]) {
+      expect(machineTrouble(text), text).toBe(true);
+    }
+    for (const text of ["AssertionError: expected 1 to be 2", "error TS2322: Type 'string' is not assignable to type 'number'.", "1 failed", "the request timed out for the user", ""]) {
+      expect(machineTrouble(text), text).toBe(false);
+    }
+  });
+
+  it("runs once more a verify command whose failure reads like the machine, without spending an attempt", async () => {
+    const repo = gitRepo();
+    const mark = join(tempDir(), "first-run").replaceAll("\\", "/");
+    // The first run fails like a test that ran out of its own time on a busy machine; the second passes.
+    const flaky = `node -e "const fs=require('fs');if(fs.existsSync('${mark}'))process.exit(0);fs.writeFileSync('${mark}','x');console.log('Error: Test timed out in 5000ms.');process.exit(1)"`;
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, verify: [flaky] }] });
+    const agents = fakeAgents({ build });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, { ...ctx, runAgent: agents.runner })).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(agents.count.build).toBe(1);
+    const runs = ctx.store.spansForJob(job.id).filter((s) => s.name === VERIFY_COMMAND_SPAN);
+    expect(runs.map((s) => [s.status, s.attrs["zero.verify.machine"] ?? false, s.attrs["zero.verify.again"] ?? false])).toEqual([["error", true, false], ["ok", false, true]]);
+  });
+
+  it("does not run again a command that fails for the change, or a second time one that keeps failing", async () => {
+    const repo = gitRepo();
+    const wrong = `node -e "console.log('AssertionError: expected 1 to be 2');process.exit(1)"`;
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, maxAttempts: 1, verify: [wrong] }] });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect(await runJob(job.id, { ...ctx, runAgent: fakeAgents({ build }).runner })).toMatchObject({ status: "failed" });
+    expect(ctx.store.spansForJob(job.id).filter((s) => s.name === VERIFY_COMMAND_SPAN)).toHaveLength(1);
+
+    const always = `node -e "console.log('Error: Test timed out in 5000ms.');process.exit(1)"`;
+    const other = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo: gitRepo(), maxAttempts: 1, verify: [always] }] });
+    const second = requestWork(other, { text: "health" }).job;
+    const failed = await runJob(second.id, { ...other, runAgent: fakeAgents({ build }).runner });
+    expect(failed).toMatchObject({ status: "failed", reason: expect.stringContaining("Test timed out in 5000ms") });
+    expect(other.store.spansForJob(second.id).filter((s) => s.name === VERIFY_COMMAND_SPAN)).toHaveLength(2);
   });
 });
