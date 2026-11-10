@@ -88,11 +88,7 @@ describe.skipIf(!enabled)("isolation box (real container)", () => {
       out.push("TCP " + sh(`${rt} exec ${name} node -e "require('net').connect(443,'1.1.1.1').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log('tcp err',e.message);process.exit()})"`));
       out.push("NETWORKS " + sh(`${rt} network inspect zero-box ${rt === "podman" ? "podman" : "bridge"}`));
       out.push("LOGS " + sh(`${rt} logs ${name}`));
-      console.log("DIAG-BEGIN
-" + out.join("
----
-") + "
-DIAG-END");
+      console.log(["DIAG-BEGIN", ...out, "DIAG-END"].join(String.fromCharCode(10) + "---" + String.fromCharCode(10)));
     }
     expect(r.output).toContain("all-checks-passed");
     expect(r.code).toBe(0);
