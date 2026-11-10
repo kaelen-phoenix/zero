@@ -47,6 +47,21 @@ describe("Claude result mapping", () => {
     expect(other.quota?.limited).not.toBe(true);
   });
 
+  it("marks a call the plan refused in its text alone, so the job waits instead of failing", () => {
+    const refused = { billing: "subscription", limited: true };
+    const thrown = claudeThrown(new Error("Claude Code returned an error result: You've hit your session limit · resets 5am (America/Argentina/Buenos_Aires)"));
+    expect(thrown).toMatchObject({ ok: false, quota: { ...refused, windows: [] } });
+    expect(claudeThrown(new Error("You've hit your limit · resets 3pm")).quota).toMatchObject(refused);
+    expect(claudeThrown(new Error("You've hit your 5-hour limit · resets 5am")).quota).toMatchObject(refused);
+    expect(claudeThrown(new Error("Claude AI usage limit reached|1794300000")).quota).toMatchObject(refused);
+    const windows = [{ name: "five_hour", label: "5 horas", utilization: 0.12, status: "ok" as const }];
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "You've hit your session limit · resets 5am" }), { billing: "subscription", windows })).toMatchObject({ ok: false, quota: { ...refused, windows } });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["You've hit your weekly limit · resets sat"] })).quota).toMatchObject(refused);
+    // Only failed calls are read: an answer that says the same words is an answer.
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: false, result: "You've hit your session limit" }), plan).quota?.limited).not.toBe(true);
+    expect(claudeThrown(new Error("the request hit a limit of 5 retries")).quota?.limited).not.toBe(true);
+  });
+
   it("marks a call stopped by its dollar cap", () => {
     expect(claudeResult(sdkResult({ subtype: "error_max_budget_usd", errors: [] }))).toMatchObject({ ok: false, budgetLimited: true, costUsd: 0.42 });
   });
