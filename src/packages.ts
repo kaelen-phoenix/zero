@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageStation } from "./config.js";
+import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageStation, type PackageTab } from "./config.js";
 import type { FactoryHome } from "./home.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
@@ -49,6 +49,28 @@ const ManifestStationSchema = z
     maxTurns: z.number().int().positive().default(40),
     /** Permission to ask the factory for jobs; absent: it cannot. */
     requests: z.object({ perLinePerDay: z.number().int().positive() }).strict().optional(),
+    /** Permission for the person in charge to ask for a run of `pass` outside its period. */
+    onDemand: z.boolean().default(false),
+  })
+  .strict();
+
+const ManifestTabSchema = z
+  .object({
+    name: z.string().regex(NAME, NAME_RULE),
+    title: z.string().trim().min(1).max(60),
+    /** A `.json` file of the package's data folder, which its stations write. */
+    data: z
+      .string()
+      .min(1)
+      .superRefine((path, ctx) => {
+        const problem = pathProblem(path, "de datos del paquete");
+        if (problem) ctx.addIssue({ code: "custom", message: problem });
+        else if (!/\.json$/i.test(path)) ctx.addIssue({ code: "custom", message: `la ruta "${path}" tiene que ser un archivo .json` });
+      }),
+    categories: z
+      .array(z.string().trim().min(1))
+      .refine((names) => new Set(names).size === names.length, "no puede repetir una categoría")
+      .optional(),
   })
   .strict();
 
@@ -61,14 +83,16 @@ export const ManifestSchema = z
     /** Folders with a `SKILL.md`; each one's name is the skill's short name. */
     skills: z.array(z.string().min(1)).default([]),
     stations: z.array(ManifestStationSchema).default([]),
+    /** Read-only panel tabs, each showing a JSON file of the package's data folder. */
+    tabs: z.array(ManifestTabSchema).default([]),
   })
   .strict();
 export type PackageManifest = z.output<typeof ManifestSchema>;
 
 /** Why a path of the manifest is refused before looking at the disk. */
-function pathProblem(path: string): string | undefined {
-  if (isAbsolute(path) || win32.isAbsolute(path) || /^[a-z]:/i.test(path)) return `la ruta "${path}" tiene que ser relativa a la carpeta del paquete`;
-  if (path.split(/[\\/]/).includes("..")) return `la ruta "${path}" no puede salir de la carpeta del paquete con ".."`;
+function pathProblem(path: string, folder = "del paquete"): string | undefined {
+  if (isAbsolute(path) || win32.isAbsolute(path) || /^[a-z]:/i.test(path)) return `la ruta "${path}" tiene que ser relativa a la carpeta ${folder}`;
+  if (path.split(/[\\/]/).includes("..")) return `la ruta "${path}" no puede salir de la carpeta ${folder} con ".."`;
   return undefined;
 }
 
@@ -196,10 +220,23 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       timeoutMinutes: s.timeoutMinutes,
       maxTurns: s.maxTurns,
       ...(s.requests && { requests: s.requests }),
+      onDemand: s.onDemand,
       entry,
     };
   });
 }
+
+function packageTabs(manifest: PackageManifest): PackageTab[] {
+  const seen = new Set<string>();
+  return manifest.tabs.map((t) => {
+    if (seen.has(t.name)) throw new Refused(`tabs: la pestaña "${t.name}" está repetida`);
+    seen.add(t.name);
+    return { name: t.name, title: t.title, data: t.data, ...(t.categories && { categories: t.categories }) };
+  });
+}
+
+/** A package's own data folder in ZERO_HOME, where its stations write and its tabs read. */
+export const packageDataDir = (home: Pick<FactoryHome, "packageData">, name: string): string => join(home.packageData, name);
 
 /** Where an entry's package lives. */
 export function packageFolder(entry: PackageEntry, home: Pick<FactoryHome, "config" | "packages">): string {
@@ -260,8 +297,9 @@ export function loadPackages(config: Pick<FactoryConfig, "packages" | "agents" |
       const skills = packageSkills(manifest, root);
       const agents = packageAgents(manifest, root, entry, skills, taken);
       const stations = packageStations(manifest, root, entry, skills);
+      const tabs = packageTabs(manifest);
       for (const a of agents) taken.add(a.name);
-      out.packages.push({ name: manifest.name, version: manifest.version, dir: root, index, entry, agents: agents.map((a) => a.name), skills: skills.map((s) => s.fullName), stations: stations.map((s) => s.name) });
+      out.packages.push({ name: manifest.name, version: manifest.version, dir: root, index, entry, agents: agents.map((a) => a.name), skills: skills.map((s) => s.fullName), stations: stations.map((s) => s.name), tabs });
       out.agents.push(...agents);
       out.skills.push(...skills);
       if (!stations.length) continue;

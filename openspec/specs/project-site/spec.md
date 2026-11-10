@@ -72,11 +72,11 @@ The workflow section MUST be a vertical numbered list (<ol>) where each step sho
 - **THEN** its items contain <code> elements with each of those commands, each followed by a description
 
 ### Requirement: Compatibility grid
-The compatibility section MUST show a dense grid of what zero supports today and nothing else. The engines are Claude (Agent SDK), Codex, Antigravity and any CLI declared in the configuration. The chat clients are Claude Code (automatic registration), Codex and OpenCode (manual configuration) and the terminal.
+The compatibility section MUST show a dense grid of what zero supports today and nothing else. The engines are Claude (Agent SDK), Codex, Antigravity, OpenCode, agents that speak ACP and any CLI declared in the configuration. The chat clients are Claude Code (automatic registration), Codex and OpenCode (manual configuration) and the terminal.
 
 #### Scenario: Grid entries
 - **WHEN** the compatibility section is read
-- **THEN** it lists Claude, Codex, Antigravity, custom CLI, Claude Code, OpenCode and terminal, and no other engine or client
+- **THEN** it lists Claude, Codex, Antigravity, OpenCode, ACP, custom CLI, Claude Code, OpenCode and terminal, and no other engine or client
 
 ### Requirement: Sección de CI y recorrido
 site/index.html MUST have a `<section id="ci">` right after `guarantees`, with marker 06, whose texts are all under data-i18n keys with their English value in EN. It MUST say that zero does not replace CI/CD or quality tools (GitHub Actions, SonarQube, SonarCloud, CodeQL, Dependabot, Snyk), which remain the authority; that zero runs the line's verification locally before delivering; that with integrate `pull-request` and `autoMerge` it merges only once every GitHub check has finished well, and that with no checks it waits a few minutes and merges with its own verification and reviews; that those tools' findings are a second look; that deployments are still done by the platform; and it MUST recommend having CI and at least one static analysis on every repository. The section MUST include an `ol.path` list of 6 steps: the request; zero with spec, build, verify, review and security; the pull request; GitHub's CI and quality checks; the merge; and the platform's deploy.

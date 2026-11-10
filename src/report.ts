@@ -109,6 +109,8 @@ function originLabel(job: Job): string {
   switch (job.source?.kind) {
     case "github-issue":
       return `Issue de GitHub #${job.source.number}`;
+    case "linear-issue":
+      return `Issue de Linear ${job.source.identifier}`;
     case "jira-issue":
       return `Issue de Jira ${job.source.key}`;
     case "night-shift":

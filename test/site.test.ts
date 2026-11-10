@@ -227,6 +227,16 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["delegate", "trust"]) expect(en).toContain(word);
   });
 
+  it("la sinopsis dice, después de la delegación, que zero libera tiempo para las personas", () => {
+    const synopsis = section("synopsis");
+    const time = translatable(synopsis).find((t) => t.key === "synopsis.time");
+    expect(time?.inner.trim()).toBe("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.");
+    expect(time!.inner).toContain("las personas");
+    expect(synopsis.indexOf('data-i18n="synopsis.loop"')).toBeGreaterThanOrEqual(0);
+    expect(synopsis.indexOf('data-i18n="synopsis.time"')).toBeGreaterThan(synopsis.indexOf('data-i18n="synopsis.loop"'));
+    expect(loadSite().EN["synopsis.time"]).toBe("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.");
+  });
+
   it("la autonomía conecta la delegación con L0 a L3 antes de la tabla", () => {
     const autonomy = section("autonomy");
     const intro = /<p data-i18n="autonomy\.intro">([\s\S]*?)<\/p>/.exec(autonomy);
@@ -292,27 +302,37 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["stars", "estrellas", "testimonio", "testimonial", "clientes satisfechos", "customers", "usuarios activos", "descargas"]) expect(text).not.toContain(word);
   });
 
-  it("marca como en camino lo de las próximas etapas", () => {
+  it("marca como en camino solo lo que falta de las próximas etapas", () => {
     const soon = [...html.matchAll(/<span class="soon" data-i18n="soon">([^<]*)<\/span>/g)];
-    expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
-    expect(loadSite().EN["soon"]).toBe("coming");
+    // Hoy no queda nada en camino, así que su traducción tampoco: vuelve con el próximo ítem pendiente.
+    expect(loadSite().EN["soon"] !== undefined).toBe(soon.length > 0);
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    // Los motores ACP/OpenCode, Linear, Jira, el simulacro y el instalador ya están: ninguno sigue en camino.
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.engines", "next.intake", "next.regen"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.engines", "next.linear", "next.intake", "next.regen"]) expect(lines.filter((l) => l.includes(`data-i18n="${item}"`)), item).toEqual([]);
   });
 
-  it("da los pedidos desde Jira como disponibles y deja Linear en camino", () => {
-    const soonLines = html.split("\n").filter((l) => l.includes('class="soon"'));
-    expect(soonLines.filter((l) => l.includes("Jira"))).toEqual([]);
-    const intake = soonLines.find((l) => l.includes('data-i18n="next.intake"'))!;
-    expect(/data-i18n="next\.intake">([^<]*)</.exec(intake)![1]).toBe("Pedidos desde Linear");
-    expect(loadSite().EN["next.intake"]).toBe("Requests from Linear");
+  it("da los motores ACP y OpenCode como disponibles, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes("next.engines") && l.includes('class="soon"'))).toEqual([]);
+    const engines = html.split("\n").filter((l) => l.includes('data-i18n="next.engines"'));
+    expect(engines).toHaveLength(1);
+    expect(engines[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+  });
+
+  it("da los pedidos desde Jira como disponibles, no en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("Jira"))).toEqual([]);
+    const intake = lines.filter((l) => l.includes('data-i18n="next.intake"'));
+    expect(intake).toHaveLength(1);
+    expect(/data-i18n="next\.intake">([^<]*)</.exec(intake[0]!)![1]).toBe("Pedidos desde Jira");
+    expect(intake[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["next.intake"]).toBe("Requests from Jira");
     const request = /<p data-i18n="workflow\.request">([^<]*)<\/p>/.exec(html)![1]!;
-    expect(request).toContain("GitHub");
-    expect(request).toContain("Jira");
-    expect(loadSite().EN["workflow.request"]).toContain("GitHub");
-    expect(loadSite().EN["workflow.request"]).toContain("Jira");
+    for (const tracker of ["GitHub", "Linear", "Jira"]) {
+      expect(request).toContain(tracker);
+      expect(loadSite().EN["workflow.request"]).toContain(tracker);
+    }
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -321,6 +341,25 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["next.otlp"]).toBeUndefined();
     expect(/<p data-i18n="workflow\.trace">([^<]*)<\/p>/.exec(html)![1]).toContain("OTLP");
     expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
+  });
+
+  it("da los pedidos desde Linear como disponibles, no en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && /linear/i.test(l))).toEqual([]);
+    const linear = lines.filter((l) => l.includes('data-i18n="next.linear"'));
+    expect(linear).toHaveLength(1);
+    expect(linear[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["ready"]).toBe("available");
+    expect(loadSite().EN["next.linear"]).toContain("Linear");
+    expect(loadSite().EN["next.intake"]).not.toContain("Linear");
+  });
+
+  it("da el simulacro de regeneración como disponible, no en camino", () => {
+    const lines = html.split("\n");
+    const regen = lines.filter((l) => l.includes('data-i18n="next.regen"'));
+    expect(regen).toHaveLength(1);
+    expect(regen[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("next.regen"))).toEqual([]);
   });
 });
 
@@ -809,7 +848,7 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
   it("lista los motores y clientes de hoy, y nada más", () => {
     const compat = section("compatibility");
     const items = [...compat.matchAll(/data-item="([^"]+)"/g)].map((m) => m[1]);
-    expect(items).toEqual(["claude", "codex", "antigravity", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
+    expect(items).toEqual(["claude", "codex", "antigravity", "opencode", "acp", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
     for (const name of ["Claude", "Codex", "Antigravity", "CLI propio", "Claude Code", "OpenCode", "Terminal"]) expect(compat).toContain(name);
     for (const other of ["Gemini", "Cursor", "Copilot", "Windsurf", "Aider", "ChatGPT"]) expect(compat).not.toContain(other);
   });
@@ -1032,7 +1071,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "ACP", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });

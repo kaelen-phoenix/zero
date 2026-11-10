@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { packagesPass, scheduledPass } from "../src/line/packages.js";
 import { SecretStore, memoryKeyring } from "../src/keychain.js";
 import { factoryConfig } from "../src/packages.js";
+import { TabDataSchema } from "../src/package-tabs.js";
 import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -41,6 +42,15 @@ describe("README in English and Spanish", () => {
     }
   });
 
+  it("document the OpenCode and ACP engines and no longer list them as coming", () => {
+    for (const text of [en, es]) {
+      expect(text).toContain("engine: opencode");
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("protocol: acp");
+    }
+    expect(section(en, "## Next steps")).not.toMatch(/ACP|OpenCode/);
+    expect(section(es, "## Próximas etapas")).not.toMatch(/ACP|OpenCode/);
+  });
+
   it("document Codex without its sandbox in both languages", () => {
     for (const text of [en, es]) {
       expect(blocks(text).map((b) => b.body).join("\n")).toContain("codex: { sandbox: off }");
@@ -71,9 +81,32 @@ describe("README in English and Spanish", () => {
     expect(es).toContain("## Cómo funciona");
   });
 
+  it("state the freed-time principle in the principles of both", () => {
+    const bullets = (text: string, heading: string) =>
+      section(text, heading).split("\n").filter((line) => line.startsWith("- "));
+    expect(bullets(en, "## How it works").some((line) => line.includes("zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration."))).toBe(true);
+    expect(bullets(es, "## Cómo funciona").some((line) => line.includes("zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional."))).toBe(true);
+  });
+
   it("has the same heading levels in the same order", () => {
     expect(levels(en).length).toBeGreaterThan(0);
     expect(levels(en)).toEqual(levels(es));
+  });
+
+  it("document the Linear intake in both, and leave no tracker on the roadmap", () => {
+    for (const [text, heading, roadmap] of [
+      [en, "## Linear issues", "## Next steps"],
+      [es, "## Issues de Linear", "## Próximas etapas"],
+    ] as const) {
+      const linear = section(text, heading);
+      expect(linear).toContain("LINEAR_API_KEY");
+      expect(blocks(linear).some((b) => b.info === "yaml" && b.body.includes("linear: { team: ENG, label: zero }"))).toBe(true);
+      expect(blocks(linear).some((b) => b.info === "sh" && b.body.includes("zero secret set LINEAR_API_KEY"))).toBe(true);
+      expect(linear).toContain("zero approve");
+      const next = section(text, roadmap);
+      expect(next).not.toMatch(/jira/i);
+      expect(next).not.toMatch(/linear/i);
+    }
   });
 
   it("has the same code blocks, with identical commands and configuration", () => {
@@ -155,8 +188,8 @@ describe("documentation up to date", () => {
       const body = section(text, heading);
       for (const word of ["jira:", "site:", "project:", "JIRA_EMAIL", "JIRA_API_TOKEN", "zero secret set"]) expect(body, word).toContain(word);
       const upcoming = section(text, next);
-      expect(upcoming).toContain("Linear");
-      expect(upcoming).not.toContain("Jira");
+      expect(upcoming).not.toMatch(/linear/i);
+      expect(upcoming).not.toMatch(/jira/i);
       return blocks(body).map((b) => ({ info: b.info, body: normalize(b.body) }));
     });
     expect(found[0]!.length).toBeGreaterThanOrEqual(2);
@@ -277,6 +310,20 @@ describe("agent packages", () => {
       expect(body, heading).not.toMatch(/community|enterprise|premium|commercial|comercial|edition|edición/i);
       expect(body, heading).toMatch(/third-party|terceros/);
     }
+  });
+
+  it.each(HEADINGS)("documents panel tabs with a manifest and data that load (%#)", async (text, heading) => {
+    const body = section(text, heading);
+    for (const word of ["tabs", "package-data", "ctx.dataDir", "categoria", "http", "1 MiB", "500", "#k="]) expect(body, word).toContain(word);
+    const found = blocks(body);
+    const tabs = found.find((b) => b.info === "yaml" && b.body.startsWith("tabs:"))!.body;
+    const dir = tempDir("zero-example-");
+    writeTree(dir, { "zero-package.yaml": `interface: 1\nname: hello\nversion: 1.0.0\n${tabs}` });
+    const ctx = testFactory({ packages: [{ path: dir }] });
+    ctx.config = await factoryConfig(ctx.home);
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    expect(ctx.config.loadedPackages!.packages[0]!.tabs.map((t) => t.name)).toEqual(["news"]);
+    expect(TabDataSchema.safeParse(JSON.parse(found.find((b) => b.info === "json" && b.body.includes('"items"'))!.body)).success).toBe(true);
   });
 
   it.each(HEADINGS)("has an example that works when copied (%#)", async (text, heading) => {

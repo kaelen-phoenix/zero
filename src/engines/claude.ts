@@ -121,7 +121,7 @@ export const claudeEngine: Engine = {
     } catch (err) {
       if (req.signal?.aborted) return { ok: false, text: "cancelled" };
       if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min` };
-      return { ok: false, text: err instanceof Error ? err.message : String(err) };
+      return claudeThrown(err);
     } finally {
       clearTimeout(timer);
       req.signal?.removeEventListener("abort", cancel);
@@ -134,6 +134,15 @@ export const claudeEngine: Engine = {
 };
 
 const BUDGET_TEXT = "Reached maximum budget";
+const CREDIT_TEXT = "Credit balance is too low";
+/** An API key out of credit: the engine waits instead of failing the work. */
+const NO_CREDIT: QuotaReport = { billing: "api", windows: [], limited: true };
+
+/** What a thrown SDK error (neither cancelled nor timed out) means for zero. */
+export function claudeThrown(err: unknown): EngineResult {
+  const text = err instanceof Error ? err.message : String(err);
+  return { ok: false, text, ...(text.includes(CREDIT_TEXT) && { quota: NO_CREDIT }) };
+}
 
 /** The model that cost the most in a result's `modelUsage` (the first one on a tie); undefined when there is none. */
 function answeringModel(usage: SDKResultMessage["modelUsage"] | undefined): string | undefined {
@@ -148,11 +157,15 @@ function answeringModel(usage: SDKResultMessage["modelUsage"] | undefined): stri
 export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): EngineResult {
   const sessionId = result.session_id;
   const model = answeringModel(result.modelUsage);
+  const usage = result.usage as { input_tokens?: unknown; output_tokens?: unknown } | undefined;
+  const tokens = typeof usage?.input_tokens === "number" && typeof usage.output_tokens === "number" ? { input: usage.input_tokens, output: usage.output_tokens } : undefined;
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
-    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+    if (errors.some((e) => String(e).includes(CREDIT_TEXT))) quota = NO_CREDIT;
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
-  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  if (result.is_error && typeof result.result === "string" && result.result.includes(CREDIT_TEXT)) quota = NO_CREDIT;
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
 }

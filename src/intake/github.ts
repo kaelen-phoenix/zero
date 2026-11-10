@@ -140,11 +140,11 @@ export function lineRepository(line: LineConfig): string | undefined {
   return url ? githubRepository(url) : undefined;
 }
 
-const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
+export const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
 
 /**
  * What the issue is told when its job reaches a status worth telling, once per status (and per question).
- * With `replyHere: false` (a tracker whose comments the factory does not read, and that is not GitHub) the texts
+ * With `replyHere: false` (a tracker whose later comments the factory does not read, and that is not GitHub: Linear, Jira) the texts
  * invite no answer on the issue and do not mention GitHub.
  */
 export function report(job: Job, opts: { replyHere?: boolean } = {}): { key: string; body: string } | undefined {

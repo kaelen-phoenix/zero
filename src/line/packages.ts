@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,7 +8,7 @@ import { ANDON_KEY, requestWork, type FactoryContext } from "../app.js";
 import { budgetState, pickAgentEngine } from "../budget.js";
 import type { PackageStation } from "../config.js";
 import { log } from "../log.js";
-import { warnOnce } from "../packages.js";
+import { packageDataDir, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
@@ -53,6 +54,8 @@ export interface StationContext {
   log: { info(message: string, fields?: Record<string, unknown>): void; warn(message: string, fields?: Record<string, unknown>): void };
   /** Line names only. */
   lines: string[];
+  /** The package's own data folder in ZERO_HOME, already created; its panel tabs read their JSON from here. */
+  dataDir: string;
   /** Kept between passes, in keys of this station alone; any value JSON can hold. */
   state: { get<T = unknown>(name: string): T | undefined; set(name: string, value: unknown): void };
   /** No job ids, branches or local paths. */
@@ -65,18 +68,22 @@ export interface StationContext {
 export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
+  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true })` for a run the person in charge asked for. */
   pass?: unknown;
   scheduled?: unknown;
   parseConfig?: unknown;
 }
 
-/** A module's `pass` or `scheduled`. */
-type StationHook = (ctx: StationContext, slot?: { at: string }) => unknown;
+/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`. */
+type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
 /** Where the time of a station's last pass is kept. */
 export const stationLastKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:last`;
+
+/** When the person in charge asked for a run of a station's `pass` outside its period, ISO 8601; at most one pending per station. */
+export const stationOnDemandKey = (pkg: string, name: string) => `${stationKey({ package: pkg, name })}:on-demand`;
 
 /** The last local day (`YYYY-MM-DD`) a time of a station's `schedule` ran; out of reach of `ctx.state`. */
 export const stationScheduleKey = (pkg: string, name: string, at: string) => `${stationKey({ package: pkg, name })}:schedule:${at}`;
@@ -224,6 +231,8 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
 function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
   const key = stationKey(station);
   const stateKey = (name: string) => `${key}:state:${name}`;
+  const dataDir = packageDataDir(ctx.home, station.package);
+  mkdirSync(dataDir, { recursive: true });
   const clean = (fields?: Record<string, unknown>) => (fields ? (JSON.parse(JSON.stringify(fields, (_k, v: unknown) => (typeof v === "string" ? withoutSecrets(v, ctx, station) : v))) as Record<string, unknown>) : undefined);
   return {
     package: station.package,
@@ -239,6 +248,7 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
       warn: (message, fields) => log.warn(`${key}: ${withoutSecrets(message, ctx, station)}`, clean(fields)),
     },
     lines: ctx.config.lines.map((l) => l.name),
+    dataDir,
     state: {
       get: <T>(name: string) => {
         const raw = ctx.store.getKv(stateKey(name));
@@ -261,6 +271,8 @@ interface StationTurn {
   mark(): void;
   /** Whether a module without the export is normal for this station. */
   optional: boolean;
+  /** Runs when the module cannot be imported, lacks the export or refuses its config. */
+  failed?(): void;
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
@@ -282,11 +294,13 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
       mod = (await import(/* @vite-ignore */ pathToFileURL(station.module).href)) as StationModule;
     } catch (err) {
       warnOnce(`${key}: no corre porque su módulo no se pudo importar: ${withoutSecrets(errorText(err), ctx, station)}`);
+      turn.failed?.();
       return;
     }
     const hook = mod[turn.hook];
     if (typeof hook !== "function") {
       if (!turn.optional) warnOnce(`${key}: no corre porque su módulo no exporta una función ${turn.hook}`);
+      turn.failed?.();
       return;
     }
     let config: unknown = station.entry.config;
@@ -295,6 +309,7 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
         config = await mod.parseConfig(config);
       } catch (err) {
         warnOnce(`${key}: no corre porque su configuración no es válida: ${withoutSecrets(errorText(err), ctx, station)}`);
+        turn.failed?.();
         return;
       }
     }
@@ -330,8 +345,28 @@ async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, 
   }
 }
 
-/** A station's `pass`, once its `everyMinutes` are over. */
+/** A station's `pass`, once its `everyMinutes` are over, or right away when the person in charge asked for it. */
 async function runStation(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, outer?: AbortSignal): Promise<void> {
+  const onDemandKey = stationOnDemandKey(station.package, station.name);
+  if (station.onDemand && ctx.store.getKv(onDemandKey) !== undefined) {
+    // Its own turn: the period stays as it was, and the request goes right before the call so it never runs twice.
+    const clear = () => ctx.store.deleteKv(onDemandKey);
+    await runTurn(
+      ctx,
+      station,
+      now,
+      {
+        hook: "pass",
+        label: `${stationKey(station)} a demanda`,
+        mark: clear,
+        optional: false,
+        failed: clear,
+        call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true }),
+      },
+      outer,
+    );
+    return;
+  }
   const lastKey = stationLastKey(station.package, station.name);
   const last = ctx.store.getKv(lastKey);
   if (last && now.getTime() - Date.parse(last) < station.everyMinutes * 60_000) return;
@@ -406,9 +441,14 @@ export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { sign
   }
 }
 
+/** Whether some loaded station has a run asked for by the person in charge still pending. */
+export function onDemandPending(ctx: FactoryContext): boolean {
+  return (ctx.config.loadedPackages?.stations ?? []).some((s) => s.onDemand && ctx.store.getKv(stationOnDemandKey(s.package, s.name)) !== undefined);
+}
+
 /**
  * The installed packages' stations, one at a time and each at most once per its
- * `everyMinutes`, only while the factory has nothing else to do. A failure or a
+ * `everyMinutes` (or once more when asked for on demand), only while the factory has nothing else to do. A failure or a
  * hang stays in the log and the next station still runs.
  */
 export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {

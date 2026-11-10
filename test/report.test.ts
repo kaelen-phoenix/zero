@@ -495,7 +495,7 @@ describe("panel: monthly report tab", () => {
 
   it("is linked from the navigation", async () => {
     const p = await panel();
-    for (const path of ["/", "/line", "/proposals", "/report"]) expect(await (await p.get(path)).text()).toContain('<a href="/report">Informe mensual</a>');
+    for (const path of ["/", "/line", "/proposals", "/report"]) expect(await (await p.get(path)).text()).toMatch(/<a href="\/report"[^>]*>[\s\S]*?<span class="lb">Informe mensual<\/span><\/a>/);
   });
 
   it("asks for a session", async () => {
