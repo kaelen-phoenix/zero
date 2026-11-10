@@ -177,6 +177,24 @@ Con `autoMerge: true` en una línea `pull-request`, la fábrica también funde s
 
 Las pasadas de la fábrica cuidan el cupo de la API de GitHub de tu cuenta: repiten sus consultas de forma condicional y cuentan los pedidos de cada una. Cuando queda 20% del cupo o menos, o si GitHub responde por límite, paran hasta que el cupo se renueva, aunque reinicies la fábrica. Abrir un pull request de un trabajo terminado no para. Con 40% o menos, `zero status` muestra una línea `GitHub:` con lo que queda.
 
+### Alertas de seguridad (`securityAlerts`)
+
+En cada línea cuyo remoto está en GitHub, la fábrica lee cada minuto las alertas abiertas de Dependabot (dependencias con vulnerabilidades conocidas), con el mismo cupo de GitHub y las mismas pausas. Cada alerta nueva de severidad alta o crítica se convierte en un trabajo de seguridad en esa línea, para actualizar la dependencia a la versión corregida: la más alta que GitHub da como corregida entre las alertas de ese paquete. Las alertas del mismo paquete comparten un trabajo, y la fábrica recuerda qué alertas tomó, así que nunca abre un segundo trabajo por ellas; una alerta nueva de un paquete cuyo trabajo todavía no terminó se suma a ese trabajo. Estos trabajos van primeros en la cola, antes que cualquier otro, y pasan por verify, revisión y seguridad como cualquier cambio; en líneas con `autoMerge` se funden cuando pasan los checks de GitHub. Las alertas sin versión corregida publicada no abren trabajo y solo se muestran. El texto de sus avisos llega a los agentes como dato de terceros, no como instrucción.
+
+Cada línea elige con `securityAlerts`:
+
+```yaml
+lines:
+  - name: tienda
+    securityAlerts: { mode: jobs, minSeverity: high }   # off · notify · jobs; minSeverity: low · medium · high · critical
+```
+
+- **`jobs`** (el valor por defecto, con `minSeverity: high`): abre trabajos para las alertas de `minSeverity` o más y solo muestra el resto. Con `minSeverity: low` o `medium`, esas alertas también tienen trabajo, en el lugar normal de la cola.
+- **`notify`**: no abre trabajos; solo muestra las alertas.
+- **`off`**: no las lee.
+
+`zero status` muestra una línea `Alertas de seguridad:` por cada alerta abierta, con el trabajo que la atiende o `solo aviso`, y un problema cuando GitHub no deja leerlas (el token necesita permiso de lectura de alertas de Dependabot, y Dependabot tiene que estar activado en el repositorio). El informe las lista bajo `## Alertas de seguridad`, y el panel marca sus trabajos como trabajos de seguridad.
+
 ### Autor de los commits
 
 Por defecto los commits de la fábrica tienen como autor a `zero`, la identidad propia de la fábrica. Algunos servicios solo aceptan commits cuyo autor es una de sus cuentas: el plan Hobby de Vercel, por ejemplo, bloquea el despliegue ("GitHub couldn't verify an account for the commit"), así que las vistas previas de los pull requests fallan su check y la fusión automática nunca arranca. Con `commitAuthor: owner` (global, o en una línea, que manda) los commits de especificación, de intento y de merge tienen como autor a vos: el `user.name` y el `user.email` que da `git config` en el repositorio de la línea, leídos al hacer el commit y nunca escritos en el archivo de la fábrica. zero sigue como committer, así se sigue viendo que los hizo la fábrica. Si el repositorio no tiene nombre o email configurados, el commit sale con autor zero y el trabajo sigue. La detección de reversiones funciona igual, porque mira los mensajes y los SHA de los commits, no sus autores.

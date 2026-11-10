@@ -254,6 +254,14 @@ export const LineSchema = z.object({
   linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
+  /**
+   * Dependabot alerts of the line's GitHub repository: `off`, `notify` (only shown) or `jobs` (one job per package
+   * for open alerts at or above `minSeverity`; the rest are only shown).
+   */
+  securityAlerts: z
+    .object({ mode: z.enum(["off", "notify", "jobs"]).default("jobs"), minSeverity: z.enum(["low", "medium", "high", "critical"]).default("high") })
+    .strict()
+    .prefault({}),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
     .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })

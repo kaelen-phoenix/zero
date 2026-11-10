@@ -10,6 +10,7 @@ import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { LINEAR_SECRET, linearIssues, pollLinear, type LinearApi } from "./intake/linear.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
+import { githubAlerts, pollSecurityAlerts, type AlertApi } from "./intake/security-alerts.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
@@ -48,6 +49,8 @@ export interface DaemonOptions {
   issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
   /** Linear for the Linear intake, per line (undefined without a key); tests inject a fake. */
   linear?: (line: LineConfig) => LinearApi | undefined;
+  /** GitHub's Dependabot alerts, per line; tests inject a fake. Without it, `once` runs do not read alerts. */
+  alerts?: (repository: string, line?: LineConfig) => AlertApi | undefined;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
@@ -75,6 +78,11 @@ const realIssues = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
 const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) => (repository: string, line?: LineConfig) => {
   const token = githubToken();
   return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+const realAlerts = (meter: GithubMeter) => (repository: string) => {
+  const token = githubToken();
+  return token ? githubAlerts(token, repository, meter.client(token, "alerts")) : undefined;
 };
 
 /** The real Linear adapter, with the key from the secret store; pollLinear signs its comments. */
@@ -233,6 +241,19 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         merging = undefined;
       });
   };
+  // Dependabot alerts of the lines on GitHub, read the same way; they become urgent security jobs.
+  let alertsAt = 0;
+  let readingAlerts: Promise<void> | undefined;
+  const readAlerts = () => {
+    if (readingAlerts || (opts.once && !opts.alerts) || !ctx.config.lines.some((l) => l.securityAlerts.mode !== "off") || Date.now() - alertsAt < (opts.once ? 0 : INTAKE_MS)) return;
+    alertsAt = Date.now();
+    readingAlerts = pollSecurityAlerts(ctx, opts.alerts ?? realAlerts(meter))
+      .catch((err) => log.warn("security alerts failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("alerts");
+        readingAlerts = undefined;
+      });
+  };
   // Night-shift integrations the owner reverted on the base branch, read the same way.
   let revertsAt = 0;
   let checkingReverts: Promise<unknown> | undefined;
@@ -328,6 +349,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         syncProposals();
         mergeReady();
         findReverts();
+        readAlerts();
       }
       takeLinear();
       exportTraces();
@@ -400,6 +422,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await publishing;
     await merging;
     await checkingReverts;
+    await readingAlerts;
     await exporting;
     await scheduling;
     await looking;
@@ -431,9 +454,12 @@ export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder:
 /** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
 const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";
 
-/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own and the packages' after. */
+/** A Dependabot alert of high or critical severity: it goes ahead of everything else. */
+const urgent = (job: Job) => job.source?.kind === "security-alert" && (job.source.severity === "high" || job.source.severity === "critical");
+
+/** Queued jobs in the order the daemon considers them: urgent security patches first, then the owner's, the night shift's own and the packages' after. */
 export function ownerFirst(jobs: Job[]): Job[] {
-  return [...jobs.filter((j) => !lowPriority(j)), ...jobs.filter(lowPriority)];
+  return [...jobs.filter(urgent), ...jobs.filter((j) => !urgent(j) && !lowPriority(j)), ...jobs.filter(lowPriority)];
 }
 
 /** Questions nobody answered in time get their default answer. */

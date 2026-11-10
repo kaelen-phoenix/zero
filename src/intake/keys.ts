@@ -5,6 +5,11 @@ export const intakeProblemKey = (line: string) => `intake.problem.${line}`;
 export const linearIssueKey = (team: string, id: string) => `linear-issue:${team}/${id}`;
 export const linearProblemKey = (line: string) => `intake.linear.problem.${line}`;
 
+/** The security-alerts pass: each alert it took (its job), each line's open alerts and its last read problem. */
+export const securityAlertKey = (repository: string, number: number) => `security-alert:${repository}#${number}`;
+export const securityAlertsKey = (line: string) => `security-alerts:${line}`;
+export const securityAlertsProblemKey = (line: string) => `security-alerts.problem.${line}`;
+
 /** Hidden mark on every comment the factory posts, so it never answers itself (it comments as the owner). */
 export const FACTORY_MARK = "<!-- zero -->";
 

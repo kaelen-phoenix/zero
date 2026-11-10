@@ -177,6 +177,24 @@ With `autoMerge: true` on a `pull-request` line, the factory also merges its pul
 
 The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
 
+### Security alerts (`securityAlerts`)
+
+On every line whose remote is on GitHub, the factory reads the open Dependabot alerts (dependencies with known vulnerabilities) every minute, with the same GitHub quota and the same pauses. Each new alert of high or critical severity becomes a security job on that line, to update the dependency to the fixed version: the highest version GitHub gives as fixed among that package's alerts. Alerts of the same package share one job, and the factory remembers which alerts it took, so it never opens a second job for them; a new alert of a package whose job is still unfinished joins that job. These jobs go first in the queue, ahead of all other work, and pass through verify, review and security like any other change; on `autoMerge` lines they merge once GitHub's checks pass. Alerts with no published fixed version open no job and are only shown. Their advisory text reaches the agents as third-party data, not as instructions.
+
+Each line chooses with `securityAlerts`:
+
+```yaml
+lines:
+  - name: tienda
+    securityAlerts: { mode: jobs, minSeverity: high }   # off · notify · jobs; minSeverity: low · medium · high · critical
+```
+
+- **`jobs`** (the default, with `minSeverity: high`): it opens jobs for alerts at or above `minSeverity` and only shows the rest. With `minSeverity: low` or `medium`, those alerts also get a job, in the normal queue position.
+- **`notify`**: it opens no job; it only shows the alerts.
+- **`off`**: it does not read them.
+
+`zero status` shows one `Alertas de seguridad:` line per open alert, with the job that handles it or `solo aviso`, and a problem when GitHub does not let the factory read them (the token needs read access to Dependabot alerts, and Dependabot must be on in the repository). The briefing lists them under `## Alertas de seguridad`, and the panel labels their jobs as security jobs.
+
 ### Commit author
 
 By default the factory's commits are authored by `zero`, the factory's own identity. Some services only accept commits whose author is one of their accounts: Vercel's Hobby plan, for example, blocks the deploy ("GitHub couldn't verify an account for the commit"), so pull request previews fail their check and auto-merge never starts. With `commitAuthor: owner` (globally, or on a line, which wins) the spec, attempt and merge commits are authored by you: the `user.name` and `user.email` that `git config` gives in the line's repository, read when committing and never written to the factory file. zero stays the committer, so it is still visible that the factory made them. If the repository has no name or email configured, the commit is authored by zero and the job goes on. Revert detection works the same, since it looks at commit messages and SHAs, not at authors.
