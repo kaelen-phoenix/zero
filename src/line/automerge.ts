@@ -6,6 +6,7 @@ import { log } from "../log.js";
 import { FACTORY_MARK } from "../intake/keys.js";
 import { spawnGit, tryGit } from "../shell.js";
 import type { Job } from "../state/store.js";
+import { cleanupKey } from "./cleanup.js";
 import { prRefreshKey, type PrRefresh } from "./finish.js";
 
 /**
@@ -251,6 +252,8 @@ function followRemoteTip(ctx: FactoryContext, job: Job) {
 function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void): boolean {
   const line = ctx.config.lines.find((l) => l.name === job.line);
   if (!line?.autoMerge || !job.spec || job.attempt >= line.maxAttempts || state.resolving === head) return false;
+  // Its last work copy is still waiting to be removed: the job would start in a half-removed folder. The tip stays untried, so a later look takes it back.
+  if (ctx.store.getKv(cleanupKey(job.id))) return false;
   if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return false;
   const fetched = spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 120_000 });
   if (fetched.status !== 0) {

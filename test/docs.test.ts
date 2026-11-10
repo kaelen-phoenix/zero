@@ -445,6 +445,17 @@ describe("what the factory produces", () => {
   });
 });
 
+describe("work copy cleanup", () => {
+  it("is explained in the same bullet of both READMEs", () => {
+    const bullet = (text: string, start: string) => text.split("\n").find((l) => l.startsWith(start))!;
+    const enBullet = bullet(en, "- **It never overwrites your work.**");
+    const esBullet = bullet(es, "- **Nunca pisa tu trabajo.**");
+    expect(enBullet).toContain("retried in the background");
+    expect(esBullet).toContain("se reintenta en segundo plano");
+    for (const b of [enBullet, esBullet]) expect(b).toContain("`zero status`");
+  });
+});
+
 describe("AGENTS.md", () => {
   it("states the language rule for the documentation", () => {
     const conventions = read("AGENTS.md").split("## Conventions")[1]!;
