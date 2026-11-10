@@ -89,6 +89,12 @@ describe("spec station output", () => {
     expect(specProblems(validSpec({ stages: [{ title: " ", tasks: ["a"] }, { title: "Vista", tasks: ["b"] }] }))).toEqual([expect.stringMatching(/stage 1 has an empty title/)]);
   });
 
+  it("rejects more stages than one job may have", () => {
+    const stages = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `Etapa ${i + 1}`, tasks: ["a"] }));
+    expect(specProblems(validSpec({ stages: stages(8) }))).toEqual([]);
+    expect(specProblems(validSpec({ stages: stages(9) }))).toEqual([expect.stringMatching(/at most 8/)]);
+  });
+
   it("writes one tasks section per stage, in order", () => {
     const spec = validSpec({ stages: [{ title: "Base", tasks: ["a", "b"] }, { title: "Vista", tasks: ["c"] }] });
     const tasks = renderOpenSpecChange(spec, { jobId: "abc123", newCapability: true })["tasks.md"]!;

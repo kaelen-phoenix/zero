@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Spec may split a request into stages
-The spec station's output SHALL accept an optional `stages` list, each stage with a `title` and its `tasks`, and `specProblems` MUST reject a feasible spec whose `stages` list is present but has fewer than 2 stages, a stage with an empty title, or a stage without tasks.
+The spec station's output SHALL accept an optional `stages` list, each stage with a `title` and its `tasks`, and `specProblems` MUST reject a feasible spec whose `stages` list is present but has fewer than 2 stages, more than 8 (`MAX_STAGES`), a stage with an empty title, or a stage without tasks.
 
 #### Scenario: Valid stages accepted
 - **WHEN** specProblems receives a feasible spec with two stages, each with a non-empty title and at least one task
@@ -12,6 +12,10 @@ The spec station's output SHALL accept an optional `stages` list, each stage wit
 #### Scenario: Single stage rejected
 - **WHEN** specProblems receives a feasible spec whose stages list has exactly one stage
 - **THEN** it returns a problem mentioning stages
+
+#### Scenario: Too many stages rejected
+- **WHEN** specProblems receives a feasible spec with 9 stages, each with a title and a task
+- **THEN** it returns a problem saying stages must be at most 8
 
 #### Scenario: Stage without tasks rejected
 - **WHEN** specProblems receives a feasible spec with two stages where one has an empty tasks list

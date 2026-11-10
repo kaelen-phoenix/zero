@@ -37,11 +37,14 @@ export const SpecSchema = z.object({
   stages: z
     .array(StageSchema)
     .optional()
-    .describe("Only for a large request (many tasks or many areas of the code): at least 2 stages, in build order, each small enough for one build call. Leave it out for small requests."),
+    .describe("Only for a large request (many tasks or many areas of the code): between 2 and 8 stages, in build order, each small enough for one build call. Leave it out for small requests."),
 });
 
 export type Spec = z.infer<typeof SpecSchema>;
 export type Stage = z.infer<typeof StageSchema>;
+
+/** The most stages one job may have: each one is a build and a full verify, with its own attempts, so the count bounds how long a job can run. */
+export const MAX_STAGES = 8;
 
 /** The spec's stages, in order; empty when it is built in one go. */
 export function specStages(spec: Pick<Spec, "stages">): Stage[] {
@@ -68,6 +71,7 @@ export function specProblems(spec: Spec): string[] {
   }
   if (spec.stages) {
     if (spec.stages.length < 2) problems.push("stages, when present, must have at least 2 stages");
+    if (spec.stages.length > MAX_STAGES) problems.push(`stages must be at most ${MAX_STAGES}; specify the first coherent part and put the rest in followUps`);
     spec.stages.forEach((s, i) => {
       if (!s.title.trim()) problems.push(`stage ${i + 1} has an empty title`);
       if (!s.tasks.length) problems.push(`stage ${i + 1} "${s.title}" has no tasks`);
