@@ -80,6 +80,7 @@
       <p class="label"><span class="marker" data-marker>01</span> <span data-i18n="synopsis.label">Sinopsis</span></p>
       <h2 id="synopsis-h" data-i18n="synopsis.title">Una fábrica de software que corre en tu máquina y convierte pedidos en cambios entregados.</h2>
       <p data-i18n="synopsis.loop">La persona no se queda sin trabajo: tiene muchas tareas y, según lo que sabe y la confianza que le tenga a la fábrica, le delega más o menos. Sigue decidiendo qué se hace y dónde entra ella; zero se ocupa de lo que le delega.</p>
+      <p data-i18n="synopsis.time">zero automatiza el desarrollo de software con IA, liberando tiempo para que las personas se enfoquen en estrategia, creatividad, supervisión y colaboración profesional.</p>
       <p data-i18n="synopsis.p1">Le pedís trabajo desde el chat de tu cliente de IA o desde la terminal. La fábrica lo especifica, lo construye, lo verifica, lo revisa y lo integra sola, en segundo plano, aunque cierres el chat.</p>
       <p data-i18n="synopsis.p2">Nunca pisa tu trabajo: cada pedido trabaja en su propia copia (<code>git worktree</code>) y su propia rama. Es open source (Apache-2.0) y gratuita. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.</p>
     </section>
@@ -179,7 +180,23 @@
     <section id="install" aria-labelledby="install-h">
       <p class="label"><span class="marker" data-marker>07</span> <span data-i18n="install.label">Instalación</span></p>
       <h2 id="install-h" data-i18n="install.title">Instalación y primeros pasos.</h2>
-      <p data-i18n="install.intro">zero se instala desde el repositorio y necesita Node 22.</p>
+      <p data-i18n="install.intro">zero se instala con un solo comando y necesita Node 22, npm y git.</p>
+      <div class="code">
+        <div class="code-bar">
+          <span class="caption">macOS · Linux</span>
+          <button type="button" class="copy" data-copy="install-unix" data-i18n="install.copy">Copiar</button>
+        </div>
+        <pre><code id="install-unix">curl -fsSL https://zerointheloop.com/install.sh | sh</code></pre>
+      </div>
+      <div class="code">
+        <div class="code-bar">
+          <span class="caption">Windows · PowerShell</span>
+          <button type="button" class="copy" data-copy="install-windows" data-i18n="install.copy">Copiar</button>
+        </div>
+        <pre><code id="install-windows">irm https://zerointheloop.com/install.ps1 | iex</code></pre>
+      </div>
+      <p data-i18n="install.oneStep">Revisa que tengas Node 22, npm y git sin instalarlos, te muestra qué va a hacer y te pregunta antes de cambiar nada. No pide permisos de administrador, no toca ninguna credencial y termina abriendo <code>zero setup</code>.</p>
+      <p data-i18n="install.manual">O a mano, desde el repositorio:</p>
       <div class="code">
         <div class="code-bar">
           <span class="caption">SH</span>
@@ -198,7 +215,6 @@ node dist/cli.js box setup</code></pre>
         <li><code>box setup</code><p data-i18n="install.box">Prepara la caja de aislamiento; pide permiso antes de instalar nada.</p></li>
       </ol>
       <p data-i18n="install.then">Después, en tu chat: <em>"zero, quiero que mi tienda calcule descuentos"</em>. O desde la terminal, con los comandos de abajo.</p>
-      <p class="note"><span data-i18n="install.installer">Instalador en un solo paso</span> <span class="soon" data-i18n="soon">en camino</span></p>
     </section>
 
     <section id="workflow" aria-labelledby="workflow-h">
@@ -340,10 +356,10 @@ node dist/cli.js box setup</code></pre>
       </ul>
       <h3 data-i18n="links.next">Próximas etapas</h3>
       <ul class="points">
-        <li><span data-i18n="next.installer">Instalador</span> <span class="soon" data-i18n="soon">en camino</span></li>
         <li><span data-i18n="next.engines">Motores ACP/OpenCode</span> <span class="soon" data-i18n="soon">en camino</span></li>
-        <li><span data-i18n="next.intake">Pedidos desde Linear y Jira</span> <span class="soon" data-i18n="soon">en camino</span></li>
-        <li><span data-i18n="next.regen">Simulacro de regeneración desde las especificaciones</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.linear">Pedidos desde Linear</span> <span class="ready" data-i18n="ready">disponible</span></li>
+        <li><span data-i18n="next.intake">Pedidos desde Jira</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.regen">Simulacro de regeneración desde las especificaciones</span> <span class="ready" data-i18n="ready">disponible</span></li>
       </ul>
     </section>
   </main>

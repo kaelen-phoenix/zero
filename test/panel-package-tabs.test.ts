@@ -55,7 +55,14 @@ describe("a package's tab in the menu", () => {
     const p = await panel();
     for (const path of ["/", "/line", "/proposals", "/about", TAB]) {
       const html = await p.text(path);
-      expect(html).toContain(`<a href="${TAB}">Noticias &lt;b&gt;</a>`);
+      // In the side menu, like the panel's own sections, and marked only on its own page.
+      const nav = /<nav class="side"[\s\S]*?<\/nav>/.exec(html)![0];
+      const link = nav.match(/<a [\s\S]*?<\/a>/g)!.find((a) => a.startsWith(`<a href="${TAB}"`))!;
+      expect(link).toContain(`title="Noticias &lt;b&gt;"`);
+      expect(link).toContain(`<span class="lb">Noticias &lt;b&gt;</span>`);
+      expect(link).not.toContain("<b>");
+      expect(link.includes(` aria-current="page"`)).toBe(path === TAB);
+      expect(html.match(/<[a-z][^>]*\saria-current=/gi)).toHaveLength(1);
     }
   });
 
@@ -91,7 +98,8 @@ describe("a package's tab page", () => {
     const html = await (await panel({ data })).text(TAB);
     expect(html).toContain(INVALID);
     expect(html).not.toContain("Visible");
-    expect(html).not.toContain("<li>");
+    // The side menu is a list too: the items would be in the page's body.
+    expect(html.split("<main>")[1]).not.toContain("<li>");
   });
 
   it("does not follow a link out of the data folder", async (t) => {

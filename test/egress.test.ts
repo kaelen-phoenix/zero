@@ -10,7 +10,7 @@ import { answer, briefing, egressReport, requestWork, setEgressMode, setEgressRu
 import { egressPolicy, judgeAddresses, judgeName, matchesSite, type EgressEvent, type EgressPolicy } from "../src/box/egress.js";
 import { createBoxExecutor } from "../src/box/executor.js";
 import { createGate, eventsFile, parseAuthority } from "../src/box/gate.js";
-import { createGateHost, gateName, gateRunArgs, ingestEgress, NETWORK, type GateHost } from "../src/box/network.js";
+import { createGateHost, gateName, gateRunArgs, ingestEgress, NETWORK, networkCreateArgs, type GateHost } from "../src/box/network.js";
 import { boxRunArgs } from "../src/box/run.js";
 import type { Exec } from "../src/box/runtime.js";
 import { parseFactory } from "../src/config.js";
@@ -134,16 +134,17 @@ describe("box network", () => {
 });
 
 /** A container runtime that only remembers networks and one gate container. */
-function fakeRuntime(dir: string) {
+function fakeRuntime(dir: string, existing: Record<string, unknown> = {}) {
   const calls: string[][] = [];
-  const networks = new Set<string>();
+  const networks = new Map<string, unknown>(Object.entries(existing));
   let gate: { image: string } | undefined;
   const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
   const exec: Exec = (_bin, args) => {
     calls.push(args);
     const [a, b] = args;
-    if (a === "network" && b === "inspect") return networks.has(args[2]!) ? ok() : { status: 1, stdout: "", stderr: "no such network" };
-    if (a === "network" && b === "create") return networks.add(args.at(-1)!), ok();
+    if (a === "network" && b === "inspect") return networks.has(args[2]!) ? ok(JSON.stringify([networks.get(args[2]!)])) : { status: 1, stdout: "", stderr: "no such network" };
+    if (a === "network" && b === "create") return networks.set(args.at(-1)!, { dns_enabled: !args.includes("--disable-dns") }), ok();
+    if (a === "network" && b === "rm") return networks.delete(args.at(-1)!) ? ok() : { status: 1, stdout: "", stderr: "no such network" };
     if (a === "network" && b === "connect") return ok();
     if (a === "container" && b === "inspect") {
       if (!gate) return { status: 1, stdout: "", stderr: "no such container" };
@@ -170,7 +171,7 @@ describe("gate host", () => {
     const gate = host(dir, rt.exec, "zero-box:v1", blocklist({ block: ["example.com"] }));
 
     const door = await gate.open({ jobId: "j1", station: "build" });
-    expect(rt.calls).toContainEqual(["network", "create", "--internal", NETWORK]);
+    expect(rt.calls).toContainEqual(["network", "create", "--internal", "--disable-dns", NETWORK]);
     expect(rt.calls).toContainEqual(["network", "connect", "podman", gateName(dir)]);
     expect(door.network).toBe(NETWORK);
     const pass = /^http:\/\/zero:([a-f0-9]{24})@10\.89\.0\.2:3128$/.exec(door.proxy)?.[1];
@@ -184,6 +185,28 @@ describe("gate host", () => {
 
     door.close();
     expect(existsSync(join(dir, "runs", `${pass}.json`))).toBe(false);
+  });
+
+  it("makes the internal network without podman's name server, which resolves nothing outside and the gate would take for its own", () => {
+    expect(networkCreateArgs("podman")).toEqual(["network", "create", "--internal", "--disable-dns", NETWORK]);
+    expect(networkCreateArgs("docker")).toEqual(["network", "create", "--internal", NETWORK]);
+  });
+
+  it("makes again a podman network an earlier version left with the name server, once only its gate is on it", async () => {
+    const dir = tempDir();
+    const rt = fakeRuntime(dir, { [NETWORK]: { dns_enabled: true, containers: { abc: { name: gateName(dir) } } } });
+    await host(dir, rt.exec).open({ jobId: "j1", station: "build" });
+    expect(rt.calls).toContainEqual(["network", "rm", NETWORK]);
+    expect(rt.calls).toContainEqual(["network", "create", "--internal", "--disable-dns", NETWORK]);
+    expect(rt.calls.findIndex((c) => c[0] === "network" && c[1] === "rm")).toBeLessThan(rt.calls.findIndex((c) => c[0] === "run"));
+
+    const busy = fakeRuntime(dir, { [NETWORK]: { dns_enabled: true, containers: { abc: { name: gateName(dir) }, def: { name: "zero-j9-aaaaaa" } } } });
+    await host(dir, busy.exec).open({ jobId: "j1", station: "build" });
+    expect(busy.calls.some((c) => c[0] === "network" && (c[1] === "rm" || c[1] === "create"))).toBe(false);
+
+    const fine = fakeRuntime(dir, { [NETWORK]: { dns_enabled: false } });
+    await host(dir, fine.exec).open({ jobId: "j1", station: "build" });
+    expect(fine.calls.some((c) => c[0] === "network" && (c[1] === "rm" || c[1] === "create"))).toBe(false);
   });
 
   it("restarts the gate when zero's image changes", async () => {

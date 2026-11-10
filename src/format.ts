@@ -4,12 +4,13 @@ import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
 import { describeDelivery } from "./line/finish.js";
+import { effectivePriority, storedPriority } from "./priority.js";
 import type { Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
 
-const STATUS_TEXT: Record<Job["status"], string> = {
+export const STATUS_TEXT: Record<Job["status"], string> = {
   queued: "en cola",
   running: "trabajando",
   waiting: "esperando tu respuesta",
@@ -55,7 +56,8 @@ export function describeJobStatus(job: Job): string {
 }
 
 export function formatRequest(r: RequestResult): string {
-  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}".`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+  const priority = storedPriority(r.job);
+  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}"${priority === "media" ? "" : `, con prioridad ${priority}`}.`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
@@ -92,6 +94,7 @@ export function formatJob(job: Job, opts: { subscription?: boolean } = {}): stri
     `Trabajo ${job.id} · ${jobName(job)}`,
     `Estado: ${describeJobStatus(job)}`,
     `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
+    `Prioridad: ${storedPriority(job)}`,
   ];
   const origin = jobOrigin(job);
   if (origin) lines.push(`Origen: ${origin}`);
@@ -125,7 +128,7 @@ export function formatAgents(lists: LineAgentList[]): string {
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
-export function formatPackages(l: PackageList): string {
+export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
   const short = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
@@ -138,7 +141,7 @@ export function formatPackages(l: PackageList): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}`);
+      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -177,6 +180,13 @@ function githubLine(g: GithubStatus, now: Date): string {
   return `GitHub: ${parts.join(" · ")}`;
 }
 
+/** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
+export function priorityNote(job: Job, now = new Date()): string {
+  const level = effectivePriority(job, now);
+  if (level === "media" && storedPriority(job) === "media") return "";
+  return ` · prioridad ${level}${level !== storedPriority(job) ? " (subió por la espera)" : ""}`;
+}
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -203,8 +213,10 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.codexUnsandboxed === "machine") out.push("AVISO: Codex corre sin su sandbox (codex.sandbox: off). zero solo comprueba la carpeta de trabajo y su repositorio en las estaciones de lectura; no cubre los archivos ignorados por git, el resto de la máquina ni la salida a internet.");
   if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)})`).join(", ")}`);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
@@ -213,7 +225,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;
     out.push("", `${title}:`);
-    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}`);
+    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`);
   };
   list("Esperando tu respuesta", s.waiting);
   list("Trabajando", s.running);

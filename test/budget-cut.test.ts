@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.js";
 import { answer, requestWork, type FactoryContext } from "../src/app.js";
-import { claudeResult } from "../src/engines/claude.js";
+import { claudeResult, claudeThrown } from "../src/engines/claude.js";
 import type { EngineResult, QuotaReport } from "../src/engines/index.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { log } from "../src/log.js";
@@ -29,6 +29,23 @@ function factory(over: Record<string, unknown> = {}, now?: () => Date) {
 const sdkResult = (over: Record<string, unknown>) => ({ type: "result", session_id: "s1", total_cost_usd: 0.42, ...over }) as unknown as SDKResultMessage;
 
 describe("Claude result mapping", () => {
+  const noCredit = { billing: "api", windows: [], limited: true };
+  const plan: QuotaReport = { billing: "subscription", windows: [] };
+
+  it("marks an API key out of credit as a refused call, whatever quota came in", () => {
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "Credit balance is too low" }), plan)).toMatchObject({ ok: false, quota: noCredit });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["Credit balance is too low · Add funds"] }))).toMatchObject({ ok: false, quota: noCredit });
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "something else broke" })).quota?.limited).not.toBe(true);
+  });
+
+  it("marks a thrown out-of-credit error the same way", () => {
+    const thrown = claudeThrown(new Error("Credit balance is too low"));
+    expect(thrown).toMatchObject({ ok: false, text: expect.stringContaining("Credit balance is too low"), quota: noCredit });
+    const other = claudeThrown(new Error("socket hang up"));
+    expect(other).toMatchObject({ ok: false, text: "socket hang up" });
+    expect(other.quota?.limited).not.toBe(true);
+  });
+
   it("marks a call stopped by its dollar cap", () => {
     expect(claudeResult(sdkResult({ subtype: "error_max_budget_usd", errors: [] }))).toMatchObject({ ok: false, budgetLimited: true, costUsd: 0.42 });
   });
@@ -67,6 +84,13 @@ describe("Claude result mapping", () => {
     expect(empty.ok).toBe(true);
     expect(empty.model).toBeUndefined();
   });
+
+  it("keeps the tokens the result reports", () => {
+    const usage = { input_tokens: 120, output_tokens: 30 };
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done", usage })).tokens).toEqual({ input: 120, output: 30 });
+    expect(claudeResult(sdkResult({ subtype: "error_max_turns", errors: [], usage })).tokens).toEqual({ input: 120, output: 30 });
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: false, result: "done" }))).not.toHaveProperty("tokens");
+  });
 });
 
 describe("agent runner", () => {
@@ -76,6 +100,17 @@ describe("agent runner", () => {
     const run = await createAgentRunner(ctx.config, { execute })({ station: "build", prompt: "p", cwd: tempDir(), trace: { tracer: ctx.tracer, jobId: "j1" } });
     expect(run).toMatchObject({ ok: false, budgetLimited: true });
     expect(ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN)!.attrs).toMatchObject({ "zero.budget.limited": true });
+  });
+
+  it("records the tokens on the agent span only when the engine reports them", async () => {
+    const span = async (result: EngineResult) => {
+      const ctx = testFactory({ engine: "claude", lines: [] });
+      await createAgentRunner(ctx.config, { execute: async () => result })({ station: "build", prompt: "p", cwd: tempDir(), trace: { tracer: ctx.tracer, jobId: "j1" } });
+      return ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN)!.attrs;
+    };
+    expect(await span({ ok: true, text: "ok", tokens: { input: 10, output: 5 } })).toMatchObject({ "gen_ai.usage.input_tokens": 10, "gen_ai.usage.output_tokens": 5 });
+    const without = await span({ ok: true, text: "ok" });
+    expect(Object.keys(without).filter((k) => k.startsWith("gen_ai.usage."))).toEqual([]);
   });
 });
 
