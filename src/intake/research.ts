@@ -4,20 +4,22 @@ import { scrubLocal } from "../line/research.js";
 import { log } from "../log.js";
 import type { ResearchNote } from "../state/store.js";
 import { lineRepository, type IssueApi } from "./github.js";
+import { inertMedia } from "./inert-media.js";
 import { breakMentions } from "./proposals.js";
 
 /**
  * Research notes as GitHub issues: every note of a line whose remote is on
  * GitHub is published once, labeled `zero:investigacion` and never with the
  * work label, so it does not become a job on its own. Its text comes from the
- * web: it is scrubbed of secrets and local paths, and its @mentions broken.
+ * web: it is scrubbed of secrets and local paths, its @mentions broken and its
+ * images and resource tags made inert.
  */
 
 export const RESEARCH_LABEL = "zero:investigacion";
 const RESEARCH_LABEL_DESCRIPTION = "Nota de investigación de zero";
 
-/** Text fit for a public issue: no secrets, no paths of the owner's machine, no mentions. */
-const publicText = (text: string, line: Pick<LineConfig, "repo">) => breakMentions(scrubLocal(text, line));
+/** Text fit for a public issue: no secrets, no paths of the owner's machine, no mentions, no remote media. */
+const publicText = (text: string, line: Pick<LineConfig, "repo">) => inertMedia(breakMentions(scrubLocal(text, line)));
 
 export function researchIssueTitle(note: ResearchNote, line: Pick<LineConfig, "repo">): string {
   return publicText(`Investigación: ${note.topic}`, line);

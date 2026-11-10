@@ -144,21 +144,25 @@ export const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).joi
 
 /**
  * What the issue is told when its job reaches a status worth telling, once per status (and per question).
- * `replyHere: false` for trackers whose later comments the factory does not read (Linear).
+ * With `replyHere: false` (a tracker whose later comments the factory does not read, and that is not GitHub: Linear, Jira) the texts
+ * invite no answer on the issue and do not mention GitHub.
  */
 export function report(job: Job, opts: { replyHere?: boolean } = {}): { key: string; body: string } | undefined {
+  const replyHere = opts.replyHere ?? true;
   const id = `\`${job.id}\``;
   if (job.status === "waiting" && job.question) {
     const timeout = job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza";
     return {
       key: `waiting:${job.question.askedAt}`,
-      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\n${opts.replyHere === false ? "Respondé" : 'Respondé comentando acá ("aprobado" o "rechazado"),'} desde el panel o el chat (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
+      body: `La fábrica necesita tu respuesta en el trabajo ${id}:\n\n${quote(job.question.text)}\n\n${replyHere ? `Respondé comentando acá ("aprobado" o "rechazado"), desde el panel o el chat` : "Respondé desde el panel o el chat"} (\`zero approve ${job.id}\`, o con \`--reject\`). Si nadie responde antes de ${job.question.expiresAt.slice(0, 16).replace("T", " ")} UTC, ${timeout}.`,
     };
   }
   if (job.status === "delivered" && job.delivery) {
     const local =
       job.delivery.mode === "merge"
-        ? " Quedó en la rama base de tu PC, no en GitHub: para publicarlo, subila (`git push`)."
+        ? replyHere
+          ? " Quedó en la rama base de tu PC, no en GitHub: para publicarlo, subila (`git push`)."
+          : " Quedó en la rama base de tu PC, sin subir: para publicarlo, subila (`git push`)."
         : job.delivery.mode === "branch"
           ? " La rama quedó en tu PC, sin subir."
           : "";

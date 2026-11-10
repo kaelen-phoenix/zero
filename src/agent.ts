@@ -277,6 +277,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       "zero.cost.source": run.costSource,
       "gen_ai.conversation.id": result.sessionId,
       ...(result.model && { "gen_ai.response.model": result.model }),
+      ...(result.tokens && { "gen_ai.usage.input_tokens": result.tokens.input, "gen_ai.usage.output_tokens": result.tokens.output }),
       ...quotaAttrs(result.quota),
       ...(run.budgetLimited && { "zero.budget.limited": true }),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),

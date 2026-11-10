@@ -23,6 +23,8 @@ export interface IntegrateOptions {
   author?: CommitAuthor;
   /** GitHub's pull requests; defaults to the real adapter. */
   pullRequests?: PullRequestsFactory;
+  /** The job already has this pull request, whose branch was at `head`: update it instead of delivering anew. */
+  existing?: { delivery: Delivery; head: string };
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
@@ -117,7 +119,18 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr, ...(line.autoMerge && { autoMerge: true }) } };
 }
 
+/** Pushes the branch to the pull request it already has, without forcing and only if the remote branch is still where it was left. */
+function updatePullRequest(line: LineConfig, copy: WorkCopy, existing: NonNullable<IntegrateOptions["existing"]>): IntegrateResult {
+  const seen = spawnGit(["ls-remote", line.remote, `refs/heads/${copy.branch}`], line.repo, { timeout: 120_000 });
+  if (seen.status !== 0) return { ok: false, reason: `No se pudo mirar la rama remota: ${(seen.stderr || String(seen.error ?? "")).trim()}` };
+  if (seen.stdout.split(/\s/)[0] !== existing.head) return { ok: false, reason: `La rama remota ${copy.branch} ya no está en ${existing.head.slice(0, 8)}, así que no se subió nada.` };
+  const push = spawnGit(["push", "-q", line.remote, `refs/heads/${copy.branch}:refs/heads/${copy.branch}`], line.repo);
+  if (push.status !== 0) return { ok: false, reason: `No se pudo subir la rama: ${(push.stderr || push.stdout).trim()}` };
+  return { ok: true, delivery: existing.delivery };
+}
+
 export async function integrate(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {
+  if (opts.existing) return updatePullRequest(line, copy, opts.existing);
   switch (line.integrate) {
     case "merge":
       return mergeIntoBase(line, copy, opts);
