@@ -222,7 +222,7 @@ describe("panel guide pages", () => {
   });
 });
 
-const SECTIONS = ["/", "/line", "/egress", "/proposals", "/research", "/monitor", "/briefing", "/report", "/about", "/agents"];
+const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/briefing", "/report", "/about", "/agents"];
 const sideNav = (html: string) => {
   const navs = html.match(/<nav class="side"[\s\S]*?<\/nav>/g) ?? [];
   expect(navs).toHaveLength(1);

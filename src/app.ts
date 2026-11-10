@@ -23,14 +23,15 @@ import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js"
 import { pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
-import { intakeProblemKey, jiraProblemKey, linearProblemKey } from "./intake/keys.js";
+import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
+import type { AlertEntry } from "./intake/security-alerts.js";
 import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
 import { stationLastKey, stationOnDemandKey } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { formatEgressSites, jobName, jobOrigin } from "./format.js";
+import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
@@ -199,6 +200,26 @@ export interface RequestResult {
   next: string;
 }
 
+/** The kinds of request the panel's "Pedidos" form offers, with the label the factory reads in the request. */
+export const REQUEST_TYPES = {
+  feature: "función nueva",
+  fix: "arreglo",
+  security: "seguridad",
+  design: "diseño",
+  docs: "documentación",
+  other: "otro",
+} as const;
+export type RequestType = keyof typeof REQUEST_TYPES;
+
+/** A typed request's text: title, its type, then the description when there is one. */
+function typedRequest(type: string, title = "", description = ""): string {
+  if (!Object.hasOwn(REQUEST_TYPES, type)) throw new Error(`Tipo de pedido desconocido: ${type}. Usá ${Object.keys(REQUEST_TYPES).join(", ")}.`);
+  const head = title.trim();
+  if (!head) throw new Error("El pedido necesita un título.");
+  const body = description.trim();
+  return `${head}\n\nTipo de pedido: ${REQUEST_TYPES[type as RequestType]}${body ? `\n\n${body}` : ""}`;
+}
+
 const PRIORITY_NAMES = PRIORITIES.join(", ");
 
 function checkPriority(name: string): JobPriority {
@@ -206,8 +227,11 @@ function checkPriority(name: string): JobPriority {
   return name;
 }
 
-export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string }): RequestResult {
-  const text = input.text.trim();
+export function requestWork(
+  ctx: FactoryContext,
+  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string },
+): RequestResult {
+  const text = input.type !== undefined ? typedRequest(input.type, input.title, input.description) : (input.text ?? "").trim();
   if (!text) throw new Error("El pedido está vacío.");
   const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
   // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
@@ -227,6 +251,7 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
       ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
       ...(input.source?.kind === "research" && { "zero.research_note": input.source.note }),
       ...(input.source?.kind === "package" && { "zero.package": `${input.source.package}/${input.source.station}` }),
+      ...(input.source?.kind === "security-alert" && { "zero.security_alert": input.source.package, "zero.severity": input.source.severity }),
     },
   });
   const integration = { merge: "lo integra en la rama base", branch: "deja una rama lista", "pull-request": "abre una solicitud de cambio" }[line.integrate];
@@ -283,6 +308,8 @@ export interface FactoryStatus {
   linear: { line: string; team: string; label: string; problem?: string }[];
   /** Lines taking Jira issues, and the last problem reaching Jira. */
   jira: { line: string; site: string; project: string; label: string; problem?: string }[];
+  /** Open Dependabot alerts per line (only lines with alerts or a read problem), each with the job that handles it. */
+  securityAlerts: LineAlerts[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
@@ -310,6 +337,28 @@ export interface FactoryStatus {
   recent: Job[];
 }
 
+export interface LineAlerts {
+  line: string;
+  alerts: (AlertEntry & { jobStatus?: Job["status"] })[];
+  problem?: string;
+}
+
+/** What the security-alerts pass last saw on each line that reads alerts, with the status of each handling job now. */
+export function securityAlerts(ctx: FactoryContext): LineAlerts[] {
+  return ctx.config.lines.flatMap((l) => {
+    if (l.securityAlerts.mode === "off") return [];
+    const problem = ctx.store.getKv(securityAlertsProblemKey(l.name));
+    let alerts: AlertEntry[] = [];
+    try {
+      alerts = JSON.parse(ctx.store.getKv(securityAlertsKey(l.name)) ?? "[]") as AlertEntry[];
+    } catch {
+      // A broken snapshot is replaced on the next read.
+    }
+    if (!alerts.length && !problem) return [];
+    return [{ line: l.name, alerts: alerts.map((a) => ({ ...a, ...(a.job && { jobStatus: ctx.store.getJob(a.job)?.status }) })), ...(problem && { problem }) }];
+  });
+}
+
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
@@ -322,6 +371,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
     linear: ctx.config.lines.flatMap((l) => (l.linear ? [{ line: l.name, team: l.linear.team, label: l.linear.label, problem: ctx.store.getKv(linearProblemKey(l.name)) }] : [])),
     jira: ctx.config.lines.flatMap((l) => (l.jira ? [{ line: l.name, site: l.jira.site, project: l.jira.project, label: l.jira.label, problem: ctx.store.getKv(jiraProblemKey(l.name)) }] : [])),
+    securityAlerts: securityAlerts(ctx),
     merges: watchedJobs(ctx).map((job) => {
       const raw = ctx.store.getKv(mergeKey(job.id));
       const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
@@ -436,7 +486,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .listJobs({ limit: 10_000 })
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages);
+  const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -564,6 +615,38 @@ export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest
   if (!files.length) throw new Error(`Ningún archivo de código de la rama ${line.baseBranch} coincide con ${input.patterns.join(", ") || "(sin patrones)"}: los tests y lo que está bajo openspec/ nunca se quitan. Indicá qué quitar con --archivos.`);
   const runAgent = deps.runAgent ?? createAgentRunner(ctx.config, { secrets: ctx.secrets });
   return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now, removeCopy: deps.removeCopy }, { line, capability: input.capability, files, usd, keep: input.keep });
+}
+
+/** Status groups of the "Pedidos" list's filter. */
+export const REQUEST_FILTERS: Record<"todos" | "activos" | "esperando" | "terminados", JobStatus[] | undefined> = {
+  todos: undefined,
+  activos: ["queued", "running"],
+  esperando: ["waiting"],
+  terminados: ["delivered", "failed", "stopped"],
+};
+export type RequestFilter = keyof typeof REQUEST_FILTERS;
+/** Most rows the "Pedidos" list shows. */
+export const REQUESTS_VIEW_MAX = 200;
+
+export interface RequestsView {
+  lines: string[];
+  /** The filter as applied: an unknown line or estado is dropped. */
+  line?: string;
+  estado: RequestFilter;
+  rows: { job: Job; age: string }[];
+}
+
+/** The panel's "Pedidos" list: every job (not only the store's first 1000), filtered, newest first, at most 200. */
+export function requestsView(ctx: FactoryContext, filter: { line?: string; estado?: string } = {}, now = new Date()): RequestsView {
+  const lines = ctx.config.lines.map((l) => l.name);
+  const line = filter.line && lines.includes(filter.line) ? filter.line : undefined;
+  const estado: RequestFilter = filter.estado && Object.hasOwn(REQUEST_FILTERS, filter.estado) ? (filter.estado as RequestFilter) : "todos";
+  const rows = ctx.store
+    .listJobs({ line, status: REQUEST_FILTERS[estado], limit: -1 })
+    .reverse()
+    .slice(0, REQUESTS_VIEW_MAX)
+    .map((job) => ({ job, age: ageText(job.createdAt, now) }));
+  return { lines, line, estado, rows };
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */

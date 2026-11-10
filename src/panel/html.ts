@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentGuide, EgressReport, FactoryGuide, FactoryStatus, LineRow, LineStation, MonitorPeriod, MonitorView, PackageTabLink, PackageTabView, ProductionLine, ProposalLine, ProposalStage, ProposalView, ResearchLine, StationState, StationView } from "../app.js";
+import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, jobCost, jobName, jobOrigin, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { describeDelivery } from "../line/finish.js";
@@ -156,6 +156,7 @@ const MENU_ICON = `<path d="M4 6h16M4 12h16M4 18h16"/>`;
 const NAV: [href: string, label: string, icon: string][] = [
   ["/", "Resumen", `<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>`],
   ["/line", "Línea", `<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>`],
+  ["/requests", "Pedidos", `<path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/>`],
   ["/egress", "Salidas", `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>`],
   ["/proposals", "Propuestas", `<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>`],
   ["/research", "Investigación", `<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>`],
@@ -531,6 +532,58 @@ export function confirmResearchPage(n: ResearchNote, nonce: string): string {
 <form method="post" action="/research/${esc(n.id)}/request"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, pedir el trabajo</button></form>
 <p><a href="/research">Cancelar</a></p></div>`,
     { nonce, active: "/research" },
+  );
+}
+
+const ESTADOS: [RequestFilter, string][] = [
+  ["todos", "Todos"],
+  ["activos", "En curso"],
+  ["esperando", "Esperando tu respuesta"],
+  ["terminados", "Terminados"],
+];
+
+/** One job of the "Pedidos" list, with its actions: detail and trace, its pending question, stop. */
+function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
+  const id = esc(j.id);
+  const question =
+    j.status === "waiting" && j.question
+      ? `<pre>${esc(j.question.text)}</pre><form method="post" action="/requests/${id}/answer"><label for="rn-${id}">Nota (opcional)</label><input id="rn-${id}" type="text" name="note">
+<button class="primary" name="decision" value="approve">Aprobar</button><button class="danger" name="decision" value="reject">Rechazar</button></form>`
+      : "";
+  const halt = FINAL_STATUSES.includes(j.status) ? "" : `<form method="post" action="/requests/${id}/stop"><button class="danger">Frenar</button></form>`;
+  return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(jobName(j))}</a></h3>
+<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}</p>
+<p><a href="/job/${id}">Ver detalle y traza</a></p>${question}${halt}</div>`;
+}
+
+/** The "Pedidos" section: a typed request form, then every request with filters and per-request actions. */
+export function requestsPage(view: RequestsView, nonce: string, flash?: string): string {
+  const lineOptions = (selected?: string) => view.lines.map((l) => `<option value="${esc(l)}"${l === selected ? " selected" : ""}>${esc(l)}</option>`).join("");
+  const types = Object.entries(REQUEST_TYPES)
+    .map(([value, label]) => `<option value="${value}">${esc(label)}</option>`)
+    .join("");
+  const form = `<div class="card"><h1>Pedidos</h1><h2>Pedir un trabajo</h2>
+<form method="post" action="/requests"><label for="q-line">Línea</label><select id="q-line" name="line">${lineOptions()}</select>
+<label for="q-type">Tipo de pedido</label><select id="q-type" name="type">${types}</select>
+<label for="q-title">Título</label><input id="q-title" type="text" name="title" required>
+<label for="q-desc">Descripción</label><textarea id="q-desc" name="description"></textarea>
+<button class="primary">Pedir</button></form></div>`;
+  const filters = `<div class="card"><h2>Pedidos de la fábrica</h2>
+<form method="get" action="/requests"><label for="f-line">Línea</label><select id="f-line" name="line"><option value="">Todas las líneas</option>${lineOptions(view.line)}</select>
+<label for="f-estado">Estado</label><select id="f-estado" name="estado">${ESTADOS.map(([v, label]) => `<option value="${v}"${v === view.estado ? " selected" : ""}>${label}</option>`).join("")}</select>
+<button>Filtrar</button></form>
+${view.rows.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
+  return page("Pedidos", form + filters + `<section class="requests">${view.rows.map(requestRow).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
+}
+
+/** The step before stopping a job from the list: the owner confirms it. */
+export function confirmStopPage(j: Job, nonce: string): string {
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Frenar «${esc(jobName(j))}»?</h1><p>El trabajo ${esc(j.id)} de la línea ${esc(j.line)} se detiene y no sigue.</p>
+<form method="post" action="/requests/${esc(j.id)}/stop"><input type="hidden" name="confirm" value="1"><button class="danger">Sí, frenarlo</button></form>
+<p><a href="/requests">Cancelar</a></p></div>`,
+    { nonce, active: "/requests" },
   );
 }
 

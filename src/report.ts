@@ -119,6 +119,8 @@ function originLabel(job: Job): string {
       return "Investigación";
     case "package":
       return `Pedido por paquete ${job.source.package}/${job.source.station}`;
+    case "security-alert":
+      return `Seguridad: alerta de Dependabot ${job.source.package}`;
     default:
       return "Pedido de la persona responsable";
   }

@@ -9,8 +9,12 @@ export const PRIORITY_AGING_MS = 24 * 60 * 60 * 1000;
 
 export const isPriority = (name: unknown): name is JobPriority => typeof name === "string" && (PRIORITIES as readonly string[]).includes(name);
 
-/** Jobs nobody is waiting for (the night shift's own and the packages') are `baja`; the rest `media`. */
+/**
+ * Jobs nobody is waiting for (the night shift's own and the packages') are `baja`; a security job for a high or
+ * critical Dependabot alert is `urgente`, which zero gives on its own (nobody can ask for it with a source); the rest `media`.
+ */
 export function defaultPriority(source?: JobSource): JobPriority {
+  if (source?.kind === "security-alert") return source.severity === "high" || source.severity === "critical" ? "urgente" : "media";
   return (source?.kind === "night-shift" && Boolean(source.autonomy)) || source?.kind === "package" ? "baja" : "media";
 }
 

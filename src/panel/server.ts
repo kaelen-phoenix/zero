@@ -1,10 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packageTabPage, page, proposalsPage, reportPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -62,6 +62,7 @@ function returnTo(path: string): string {
   const job = /^\/job\/([0-9a-f]{8})\//.exec(path)?.[1];
   if (job) return `/job/${job}`;
   if (path.startsWith("/proposals")) return "/proposals";
+  if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
@@ -194,6 +195,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         if (url.searchParams.get("fragment") === "1") return send(res, 200, lineView(productionLine(ctx)), nonce);
         return send(res, 200, linePage(productionLine(ctx), nonce), nonce);
       }
+      if (path === "/requests") {
+        const view = requestsView(ctx, { line: url.searchParams.get("line") || undefined, estado: url.searchParams.get("estado") || undefined }, ctx.now?.());
+        return send(res, 200, requestsPage(view, nonce, flash), nonce);
+      }
       const job = /^\/job\/([0-9a-f]{8})$/.exec(path)?.[1];
       if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine)), nonce);
       if (path === "/egress") {
@@ -253,6 +258,23 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (path === "/request") {
       const r = requestWork(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined });
       return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+    }
+    if (path === "/requests") {
+      const r = requestWork(ctx, { type: form.get("type") ?? "", title: form.get("title") ?? "", description: form.get("description") ?? "", line: form.get("line") || undefined });
+      return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+    }
+    const requestAction = /^\/requests\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
+    if (requestAction) {
+      const [, id, action] = requestAction as unknown as [string, string, string];
+      if (action === "stop") {
+        // Stopping cannot be undone, so the first press only asks for confirmation.
+        if (form.get("confirm") !== "1") return send(res, 200, confirmStopPage(getJob(ctx, id), nonce), nonce);
+        await stop(ctx, id);
+        return back(res, "/requests", `Frenando el trabajo ${id}.`);
+      }
+      const decision = form.get("decision") === "approve" ? "approve" : "reject";
+      await answer(ctx, id, decision, form.get("note") || undefined);
+      return back(res, "/requests", decision === "approve" ? `Aprobado: el trabajo ${id} sigue.` : `Rechazado: el trabajo ${id} se detuvo.`);
     }
     if (path === "/andon") {
       if (form.get("state") === "off") resume(ctx);

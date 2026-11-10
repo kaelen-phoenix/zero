@@ -78,7 +78,11 @@ export type JobSource =
   /** A research note the owner turned into work. */
   | { kind: "research"; note: string }
   /** A package's station asked for it with `ctx.requestJob`. */
-  | { kind: "package"; package: string; station: string };
+  | { kind: "package"; package: string; station: string }
+  /** Open Dependabot alerts of one package (ecosystem plus name) on the line's GitHub repository; `severity` is the highest of them. */
+  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity };
+
+export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";
