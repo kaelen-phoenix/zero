@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { requestWork, type FactoryContext } from "../src/app.js";
 import { egressPolicy } from "../src/box/egress.js";
 import { createBoxExecutor } from "../src/box/executor.js";
-import { createGateHost } from "../src/box/network.js";
+import { createGateHost, gateName } from "../src/box/network.js";
 import { inspectBox } from "../src/box/status.js";
 import { runJob } from "../src/line/runner.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
@@ -73,6 +74,26 @@ describe.skipIf(!enabled)("isolation box (real container)", () => {
       "echo all-checks-passed",
     ].join(" && ");
     const r = await box.shell(checks, { cwd: gitRepo(), mount: "ro", jobId: job.id, station: "verify", timeoutMs: 180_000 });
+    if (!r.output.includes("all-checks-passed")) {
+      const rt = process.env.ZERO_BOX_RUNTIME ?? "podman";
+      const sh = (c: string) => { try { return execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch (e) { const x = e as { stdout?: string; stderr?: string }; return `ERR ${x.stdout ?? ""}${x.stderr ?? ""}`; } };
+      const name = gateName(ctx.home.gate);
+      const out: string[] = [];
+      out.push("VERSION " + sh(`${rt} version`));
+      for (const f of readdirSync(ctx.home.gate)) if (f.startsWith("events-")) out.push("EVENTS " + readFileSync(join(ctx.home.gate, f), "utf8"));
+      out.push("NETSETTINGS " + sh(`${rt} inspect ${name} --format '{{json .NetworkSettings}}'`));
+      out.push("RESOLV " + sh(`${rt} exec ${name} cat /etc/resolv.conf`));
+      out.push("ROUTE " + sh(`${rt} exec ${name} cat /proc/net/route`));
+      out.push("LOOKUP " + sh(`${rt} exec ${name} node -e "require('dns').lookup('registry.npmjs.org',{all:true},(e,a)=>console.log(String(e),JSON.stringify(a)))"`));
+      out.push("TCP " + sh(`${rt} exec ${name} node -e "require('net').connect(443,'1.1.1.1').on('connect',()=>{console.log('tcp ok');process.exit()}).on('error',e=>{console.log('tcp err',e.message);process.exit()})"`));
+      out.push("NETWORKS " + sh(`${rt} network inspect zero-box ${rt === "podman" ? "podman" : "bridge"}`));
+      out.push("LOGS " + sh(`${rt} logs ${name}`));
+      console.log("DIAG-BEGIN
+" + out.join("
+---
+") + "
+DIAG-END");
+    }
     expect(r.output).toContain("all-checks-passed");
     expect(r.code).toBe(0);
 
