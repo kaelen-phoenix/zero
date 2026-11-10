@@ -1,6 +1,6 @@
 import type { Octokit } from "@octokit/rest";
 import { afterEach, describe, expect, it } from "vitest";
-import { checksOutageKey, githubMerges, mergeKey, pollMerges, type Check, type ChecksOutage, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
+import { checksOutageKey, checksRecoveredKey, githubMerges, mergeKey, pollMerges, type Check, type ChecksOutage, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
@@ -18,7 +18,7 @@ interface FakePr {
 }
 
 /** GitHub with several pull requests of one repository and the checks of its base branch; records what the factory did. */
-function fakeGitHub(prs: Record<number, FakePr>, base: { checks: Check[] } = { checks: [] }) {
+function fakeGitHub(prs: Record<number, FakePr>, base: { checks: Check[] } = { checks: [] }, live = false) {
   const did: string[] = [];
   const api: MergeApi = {
     pullRequest: async (n) => prs[n]!.pr,
@@ -32,7 +32,12 @@ function fakeGitHub(prs: Record<number, FakePr>, base: { checks: Check[] } = { c
     comment: async (n, body) => void did.push(`comment #${n}: ${body}`),
     behind: async (_base, sha) => Object.values(prs).find((p) => p.pr.headSha === sha)!.behind,
     updateBranch: async (n, sha) => void did.push(`update #${n} @${sha}`),
-    rerun: async (run) => void did.push(`rerun ${run}`),
+    rerun: async (run) => {
+      did.push(`rerun ${run}`);
+      // Live: the runs it was asked for start again on that pull request.
+      const p = Object.values(prs).find((x) => x.checks.some((c) => c.run === run));
+      if (live && p) p.checks = p.checks.map((c) => (c.run === run ? { name: c.name, done: false, ok: false, run } : c));
+    },
   };
   return { api, did };
 }
@@ -54,7 +59,7 @@ async function factoryWith(numbers: number[]) {
     const raw = ctx.store.getKv(checksOutageKey("kaelen/demo"));
     return raw ? (JSON.parse(raw) as ChecksOutage) : undefined;
   };
-  return { ctx, clock, state, outage };
+  return { ctx, clock, state, outage, jobs };
 }
 
 const hhmm = (iso: string) => {
@@ -86,8 +91,8 @@ describe("the same check failing in several pull requests", () => {
     expect(state(10)).toMatchObject({ status: "blocked", why, outage: "2026-11-10T11:30:00Z" });
     expect(gh.did).toEqual([]);
 
-    // Seen again later, each stays held without anything spent or said.
-    clock.ms += 30 * MINUTE;
+    // Seen again later, before the first probe (12:30), each stays held without anything spent or said.
+    clock.ms += 20 * MINUTE;
     await pass();
     expect(gh.did).toEqual([]);
     expect(state(10)).toMatchObject({ status: "blocked", why });
@@ -171,6 +176,179 @@ describe("during an outage", () => {
     clock.ms += 6 * MINUTE;
     await pollMerges(ctx, () => gh.api);
     expect(state(11)).toMatchObject({ status: "waiting", outage: "2026-11-10T11:40:00Z" });
+  });
+});
+
+const at = (ms: number) => new Date(ms).toISOString();
+
+/** An outage seen through the base: #10 and #11 failed `e2e` at 11:40 and 11:50, `main` at 11:30; looked at 12:00. */
+async function downAtNoon(more: number[] = []) {
+  const f = await factoryWith([10, 11, ...more]);
+  const prs: Record<number, FakePr> = { 10: pull("a", red("e2e", "2026-11-10T11:40:00Z", 1)), 11: pull("b", red("e2e", "2026-11-10T11:50:00Z", 2)) };
+  for (const n of more) prs[n] = pull(`h${n}`, running);
+  const base = { checks: red("e2e", "2026-11-10T11:30:00Z") };
+  const gh = fakeGitHub(prs, base, true);
+  f.clock.ms = Date.parse("2026-11-10T12:00:00Z");
+  const pass = () => pollMerges(f.ctx, () => gh.api);
+  await pass();
+  expect(f.outage()).toMatchObject({ since: "2026-11-10T11:30:00Z", lastFailure: { e2e: "2026-11-10T11:50:00Z" }, nextProbeAt: "2026-11-10T12:20:00.000Z" });
+  expect(gh.did).toEqual([]);
+  return { ...f, prs, base, gh, pass, tick: (minutes: number) => (f.clock.ms += minutes * MINUTE) };
+}
+
+describe("the environment coming back", () => {
+  it("is seen in a run that passed at another pull request, and then each held one runs again once, one at a time", async () => {
+    const { ctx, prs, gh, pass, tick, state, outage } = await downAtNoon([12]);
+    prs[12] = pull("h12", passed("e2e", "2026-11-10T12:05:00Z"));
+    tick(6);
+    await pass();
+    expect(gh.did).toEqual(["merge #12 @h12"]);
+    expect(outage()).toBeUndefined();
+    expect(ctx.store.getKv(checksRecoveredKey("kaelen/demo"))).toBe("2026-11-10T12:05:00.000Z");
+    expect(state(10).backoff).toBeUndefined();
+    expect(state(11).backoff).toBeUndefined();
+
+    // The old failures, at the pull requests and at the base, no longer make an outage.
+    tick(1);
+    await pass();
+    expect(gh.did.slice(1)).toEqual(["rerun 1"]);
+    expect(state(10)).toMatchObject({ status: "waiting", rerun: "a" });
+    expect(state(10).outage).toBeUndefined();
+    expect(state(11)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e; espera su turno para correr de nuevo sus checks", outage: "2026-11-10T11:30:00Z" });
+    expect(outage()).toBeUndefined();
+
+    // #10 fails again on its own: told about it, never run again; then it is #11's turn.
+    prs[10] = pull("a", red("e2e", "2026-11-10T12:20:00Z", 1));
+    tick(14);
+    await pass();
+    expect(gh.did.slice(2)).toEqual(["comment #10: La fábrica no funde este pull request: fallaron los checks e2e. Queda abierto; si se arregla, lo funde en la próxima revisión.", "rerun 2"]);
+    expect(state(10)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e" });
+    expect(state(11).outage).toBeUndefined();
+    tick(60 * 3);
+    await pass();
+    expect(gh.did.filter((d) => d === "rerun 1")).toHaveLength(1);
+  });
+
+  it("is seen at the base branch, read at most every 5 minutes", async () => {
+    const { base, pass, tick, outage } = await downAtNoon();
+    base.checks = passed("e2e", "2026-11-10T12:01:00Z");
+    tick(2);
+    await pass();
+    expect(outage()).toBeDefined();
+    tick(3);
+    await pass();
+    expect(outage()).toBeUndefined();
+  });
+
+  it("does not count a run that passed before the last failure", async () => {
+    const { base, pass, tick, outage } = await downAtNoon();
+    base.checks = passed("e2e", "2026-11-10T11:45:00Z");
+    tick(6);
+    await pass();
+    expect(outage()?.checks).toEqual(["e2e"]);
+  });
+});
+
+describe("probing whether the environment is back", () => {
+  it("runs the failed checks of the oldest held pull request again 30 minutes after the last failure, without spending its own", async () => {
+    const { gh, pass, tick, state, outage, jobs } = await downAtNoon();
+    tick(19);
+    await pass();
+    expect(gh.did).toEqual([]);
+    tick(1);
+    await pass();
+    expect(gh.did).toEqual(["rerun 1"]);
+    expect(outage()?.probe).toEqual({ job: jobs[10], head: "a", at: "2026-11-10T12:20:00.000Z" });
+    expect(state(10)).toMatchObject({ status: "waiting", refreshing: { head: "a", at: "2026-11-10T12:20:00.000Z", rerun: true } });
+    expect(state(10).rerun).toBeUndefined();
+    expect(state(11).rerun).toBeUndefined();
+  });
+
+  it("probes right away when the failures are old", async () => {
+    const { ctx, outage } = await factoryWith([10, 11]);
+    const gh = fakeGitHub({ 10: pull("a", red("e2e", "2026-11-10T09:00:00Z", 1)), 11: pull("b", red("e2e", "2026-11-10T09:10:00Z", 2)) }, { checks: red("e2e", "2026-11-10T08:50:00Z") });
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 1"]);
+    expect(outage()?.probe?.head).toBe("a");
+  });
+
+  it("waits twice as long after each probe that fails again, up to 240 minutes", async () => {
+    const { prs, gh, pass, tick, clock, outage } = await downAtNoon();
+    const delays: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      clock.ms = Date.parse(outage()!.nextProbeAt!);
+      await pass();
+      expect(outage()?.probe).toBeDefined();
+      tick(3);
+      prs[10] = pull("a", red("e2e", at(clock.ms - MINUTE), 1));
+      await pass();
+      expect(outage()?.probe).toBeUndefined();
+      delays.push(outage()!.probeDelayMs! / MINUTE);
+      expect(outage()!.nextProbeAt).toBe(at(clock.ms - MINUTE + outage()!.probeDelayMs!));
+    }
+    expect(delays).toEqual([60, 120, 240, 240]);
+    expect(gh.did).toEqual(["rerun 1", "rerun 1", "rerun 1", "rerun 1"]);
+  });
+
+  it("runs one probe at a time and nothing else meanwhile; a probe that passes ends the outage", async () => {
+    const { prs, gh, pass, tick, outage } = await downAtNoon([12]);
+    prs[12] = pull("h12", red("lint", "2026-11-10T12:00:00Z"));
+    tick(20);
+    await pass();
+    const spent = () => gh.did.filter((d) => !d.startsWith("comment"));
+    expect(spent()).toEqual(["rerun 1"]);
+    // Another pull request that could run its failed check again waits its turn while the probe runs.
+    prs[12] = pull("h12b", red("lint", "2026-11-10T12:25:00Z", 3));
+    for (let i = 0; i < 6; i++) {
+      tick(15);
+      await pass();
+    }
+    expect(spent()).toEqual(["rerun 1"]);
+    prs[10] = pull("a", [{ name: "ci", done: true, ok: true, at: "2026-11-10T13:50:00Z" }, ...passed("e2e", "2026-11-10T13:50:00Z")]);
+    tick(1);
+    await pass();
+    expect(gh.did).toContain("merge #10 @a");
+    expect(outage()).toBeUndefined();
+  });
+});
+
+describe("an outage with no pull request left", () => {
+  it("is forgotten", async () => {
+    const { prs, pass, tick, outage } = await downAtNoon();
+    prs[10]!.pr = { ...prs[10]!.pr, merged: true, open: false };
+    prs[11]!.pr = { ...prs[11]!.pr, open: false };
+    tick(1);
+    await pass();
+    expect(outage()).toBeUndefined();
+  });
+});
+
+describe("pull requests stuck before this change", () => {
+  it("come unstuck on their own: each gets exactly one more run, one at a time, and those that pass merge", async () => {
+    const numbers = [505, 475, 469, 467, 463, 448];
+    const { ctx, clock, jobs, state, outage } = await factoryWith(numbers);
+    const prs: Record<number, FakePr> = {};
+    numbers.forEach((n, i) => {
+      const head = `h${n}`;
+      prs[n] = pull(head, red("e2e", at(Date.parse("2026-11-09T10:00:00Z") + i * 30 * MINUTE), n));
+      const why = "fallaron los checks e2e";
+      ctx.store.setKv(mergeKey(jobs[n]!), JSON.stringify({ status: "blocked", why, reported: `checks:${head}:e2e`, rerun: head, backoff: { sha: head, mergeable: true, why, delayMs: 60 * MINUTE, nextChecksAt: "2026-11-09T14:00:00Z" } } satisfies MergeState));
+    });
+    const gh = fakeGitHub(prs, { checks: [] }, true);
+    clock.ms = Date.parse("2026-11-10T09:00:00Z");
+    for (let i = 0; i < 40 && numbers.some((n) => !prs[n]!.pr.merged); i++) {
+      // e2e passes again today: whatever was run again ends well.
+      for (const n of numbers) if (prs[n]!.checks.some((c) => !c.done)) prs[n]!.checks = prs[n]!.checks.map((c) => ({ ...c, done: true, ok: true, at: at(clock.ms) }));
+      await pollMerges(ctx, () => gh.api);
+      expect(numbers.filter((n) => prs[n]!.checks.some((c) => !c.done)).length).toBeLessThanOrEqual(1);
+      clock.ms += 10 * MINUTE;
+    }
+    for (const n of numbers) {
+      expect(gh.did.filter((d) => d === `rerun ${n}`)).toHaveLength(1);
+      expect(state(n).status).toBe("merged");
+    }
+    expect(gh.did.filter((d) => d.startsWith("comment") || d.startsWith("update"))).toEqual([]);
+    expect(outage()).toBeUndefined();
   });
 });
 
