@@ -397,7 +397,8 @@ async function prepareWorkCopy(deps: RunnerDeps, job: Job, line: LineConfig, iso
           }
         });
       }
-      git(["checkout", "-q", "--", "."], bare.cwd);
+      // A repository whose base has no files yet (a package's new one) has nothing to restore, and git refuses the pathspec.
+      if (git(["ls-tree", "--name-only", "HEAD"], bare.cwd)) git(["checkout", "-q", "--", "."], bare.cwd);
       const exclude = untrackedPaths(bare.cwd);
       await mkdir(join(deps.home.jobs, job.id), { recursive: true });
       await writeFile(excludeFile, JSON.stringify(exclude));

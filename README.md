@@ -635,6 +635,8 @@ stations:
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # lets ctx.requestJob open jobs; without it, it cannot
     onDemand: true                 # lets you ask for a pass with zero package run; without it, you cannot
+    uploads: { maxMb: 20, extensions: [".zip"] } # lets you send it a file; needs onDemand: true
+    repositories: { perDay: 2 }    # lets ctx.repos create local git repositories; without it, it cannot
 ```
 
 - **Agents** run on every line as global custom agents, after the ones in your file and with the same guarantees (see Custom agents). They are never written to your file. Their names cannot repeat a fixed station, an agent of yours or another package's.
@@ -678,21 +680,31 @@ export async function scheduled(ctx, { at }) {
 | `ctx.runAgent({ prompt, schema })` | A read-only agent in an empty folder, with the station's instructions and skills. Returns `{ ok, text, output, costUsd }`. In `scheduled` it throws an error |
 | `ctx.z` | zero's zod, for the `schema` |
 | `ctx.log.info`, `ctx.log.warn` | To zero's log, without the values of its secrets |
-| `ctx.lines` | Line names only |
+| `ctx.lines` | Line names only: yours and those of this package's repositories, never another package's |
 | `ctx.state.get(name)`, `ctx.state.set(name, value)` | Saved between passes, separately for each station |
 | `ctx.deliveredJobs(since)` | Line, title, summary and date of delivered jobs, without job ids, branches or local paths |
-| `ctx.requestJob({ line, text })` | Asks the factory for a job. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.requestJob({ line, text, maxUsd })` | Asks the factory for a job; `{ repo, text, maxUsd }` asks for it on one of its repositories. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.job(id)` | Status, cost, cap and delivery of a job this package asked for; `undefined` for any other |
 | `ctx.dataDir` | The package's data folder, `~/.zero/package-data/<package>`, already created; its panel tabs read from here |
+| `ctx.upload` | The file you sent this on-demand run: `{ name, path, sizeBytes, at }`; absent in every other turn |
+| `ctx.unzip(zip, dest)` | Unpacks a zip of `ctx.dataDir` into a folder of it or of one of its repositories. Returns `{ files }` or `{ reason }`; it never throws |
+| `ctx.repos` | `create`, `archive` and `remove` for the package's local git repositories, if it declares `repositories` |
 
 `ctx.runAgent` records each call as `package:<package>/<station>`, picks the engine from the entry's chain and shares the `limits.usdPerNight` cap on pay-per-use. With no engine or no cap left, it returns `ok: false` without calling anyone.
 
 `ctx.requestJob` lets a station detect something and send the change through the normal line (spec, build, verify, review, integration) instead of touching a repository on its own. It only works if the station's manifest declares `requests: { perLinePerDay: N }`, where N is a whole number above zero. You get `{ reason }` and no job when the station declares no `requests`, the line is not one of `ctx.lines`, the text is empty or not text, the andon is on, the budget is used up, the pass has ended, or the station already opened N jobs on that line today (each station and line counts on its own, per local day, and a refused request spends nothing). The text is cut to 4000 characters, without the station's secrets, recognizable tokens or local paths, and agents receive it as a third party's data, naming where it came from. These jobs follow their line's level and integration like any request of yours: on L2 or L3 they integrate without asking. The factory starts them after your work, one at a time, and only with nothing else queued or running. Status, panel, briefing and monthly report show them as `pedido por paquete <package>/<station>`.
+
+**Cost per job.** With `maxUsd`, the station caps what that job may spend: it becomes the job's budget instead of `limits.usdPerJob`, and the line stops the job when it reaches it, as with any job. It has to be a number above zero and no higher than `limits.usdPerJob`; anything else returns `{ reason }`, opens no job and spends none of the day's requests. Later, `ctx.job(id)` tells the station how that job is going: `status`, `costUsd` (what it really cost), `budgetUsd`, `waiting` (it waits for your answer), `finishedAt`, a `reason` without secrets or local paths, and `delivery` with its `mode` and `commit`. It only answers for jobs this same package asked for; for yours, another package's or an id that does not exist it returns `undefined`.
 
 **Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
 **On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The daemon runs it in its own pass, every few minutes, whatever the line is doing: it does not wait for queued or running jobs, nor for scout or research, and it never starts a job or takes a job's place. It still waits for the andon off, budget left and its declared secrets saved; until then it stays pending. `ctx.runAgent` still shares the `limits.usdPerNight` cap. A station never runs two turns at once: if its regular or scheduled turn is under way, the request waits for the next pass. An on-demand run does not move the station's period, and the station does not run its regular turn while a request is pending. `zero status`, the panel's summary and the briefing show the pending runs and the last run of each station: running, ended fine, failed, over its time, cut by a shutdown, could not run, or with no result when it never ended. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log; the run shows as could not run. The command exits 1 when refused, and starts the factory if it was off.
 
 **A request for the run.** `zero package run <package>/<station> --pedido "..."` (the chat's `zero_package_run` takes the same as `request`, and the panel's "Paquetes" tab has a "Pedir ahora" button with an optional text field on every station that takes on-demand runs) sends a text with that run. The station gets it as `run.request` in `pass(ctx, run)`, that is `{ onDemand: true, request }`, as a request from the person in charge; with no text, or one that is empty once cleaned, it still gets exactly `{ onDemand: true }`. zero cleans it before keeping it: the values of the station's declared secrets and the paths of your lines' repositories are taken out, and it is cut to 4000 characters. Only you can ask for one, from the terminal, the chat or the panel with your session; a station's `ctx`, issues, comments and packages' `requestJob` have no way to. The command answers once the run started, or, after 2 minutes (30 seconds from the chat), that it is still pending and will run on the daemon's next pass. `zero status` shows the pending request with its text (`Corridas a demanda pendientes:`), the run while it is going (`Corrida a demanda de <package>/<station>: en curso`) and how the last one ended: it finished, failed (with its error, without secrets or local paths, at most 600 characters), ran past its `timeoutMinutes` or was cut by a shutdown. `zero package list` and the panel's "Paquetes" tab show the same.
+
+**Sending a file to a station.** A station with `onDemand: true` may also declare `uploads`: `maxMb` (above zero and at most 100, 20 by default) and `extensions` (`[".zip"]` by default); a manifest with `uploads` and without `onDemand: true` stays out. You send the file with `zero package upload <package>/<station> <file>` (it takes `--pedido` like `zero package run`) or from the panel's "Paquetes" tab, which shows an upload form on those stations. zero keeps it in `~/.zero/package-data/<package>/uploads/<station>/`, under the time and a cleaned base name, and asks for an on-demand run of that station, which gets it as `ctx.upload` (`{ name, path, sizeBytes, at }`, with `path` inside its data folder); no other turn has `ctx.upload`. It is a third party's content, so zero checks everything before keeping it and leaves nothing behind when it refuses: the station does not declare `uploads`, the extension is not one of its own, the file goes past `maxMb` (the panel stops reading there too), a `.zip` does not start like a zip, or the run would be refused (another one pending, the andon on, the budget used up). The panel's form asks for your session and refuses a request coming from another site.
+
+**Unpacking a zip.** `ctx.unzip(zip, dest)` unpacks a zip of the data folder into a folder of it (relative paths are taken from `ctx.dataDir`) or into one of the package's repositories, never into its `.git`. zero reads the whole archive before writing anything and refuses all of it, with `{ reason }`, when an entry is a symbolic link, has an absolute path, a drive, `..` or `:`, is encrypted or zip64, when there is a link on the way to the destination, or when it has more than 10,000 entries or unpacks past 1 GiB. It only knows stored and deflated entries.
 
 **Panel tabs.** With `tabs`, a package adds read-only tabs of its own to the browser panel. Each one shows a JSON file that the package's stations write in its data folder, `~/.zero/package-data/<package>`, which they receive already created as `ctx.dataDir`. No package code runs in the panel, and tabs need no `allowCode`: the panel only reads that file and checks it against a schema. Each tab's `name` follows the rule of the package's other names and cannot repeat, and `data` must be a relative `.json` path that stays inside the data folder; otherwise the whole package stays out.
 
@@ -704,12 +716,13 @@ tabs:
     categories: [release, security] # optional: the filter's options
 ```
 
-The file holds an object with `items`, a list of at most 500 elements. Only `title` is required (up to 300 characters); `description` takes up to 2000, and `url`, `category` and `date` are optional text:
+The file holds an object with `items`, a list of at most 500 elements. Only `title` is required (up to 300 characters); `description` takes up to 2000, and `url`, `category`, `date` and `file` are optional text:
 
 ```json
 {
   "items": [
-    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" },
+    { "title": "Delivery d1", "file": "out/d1.zip", "date": "2026-11-02" }
   ]
 }
 ```
@@ -726,6 +739,32 @@ export async function scheduled(ctx) {
 
 Each tab appears in the menu of every panel page and has its own address, `/packages/<package>/<tab>`, which asks for the panel's session like the other pages. To share it, add the panel key to that address (`/packages/hello/news#k=…`): after signing in the panel stays on that tab instead of the overview. The filter uses the `categoria` parameter, with the manifest's `categories` as options or, without them, those the elements use. Since this is a third party's data, all its text is escaped, and a `url` only becomes a link when it is an absolute `http` or `https` address, opened in a new tab; any other one (`javascript:`, `data:`, relative) shows the element without a link. A missing file shows that there is no data yet; one over 1 MiB, that is not JSON, does not pass the schema or whose real path leaves the data folder (through a link, for example) shows a warning and none of its elements.
 
+**Downloads.** An element's `file` offers a file of the data folder for download: a relative path such as `out/d1.zip`, without `..` or a drive (one that has them makes the whole file invalid). The tab shows a "Descargar" link only when that file exists as a regular file whose real path stays inside the data folder; otherwise the element shows without it. The link points to `/packages/<package>/<tab>/files/<path>`, which asks for the panel's session and hands the file out as an attachment (`application/octet-stream`, never opened in the browser) only when the tab's current data lists exactly that file, it is still a regular file inside the data folder, links resolved, and it weighs at most 512 MiB. Any other request gets 404, and no package code runs to answer it.
+
+**Local repositories.** A station whose manifest declares `repositories: { perDay: N }` can build on a local git repository of its own, without GitHub and without you editing your file. `ctx.repos.create(name, { from, setup, verify })` creates `~/.zero/package-repos/<package>/<name>` with one commit on `main`, with the files of a zip of the data folder when `from` names one (unpacked the same way as `ctx.unzip`), and adds to your file the line `<package>-<name>` with `integrate: merge`, `package: <package>` and the `setup` and `verify` commands it gave. The name takes lowercase letters, digits and dashes, up to 40 characters. It refuses, changing neither the file nor any folder, when the station does not declare `repositories`, it already created N today, the name is not valid or the line name is taken. With `requests`, `ctx.requestJob({ repo: name, text, maxUsd })` opens a normal job there: spec, build, verify and review as on any line, and the delivery is the merge commit on that repository's `main`, with no remote and no pull request. `ctx.repos.archive(name, file)` writes a zip of `main` to a `.zip` path of the data folder, ready to offer as a tab's `file`, and `ctx.repos.remove(name)` takes out the line and the folder, except while the line has a job that has not ended. Every call refuses another package's repositories, a station never sees another package's lines in `ctx.lines` nor can ask for jobs on them, and scout, unjam and research leave these lines alone.
+
+```js
+export async function pass(ctx, run) {
+  const pending = ctx.state.get("pending");
+  if (pending) {
+    const job = ctx.job(pending.job);
+    if (job?.status === "delivered") {
+      await ctx.repos.archive(pending.repo, `out/${pending.repo}.zip`);
+      ctx.state.set("pending", null);
+      ctx.log.info("delivered", { costUsd: job.costUsd });
+    }
+    return;
+  }
+  if (!run?.onDemand || !ctx.upload) return;
+  const repo = `d${ctx.now.getTime()}`;
+  const made = await ctx.repos.create(repo, { from: ctx.upload.path, verify: ["npm test"] });
+  if ("reason" in made) return ctx.log.warn("no repository", { why: made.reason });
+  const job = ctx.requestJob({ repo, text: run.request ?? "Finish what the README asks for", maxUsd: 2 });
+  if ("reason" in job) return ctx.log.warn("no job", { why: job.reason });
+  ctx.state.set("pending", { repo, job: job.id });
+}
+```
+
 **How to install one:**
 
 ```sh
@@ -740,6 +779,7 @@ zero package list
 zero package update hello                    # shows the change and applies it; without a name, every package
 zero package run hello/note                  # one pass of that station on the next pass, without waiting for the queue (onDemand: true)
 zero package run hello/note --pedido "check this week's prices"   # the same, with a request for that run
+zero package upload hello/note ./site.zip    # sends that file to the station and asks for an on-demand run (uploads)
 zero package remove hello                    # takes it out of the file; its files stay
 ```
 

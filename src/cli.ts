@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -93,6 +95,9 @@ Fábrica:
                                  Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
                                  (solo si su manifiesto declara onDemand: true), con un pedido en texto si querés;
                                  responde cuando la corrida empezó (o, pasados 2 minutos, que sigue pendiente)
+  zero package upload <paquete>/<estación> <archivo> [--pedido "<texto>"]
+                                 Le sube un archivo (un zip) a la estación y pide una corrida a demanda que lo recibe
+                                 (solo si su manifiesto declara uploads); responde como zero package run
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
@@ -409,6 +414,19 @@ Informe: ${r.report}`);
         if (action === "run") {
           if (!name) throw new Error("Indicá la estación: zero package run <paquete>/<estación>");
           const r = requestStationRun(ctx, name, new Date(), values.pedido);
+          if (!r.ok) {
+            console.log(r.reason);
+            return 1;
+          }
+          console.log(r.text);
+          if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+          console.log((await waitStationStart(ctx, name, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
+          return 0;
+        }
+        if (action === "upload") {
+          const file = rest[2];
+          if (!name || !file) throw new Error("Indicá la estación y el archivo: zero package upload <paquete>/<estación> <archivo>");
+          const r = await uploadToStation(ctx, name, { name: basename(file), content: createReadStream(file), ...(values.pedido !== undefined && { request: values.pedido }) });
           if (!r.ok) {
             console.log(r.reason);
             return 1;

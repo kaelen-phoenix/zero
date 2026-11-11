@@ -634,6 +634,8 @@ stations:
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # deja que ctx.requestJob abra trabajos; sin esto, no puede
     onDemand: true                 # te deja pedir una pasada con zero package run; sin esto, no podés
+    uploads: { maxMb: 20, extensions: [".zip"] } # te deja mandarle un archivo; necesita onDemand: true
+    repositories: { perDay: 2 }    # deja que ctx.repos cree repositorios git locales; sin esto, no puede
 ```
 
 - **Agentes:** corren en todas las líneas como agentes a medida globales, después de los de tu archivo y con las mismas garantías (ver Agentes a medida). Nunca se escriben en tu archivo. Sus nombres no pueden repetir una estación fija, un agente tuyo ni el de otro paquete.
@@ -677,21 +679,31 @@ export async function scheduled(ctx, { at }) {
 | `ctx.runAgent({ prompt, schema })` | Un agente de solo lectura en una carpeta vacía, con las instrucciones y skills de la estación. Devuelve `{ ok, text, output, costUsd }`. En `scheduled` lanza un error |
 | `ctx.z` | El zod de zero, para el `schema` |
 | `ctx.log.info`, `ctx.log.warn` | Al registro de zero, sin los valores de sus secretos |
-| `ctx.lines` | Solo los nombres de las líneas |
+| `ctx.lines` | Solo los nombres de las líneas: las tuyas y las de los repositorios de este paquete, nunca las de otro paquete |
 | `ctx.state.get(nombre)`, `ctx.state.set(nombre, valor)` | Se guarda entre pasadas, por separado para cada estación |
 | `ctx.deliveredJobs(desde)` | Línea, título, resumen y fecha de los trabajos entregados, sin identificadores de trabajo, ramas ni rutas locales |
-| `ctx.requestJob({ line, text })` | Le pide un trabajo a la fábrica. Devuelve `{ id }`, o `{ reason }` si no se puede; nunca lanza |
+| `ctx.requestJob({ line, text, maxUsd })` | Le pide un trabajo a la fábrica; `{ repo, text, maxUsd }` lo pide sobre uno de sus repositorios. Devuelve `{ id }`, o `{ reason }` si no se puede; nunca lanza |
+| `ctx.job(id)` | Estado, costo, tope y entrega de un trabajo que pidió este paquete; `undefined` para cualquier otro |
 | `ctx.dataDir` | La carpeta de datos del paquete, `~/.zero/package-data/<paquete>`, ya creada; de acá leen sus pestañas del panel |
+| `ctx.upload` | El archivo que le mandaste a esta corrida a demanda: `{ name, path, sizeBytes, at }`; no está en ningún otro turno |
+| `ctx.unzip(zip, destino)` | Descomprime un zip de `ctx.dataDir` en una carpeta suya o de uno de sus repositorios. Devuelve `{ files }` o `{ reason }`; nunca lanza |
+| `ctx.repos` | `create`, `archive` y `remove` para los repositorios git locales del paquete, si declara `repositories` |
 
 `ctx.runAgent` registra cada llamada como `package:<paquete>/<estación>`, elige el motor de la cadena de la entrada y comparte el tope `limits.usdPerNight` en el pago por uso. Sin motor o sin tope restante devuelve `ok: false` sin llamar a nadie.
 
 `ctx.requestJob` deja que una estación detecte algo y mande el cambio por la línea normal (especificación, construcción, verify, revisión, integración) en vez de tocar un repositorio por su cuenta. Solo funciona si el manifiesto de la estación declara `requests: { perLinePerDay: N }`, con N entero mayor que cero. Recibís `{ reason }` y ningún trabajo cuando la estación no declara `requests`, la línea no es una de `ctx.lines`, el texto está vacío o no es texto, el andon está activo, se agotó el presupuesto, la pasada terminó o la estación ya abrió N trabajos en esa línea hoy (cada estación y línea cuenta aparte, por día local, y un pedido rechazado no gasta nada). El texto se recorta a 4000 caracteres, sin los secretos de la estación, tokens reconocibles ni rutas locales, y los agentes lo reciben como datos de un tercero, con su origen. Estos trabajos siguen el nivel y la integración de su línea como cualquier pedido tuyo: en L2 o L3 se integran sin preguntarte. La fábrica los arranca después de tu trabajo, de a uno y solo sin nada más en cola o en marcha. El estado, el panel, el briefing y el informe mensual los muestran como `pedido por paquete <paquete>/<estación>`.
+
+**Costo por trabajo.** Con `maxUsd`, la estación pone un tope a lo que puede gastar ese trabajo: pasa a ser su presupuesto en lugar de `limits.usdPerJob`, y la línea frena el trabajo cuando lo alcanza, como con cualquier trabajo. Tiene que ser un número mayor que cero y no mayor que `limits.usdPerJob`; cualquier otro valor devuelve `{ reason }`, no abre ningún trabajo ni gasta los pedidos del día. Después, `ctx.job(id)` le dice a la estación cómo va ese trabajo: `status`, `costUsd` (lo que costó de verdad), `budgetUsd`, `waiting` (espera tu respuesta), `finishedAt`, un `reason` sin secretos ni rutas locales, y `delivery` con su `mode` y su `commit`. Solo responde por trabajos que pidió este mismo paquete; para los tuyos, los de otro paquete o un identificador que no existe devuelve `undefined`.
 
 **Pasadas con horario.** Con `schedule` (una lista de horas locales `HH:MM`, sin repetir), zero llama a `scheduled(ctx, { at })` del módulo en cada una de esas horas en vez de a `pass`; `at` es la hora tal como la escribe el manifiesto y `ctx.now` la hora real de la pasada. Corren aunque haya trabajos en cola o en marcha y aunque se haya agotado el presupuesto, porque no pueden usar un modelo: `ctx.runAgent` lanza un error y no llama a ningún motor. Sí tienen `ctx.secrets`, `ctx.state` (los mismos valores que `pass`), `ctx.log` y `ctx.lines`, y el resto de `ctx` funciona igual. Cada hora corre como máximo una vez por día local y cuenta como usada antes de la llamada, así que la que falla o supera `timeoutMinutes` no se repite ese día. Una hora que no pudo correr (la fábrica estaba apagada, el andon activo o faltaba un secreto declarado) corre después solo si no pasaron más de 2 horas, de la más vieja a la más nueva, y si no espera al día siguiente; con el andon activo no arranca ninguna. `pass` sigue con su propio ritmo en el tiempo libre, así que una estación puede exportar una, la otra o las dos. Las dos pueden correr a la vez y comparten `ctx.state`: tenelo en cuenta al escribir la estación.
 
 **Corridas a demanda.** A una estación cuyo manifiesto declara `onDemand: true` (por defecto es false) le podés pedir que corra una vez sin esperar sus `everyMinutes`: `zero package run <paquete>/<estación>`, o la herramienta `zero_package_run` del chat. zero llama a su `pass(ctx, { onDemand: true })`, con el mismo `ctx` de siempre, así la estación distingue tu pedido de su turno normal, que no recibe segundo argumento. El daemon la corre en una pasada propia, cada pocos minutos, haga lo que haga la línea: no espera a los trabajos en cola o en marcha, ni a scout o la investigación, y nunca empieza un trabajo ni ocupa el lugar de uno. Sí espera el andon apagado, presupuesto disponible y sus secretos declarados guardados; mientras tanto queda pendiente. `ctx.runAgent` sigue compartiendo el tope de `limits.usdPerNight`. Una estación nunca corre dos turnos a la vez: si su turno normal o programado está en marcha, el pedido espera la próxima pasada. Una corrida a demanda no mueve el período de la estación, y la estación no corre su turno normal mientras haya un pedido pendiente. `zero status`, el resumen del panel y el informe muestran las corridas pendientes y la última corrida de cada estación: corriendo, terminó bien, falló, superó su tiempo, se cortó al apagar la fábrica, no pudo correr, o sin resultado cuando nunca terminó. Hay como máximo una corrida pendiente por estación: si la pedís de nuevo antes de que corra, se rechaza. También recibís el motivo, y no se registra nada, cuando la estación no es `<paquete>/<estación>`, el paquete o la estación no existen, la estación no puede correr (por ejemplo, sin `allowCode`), no declara `onDemand: true`, el andon está activo o se agotó el presupuesto. Un módulo que no se puede importar, no tiene `pass` o cuyo `parseConfig` lanza un error descarta el pedido, y el motivo queda en el log; la corrida figura como que no pudo correr. El comando sale con 1 cuando se rechaza, y enciende la fábrica si estaba apagada.
 
 **Un pedido para la corrida.** `zero package run <paquete>/<estación> --pedido "..."` (la herramienta `zero_package_run` del chat recibe lo mismo como `request`, y la pestaña "Paquetes" del panel tiene un botón "Pedir ahora" con un campo de texto opcional en cada estación que acepta corridas a demanda) manda un texto con esa corrida. La estación lo recibe como `run.request` en `pass(ctx, run)`, es decir `{ onDemand: true, request }`, como pedido de la persona a cargo; sin texto, o con uno que queda vacío al limpiarlo, sigue recibiendo exactamente `{ onDemand: true }`. zero lo limpia antes de guardarlo: saca los valores de los secretos declarados por la estación y las rutas de los repositorios de tus líneas, y lo corta a 4000 caracteres. Solo vos podés pedirla, desde la terminal, el chat o el panel con tu sesión; el `ctx` de una estación, los issues, los comentarios y el `requestJob` de los paquetes no tienen forma de hacerlo. El comando responde cuando la corrida empezó o, pasados 2 minutos (30 segundos desde el chat), que sigue pendiente y va a correr en la próxima pasada del daemon. `zero status` muestra el pedido pendiente con su texto (`Corridas a demanda pendientes:`), la corrida mientras está en marcha (`Corrida a demanda de <paquete>/<estación>: en curso`) y cómo terminó la última: terminó bien, falló (con su error, sin secretos ni rutas locales, hasta 600 caracteres), superó su `timeoutMinutes` o se cortó porque la fábrica se apagó. `zero package list` y la pestaña "Paquetes" del panel muestran lo mismo.
+
+**Mandarle un archivo a una estación.** Una estación con `onDemand: true` también puede declarar `uploads`: `maxMb` (mayor que cero y hasta 100, 20 por defecto) y `extensions` (`[".zip"]` por defecto); un manifiesto con `uploads` y sin `onDemand: true` queda afuera. Mandás el archivo con `zero package upload <paquete>/<estación> <archivo>` (acepta `--pedido` como `zero package run`) o desde la pestaña "Paquetes" del panel, que muestra un formulario para subirlo en esas estaciones. zero lo guarda en `~/.zero/package-data/<paquete>/uploads/<estación>/`, con la hora y un nombre base limpio, y pide una corrida a demanda de esa estación, que lo recibe como `ctx.upload` (`{ name, path, sizeBytes, at }`, con `path` dentro de su carpeta de datos); ningún otro turno tiene `ctx.upload`. Es contenido de terceros, así que zero revisa todo antes de guardarlo y no deja nada cuando lo rechaza: la estación no declara `uploads`, la extensión no es una de las suyas, el archivo pasa de `maxMb` (el panel también deja de leer ahí), un `.zip` no empieza como un zip, o la corrida se rechazaría (ya hay otra pendiente, el andon está activo, se agotó el presupuesto). El formulario del panel pide tu sesión y rechaza un pedido que viene de otro sitio.
+
+**Descomprimir un zip.** `ctx.unzip(zip, destino)` descomprime un zip de la carpeta de datos en una carpeta suya (las rutas relativas se toman desde `ctx.dataDir`) o en uno de los repositorios del paquete, nunca en su `.git`. zero lee el archivo entero antes de escribir nada y lo rechaza todo, con `{ reason }`, cuando una entrada es un enlace simbólico, tiene una ruta absoluta, una unidad, `..` o `:`, está cifrada o es zip64, cuando hay un enlace en el camino al destino, o cuando tiene más de 10.000 entradas o descomprimido pasa de 1 GiB. Solo conoce entradas guardadas y comprimidas con deflate.
 
 **Pestañas del panel.** Con `tabs`, un paquete suma pestañas propias, de solo lectura, al panel del navegador. Cada una muestra un archivo JSON que las estaciones del paquete escriben en su carpeta de datos, `~/.zero/package-data/<paquete>`, que reciben ya creada como `ctx.dataDir`. En el panel no corre código del paquete, y las pestañas no necesitan `allowCode`: el panel solo lee ese archivo y lo valida con un esquema. El `name` de cada pestaña sigue la regla de los demás nombres del paquete y no se puede repetir, y `data` tiene que ser una ruta `.json` relativa que no salga de la carpeta de datos; si no, el paquete entero queda afuera.
 
@@ -703,12 +715,13 @@ tabs:
     categories: [release, security] # opcional: las opciones del filtro
 ```
 
-El archivo tiene un objeto con `items`, una lista de hasta 500 elementos. Solo `title` es obligatorio (hasta 300 caracteres); `description` admite hasta 2000, y `url`, `category` y `date` son textos opcionales:
+El archivo tiene un objeto con `items`, una lista de hasta 500 elementos. Solo `title` es obligatorio (hasta 300 caracteres); `description` admite hasta 2000, y `url`, `category`, `date` y `file` son textos opcionales:
 
 ```json
 {
   "items": [
-    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" }
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" },
+    { "title": "Delivery d1", "file": "out/d1.zip", "date": "2026-11-02" }
   ]
 }
 ```
@@ -725,6 +738,32 @@ export async function scheduled(ctx) {
 
 Cada pestaña aparece en el menú de todas las páginas del panel y tiene su propia dirección, `/packages/<paquete>/<pestaña>`, que pide la sesión del panel como las demás páginas. Para compartirla, sumale la clave del panel a esa dirección (`/packages/hello/news#k=…`): después de ingresar, el panel queda en esa pestaña y no en el resumen. El filtro usa el parámetro `categoria`, con las `categories` del manifiesto como opciones o, si no las declara, las que usan los elementos. Como son datos de terceros, todo su texto se escapa, y una `url` solo se vuelve link si es una dirección absoluta `http` o `https`, que se abre en una pestaña nueva; cualquier otra (`javascript:`, `data:`, relativa) muestra el elemento sin link. Un archivo que falta muestra que todavía no hay datos; uno de más de 1 MiB, que no es JSON, que no cumple el esquema o cuya ruta real sale de la carpeta de datos (por ejemplo, por un enlace) muestra un aviso y ninguno de sus elementos.
 
+**Descargas.** El `file` de un elemento ofrece para bajar un archivo de la carpeta de datos: una ruta relativa como `out/d1.zip`, sin `..` ni unidad (una que los tenga invalida el archivo entero). La pestaña muestra un link "Descargar" solo cuando ese archivo existe como archivo común y su ruta real queda dentro de la carpeta de datos; si no, el elemento se muestra sin él. El link apunta a `/packages/<paquete>/<pestaña>/files/<ruta>`, que pide la sesión del panel y entrega el archivo como adjunto (`application/octet-stream`, nunca se abre en el navegador) solo cuando los datos actuales de la pestaña listan exactamente ese archivo, sigue siendo un archivo común dentro de la carpeta de datos, con los enlaces resueltos, y pesa hasta 512 MiB. Cualquier otro pedido recibe 404, y para responderlo no corre código del paquete.
+
+**Repositorios locales.** Una estación cuyo manifiesto declara `repositories: { perDay: N }` puede construir sobre un repositorio git local propio, sin GitHub y sin que edites tu archivo. `ctx.repos.create(nombre, { from, setup, verify })` crea `~/.zero/package-repos/<paquete>/<nombre>` con un commit en `main`, con los archivos de un zip de la carpeta de datos cuando `from` nombra uno (descomprimido igual que con `ctx.unzip`), y suma a tu archivo la línea `<paquete>-<nombre>` con `integrate: merge`, `package: <paquete>` y los comandos `setup` y `verify` que le dio. El nombre va en minúsculas, dígitos y guiones, hasta 40 caracteres. Se rechaza, sin cambiar el archivo ni ninguna carpeta, cuando la estación no declara `repositories`, ya creó N hoy, el nombre no es válido o el nombre de la línea ya está usado. Con `requests`, `ctx.requestJob({ repo: nombre, text, maxUsd })` abre ahí un trabajo normal: especificación, construcción, verify y revisión como en cualquier línea, y la entrega es el commit de fusión en `main` de ese repositorio, sin remoto y sin pull request. `ctx.repos.archive(nombre, archivo)` escribe un zip de `main` en una ruta `.zip` de la carpeta de datos, listo para ofrecer como `file` de una pestaña, y `ctx.repos.remove(nombre)` saca la línea y la carpeta, salvo mientras la línea tenga un trabajo sin terminar. Toda llamada rechaza los repositorios de otro paquete, una estación nunca ve en `ctx.lines` las líneas de otro paquete ni puede pedir trabajos en ellas, y scout, el destrabador y la investigación no miran estas líneas.
+
+```js
+export async function pass(ctx, run) {
+  const pending = ctx.state.get("pending");
+  if (pending) {
+    const job = ctx.job(pending.job);
+    if (job?.status === "delivered") {
+      await ctx.repos.archive(pending.repo, `out/${pending.repo}.zip`);
+      ctx.state.set("pending", null);
+      ctx.log.info("delivered", { costUsd: job.costUsd });
+    }
+    return;
+  }
+  if (!run?.onDemand || !ctx.upload) return;
+  const repo = `d${ctx.now.getTime()}`;
+  const made = await ctx.repos.create(repo, { from: ctx.upload.path, verify: ["npm test"] });
+  if ("reason" in made) return ctx.log.warn("no repository", { why: made.reason });
+  const job = ctx.requestJob({ repo, text: run.request ?? "Finish what the README asks for", maxUsd: 2 });
+  if ("reason" in job) return ctx.log.warn("no job", { why: job.reason });
+  ctx.state.set("pending", { repo, job: job.id });
+}
+```
+
 **Cómo instalar uno:**
 
 ```sh
@@ -739,6 +778,7 @@ zero package list
 zero package update hello                    # muestra el cambio y lo aplica; sin nombre, todos los paquetes
 zero package run hello/note                  # una pasada de esa estación en la próxima pasada, sin esperar la cola (onDemand: true)
 zero package run hello/note --pedido "revisá los precios de esta semana"   # lo mismo, con un pedido para esa corrida
+zero package upload hello/note ./site.zip    # le manda ese archivo a la estación y pide una corrida a demanda (uploads)
 zero package remove hello                    # lo saca del archivo; sus archivos quedan
 ```
 

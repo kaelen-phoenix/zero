@@ -15,6 +15,8 @@ export const MANIFEST = "zero-package.yaml";
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 const NAME_RULE = "usá minúsculas, dígitos y guiones";
 const SCHEDULE_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+/** The largest upload a station may declare. */
+export const MAX_UPLOAD_MB = 100;
 
 /** No `engine` or `model` here: which engine runs a third party's agent is up to the package's entry, so they are refused as unknown keys. */
 const ManifestAgentSchema = z
@@ -51,8 +53,22 @@ const ManifestStationSchema = z
     requests: z.object({ perLinePerDay: z.number().int().positive() }).strict().optional(),
     /** Permission for the person in charge to ask for a run of `pass` outside its period. */
     onDemand: z.boolean().default(false),
+    /** Permission for the person in charge to upload a file to it, which asks for an on-demand run. */
+    uploads: z
+      .object({
+        maxMb: z.number().positive().max(MAX_UPLOAD_MB).default(20),
+        extensions: z
+          .array(z.string().regex(/^\.[a-z0-9]+$/i, "va una extensión como .zip"))
+          .min(1)
+          .default([".zip"]),
+      })
+      .strict()
+      .optional(),
+    /** Permission to create local git repositories, each with a line of its own; at most `perDay` a local day. */
+    repositories: z.object({ perDay: z.number().int().positive() }).strict().optional(),
   })
-  .strict();
+  .strict()
+  .refine((s) => !s.uploads || s.onDemand, { message: "uploads necesita onDemand: true", path: ["uploads"] });
 
 const ManifestTabSchema = z
   .object({
@@ -90,7 +106,7 @@ export const ManifestSchema = z
 export type PackageManifest = z.output<typeof ManifestSchema>;
 
 /** Why a path of the manifest is refused before looking at the disk. */
-function pathProblem(path: string, folder = "del paquete"): string | undefined {
+export function pathProblem(path: string, folder = "del paquete"): string | undefined {
   if (isAbsolute(path) || win32.isAbsolute(path) || /^[a-z]:/i.test(path)) return `la ruta "${path}" tiene que ser relativa a la carpeta ${folder}`;
   if (path.split(/[\\/]/).includes("..")) return `la ruta "${path}" no puede salir de la carpeta ${folder} con ".."`;
   return undefined;
@@ -221,6 +237,8 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       maxTurns: s.maxTurns,
       ...(s.requests && { requests: s.requests }),
       onDemand: s.onDemand,
+      ...(s.uploads && { uploads: { maxMb: s.uploads.maxMb, extensions: s.uploads.extensions.map((e) => e.toLowerCase()) } }),
+      ...(s.repositories && { repositories: s.repositories }),
       entry,
     };
   });

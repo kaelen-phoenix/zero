@@ -345,7 +345,12 @@ export const LineSchema = z.object({
   allowedArtifacts: z.array(z.string()).default([]),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
+  /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
+  package: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes").optional(),
 });
+
+/** The package a line belongs to, if a package created it. */
+export const ownedBy = (line: { package?: string }): string | undefined => line.package;
 
 export const FactorySchema = z
   .object({
@@ -508,6 +513,10 @@ export interface PackageStation {
   requests?: { perLinePerDay: number };
   /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
   onDemand: boolean;
+  /** Absent: nothing can be uploaded to it. Extensions in lower case, with the dot. */
+  uploads?: { maxMb: number; extensions: string[] };
+  /** Permission to create local git repositories with lines of their own (`ctx.repos`); absent: it cannot. */
+  repositories?: { perDay: number };
   entry: PackageEntry;
 }
 

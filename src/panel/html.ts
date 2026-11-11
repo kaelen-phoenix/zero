@@ -218,7 +218,7 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
-/** A package's read-only tab: a third party's data, so every text is escaped and only http(s) links get an href. */
+/** A package's read-only tab: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
 export function packageTabPage(view: PackageTabView, nonce: string): string {
   const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
   const filter = view.categories.length
@@ -228,7 +228,8 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
     const href = safeUrl(i.url);
     const title = href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(i.title)}</a>` : esc(i.title);
     const meta = [i.category, i.date].filter(Boolean).map(esc).join(" · ");
-    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}</li>`;
+    const download = i.download ? `<br><a href="${esc(i.download)}" download>Descargar</a>` : "";
+    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}${download}</li>`;
   };
   const body =
     view.state === "missing"
@@ -241,8 +242,11 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
   return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
 }
 
-/** One station of a package: its state, its last on-demand run and, when it takes them, the form to ask for one. */
-function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean): string {
+/** What a station takes as uploads, by `<package>/<station>`. */
+export type StationUploads = Record<string, { maxMb: number; extensions: string[] }>;
+
+/** One station of a package: its state, its last on-demand run and, when it takes them, the forms to ask for one and to upload a file. */
+function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean, uploads?: StationUploads[string]): string {
   const ref = `${pkg}/${s.name}`;
   const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
   const pending = s.onDemandPendingSince
@@ -252,13 +256,16 @@ function packageStation(pkg: string, s: PackageList["packages"][number]["station
   const form = onDemand
     ? `<form method="post" action="/packages/run"><input type="hidden" name="station" value="${esc(ref)}"><label for="p-${esc(ref)}">Pedido (opcional)</label><textarea id="p-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Pedir ahora</button></form>`
     : "";
-  return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}</div>`;
+  const upload = uploads
+    ? `<form method="post" action="/packages/upload?station=${esc(encodeURIComponent(ref))}" enctype="multipart/form-data"><input type="hidden" name="station" value="${esc(ref)}"><label for="f-${esc(ref)}">Archivo (${esc(uploads.extensions.join(", "))}, hasta ${esc(String(uploads.maxMb))} MB)</label><input id="f-${esc(ref)}" type="file" name="file" accept="${esc(uploads.extensions.join(","))}" required><label for="u-${esc(ref)}">Pedido (opcional)</label><textarea id="u-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Subir archivo</button></form>`
+    : "";
+  return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;
 }
 
 /** The "Paquetes" tab: each loaded package's stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
-export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string): string {
+export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string, uploads: StationUploads = {}): string {
   const packages = list.packages
-    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`))).join("") : `<p class="muted">Sin estaciones.</p>`}`)
+    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
     .join("");
   const problems = list.problems.length ? `<div class="card bad"><h2>Problemas</h2><ul>${list.problems.map((p) => `<li>${esc(p.package)}: ${esc(p.reason)}</li>`).join("")}</ul></div>` : "";
   return page(
