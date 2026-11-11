@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
 import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
@@ -25,6 +26,7 @@ import { effectivePriority, priorityRank } from "./priority.js";
 import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { cleanupPass } from "./line/cleanup.js";
+import { killLeftovers } from "./leftovers.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
@@ -73,6 +75,8 @@ export interface DaemonOptions {
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
   packageUpdates?: boolean;
+  /** Kills the processes an interrupted job left in its work copy; defaults to the real one. */
+  killLeftovers?: (folder: string) => number;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -149,6 +153,14 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   for (const job of store.listJobs({ status: ["running"] })) {
     log.info("resuming interrupted job", { job: job.id, checkpoint: job.checkpoint, station: job.station });
+    // What the dead daemon left running there would keep the folder locked (EBUSY) when the job resumes.
+    if (job.worktree && existsSync(job.worktree)) {
+      try {
+        (opts.killLeftovers ?? killLeftovers)(job.worktree);
+      } catch (err) {
+        log.warn("cannot kill the processes left in an interrupted job's work copy", { job: job.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     store.updateJob(job.id, { status: "queued" });
   }
 
