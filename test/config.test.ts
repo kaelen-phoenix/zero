@@ -25,6 +25,12 @@ describe("factory definition", () => {
     expect(cfg.limits.protectedPaths).not.toContain(".agents/**");
   });
 
+  it("leaves autostart off unless the file turns it on, and only with a boolean", () => {
+    expect(parseFactory("lines: []\n").autostart).toBe(false);
+    expect(parseFactory("autostart: true\n").autostart).toBe(true);
+    expect(() => parseFactory('autostart: "si"\n')).toThrow(/autostart/);
+  });
+
   it("rejects an unknown level naming the field", () => {
     expect(() => parseFactory("level: L9\n")).toThrow(/level/);
   });

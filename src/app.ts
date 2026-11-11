@@ -1,11 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
+import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
@@ -84,12 +86,35 @@ export function openTownhall(home: FactoryHome, now?: () => Date): Townhall {
   return resilient(createTownhall(createLocalStore(home.townhall), now));
 }
 
+/** Where the last daemon ended: kv `{at, reason}`, written only when it stopped because it was asked to (or a `once` run ended). */
+export const STOPPED_KEY = "daemon-stopped";
+/** When a process last launched a daemon: kv, an ISO date. */
+export const LAUNCH_KEY = "daemon-launch";
+/** How long a launched daemon has to take the lock before another launch is tried. */
+const LAUNCH_WAIT_MS = 30_000;
+
+export type DaemonStopReason = "shutdown" | "signal" | "once";
+export interface StopRecord {
+  at: string;
+  reason: DaemonStopReason;
+}
+
+/**
+ * `running`; `unresponsive`: the lock is held (or the heartbeat's process lives) with no fresh beat;
+ * `stopped`: nothing left behind, or the last daemon was asked to stop; `crashed`: a heartbeat is left, its process is gone and the lock is free.
+ */
+export type DaemonState = "running" | "unresponsive" | "stopped" | "crashed";
+
 export interface DaemonInfo {
   alive: boolean;
   pid?: number;
   beatAt?: string;
   /** Some process holds the daemon lock, even if its heartbeat is stale. Only `factoryStatus` fills it in. */
   lockHeld?: boolean;
+  /** Only `daemonStatus` (and so `factoryStatus`) fills it in. */
+  state?: DaemonState;
+  /** `stopped`: when the stop was recorded; `crashed`: the last heartbeat. */
+  since?: string;
 }
 
 function pidAlive(pid: number): boolean {
@@ -108,9 +133,46 @@ export function daemonInfo(store: Store, now = new Date()): DaemonInfo {
   return { alive: now.getTime() - Date.parse(beatAt) < BEAT_FRESH_MS && pidAlive(pid), pid, beatAt };
 }
 
+export function readStopRecord(store: Store): StopRecord | undefined {
+  try {
+    const raw = store.getKv(STOPPED_KEY);
+    return raw ? (JSON.parse(raw) as StopRecord) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The daemon's state for `zero status`: running, not responding, stopped on purpose or crashed. */
+export function daemonStatus(ctx: Pick<FactoryContext, "store" | "home">, now = new Date(), bootedAt = Date.now() - uptime() * 1000): DaemonInfo & { state: DaemonState } {
+  const info = { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) };
+  if (info.alive) return { ...info, state: "running" };
+  if (info.lockHeld) return { ...info, state: "unresponsive" };
+  if (info.pid !== undefined && info.beatAt) {
+    // A beat from before the machine started cannot belong to a live process, whatever now has its pid.
+    const gone = Date.parse(info.beatAt) < bootedAt || !pidAlive(info.pid);
+    return gone ? { ...info, state: "crashed", since: info.beatAt } : { ...info, state: "unresponsive" };
+  }
+  return { ...info, state: "stopped", since: readStopRecord(ctx.store)?.at };
+}
+
+/**
+ * Starts the daemon again when it crashed with work left: a job running or queued. Never after a stop on purpose.
+ * Returns true when it called the starter.
+ */
+export async function reviveDaemon(ctx: FactoryContext, start: (ctx: FactoryContext) => Promise<boolean> = ensureDaemon): Promise<boolean> {
+  if (daemonStatus(ctx, (ctx.now ?? (() => new Date()))()).state !== "crashed") return false;
+  if (!ctx.store.listJobs({ status: ["running", "queued"] }).length) return false;
+  await start(ctx);
+  return true;
+}
+
 /** Starts the daemon in the background when it is not running. Returns true if it had to start it. */
 export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
   if (daemonInfo(ctx.store).alive || daemonLockHeld(ctx.home)) return false;
+  // Another call (this process or another) launched one a moment ago: it is still on its way to the lock.
+  const launched = Date.parse(ctx.store.getKv(LAUNCH_KEY) ?? "");
+  if (Date.now() - launched < LAUNCH_WAIT_MS) return false;
+  ctx.store.setKv(LAUNCH_KEY, new Date().toISOString());
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot locate the zero CLI to start the daemon");
   const log = openSync(ctx.home.daemonLog, "a");
@@ -546,7 +608,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
-    daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
+    daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
     today: computeMetrics(ctx.store, startOfDay(now), now),
@@ -1382,6 +1444,12 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
   return mode === "allowlist"
     ? `Modo allowlist: la caja solo sale a tus sitios permitidos (${ctx.config.egress.allow.join(", ") || "ninguno todavía"}) y a los de tus motores.`
     : "Modo blocklist: la caja sale a todo salvo lo sospechoso y lo que bloquees.";
+}
+
+/** Writes `autostart` to the factory file and makes the login entry match it. Terminal only: no chat tool calls it. */
+export async function setAutostart(ctx: FactoryContext, enabled: boolean, deps?: AutostartDeps): Promise<AutostartResult> {
+  ctx.config = await editConfig(ctx, (doc) => doc.set("autostart", enabled));
+  return syncAutostart(ctx.home, enabled, deps);
 }
 
 export function lines(config: FactoryConfig) {

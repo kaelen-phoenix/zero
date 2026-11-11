@@ -92,6 +92,17 @@ zero start [--detach] · zero shutdown
 
 Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda, con un `request` opcional), `zero_merge` (funde un pull request que entregó la fábrica, cuando GitHub dice que está listo), y `zero_egress` y `zero_egress_block` (salidas a internet).
 
+### Encender al iniciar sesión (`autostart`)
+
+```sh
+zero autostart on    # registra el arranque al iniciar sesión, sin permisos de administrador
+zero autostart off   # lo borra
+```
+
+Con `autostart: true` en el archivo de la fábrica, zero registra su arranque al iniciar sesión, solo para tu usuario: un archivo en tu carpeta de inicio en Windows, un LaunchAgent en macOS, un servicio de usuario de systemd en Linux. Cada uno corre `zero start --detach` para la carpeta de esta fábrica. `zero autostart off` (o `autostart: false`) lo borra. `zero setup` te pregunta si lo querés (la respuesta por defecto es no), y el chat no puede cambiarlo. Dentro del contenedor de Docker no hay nada que registrar: la política de reinicio de compose vuelve a levantar la fábrica.
+
+Si la fábrica se cae sin un `zero shutdown` (la máquina se reinició, el proceso murió) con trabajos en curso o en cola, la vuelve a encender lo próximo que corra: el arranque al iniciar sesión, el servidor MCP cuando tu chat lo abre o cualquier comando `zero`, que avisa `La fábrica se había caído con trabajo pendiente: la volví a encender.` Los trabajos se retoman desde su checkpoint. Una fábrica que apagaste a propósito queda apagada. `zero status` distingue los dos casos: `apagada a propósito desde HH:MM`, o `se cayó` con su último latido y cuántos trabajos quedaron en curso.
+
 ## Instalar con Docker
 
 La imagen se construye desde este repositorio, con zero, Node 22, git, `gh`, el cliente de Docker y solo los CLI de IA que nombres. Después no se instala nada: para sumar un CLI hay que reconstruir.

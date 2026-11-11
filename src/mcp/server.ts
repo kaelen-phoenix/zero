@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
+import { log } from "../log.js";
 import { monthlyMarkdown } from "../report.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
@@ -15,8 +16,22 @@ Relay results in the owner's language and in plain terms; the owner may not be a
 type Text = { content: { type: "text"; text: string }[]; isError?: boolean };
 const text = (t: string): Text => ({ content: [{ type: "text", text: t }] });
 
-/** Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client. */
-async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string): Promise<Text> {
+type Starter = (ctx: FactoryContext) => Promise<boolean>;
+
+/** Starts a crashed daemon again; never fails the call that asked. */
+async function revive(ctx: FactoryContext, start: Starter): Promise<void> {
+  try {
+    await reviveDaemon(ctx, start);
+  } catch (err) {
+    log.warn("cannot start the factory again", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client.
+ * With `start`, a daemon that crashed with work left is started again after the call.
+ */
+async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, start?: Starter): Promise<Text> {
   let ctx: FactoryContext | undefined;
   try {
     ctx = await openFactory(home);
@@ -24,17 +39,28 @@ async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promi
   } catch (err) {
     return { ...text(err instanceof Error ? err.message : String(err)), isError: true };
   } finally {
+    if (ctx && start) await revive(ctx, start);
     ctx?.store.close();
   }
+}
+
+export interface ZeroMcpOptions {
+  autoStart?: boolean;
+  stationWaitMs?: number;
+  merges?: MergeApiFactory;
+  /** How the daemon is started; tests inject one. */
+  start?: Starter;
 }
 
 /**
  * The chat is the front door and the control room: every tool returns at
  * once and only reads or writes the factory's state; the daemon does the work.
  */
-export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean; stationWaitMs?: number; merges?: MergeApiFactory } = {}): McpServer {
+export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}): McpServer {
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
+  const ensureDaemon = opts.start ?? startDaemon;
+  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
   // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
 
@@ -278,6 +304,21 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
   return server;
 }
 
+/** The MCP server's start: a factory that crashed with work left is started again before the chat asks anything. */
+export async function reviveOnStart(home: FactoryHome, start: Starter = startDaemon): Promise<void> {
+  try {
+    const ctx = await openFactory(home);
+    try {
+      await revive(ctx, start);
+    } finally {
+      ctx.store.close();
+    }
+  } catch (err) {
+    log.warn("cannot read the factory to start it again", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export async function serveStdio(home: FactoryHome) {
+  await reviveOnStart(home);
   await createZeroMcpServer(home).connect(new StdioServerTransport());
 }

@@ -92,6 +92,17 @@ zero start [--detach] · zero shutdown
 
 The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), `zero_package_run` (a package station on demand, with an optional `request`), `zero_merge` (merges a pull request the factory delivered, once GitHub says it is ready), and `zero_egress` and `zero_egress_block` (internet egress).
 
+### Start at login (`autostart`)
+
+```sh
+zero autostart on    # registers the start at login, without administrator rights
+zero autostart off   # removes it
+```
+
+With `autostart: true` in the factory file, zero registers its own start when you log in, only for your user: a file in your Startup folder on Windows, a LaunchAgent on macOS, a systemd user service on Linux. Each one runs `zero start --detach` for this factory's folder. `zero autostart off` (or `autostart: false`) removes it. `zero setup` asks whether you want it (the default answer is no), and the chat cannot change it. Inside the Docker container there is nothing to register: compose's restart policy brings the factory back.
+
+If the factory goes down without a `zero shutdown` (the machine restarted, the process died) while jobs were in progress or queued, whatever runs next brings it back: the start at login, the MCP server when your chat opens it, or any `zero` command, which says `La fábrica se había caído con trabajo pendiente: la volví a encender.` The jobs resume from their checkpoint. A factory you turned off on purpose stays off. `zero status` tells both cases apart: `apagada a propósito desde HH:MM`, or `se cayó` with its last heartbeat and how many jobs were left in progress.
+
 ## Install with Docker
 
 The image is built from this repository, with zero, Node 22, git, `gh`, the Docker client and only the AI CLIs you name. Nothing gets installed later: to add a CLI you rebuild.

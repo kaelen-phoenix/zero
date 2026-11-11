@@ -338,9 +338,15 @@ describe("status of a daemon that does not respond", () => {
     expect(overviewPage(factoryStatus(ctx), ["demo"], "nonce")).toContain("no responde (proceso 4242)");
   });
 
-  it("says it is off when the lock is free", () => {
+  it("says it crashed when the lock is free and the heartbeat's process is gone", () => {
     const ctx = factory();
-    beat(ctx, 4242, STALE);
+    beat(ctx, spawnSync(process.execPath, ["-e", ""]).pid, STALE);
+    expect(factoryLine(ctx)).toContain("se cayó");
+    expect(factoryLine(ctx)).not.toContain("no responde");
+  });
+
+  it("says it is off when nothing was left behind", () => {
+    const ctx = factory();
     expect(factoryLine(ctx)).toContain("apagada");
     expect(factoryLine(ctx)).not.toContain("no responde");
   });

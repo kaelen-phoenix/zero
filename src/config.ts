@@ -375,6 +375,8 @@ export const FactorySchema = z
     engines: z.record(z.string(), CustomEngineSchema).default({}),
     /** `off` starts Codex without its own sandbox, where it does not work; zero then checks read-only calls itself. Only the owner decides it: in this file, never from the chat. */
     codex: z.object({ sandbox: z.enum(["on", "off"]).default("on") }).strict().prefault({}),
+    /** Start the factory when the owner logs in (a user-level entry, see autostart.ts). Only the owner decides it: `zero autostart`, `zero setup` or this file, never the chat. */
+    autostart: z.boolean().default(false),
     /** Replacement engines, in order, for stations whose engine is paused by its plan. Only these are ever used. */
     fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
