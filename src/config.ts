@@ -296,6 +296,26 @@ export const LineSchema = z.object({
     .object({ mode: z.enum(["off", "notify", "jobs"]).default("jobs"), minSeverity: z.enum(["low", "medium", "high", "critical"]).default("high") })
     .strict()
     .prefault({}),
+  /**
+   * The external services the line's app uses, for the monthly report's costs. Strict: only identifiers go here,
+   * their tokens live in the secret store (GITHUB_BILLING_TOKEN, VERCEL_TOKEN, SUPABASE_ACCESS_TOKEN).
+   */
+  services: z
+    .object({
+      /** GitHub Actions of the line's repository; account and repository come from the line's remote when absent. */
+      github: z
+        .object({
+          account: z.string().min(1).optional(),
+          type: z.enum(["user", "organization"]).default("user"),
+          repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/repo").optional(),
+        })
+        .strict(),
+      vercel: z.object({ project: z.string().min(1), team: z.string().min(1).optional() }).strict(),
+      supabase: z.object({ project: z.string().min(1), organization: z.string().min(1).optional() }).strict(),
+    })
+    .partial()
+    .strict()
+    .optional(),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
     .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })

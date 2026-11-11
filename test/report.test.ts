@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { monthlyReport, requestWork, saveReport, type FactoryContext } from "../src/app.js";
+import { BILLING_SERVICES, billingKey, type BillingRecord } from "../src/billing/records.js";
 import { factoryHome } from "../src/home.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
@@ -29,7 +30,7 @@ afterEach(async () => {
 const OCT_1 = new Date(2026, 9, 1, 9);
 
 /** A factory with two lines and a clock the tests move, so createdAt and finishedAt are exact. */
-function factory(lines?: { name: string; repo: string }[]) {
+function factory(lines?: { name: string; repo: string; services?: Record<string, unknown> }[]) {
   const clock = { at: new Date(2026, 10, 15, 12) };
   const ctx = testFactory({ level: "L2", isolation: "worktree", lines: lines ?? [{ name: "tienda", repo: gitRepo() }, { name: "blog", repo: gitRepo() }] }, () => clock.at);
   return { ctx, clock };
@@ -373,6 +374,110 @@ describe("monthly report: rendering", () => {
     const report = one(f);
     expect(reportMarkdown(report).split("\n")[0]).toBe("# Informe mensual de tienda: octubre de 2026");
     expect(reportHtml(report)).toContain("<h1>Informe mensual de tienda: octubre de 2026</h1>");
+  });
+});
+
+describe("monthly report: services", () => {
+  const ALL = { github: {}, vercel: { project: "prj_1" }, supabase: { project: "abcd" } };
+  const withServices = (services: Record<string, unknown> = ALL) => factory([{ name: "tienda", repo: gitRepo(), services }, { name: "blog", repo: gitRepo() }]);
+  const store = (f: { ctx: FactoryContext }, record: Partial<BillingRecord> & { service: BillingRecord["service"] }, month = "2026-10") =>
+    f.ctx.store.setKv(
+      billingKey("tienda", record.service, month),
+      JSON.stringify({ month, source: BILLING_SERVICES[record.service].source, readAt: new Date(2026, 10, 2, 3).toISOString(), status: "ok", figures: [], ...record }),
+    );
+  const actions = { label: "Minutos brutos", value: "500" };
+
+  it("lists each service with its source and date, and adds factory and services", async () => {
+    const f = withServices({ github: {}, vercel: { project: "prj_1" } });
+    await finished(f, { title: "x", costUsd: 5 });
+    store(f, { service: "github", costUsd: 2, figures: [actions, { label: "Cubierto por el plan", value: "$8.00" }] });
+    store(f, { service: "vercel", costUsd: 4.75 });
+    const report = one(f);
+    expect(report.total).toEqual({ usd: 11.75, missing: [] });
+    const md = reportMarkdown(report);
+    expect(md).toContain("## Servicios");
+    expect(md).toContain("- GitHub Actions: $2.00 · Minutos brutos: 500 · Cubierto por el plan: $8.00 · Fuente: API de facturación de GitHub · leído el 2026-11-02");
+    expect(md).toContain("- Vercel: $4.75 · Fuente: API de Vercel · leído el 2026-11-02");
+    expect(md).toContain("- Total del mes (fábrica + servicios): $11.75");
+    const html = reportHtml(report);
+    expect(html).toContain("<h2>Servicios</h2>");
+    expect(html).toContain("<b>Total del mes (fábrica + servicios)</b>: $11.75");
+  });
+
+  it("adds only known costs and names the services without one", async () => {
+    const f = withServices();
+    await finished(f, { title: "x", costUsd: 5 });
+    store(f, { service: "github", costUsd: 2 });
+    store(f, { service: "supabase", figures: [{ label: "Plan", value: "pro" }] });
+    const md = reportMarkdown(one(f));
+    expect(md).toContain("- Supabase: sin dato (la API no da el costo) · Plan: pro · Fuente: Management API de Supabase · leído el 2026-11-02");
+    expect(md).toContain("- Vercel: sin dato (todavía no se leyó) · Fuente: API de Vercel · sin lectura");
+    expect(md).toContain("- Total del mes (fábrica + servicios): $7.00 (sin dato: Vercel, Supabase)");
+  });
+
+  it("says why a service has no figure, without numbers it was not given", () => {
+    const f = withServices({ vercel: { project: "prj_1" } });
+    store(f, { service: "vercel", status: "sin-dato", reason: "sin-token", costUsd: 99 });
+    const report = one(f);
+    expect(report.services).toEqual([{ name: "Vercel", figures: [], source: "API de Vercel", readAt: "2026-11-02", missing: "falta el token" }]);
+    expect(reportMarkdown(report)).toContain("- Vercel: sin dato (falta el token)");
+    expect(report.total).toEqual({ usd: 0, missing: ["Vercel"] });
+  });
+
+  it("does not throw on a broken record, another month's or another line's", () => {
+    const f = withServices({ vercel: { project: "prj_1" }, supabase: { project: "abcd" } });
+    f.ctx.store.setKv(billingKey("tienda", "vercel", "2026-10"), "{no es json");
+    store(f, { service: "supabase", costUsd: 3 }, "2026-09");
+    f.ctx.store.setKv(billingKey("blog", "supabase", "2026-10"), JSON.stringify({ service: "supabase", month: "2026-10", readAt: new Date().toISOString(), status: "ok", costUsd: 3, figures: [] }));
+    expect(one(f).services!.map((s) => s.missing)).toEqual(["todavía no se leyó", "todavía no se leyó"]);
+  });
+
+  it("keeps the subscription estimate visible in the total", async () => {
+    const f = withServices({ vercel: { project: "prj_1" } });
+    await finished(f, { title: "x", costUsd: 4, billing: [{ billing: "subscription", usd: 4 }] });
+    store(f, { service: "vercel", costUsd: 1 });
+    expect(reportMarkdown(one(f))).toContain("- Total del mes (fábrica + servicios): $5.00 (incluye $4.00 estimados con suscripción que no se cobraron)");
+  });
+
+  it("cleans stored text and escapes it in HTML", () => {
+    const f = withServices({ vercel: { project: "prj_1" } });
+    const token = `ghp_${"a1B2".repeat(10)}`;
+    store(f, { service: "vercel", costUsd: 1, source: `API ${token}`, figures: [{ label: "<script>x</script>", value: `${homedir()}${sep}secreto` }] });
+    for (const out of [reportMarkdown(one(f)), reportHtml(one(f))]) {
+      expect(out).not.toContain(token);
+      expect(out).not.toContain("secreto");
+      expect(out).not.toContain("<script>");
+    }
+  });
+
+  it("renders a line without services exactly as before", async () => {
+    const f = withServices();
+    await finished(f, { title: "Del blog", line: "blog", costUsd: 2 });
+    const report = one(f, "blog");
+    expect(report).not.toHaveProperty("services");
+    expect(report).not.toHaveProperty("total");
+    const md = reportMarkdown(report);
+    expect(md).not.toContain("Servicios");
+    expect(md).not.toContain("Total del mes");
+    expect(md.endsWith("El tiempo va del pedido al cierre e incluye las esperas.")).toBe(true);
+    expect(reportHtml(report)).not.toContain("Servicios");
+  });
+
+  it("reads only the store: no fetch, no writes", async () => {
+    const f = withServices();
+    store(f, { service: "github", costUsd: 2 });
+    await finished(f, { title: "x", costUsd: 1 });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("el informe no debe llamar a la red");
+    }) as typeof fetch;
+    try {
+      const before = JSON.stringify(f.ctx.store.kvWithPrefix(""));
+      expect(monthlyMarkdown(monthlyReport(f.ctx, { month: "2026-10" }))).toContain("## Servicios");
+      expect(JSON.stringify(f.ctx.store.kvWithPrefix(""))).toBe(before);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

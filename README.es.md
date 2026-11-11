@@ -345,6 +345,33 @@ zero informe tienda --mes 2026-10 --html    # guarda un documento HTML autónomo
 - La pestaña "Informe mensual" del panel deja elegir línea y mes y descargar cada línea en Markdown o HTML; cada descarga deja además una copia en `ZERO_HOME/reports`. En el chat, `zero_monthly_report` devuelve el mismo Markdown y solo lee.
 - Nada se envía solo: ninguna pasada del daemon lo genera ni lo publica. Solo existe cuando lo pedís, y vos decidís a quién se lo das.
 
+### Servicios externos (`services`)
+
+Además de lo que la fábrica gastó en agentes, el informe puede mostrar lo que costaron ese mes los servicios que usa la app de cada línea. Indicás cuáles en la línea, solo con sus identificadores:
+
+```yaml
+lines:
+  - name: tienda
+    services:
+      github: {}                                   # GitHub Actions del repositorio de la línea; cuenta y repositorio salen de su remoto
+      vercel: { project: prj_1, team: team_1 }     # el proyecto de Vercel (team opcional)
+      supabase: { project: abcd }                  # el ref del proyecto de Supabase (organization opcional)
+```
+
+```sh
+zero secret set GITHUB_BILLING_TOKEN    # opcional: sin él, el token de GitHub de la fábrica
+zero secret set VERCEL_TOKEN
+zero secret set SUPABASE_ACCESS_TOKEN
+```
+
+- GitHub: `github: { account: acme, type: organization, repository: acme/tienda }` cuando la cuenta o el repositorio no son los del remoto (`type` es `user` por defecto). Lee la API de uso de facturación de GitHub de la cuenta y se queda solo con los ítems de Actions del repositorio de la línea: minutos y dólares brutos, lo que cubrió el uso incluido en el plan y lo que se facturó, que es el costo.
+- Vercel: el costo facturado de los cargos del mes atribuidos al proyecto. Supabase: el plan de la organización del proyecto y el uso que dé la Management API; no da costo, así que el costo dice "sin dato".
+- Los tokens son secretos del almacén, nunca van en el archivo (la sección rechaza cualquier otra clave), en argv ni en los logs. Cada llamada solo lee.
+- El daemon lee cada servicio como mucho una vez por día local, para el mes en curso y, hasta leerlo después de cerrado, para el anterior, y guarda la respuesta en `state.db`. El informe lee solo eso: no llama a ninguna API ni a ningún modelo.
+- Si falta el token, el servicio no responde en 10 segundos o responde con un error, o la respuesta no trae el costo, ese servicio queda como "sin dato", con el motivo. El informe nunca falla por eso y nunca inventa un número.
+- Cada servicio muestra sus cifras, su fuente y la fecha en que se leyó, y una fila "Total del mes (fábrica + servicios)" suma el costo de la fábrica y los costos conocidos de los servicios, nombrando los que están "sin dato". Las líneas sin `services` muestran el informe como antes.
+- Los servicios nuevos (Expo/EAS, Google Play, comisiones de Mercado Pago) se agregan en `src/billing/`: una entrada en `BILLING_SERVICES`, una clave en `services` y un lector.
+
 ## Simulacro de regeneración
 
 Mide si las especificaciones de una línea alcanzan para reconstruir una parte de su código. Indicás la línea, la capacidad (su spec es `openspec/specs/<capacidad>/spec.md` en la rama base) y los archivos a quitar.
