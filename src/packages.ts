@@ -64,6 +64,8 @@ const ManifestStationSchema = z
       })
       .strict()
       .optional(),
+    /** Permission to create local git repositories, each with a line of its own; at most `perDay` a local day. */
+    repositories: z.object({ perDay: z.number().int().positive() }).strict().optional(),
   })
   .strict()
   .refine((s) => !s.uploads || s.onDemand, { message: "uploads necesita onDemand: true", path: ["uploads"] });
@@ -236,6 +238,7 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       ...(s.requests && { requests: s.requests }),
       onDemand: s.onDemand,
       ...(s.uploads && { uploads: { maxMb: s.uploads.maxMb, extensions: s.uploads.extensions.map((e) => e.toLowerCase()) } }),
+      ...(s.repositories && { repositories: s.repositories }),
       entry,
     };
   });

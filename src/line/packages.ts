@@ -1,13 +1,15 @@
-import { mkdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
-import { ANDON_KEY, requestWork, type FactoryContext } from "../app.js";
+import { addPackageLine, ANDON_KEY, removePackageLine, requestWork, type FactoryContext } from "../app.js";
 import { budgetState, pickAgentEngine } from "../budget.js";
-import type { PackageStation } from "../config.js";
+import type { LineConfig, PackageStation } from "../config.js";
 import { log } from "../log.js";
+import { git } from "../shell.js";
+import { FACTORY_IDENTITY } from "../workspace.js";
 import { isInside, packageDataDir, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
@@ -74,8 +76,13 @@ export interface StationContext {
   state: { get<T = unknown>(name: string): T | undefined; set(name: string, value: unknown): void };
   /** No job ids, branches or local paths. */
   deliveredJobs(since: Date): DeliveredJob[];
-  /** Opens a normal job on one of `lines`, if the manifest's `requests` allows it; `maxUsd` caps its cost, never above `limits.usdPerJob`. Never throws. */
-  requestJob(req: { line: string; text: string; maxUsd?: number }): JobRequestResult;
+  /**
+   * Opens a normal job on one of `lines`, or on the line of one of `repos` by its name, if the manifest's `requests`
+   * allows it; `maxUsd` caps its cost, never above `limits.usdPerJob`. Never throws.
+   */
+  requestJob(req: { line: string; text: string; maxUsd?: number } | { repo: string; text: string; maxUsd?: number }): JobRequestResult;
+  /** The package's local git repositories, if the manifest's `repositories` allows creating them. */
+  repos: StationRepos;
   /** A job this package opened with `requestJob`; undefined for any other id. Never throws. */
   job(id: string): PackageJobView | undefined;
   /** The file this on-demand run answers; absent in every other turn. */
@@ -97,6 +104,19 @@ export interface PackageJobView {
   /** Why it ended as it did, cleaned. */
   reason?: string;
   delivery?: { mode: "merge" | "branch" | "pull-request"; commit?: string };
+}
+
+/**
+ * A package's local git repositories in ZERO_HOME, each with a line `<package>-<name>` that delivers by merging into its
+ * `main`, with no remote. Every call refuses another package's repositories, and none throws.
+ */
+export interface StationRepos {
+  /** A repository with one commit on `main`, seeded from a zip of `dataDir` when `from` says so, and its line. */
+  create(name: string, opts?: { from?: string; setup?: string[]; verify?: string[] }): Promise<{ ok: true; line: string } | { reason: string }>;
+  /** A zip of `main`'s tree, written to a `.zip` path of `dataDir`; `file` comes back relative to it. */
+  archive(name: string, file: string): Promise<{ ok: true; file: string } | { reason: string }>;
+  /** Takes out the line and the folder; refused while the line has a job that has not ended. */
+  remove(name: string): Promise<{ ok: true } | { reason: string }>;
 }
 
 /** The new job, or why there is none. */
@@ -318,14 +338,20 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
 }
 
 /** A station's request as it came; reading it runs the station's code when it is not a plain object. */
-function readRequest(req: unknown): { line?: unknown; text?: unknown; maxUsd?: unknown } {
+function readRequest(req: unknown): { line?: unknown; repo?: unknown; text?: unknown; maxUsd?: unknown } {
   try {
-    const { line, text, maxUsd } = req as { line?: unknown; text?: unknown; maxUsd?: unknown };
-    return { line, text, maxUsd };
+    const { line, repo, text, maxUsd } = req as { line?: unknown; repo?: unknown; text?: unknown; maxUsd?: unknown };
+    return { line, repo, text, maxUsd };
   } catch {
     return {};
   }
 }
+
+/** The line of a package's own repository. */
+export const packageLineName = (pkg: string, repo: string) => `${pkg}-${repo}`;
+
+/** The lines a station may see and ask for: the owner's and its own package's, never another package's. */
+const visibleLines = (ctx: FactoryContext, station: PackageStation) => ctx.config.lines.filter((l) => !l.package || l.package === station.package);
 
 /** How many jobs the station opened on a line that day; one key per line and station, out of reach of `ctx.state`. */
 function requestsUsed(raw: string | undefined, day: string): number {
@@ -341,13 +367,17 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
     try {
       if (signal.aborted) return { reason: "la pasada ya terminó" };
       if (!station.requests) return { reason: "la estación no declara requests en su manifiesto" };
-      const { line, text, maxUsd } = readRequest(req);
-      if (typeof line !== "string" || typeof text !== "string") return { reason: "el pedido necesita line y text, como texto" };
+      const asked = readRequest(req);
+      const { text, maxUsd } = asked;
+      if (asked.line !== undefined && asked.repo !== undefined) return { reason: "el pedido lleva line o repo, no los dos" };
+      const line = typeof asked.repo === "string" ? packageLineName(station.package, asked.repo) : asked.line;
+      if (typeof line !== "string" || typeof text !== "string") return { reason: "el pedido necesita line (o repo) y text, como texto" };
       const cap = ctx.config.limits.usdPerJob;
       if (maxUsd !== undefined && (typeof maxUsd !== "number" || !Number.isFinite(maxUsd) || maxUsd <= 0 || maxUsd > cap)) {
         return { reason: `maxUsd tiene que ser un número mayor que 0 y no mayor que limits.usdPerJob (${cap})` };
       }
-      if (!ctx.config.lines.some((l) => l.name === line)) return { reason: `no existe la línea "${withoutSecrets(line, ctx, station)}"` };
+      // Another package's line is as unknown to this station as a line that does not exist.
+      if (!visibleLines(ctx, station).some((l) => l.name === line)) return { reason: `no existe la línea "${withoutSecrets(line, ctx, station)}"` };
       if (ctx.store.getKv(ANDON_KEY) === "on") return { reason: "la fábrica está detenida" };
       if (budgetState(ctx.store, ctx.config, now).reached) return { reason: "se alcanzó el presupuesto" };
       const quotaKey = `${key}:requests:${line}`;
@@ -370,27 +400,174 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
   };
 }
 
-/** `ctx.unzip`: both paths inside the data folder, the zip a real regular file there. */
-async function stationUnzip(dataDir: string, zip: unknown, dest: unknown): Promise<UnzipOutcome> {
+/** A path segment that names a repository's git folder, also by its Windows short name. */
+const gitSegment = (path: string) => path.split(/[\\/]/).some((part) => /^(?:\.git|git~\d+)$/i.test(part));
+
+/** A zip of `dataDir` as a real regular file there, or why not. */
+function dataZip(root: string, zip: unknown): { real: string } | { reason: string } {
+  if (typeof zip !== "string" || !zip) return { reason: "falta la ruta del zip, como texto" };
+  const from = resolve(root, zip);
+  if (!isInside(from, root)) return { reason: "el zip tiene que estar en la carpeta de datos del paquete" };
+  let real: string;
+  try {
+    real = realpathSync(from);
+  } catch {
+    return { reason: "el zip no existe" };
+  }
+  return isInside(real, root) && statSync(real).isFile() ? { real } : { reason: "el zip tiene que ser un archivo de la carpeta de datos del paquete" };
+}
+
+/**
+ * `ctx.unzip`: the zip a real regular file of the data folder; the destination inside the data folder or inside one of
+ * the package's own repositories, never in their git folder.
+ */
+async function stationUnzip(dataDir: string, reposDir: string, zip: unknown, dest: unknown): Promise<UnzipOutcome> {
   try {
     if (typeof zip !== "string" || typeof dest !== "string" || !zip || !dest) return { reason: "unzip necesita la ruta del zip y la del destino, como texto" };
     const root = realpathSync(dataDir);
-    const from = resolve(root, zip);
+    const source = dataZip(root, zip);
+    if ("reason" in source) return source;
     const to = resolve(root, dest);
-    if (!isInside(from, root) || !isInside(to, root)) return { reason: "el zip y el destino tienen que estar en la carpeta de datos del paquete" };
-    let real: string;
-    try {
-      real = realpathSync(from);
-    } catch {
-      return { reason: "el zip no existe" };
+    let base = root;
+    if (!isInside(to, root)) {
+      const repos = existsSync(reposDir) ? realpathSync(reposDir) : undefined;
+      if (!repos || !isInside(to, repos) || to === repos) return { reason: "el destino tiene que estar en la carpeta de datos del paquete o en uno de sus repositorios" };
+      // The repository's own folder is the root: a link on the way to the destination is refused from there.
+      base = join(repos, relative(repos, to).split(sep)[0]!);
+      if (gitSegment(relative(base, to))) return { reason: "el destino no puede estar en la carpeta .git del repositorio" };
+      const r = await unzip(source.real, to, base, { noGit: true });
+      return r.ok ? { files: r.files } : { reason: r.reason };
     }
-    if (!isInside(real, root) || !statSync(real).isFile()) return { reason: "el zip tiene que ser un archivo de la carpeta de datos del paquete" };
-    const r = await unzip(real, to, root);
+    const r = await unzip(source.real, to, base);
     return r.ok ? { files: r.files } : { reason: r.reason };
   } catch (err) {
     return { reason: `no se pudo descomprimir: ${errorText(err)}` };
   }
 }
+
+/** A package's repository name: what `ctx.repos` accepts. */
+const REPO_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** Where a package's repositories live. */
+export const packageReposDir = (home: Pick<FactoryContext["home"], "packageRepos">, pkg: string) => join(home.packageRepos, pkg);
+
+/** How many repositories a station created on a local day; one key per day, out of reach of `ctx.state`. */
+const reposKey = (station: PackageStation, day: string) => `${stationKey(station)}:repos:${day}`;
+
+/** A command list as a station gave it, or undefined when it is not one. */
+function commands(value: unknown): string[] | undefined {
+  if (value === undefined) return [];
+  return Array.isArray(value) && value.every((c) => typeof c === "string" && c.trim() !== "") ? [...(value as string[])] : undefined;
+}
+
+/** `ctx.repos.*` option objects as they came; reading them runs the station's code when they are not plain objects. */
+function readCreate(opts: unknown): { from?: unknown; setup?: unknown; verify?: unknown } {
+  try {
+    if (opts === undefined) return {};
+    const { from, setup, verify } = opts as { from?: unknown; setup?: unknown; verify?: unknown };
+    return { from, setup, verify };
+  } catch {
+    return {};
+  }
+}
+
+/** Jobs of a line that have not ended. */
+const unfinished = (ctx: FactoryContext, line: string) => ctx.store.listJobs({ status: ["queued", "running", "waiting"] }).some((j) => j.line === line);
+
+/** `ctx.repos`: local git repositories with lines of their own, only the station's package's. Never throws. */
+function stationRepos(ctx: FactoryContext, station: PackageStation, now: Date, signal: AbortSignal, dataDir: string): StationRepos {
+  const key = stationKey(station);
+  const reposDir = packageReposDir(ctx.home, station.package);
+  const failed = (what: string, err: unknown) => ({ reason: `${what}: ${publicText(withoutSecrets(errorText(err), ctx, station), ctx.config.lines.map((l) => l.repo)).text}` });
+  /** The package's own line for a repository name, or why there is none. */
+  const own = (name: unknown): { line: LineConfig } | { reason: string } => {
+    if (typeof name !== "string" || !REPO_NAME.test(name)) return { reason: "el nombre del repositorio va en minúsculas, dígitos y guiones, hasta 40 caracteres" };
+    const line = ctx.config.lines.find((l) => l.name === packageLineName(station.package, name));
+    return line && line.package === station.package ? { line } : { reason: `el paquete no tiene un repositorio "${name}"` };
+  };
+  return {
+    create: async (name, opts) => {
+      try {
+        if (signal.aborted) return { reason: "la pasada ya terminó" };
+        if (!station.repositories) return { reason: "la estación no declara repositories en su manifiesto" };
+        if (typeof name !== "string" || !REPO_NAME.test(name)) return { reason: "el nombre del repositorio va en minúsculas, dígitos y guiones, hasta 40 caracteres" };
+        const asked = readCreate(opts);
+        const setup = commands(asked.setup);
+        const verify = commands(asked.verify);
+        if (!setup || !verify) return { reason: "setup y verify van como listas de comandos" };
+        if (asked.from !== undefined && typeof asked.from !== "string") return { reason: "from va como la ruta de un zip de la carpeta de datos" };
+        const lineName = packageLineName(station.package, name);
+        if (ctx.config.lines.some((l) => l.name === lineName)) return { reason: `ya existe la línea "${lineName}"` };
+        const day = localDay(now);
+        const used = Number(ctx.store.getKv(reposKey(station, day)) ?? 0) || 0;
+        if (used >= station.repositories.perDay) return { reason: `ya creó ${used} de ${station.repositories.perDay} repositorios de hoy` };
+        const repo = join(reposDir, name);
+        if (existsSync(repo)) return { reason: `ya existe la carpeta del repositorio "${name}"` };
+        const source = asked.from === undefined ? undefined : dataZip(realpathSync(dataDir), asked.from);
+        if (source && "reason" in source) return source;
+        await mkdir(repo, { recursive: true });
+        try {
+          if (source) {
+            const r = await unzip(source.real, repo, realpathSync(repo), { noGit: true });
+            if (!r.ok) throw new Refusal(r.reason);
+          }
+          git(["init", "-q", "-b", "main"], repo);
+          // Files go back out in a zip as they came in, whatever this machine's line endings.
+          git(["config", "core.autocrlf", "false"], repo);
+          git(["add", "-A"], repo);
+          git([...FACTORY_IDENTITY, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "--no-verify", "-m", `zero: ${lineName}`], repo);
+          await addPackageLine(ctx, { name: lineName, repo, package: station.package, setup, verify });
+        } catch (err) {
+          await rm(repo, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+          return err instanceof Refusal ? { reason: err.message } : failed("no se pudo crear el repositorio", err);
+        }
+        // Counted once the line exists: what goes wrong before spends nothing.
+        ctx.store.setKv(reposKey(station, day), String(used + 1));
+        log.info(`${key} created a repository`, { line: lineName });
+        return { ok: true, line: lineName };
+      } catch (err) {
+        return failed("no se pudo crear el repositorio", err);
+      }
+    },
+    archive: async (name, file) => {
+      try {
+        if (signal.aborted) return { reason: "la pasada ya terminó" };
+        const found = own(name);
+        if ("reason" in found) return found;
+        if (typeof file !== "string" || !file || !/\.zip$/i.test(file)) return { reason: "el archivo va como una ruta .zip de la carpeta de datos" };
+        const root = realpathSync(dataDir);
+        const out = resolve(root, file);
+        if (!isInside(out, root) || out === root) return { reason: "el archivo tiene que estar en la carpeta de datos del paquete" };
+        await mkdir(dirname(out), { recursive: true });
+        // Checked after the folder exists: a link on the way could take the file out.
+        if (!isInside(realpathSync(dirname(out)), root)) return { reason: "el archivo tiene que estar en la carpeta de datos del paquete" };
+        if (existsSync(out) && lstatSync(out).isSymbolicLink()) return { reason: "el archivo no puede ser un enlace" };
+        git(["archive", "--format=zip", "-o", out, found.line.baseBranch], found.line.repo);
+        return { ok: true, file: relative(root, out).split(sep).join("/") };
+      } catch (err) {
+        return failed("no se pudo exportar el repositorio", err);
+      }
+    },
+    remove: async (name) => {
+      try {
+        if (signal.aborted) return { reason: "la pasada ya terminó" };
+        const found = own(name);
+        if ("reason" in found) return found;
+        if (unfinished(ctx, found.line.name)) return { reason: `la línea "${found.line.name}" tiene trabajos sin terminar` };
+        await removePackageLine(ctx, { name: found.line.name, package: station.package });
+        // Only a folder of this package's repositories goes, whatever the line said.
+        const repo = resolve(found.line.repo);
+        if (isInside(repo, resolve(reposDir)) && repo !== resolve(reposDir)) await rm(repo, { recursive: true, force: true, maxRetries: 3 });
+        log.info(`${key} removed a repository`, { line: found.line.name });
+        return { ok: true };
+      } catch (err) {
+        return failed("no se pudo quitar el repositorio", err);
+      }
+    },
+  };
+}
+
+class Refusal extends Error {}
 
 function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal, upload?: StationUpload): StationContext {
   const key = stationKey(station);
@@ -411,7 +588,10 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
       info: (message, fields) => log.info(`${key}: ${withoutSecrets(message, ctx, station)}`, clean(fields)),
       warn: (message, fields) => log.warn(`${key}: ${withoutSecrets(message, ctx, station)}`, clean(fields)),
     },
-    lines: ctx.config.lines.map((l) => l.name),
+    // Read when asked: a repository created in this turn shows up.
+    get lines() {
+      return visibleLines(ctx, station).map((l) => l.name);
+    },
     dataDir,
     state: {
       get: <T>(name: string) => {
@@ -423,8 +603,9 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
     deliveredJobs: (since) => deliveredJobs(ctx, since),
     requestJob: stationRequest(ctx, station, now, signal),
     job: (id) => packageJob(ctx, station, id),
+    repos: stationRepos(ctx, station, now, signal, dataDir),
     ...(upload && { upload: { ...upload } }),
-    unzip: (zip, dest) => (signal.aborted ? Promise.resolve({ reason: "la pasada ya terminó" }) : stationUnzip(dataDir, zip, dest)),
+    unzip: (zip, dest) => (signal.aborted ? Promise.resolve({ reason: "la pasada ya terminó" }) : stationUnzip(dataDir, packageReposDir(ctx.home, station.package), zip, dest)),
   };
 }
 

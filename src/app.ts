@@ -1598,6 +1598,32 @@ async function editConfig(ctx: FactoryContext, edit: Parameters<typeof editFacto
   return withPackages(await editFactory(ctx.home.config, edit), ctx.home);
 }
 
+/** A line a package creates on a local repository of its own: merge delivery, no remote work. */
+export interface PackageLineInput {
+  name: string;
+  repo: string;
+  package: string;
+  setup: string[];
+  verify: string[];
+}
+
+/** Adds a package's line to the factory file; throws when the name is taken or the file refuses it. */
+export async function addPackageLine(ctx: FactoryContext, input: PackageLineInput): Promise<void> {
+  if (ctx.config.lines.some((l) => l.name === input.name)) throw new Error(`ya existe la línea "${input.name}"`);
+  const entry = { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify };
+  ctx.config = await editConfig(ctx, (doc) => {
+    if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
+    else doc.setIn(["lines"], doc.createNode([entry]));
+  });
+}
+
+/** Takes a package's line out of the factory file; only one that package owns. */
+export async function removePackageLine(ctx: FactoryContext, input: { name: string; package: string }): Promise<void> {
+  const index = ctx.config.lines.findIndex((l) => l.name === input.name);
+  if (index < 0 || ctx.config.lines[index]!.package !== input.package) throw new Error(`la línea "${input.name}" no es del paquete ${input.package}`);
+  ctx.config = await editConfig(ctx, (doc) => doc.deleteIn(["lines", index]));
+}
+
 export interface AgentListEntry {
   name: string;
   /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */

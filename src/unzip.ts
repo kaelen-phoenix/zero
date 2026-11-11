@@ -13,6 +13,8 @@ export type UnzipResult = { ok: true; files: string[] } | { ok: false; reason: s
 export interface UnzipLimits {
   maxEntries?: number;
   maxBytes?: number;
+  /** Refuse entries with a `.git` segment: unpacking into a repository must never reach its hooks or config. */
+  noGit?: boolean;
 }
 
 interface Entry {
@@ -65,7 +67,7 @@ function findEnd(zip: Buffer): number {
 }
 
 /** Every entry of the central directory, refused whole on anything this reader does not take. */
-function readEntries(zip: Buffer, limits: Required<UnzipLimits>): Entry[] {
+function readEntries(zip: Buffer, limits: { maxEntries: number; maxBytes: number }): Entry[] {
   const end = findEnd(zip);
   if (end >= 20 && zip.readUInt32LE(end - 20) === ZIP64_LOCATOR) throw new Refused("es un zip64, que no se acepta");
   const disk = zip.readUInt16LE(end + 4);
@@ -166,6 +168,10 @@ export async function unzip(zipPath: string, dest: string, root: string = dest, 
     if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Refused("el destino sale de su carpeta");
     const zip = await readFile(zipPath);
     const entries = readEntries(zip, max);
+    if (limits.noGit) {
+      const git = entries.find((e) => e.name.split("/").some((part) => part.toLowerCase() === ".git"));
+      if (git) throw new Refused(`la entrada "${git.name}" escribiría en la carpeta .git de un repositorio`);
+    }
     // First pass: every entry's bytes and every place it goes, before writing anything.
     let left = max.maxBytes;
     for (const entry of entries) {

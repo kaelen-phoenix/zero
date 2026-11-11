@@ -31,7 +31,7 @@ const researchedKey = (line: string, skill: string) => `research:${line}:${skill
 
 /** The lines that research: those with a research skill of their own. */
 export function researchLines(lines: LineConfig[]): LineConfig[] {
-  return lines.filter((l) => (l.stations?.research?.skills.length ?? 0) > 0);
+  return lines.filter((l) => !l.package && (l.stations?.research?.skills.length ?? 0) > 0);
 }
 
 /** Only absolute http(s) URLs, without query string or fragment, which could carry data out; anything else (file:, javascript:, plain text) is dropped. */

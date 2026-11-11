@@ -406,6 +406,7 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
   const period = periodStart(shift, now);
   const logs: LogCache = new Map();
   for (const line of ctx.config.lines) {
+    if (line.package) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
     if (signal?.aborted || ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.getKv(unjamPassKey(line.name)) === period.toISOString()) continue;

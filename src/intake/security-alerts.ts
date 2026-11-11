@@ -182,7 +182,8 @@ function snapshot(ctx: FactoryContext, repository: string, alerts: DependabotAle
  */
 export async function pollSecurityAlerts(ctx: FactoryContext, api: (repository: string, line: LineConfig) => AlertApi | undefined): Promise<void> {
   for (const line of ctx.config.lines) {
-    if (line.securityAlerts.mode === "off") continue;
+    // A package's local repository has no GitHub remote to read.
+    if (line.securityAlerts.mode === "off" || line.package) continue;
     const repository = lineRepository(line);
     if (!repository) continue;
     const problem = securityAlertsProblemKey(line.name);

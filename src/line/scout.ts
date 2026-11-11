@@ -305,6 +305,8 @@ export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now:
   promotePending(ctx, now);
   const period = periodStart(shift, now);
   for (const line of ctx.config.lines) {
+    // A package's own repository is its station's business, not the night shift's.
+    if (line.package) continue;
     if (ctx.store.getKv(scoutedKey(line.name)) === period.toISOString()) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
     if (ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;
