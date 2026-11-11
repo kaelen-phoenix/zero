@@ -414,6 +414,17 @@ export const FactorySchema = z
 
     /** Absent: traces stay only in state.db. */
     telemetry: TelemetrySchema.optional(),
+    /** Absent: off. Only the person in charge turns it on, in this file. */
+    selfUpdate: z
+      .object({
+        enabled: z.boolean().default(false),
+        remote: z.string().min(1).default("origin"),
+        /** Absent: the install folder's checked-out branch. */
+        branch: z.string().min(1).optional(),
+        startTimeoutSeconds: z.number().int().min(10).default(120),
+      })
+      .strict()
+      .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),

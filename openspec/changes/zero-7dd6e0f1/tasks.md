@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Config, version and records
 
-- [ ] 1.1 src/config.ts: add strict `selfUpdate` to FactorySchema (`enabled` false, `remote` 'origin', optional `branch`, `startTimeoutSeconds` int ≥10 default 120), prefaulted to {}.
-- [ ] 1.2 src/cli.ts: `zero --version` (also `-v`) printing `zero <package.json version>` plus the short commit from `git rev-parse HEAD` in the install folder when it works; handled before `openFactory`.
-- [ ] 1.3 Create src/self-update.ts: `installFolder(entry = process.argv[1])` (the parent of the `dist` holding cli.js), kv keys `self-update:state` (`{status: 'idle'|'ready'|'switching', from?, to?, dir?, checkedAt?, problem?, failed?: string[]}`) and `self-update:history` (last 20 `{from, to, at, outcome: 'updated'|'rolled-back'|'failed', reason?}`), `readSelfUpdate`/`recordSelfUpdate` that log store failures instead of throwing.
-- [ ] 1.4 Write the OpenSpec change (proposal, tasks, spec delta).
-- [ ] 1.5 Tests in test/self-update.test.ts: schema defaults and the refusal of unknown keys; `--version` output; history capped at 20.
+- [x] 1.1 src/config.ts: add strict `selfUpdate` to FactorySchema (`enabled` false, `remote` 'origin', optional `branch`, `startTimeoutSeconds` int ≥10 default 120), prefaulted to {}.
+- [x] 1.2 src/cli.ts: `zero --version` (also `-v`) printing `zero <package.json version>` plus the short commit from `git rev-parse HEAD` in the install folder when it works; handled before `openFactory`.
+- [x] 1.3 Create src/self-update.ts: `installFolder(entry = process.argv[1])` (the parent of the `dist` holding cli.js), kv keys `self-update:state` (`{status: 'idle'|'ready'|'switching', from?, to?, dir?, checkedAt?, problem?, failed?: string[]}`) and `self-update:history` (last 20 `{from, to, at, outcome: 'updated'|'rolled-back'|'failed', reason?}`), `readSelfUpdate`/`recordSelfUpdate` that log store failures instead of throwing.
+- [x] 1.4 Write the OpenSpec change (proposal, tasks, spec delta).
+- [x] 1.5 Tests in test/self-update.test.ts: schema defaults and the refusal of unknown keys; `--version` output; history capped at 20.
 
 ## 2. Etapa 2: Detection and side preparation
 
