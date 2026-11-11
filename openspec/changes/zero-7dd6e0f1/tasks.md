@@ -25,8 +25,8 @@
 
 ## 4. Etapa 4: Visibility, docs and ADR
 
-- [ ] 4.1 src/app.ts: add `selfUpdate?: {last?: HistoryEntry; problem?: string; ready?: {from, to}}` to `FactoryStatus` (only when enabled or there is history). src/format.ts: add a `Autoactualización:` line in `formatStatus` (updated `de <from> a <to> el HH:MM`; `volvió a la versión anterior <from> (no arrancó <to>)`; or the problem). src/panel/html.ts: show it as a muted paragraph in the first card of `overviewPage`. src/townhall/briefing.ts: a new trailing optional parameter fed from `briefing()` in app.ts, listing rollbacks and failures in the decisions list.
-- [ ] 4.2 docs/adr/0004-autoactualizacion.md: the decisions (off by default and only from the file, side preparation, a separate switch process with built-ins only, the lock as proof of start, rollback, and no retrying a failed commit).
-- [ ] 4.3 README.md and README.es.md: a section on self-update with the same structure and code block (`selfUpdate: { enabled: true }`). Extend test/docs.test.ts to check both mention `selfUpdate`, and keep test/wording.test.ts passing.
-- [ ] 4.4 AGENTS.md: a Layout entry for src/self-update.ts and src/self-update-switch.ts.
-- [ ] 4.5 Tests: status and panel lines shown after a rollback and absent when off; a briefing section. Run `npm run typecheck`, the new and touched test files, `npm run build` and `npx openspec validate --all`.
+- [x] 4.1 src/app.ts: add `selfUpdate?: {last?: HistoryEntry; problem?: string; ready?: {from, to}}` to `FactoryStatus` (only when enabled or there is history). src/format.ts: add a `Autoactualización:` line in `formatStatus` (updated `de <from> a <to> el HH:MM`; `volvió a la versión anterior <from> (no arrancó <to>)`; or the problem). src/panel/html.ts: show it as a muted paragraph in the first card of `overviewPage`. src/townhall/briefing.ts: a new trailing optional parameter fed from `briefing()` in app.ts, listing rollbacks and failures in the decisions list.
+- [x] 4.2 docs/adr/0004-autoactualizacion.md: the decisions (off by default and only from the file, side preparation, a separate switch process with built-ins only, the lock as proof of start, rollback, and no retrying a failed commit).
+- [x] 4.3 README.md and README.es.md: a section on self-update with the same structure and code block (`selfUpdate: { enabled: true }`). Extend test/docs.test.ts to check both mention `selfUpdate`, and keep test/wording.test.ts passing.
+- [x] 4.4 AGENTS.md: a Layout entry for src/self-update.ts and src/self-update-switch.ts.
+- [x] 4.5 Tests: status and panel lines shown after a rollback and absent when off; a briefing section. Run `npm run typecheck`, the new and touched test files, `npm run build` and `npx openspec validate --all`.

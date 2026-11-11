@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -7,6 +7,7 @@ import { outageText } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
+import type { SelfUpdateEntry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
@@ -279,6 +280,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
+  if (s.selfUpdate) for (const l of selfUpdateLines(s.selfUpdate, now)) out.push(l.text);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
@@ -341,6 +343,25 @@ export function formatEgress(r: EgressReport): string {
   out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
   out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
+}
+
+const commit = (sha: string) => sha.slice(0, 12);
+
+/** One self-update: «de <from> a <to> el HH:MM», a rollback to the previous version, or a preparation that failed. */
+export function selfUpdateEntryText(e: SelfUpdateEntry, now = new Date()): string {
+  const when = resetTime(e.at, now);
+  if (e.outcome === "updated") return `de ${commit(e.from)} a ${commit(e.to)} el ${when}`;
+  if (e.outcome === "rolled-back") return `volvió a la versión anterior ${commit(e.from)} (no arrancó ${commit(e.to)}) el ${when}${e.reason ? `: ${e.reason}` : ""}`;
+  return `no pudo pasar a ${commit(e.to)}, sigue en ${commit(e.from)} (${when})${e.reason ? `: ${e.reason}` : ""}`;
+}
+
+/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update and a problem), `bad` when they warn. */
+export function selfUpdateLines(s: SelfUpdateStatus, now = new Date()): { text: string; bad: boolean }[] {
+  return [
+    ...(s.ready ? [{ text: `Autoactualización: ${commit(s.ready.to)} está lista; cambia de versión cuando no haya trabajos corriendo (ahora ${commit(s.ready.from)})`, bad: false }] : []),
+    ...(s.last ? [{ text: `Autoactualización: ${selfUpdateEntryText(s.last, now)}`, bad: s.last.outcome !== "updated" }] : []),
+    ...(s.problem ? [{ text: `Autoactualización: PROBLEMA: ${s.problem}`, bad: true }] : []),
+  ];
 }
 
 /** One line per environment outage: «Entorno caído en <repo> desde HH:MM (checks: a, b) · N pull requests esperan». */

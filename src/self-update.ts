@@ -331,6 +331,12 @@ function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry): SelfUpdateSt
     status: "idle",
     ...(state.checkedAt ? { checkedAt: state.checkedAt } : {}),
     ...(failed?.length ? { failed } : {}),
-    ...(entry.outcome === "updated" ? {} : { problem: entry.outcome === "rolled-back" ? `volví a ${entry.from.slice(0, 12)}: ${entry.reason ?? `${entry.to.slice(0, 12)} no arrancó`}` : (entry.reason ?? "el cambio de versión falló") }),
+    ...(entry.outcome === "updated" ? {} : { problem: entryProblem(entry) }),
   };
+}
+
+/** The problem a failed or rolled-back update leaves on the state; status leaves it out when it only repeats that entry. */
+export function entryProblem(entry: SelfUpdateEntry): string | undefined {
+  if (entry.outcome === "updated") return undefined;
+  return entry.outcome === "rolled-back" ? `volví a ${entry.from.slice(0, 12)}: ${entry.reason ?? `${entry.to.slice(0, 12)} no arrancó`}` : (entry.reason ?? "el cambio de versión falló");
 }
