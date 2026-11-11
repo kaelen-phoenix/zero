@@ -25,6 +25,10 @@ export interface IntegrateOptions {
   pullRequests?: PullRequestsFactory;
   /** The job already has this pull request, whose branch was at `head`: update it instead of delivering anew. */
   existing?: { delivery: Delivery; head: string };
+  /** Removes the temporary merge copy; defaults to the real one. */
+  removeCopy?: (repo: string, path: string) => void;
+  /** A temporary merge copy could not be removed: it is left for a later cleanup. */
+  onLeftover?: (path: string, error: string) => void;
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
@@ -51,15 +55,26 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
       return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos (o pisaría archivos sin seguimiento en ${owner}). La rama ${copy.branch} queda lista para resolverlo.` };
     }
   } else {
-    const temp = join(opts.scratchDir, `merge-${opts.jobId}`);
-    removeWorkCopy(line.repo, temp);
+    const remove = opts.removeCopy ?? removeWorkCopy;
+    let temp = join(opts.scratchDir, `merge-${opts.jobId}`);
+    try {
+      remove(line.repo, temp);
+    } catch {
+      // A copy an earlier run left locked: this merge goes in a fresh folder.
+      temp = join(opts.scratchDir, `merge-${opts.jobId}-${Date.now()}`);
+    }
     git(["worktree", "add", "-q", temp, line.baseBranch], line.repo);
     try {
       if (!mergeIn(temp, copy.branch, message, env)) {
         return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos. La rama ${copy.branch} queda lista para resolverlo.` };
       }
     } finally {
-      removeWorkCopy(line.repo, temp);
+      try {
+        remove(line.repo, temp);
+      } catch (err) {
+        // The merge is done or refused already; a folder that cannot go yet never changes that.
+        opts.onLeftover?.(temp, err instanceof Error ? err.message : String(err));
+      }
     }
   }
   return { ok: true, delivery: { mode: "merge", branch: copy.branch, commit: git(["rev-parse", line.baseBranch], line.repo) } };

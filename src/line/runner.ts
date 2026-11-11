@@ -16,6 +16,8 @@ import type { PullRequestsFactory } from "../tracker.js";
 import { conflictMarkers, openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
 import { askOwner, describeDelivery, finalizeJob, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
 import { integrate } from "./integrate.js";
+import { recordCleanup } from "./cleanup.js";
+import { killLeftovers } from "../leftovers.js";
 import { asksBeforeUpdate, decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
 import {
@@ -48,6 +50,8 @@ export interface RunnerDeps extends LedgerDeps {
   pullRequests?: PullRequestsFactory;
   /** What the dependency check asks OSV and deps.dev with; defaults to the global fetch. */
   fetch?: typeof fetch;
+  /** Kills the processes left running in a folder; defaults to the real one from leftovers.ts. */
+  killLeftovers?: (folder: string) => number;
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
@@ -89,6 +93,28 @@ export function isTransientNetworkError(err: unknown): boolean {
     if (typeof current !== "object" || current === null) return false;
     const { code, message, cause } = current as { code?: unknown; message?: unknown; cause?: unknown };
     if ([code, message].some((text) => typeof text === "string" && NETWORK_CODES.test(text))) return true;
+    current = cause;
+  }
+  return false;
+}
+
+/** How many times one job goes back to the queue after hitting a locked folder, in its whole life. */
+const MAX_BUSY_RETRIES = 2;
+
+/** The kv key that counts a job's locked-folder retries. */
+export const busyRetryKey = (jobId: string) => `busy-retry:${jobId}`;
+
+const BUSY_CODES = /\bEBUSY\b/;
+
+/** Whether an exception is a locked file or folder (EBUSY on Windows), by the `code` or message of the error or of its chain of causes. */
+export function isLockedFolderError(err: unknown): boolean {
+  if (err instanceof SetupFailed) return false;
+  let current = err;
+  for (let depth = 0; depth < 5; depth++) {
+    if (typeof current === "string") return BUSY_CODES.test(current);
+    if (typeof current !== "object" || current === null) return false;
+    const { code, message, cause } = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if ([code, message].some((text) => typeof text === "string" && BUSY_CODES.test(text))) return true;
     current = cause;
   }
   return false;
@@ -228,6 +254,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         scratchDir: join(deps.home.worktrees, line.name),
         author: commitAuthor(config, line),
         pullRequests: deps.pullRequests,
+        removeCopy: deps.removeCopy,
+        onLeftover: (path, error) => recordCleanup(store, `${jobId}-merge`, { repo: line.repo, path, error, since: (deps.now ?? (() => new Date()))().toISOString() }),
         ...(refresh && job!.delivery && { existing: { delivery: job!.delivery, head: refresh.head } }),
       });
     });
@@ -247,6 +275,12 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     if (err instanceof RefreshFailed) return fail(err.message);
     const requeued = isTransientNetworkError(err) ? requeueAfterCut(deps, jobId, opened, err) : undefined;
     if (requeued) return requeued;
+    if (isLockedFolderError(err)) {
+      const again = requeueAfterBusy(deps, jobId, opened, err);
+      if (again) return again;
+      log.error("job hit a locked folder with no retries left", { job: jobId, error: err instanceof Error ? err.message : String(err) });
+      return fail(`Una carpeta de la copia de trabajo quedó bloqueada (EBUSY) y el trabajo ya volvió a la cola ${MAX_BUSY_RETRIES} veces por eso: ${err instanceof Error ? err.message : String(err)}`);
+    }
     log.error("job crashed", { job: jobId, error: err instanceof Error ? err.stack : String(err) });
     return fail(`Error inesperado: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -272,6 +306,39 @@ function updateProblem(copy: WorkCopy, refresh: PrRefresh): string | undefined {
   const contains = (rev: string) => tryGit(["merge-base", "--is-ancestor", rev, "HEAD"], copy.cwd) !== undefined;
   if (!contains(refresh.head) || !refresh.baseCommit || !contains(refresh.baseCommit)) return `No se subió la actualización: la rama ya no contiene a ${copy.base} y a la punta anterior del pull request.`;
   return undefined;
+}
+
+/**
+ * Puts a job back in the queue after it hit a locked folder (EBUSY), killing first what was left running in its
+ * work copy, or returns undefined when it has no retries left, so that it fails. Like a network cut, half-done
+ * changes are dropped and a cut build does not spend an attempt; a drop that throws is only logged.
+ */
+function requeueAfterBusy(deps: RunnerDeps, jobId: string, copy: WorkCopy | undefined, err: unknown): Job | undefined {
+  const { store } = deps;
+  try {
+    const retries = Number(store.getKv(busyRetryKey(jobId)) ?? 0);
+    if (retries >= MAX_BUSY_RETRIES) return undefined;
+    const job = store.getJob(jobId)!;
+    if (job.worktree) {
+      try {
+        (deps.killLeftovers ?? killLeftovers)(job.worktree);
+      } catch (kill) {
+        log.warn("cannot kill the processes left in the work copy", { job: jobId, error: kill instanceof Error ? kill.message : String(kill) });
+      }
+    }
+    try {
+      copy?.discardChanges();
+    } catch (drop) {
+      log.warn("cannot drop uncommitted changes after a locked folder", { job: jobId, error: drop instanceof Error ? drop.message : String(drop) });
+    }
+    if (copy && job.station === "build" && job.attempt > 0) store.updateJob(jobId, { attempt: job.attempt - 1 });
+    store.setKv(busyRetryKey(jobId), String(retries + 1));
+    log.info("locked folder; job back in the queue to resume from its checkpoint", { job: jobId, station: job.station, retry: retries + 1, error: err instanceof Error ? err.message : String(err) });
+    return store.updateJob(jobId, { status: "queued" });
+  } catch (requeue) {
+    log.error("cannot put the job back in the queue after a locked folder", { job: jobId, error: requeue instanceof Error ? requeue.message : String(requeue) });
+    return undefined;
+  }
 }
 
 /**
