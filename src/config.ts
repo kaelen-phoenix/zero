@@ -77,6 +77,17 @@ const ResearchSchema = z.union([
     .strict(),
 ]);
 
+/** The unjam station's diagnosis of what holds the lines up while the factory is idle, or `off`. */
+const UnjamSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Fix jobs and retries the unjam station opens on its own per local day, across every line. */
+      maxJobsPerDay: z.number().int().min(0).default(2),
+    })
+    .strict(),
+]);
+
 export const DEFAULT_SIGNATURE_TEXT = "— Hecho con [zero in the loop](https://zerointheloop.com)";
 export const DEFAULT_SIGNATURE_TRAILER = "Built-by: zero in the loop <https://zerointheloop.com>";
 
@@ -158,7 +169,7 @@ export const CustomEngineSchema = z
   });
 
 /** The stations zero itself defines; a custom agent never takes one of their names. */
-export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
+export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research", "unjam"] as const;
 
 /**
  * A project's own agent. `review`: a read-only reviewer that runs after review
@@ -318,7 +329,7 @@ export const LineSchema = z.object({
     .optional(),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema, unjam: LineSkillsSchema })
     .partial()
     .strict()
     .optional(),
@@ -403,12 +414,16 @@ export const FactorySchema = z
         scout: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Reads the web once a day for skills, MCP servers and technologies; read-only, never installs anything. */
         research: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
+        /** Diagnoses what holds the lines up while the factory is idle; read-only, never fixes anything itself. */
+        unjam: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
       })
       .prefault({}),
     /** Absent: on, at any hour the factory is idle. */
     nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     /** Absent: on, one note per line with a research skill per day. */
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
+    /** Absent: on, with the night shift's gates, at most two jobs a day. */
+    unjam: UnjamSchema.default({ maxJobsPerDay: 2 }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
 
@@ -575,7 +590,7 @@ export function customAgentChain(config: Pick<FactoryConfig, "engine" | "fallbac
 }
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam"];
 
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {

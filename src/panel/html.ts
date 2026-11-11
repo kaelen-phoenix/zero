@@ -902,6 +902,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
     cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
   },
+  unjam: {
+    name: "Destrabador (unjam)",
+    does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
+    cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };

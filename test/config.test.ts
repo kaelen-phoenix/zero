@@ -270,7 +270,7 @@ describe("a file with retired keys", () => {
   });
 
   it("lists the remaining agent stations in order", () => {
-    const stations = ["spec", "build", "review", "security", "reply", "scout", "research"];
+    const stations = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam"];
     expect(AGENT_STATIONS).toEqual(stations);
     expect(SKILL_STATIONS).toEqual(stations);
     expect(Object.keys(AGENT_ACCESS)).toEqual(stations);

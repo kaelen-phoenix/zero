@@ -135,7 +135,7 @@ describe("panel guide pages", () => {
     const p = await panel({ stations: { security: { engine: "codex", model: "gpt-x", timeoutMinutes: 20, maxTurns: 30 } } });
     const html = await p.text("/agents");
     const order = [...html.matchAll(/class="card agent" data-station="([a-z]+)"/g)].map((m) => m[1]);
-    expect(order).toEqual(["spec", "build", "review", "security", "reply", "scout", "research"]);
+    expect(order).toEqual(["spec", "build", "review", "security", "reply", "scout", "research", "unjam"]);
     expect(html).not.toContain("community");
     const security = plain(card(html, "security"));
     expect(security).toContain("Motor: codex");

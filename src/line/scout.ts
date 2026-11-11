@@ -73,8 +73,8 @@ export function periodStart(shift: NightShift, now: Date): Date {
   return start;
 }
 
-/** Stations that work while the factory is idle; they share `limits.usdPerNight`. */
-const IDLE_STATIONS = new Set(["scout", "research"]);
+/** Stations that work while the factory is idle (scout, research and the unjam station); they share `limits.usdPerNight`. */
+const IDLE_STATIONS = new Set(["scout", "research", "unjam"]);
 
 /** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
 export const PACKAGE_AGENT_PREFIX = "package:";

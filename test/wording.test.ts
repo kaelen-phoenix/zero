@@ -93,7 +93,7 @@ describe("reasons", () => {
 });
 
 describe("agents that write for people", () => {
-  it.each(["spec", "scout", "research", "reply"])("%s carries the wording rule", (station) => {
+  it.each(["spec", "scout", "research", "reply", "unjam"])("%s carries the wording rule", (station) => {
     const text = read(`agents/${station}.md`);
     expect(text).toContain("la persona responsable");
     expect(text).toContain("the person in charge");
