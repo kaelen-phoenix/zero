@@ -11,7 +11,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
@@ -25,7 +25,9 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, mergeKey, pullRequestOf, watchedJobs, type ChecksOutage, type MergeState } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { githubToken } from "./line/integrate.js";
+import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
@@ -1040,6 +1042,46 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
     log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
   }
   return proposal;
+}
+
+/** Builds the GitHub adapter of a repository for a line, or nothing without access. */
+export type MergeApiFactory = (repository: string, line?: LineConfig) => MergeApi | undefined;
+
+/** The real signed adapter, outside the daemon's meter, like the CLI's own calls to GitHub. */
+const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
+  const token = githubToken(process.env, ctx.secrets);
+  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+  const wanted = pullRequestOf(target.trim());
+  if (!wanted) {
+    const job = getJob(ctx, target.trim());
+    if (job.status !== "delivered") throw new Error(`El trabajo ${job.id} no está entregado: no hay nada que fundir.`);
+    if (!job.delivery?.url || !pullRequestOf(job.delivery.url)) throw new Error(`El trabajo ${job.id} no se entregó como pull request de GitHub: no hay nada que fundir.`);
+    return job;
+  }
+  const same = (url: string | undefined) => {
+    const pr = url ? pullRequestOf(url) : undefined;
+    return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
+  };
+  const job = ctx.store.listJobs({ status: ["delivered"], limit: 1000 }).find((j) => same(j.delivery?.url));
+  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
+  return job;
+}
+
+/**
+ * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
+ * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ */
+export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
+  const job = deliveredPullRequest(ctx, target);
+  const url = job.delivery!.url!;
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
+  if (!gh) return { job: job.id, url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+  return mergeRequested(ctx, job, gh, opts.via);
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

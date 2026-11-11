@@ -560,6 +560,70 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   }
 }
 
+/** Where the person in charge asked for a merge. */
+export type MergeVia = "cli" | "chat" | "panel";
+
+export interface MergeOutcome {
+  job: string;
+  url: string;
+  merged: boolean;
+  /** The merge commit, once merged. */
+  commit?: string;
+  /** Why it was not merged. */
+  why?: string;
+}
+
+const ON_REQUEST = "fundido a pedido de quien está a cargo";
+
+/**
+ * Merges a delivered pull request because the person in charge asked for it, whether or not its line has
+ * `autoMerge`, but only when `mergeDecision` says it is ready: otherwise it says why and touches nothing on
+ * GitHub. A refusal of the merge itself comes back as not merged. What follows a merge (branch, issue,
+ * townhall) is best effort and never turns it into a failure.
+ */
+export async function mergeRequested(ctx: FactoryContext, job: Job, gh: MergeApi, via: MergeVia): Promise<MergeOutcome> {
+  const url = job.delivery!.url!;
+  const number = pullRequestOf(url)!.number;
+  const key = mergeKey(job.id);
+  const raw = ctx.store.getKv(key);
+  const { backoff: _backoff, ...state }: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
+  const save = (status: MergeState["status"], why: string) => ctx.store.setKv(key, JSON.stringify({ ...state, status, why } satisfies MergeState));
+  const now = (ctx.now ?? (() => new Date()))().getTime();
+  const not = (why: string): MergeOutcome => ({ job: job.id, url, merged: false, why });
+
+  const pr = await gh.pullRequest(number);
+  const checks = pr.open ? await gh.checks(pr.headSha) : [];
+  const decision = mergeDecision(pr, checks, now - Date.parse(job.finishedAt ?? job.updatedAt));
+  if (decision.kind === "gone") {
+    if (decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
+    save(decision.merged ? "merged" : "closed", decision.merged ? "fundido por otra persona" : "cerrado sin fundir");
+    return not(decision.merged ? "ya estaba fundido" : "está cerrado sin fundir");
+  }
+  if (decision.kind !== "merge") return not(decision.why);
+
+  let commit: string | undefined;
+  try {
+    commit = await gh.merge(number, pr.headSha);
+  } catch (err) {
+    if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    return not(`GitHub no lo dejó fundir: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  recordMergeCommit(ctx, job, commit);
+  save("merged", ON_REQUEST);
+  ctx.tracer.start("zero.merge", { jobId: job.id, parentId: ctx.tracer.jobSpanId(job.id), attrs: { "zero.merge.via": via, "zero.merge.commit": commit, "zero.merge.url": url } }).end("ok");
+  log.info("pull request merged on request", { job: job.id, url, via });
+  await gh.deleteBranch(job.delivery!.branch).catch((err) => log.warn("could not delete merged branch", { job: job.id, error: String(err) }));
+  if (job.source?.kind === "github-issue") {
+    await gh.comment(job.source.number, `La fábrica fundió ${url}: el cambio ya está en la rama base.`).catch((err) => log.warn("could not tell the issue about the merge", { job: job.id, error: String(err) }));
+  }
+  try {
+    await ctx.townhall.publish([{ kind: "lesson", line: job.line, job: job.id, topic: "fundido a pedido", source: "", body: `${url} fundido a pedido de quien está a cargo${commit ? ` (commit ${commit})` : ""}.` }]);
+  } catch (err) {
+    log.warn("cannot record the merge in the townhall", { job: job.id, error: String(err) });
+  }
+  return { job: job.id, url, merged: true, ...(commit && { commit }) };
+}
+
 /** The checks that ended well at the tips looked at in a pass, per repository: what tells an environment is back. */
 type Passed = Map<string, Check[]>;
 

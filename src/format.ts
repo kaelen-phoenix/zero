@@ -3,7 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
-import { outageText } from "./line/automerge.js";
+import { outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
@@ -82,6 +82,11 @@ export function describeJobStatus(job: Job): string {
 export function formatRequest(r: RequestResult): string {
   const priority = storedPriority(r.job);
   return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}"${priority === "media" ? "" : `, con prioridad ${priority}`}.`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+}
+
+/** What a merge on request did, for the CLI, the chat and the panel. */
+export function formatMerge(r: MergeOutcome): string {
+  return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */

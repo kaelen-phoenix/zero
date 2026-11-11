@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
+import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 import { monthlyMarkdown } from "../report.js";
 
@@ -32,7 +32,7 @@ async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promi
  * The chat is the front door and the control room: every tool returns at
  * once and only reads or writes the factory's state; the daemon does the work.
  */
-export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean; stationWaitMs?: number } = {}): McpServer {
+export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean; stationWaitMs?: number; merges?: MergeApiFactory } = {}): McpServer {
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
   // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
@@ -84,6 +84,16 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       },
     },
     ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) })),
+  );
+
+  server.registerTool(
+    "zero_merge",
+    {
+      title: "Fundir un pull request entregado",
+      description: "Merge a pull request the factory delivered, even on lines without autoMerge, only if GitHub says it is ready (checks green, no conflicts); otherwise it says why and forces nothing. Only when the owner asks for it.",
+      inputSchema: { target: z.string().describe("The job id or the GitHub pull request URL.") },
+    },
+    ({ target }) => withFactory(home, async (ctx) => formatMerge(await mergePullRequest(ctx, target, { via: "chat", api: opts.merges }))),
   );
 
   server.registerTool(
