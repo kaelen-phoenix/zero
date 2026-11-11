@@ -5,7 +5,7 @@ import { ANDON_KEY } from "../src/app.js";
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
-import { mergeKey, type MergeState } from "../src/line/automerge.js";
+import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { scoutSpent } from "../src/line/scout.js";
 import { collectJams, readDiagnosis, unjamPass } from "../src/line/unjam.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
@@ -152,6 +152,69 @@ describe("the daemon's idle run", () => {
     const agents = fakeAgents({});
     await runDaemon(ctx, { once: true, pollMs: 10, panel: false, scout: true, unjam: true, research: true, agentRunner: () => agents.runner });
     expect(agents.calls.map(agentName)).toEqual(["scout", "unjam", "research"]);
+  });
+});
+
+describe("failed checks' logs", () => {
+  function fakeMerges(failedLog: (run: number, check: string) => Promise<string | undefined>) {
+    const logs: [number, string][] = [];
+    const api: MergeApi = {
+      pullRequest: async (n) => ({ open: true, merged: false, mergeable: true, headSha: `sha${n}` }),
+      checks: async (sha) => [
+        { name: "android", done: true, ok: false, run: Number(sha.slice(3)) * 100 },
+        { name: "lint", done: true, ok: true, run: 1 },
+      ],
+      merge: async () => undefined,
+      deleteBranch: async () => {},
+      comment: async () => {},
+      failedLog: (run, check) => {
+        logs.push([run, check]);
+        return failedLog(run, check);
+      },
+    };
+    const repos: string[] = [];
+    return { logs, repos, factory: (repository: string) => (repos.push(repository), api) };
+  }
+
+  it("reads one log per repository and check, and puts its end in the prompt", async () => {
+    const { ctx } = factory();
+    const prs = [1, 2, 3].map((n) => blockedPr(ctx, n));
+    const merges = fakeMerges(async () => `${"x".repeat(5000)}\nGradle falló en C:\\Users\\alguien\\app\\build.gradle`);
+    const agents = diagnosing([]);
+    await unjamPass(ctx, agents.runner, at(3), undefined, merges.factory);
+    expect(merges.logs).toEqual([[100, "android"]]);
+    expect(merges.repos).toEqual(["acme/tienda", "acme/tienda", "acme/tienda"]);
+    const prompt = agents.calls[0]!.prompt;
+    for (const p of prs) expect(prompt).toContain(`pr:${p.id}`);
+    expect(prompt.split("failed check android, end of its log")).toHaveLength(4);
+    expect(prompt).toContain("Gradle falló en (ruta local)");
+    expect(prompt).not.toContain("alguien");
+    expect(prompt).not.toContain("x".repeat(3001));
+    expect(prompt).not.toContain("failed check lint");
+  });
+
+  it("keeps the jam without a log when the read fails", async () => {
+    const { ctx } = factory();
+    const pr = blockedPr(ctx, 1);
+    const job = failedJob(ctx);
+    const merges = fakeMerges(async () => {
+      throw new Error("404");
+    });
+    const agents = diagnosing([cause({ jams: [`pr:${pr.id}`, `job:${job.id}`] })]);
+    await unjamPass(ctx, agents.runner, at(3), undefined, merges.factory);
+    expect(agents.calls[0]!.prompt).toContain(`pr:${pr.id}`);
+    expect(agents.calls[0]!.prompt).toContain("failed check android (no log)");
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.jams).toHaveLength(2);
+  });
+
+  it("keeps the jam as it was when GitHub cannot be read", async () => {
+    const { ctx } = factory();
+    const pr = blockedPr(ctx, 1);
+    const api = fakeMerges(async () => "log");
+    const agents = diagnosing([]);
+    await unjamPass(ctx, agents.runner, at(3), undefined, () => ({ ...api.factory("acme/tienda"), pullRequest: async () => Promise.reject(new Error("GitHub en pausa")) }));
+    expect(agents.calls[0]!.prompt).toContain(`pr:${pr.id}`);
+    expect(api.logs).toEqual([]);
   });
 });
 

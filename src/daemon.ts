@@ -372,8 +372,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
         meter.endRun("scout");
       }
-      if (unjams && !researchStop.signal.aborted)
-        await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("unjam failed", { error: String(err) }));
+      if (unjams && !researchStop.signal.aborted) {
+        // The failed checks' logs are read through the meter, and not at all while GitHub holds a pause.
+        const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+        await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal, merges).catch((err) => log.warn("unjam failed", { error: String(err) }));
+        meter.endRun("unjam");
+      }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)

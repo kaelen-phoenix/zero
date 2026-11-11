@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
-import { ANDON_KEY, currentBox, type FactoryContext } from "../app.js";
+import { ANDON_KEY, currentBox, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
 import type { LineConfig } from "../config.js";
 import { lineRepository } from "../intake/github.js";
@@ -19,6 +19,8 @@ export const CAUSES_PER_LINE = 10;
 export const FAILED_DAYS = 7;
 /** Characters of a job's last feedback the prompt carries. */
 export const FEEDBACK_CHARS = 1500;
+/** Characters of a failed check's log the prompt carries: its end, where the failure is. */
+export const LOG_CHARS = 3000;
 const DAY = 86_400_000;
 
 export type JamKind = "failed-job" | "waiting-job" | "pull-request" | "checks-outage" | "checks-billing" | "intake" | "cleanup" | "box";
@@ -37,6 +39,8 @@ export interface Jam {
   url?: string;
   /** A pull request GitHub reports in conflict with its base branch. */
   conflict?: boolean;
+  /** Failed checks of a pull request's head, with the end of their GitHub Actions log when it could be read. */
+  checks?: { name: string; log?: string }[];
 }
 
 export const CAUSE_KINDS = ["code", "flaky-test", "ci", "github-account", "machine"] as const;
@@ -180,7 +184,54 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
   return jams.map((j) => ({ ...j, text: scrubLocal(j.text, line), ...(j.detail && { detail: scrubLocal(j.detail, line) }) }));
 }
 
-const jamBlock = (j: Jam) => [`### ${j.id} (${j.kind})`, j.text, j.detail ?? ""].filter(Boolean).join("\n");
+const checkBlock = (c: { name: string; log?: string }) => (c.log ? `failed check ${c.name}, end of its log:\n\`\`\`\n${c.log}\n\`\`\`` : `failed check ${c.name} (no log)`);
+const jamBlock = (j: Jam) => [`### ${j.id} (${j.kind})`, j.text, j.detail ?? "", ...(j.checks ?? []).map(checkBlock)].filter(Boolean).join("\n");
+
+/** Logs already read in a pass, one per repository and check name, so many pull requests failing the same check cost one read. */
+export type LogCache = Map<string, Promise<string | undefined>>;
+
+/**
+ * The failed checks of each blocked pull request's head, with the end of their GitHub Actions log, read at most once per
+ * repository and check name in the pass. Anything GitHub refuses or fails at leaves the jam as it was, or without a log.
+ */
+export async function withCheckLogs(line: LineConfig, jams: Jam[], merges: MergeApiFactory, cache: LogCache = new Map()): Promise<Jam[]> {
+  const out: Jam[] = [];
+  for (const jam of jams) {
+    const pr = jam.kind === "pull-request" && jam.url ? pullRequestOf(jam.url) : undefined;
+    const api = pr && merges(pr.repository, line);
+    if (!pr || !api) {
+      out.push(jam);
+      continue;
+    }
+    try {
+      const head = await api.pullRequest(pr.number);
+      const failed = (await api.checks(head.headSha)).filter((c) => c.done && !c.ok);
+      const checks: { name: string; log?: string }[] = [];
+      for (const name of new Set(failed.map((c) => c.name))) {
+        const run = failed.find((c) => c.name === name && c.run !== undefined && !c.billing)?.run;
+        let text: string | undefined;
+        if (run !== undefined && api.failedLog) {
+          const key = `${pr.repository}\n${name}`;
+          let read = cache.get(key);
+          if (!read) {
+            read = api.failedLog(run, name).catch((err) => {
+              log.warn("unjam could not read a check's log", { line: line.name, repository: pr.repository, check: name, error: String(err) });
+              return undefined;
+            });
+            cache.set(key, read);
+          }
+          text = await read;
+        }
+        checks.push({ name, ...(text && { log: scrubLocal(text.slice(-LOG_CHARS), line) }) });
+      }
+      out.push(checks.length ? { ...jam, checks } : jam);
+    } catch (err) {
+      log.warn("unjam could not read a pull request's checks", { line: line.name, url: jam.url, error: String(err) });
+      out.push(jam);
+    }
+  }
+  return out;
+}
 
 /** What the unjam station is asked for one line. */
 export function unjamPrompt(ctx: FactoryContext, line: LineConfig, jams: Jam[]): string {
@@ -261,15 +312,16 @@ const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running
  * The unjam station while the factory is idle, with the night shift's gates and its shared spending cap: every line
  * with jams and not yet diagnosed this period gets one call. A line without jams gets none, and loses its old diagnosis.
  */
-export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal): Promise<void> {
+export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal, merges?: MergeApiFactory): Promise<void> {
   const shift = ctx.config.nightShift;
   if (ctx.config.unjam === "off" || shift === "off" || !insideHours(shift, now)) return;
   const period = periodStart(shift, now);
+  const logs: LogCache = new Map();
   for (const line of ctx.config.lines) {
     // Checked again before every line, so owner work that arrives mid-pass goes first.
     if (signal?.aborted || ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.getKv(unjamPassKey(line.name)) === period.toISOString()) continue;
-    const jams = collectJams(ctx, line, now);
+    let jams = collectJams(ctx, line, now);
     if (!jams.length) {
       if (ctx.store.getKv(unjamKey(line.name))) ctx.store.deleteKv(unjamKey(line.name));
       continue;
@@ -285,6 +337,7 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
     }
     ctx.store.setKv(unjamPassKey(line.name), period.toISOString());
     try {
+      if (merges) jams = await withCheckLogs(line, jams, merges, logs);
       await unjamLine(ctx, line, jams, runAgent, now, { maxBudgetUsd, signal });
     } catch (err) {
       log.warn("unjam failed", { line: line.name, error: String(err) });

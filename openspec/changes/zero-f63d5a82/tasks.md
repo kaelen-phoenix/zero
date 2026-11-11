@@ -11,10 +11,10 @@
 
 ## 2. Etapa 2: Logs de los checks fallidos
 
-- [ ] 2.1 automerge.ts: método opcional `MergeApi.failedLog?(run: number, check: string): Promise<string | undefined>`. En `githubMerges`, implementarlo con `actions.listJobsForWorkflowRun` (filter latest), eligiendo el job fallido con ese nombre o, si no hay, el primero fallido, y `actions.downloadJobLogsForWorkflowRun`, devolviendo el final del texto.
-- [ ] 2.2 github-quota.ts: sumar `unjam` a `GithubPass`. daemon.ts: pasarle a `unjamPass` `opts.merges ?? realMerges(ctx, meter, "unjam")`, no pasarlo durante una pausa de GitHub y llamar `meter.endRun("unjam")` al terminar.
-- [ ] 2.3 unjam.ts: para las trabas de pull request bloqueado, leer el head (`pullRequest`) y los checks (`checks`), y pedir a lo sumo un log por repositorio y nombre de check en la pasada; recortarlo a 3000 caracteres, pasarlo por `scrubLocal` y agregarlo al prompt. Cualquier error queda en el log de zero y la traba sigue sin log.
-- [ ] 2.4 Tests con un `MergeApi` falso: un solo `failedLog` para tres pull requests con el mismo check fallido, el log en el prompt y una lectura fallida que no corta la pasada.
+- [x] 2.1 automerge.ts: método opcional `MergeApi.failedLog?(run: number, check: string): Promise<string | undefined>`. En `githubMerges`, implementarlo con `actions.listJobsForWorkflowRun` (filter latest), eligiendo el job fallido con ese nombre o, si no hay, el primero fallido, y `actions.downloadJobLogsForWorkflowRun`, devolviendo el final del texto.
+- [x] 2.2 github-quota.ts: sumar `unjam` a `GithubPass`. daemon.ts: pasarle a `unjamPass` `opts.merges ?? realMerges(ctx, meter, "unjam")`, no pasarlo durante una pausa de GitHub y llamar `meter.endRun("unjam")` al terminar.
+- [x] 2.3 unjam.ts: para las trabas de pull request bloqueado, leer el head (`pullRequest`) y los checks (`checks`), y pedir a lo sumo un log por repositorio y nombre de check en la pasada; recortarlo a 3000 caracteres, pasarlo por `scrubLocal` y agregarlo al prompt. Cualquier error queda en el log de zero y la traba sigue sin log.
+- [x] 2.4 Tests con un `MergeApi` falso: un solo `failedLog` para tres pull requests con el mismo check fallido, el log en el prompt y una lectura fallida que no corta la pasada.
 
 ## 3. Etapa 3: Trabajos de arreglo como propuestas del destrabador
 
