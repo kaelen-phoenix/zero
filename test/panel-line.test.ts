@@ -57,8 +57,11 @@ function events(res: Response) {
     }
     done = true;
   })();
-  /** Waits until `ok` holds and returns how long it took; fails after `ms`. */
-  const until = async (ok: () => boolean, ms = 2000) => {
+  /**
+   * Waits until `ok` holds and returns how long it took; fails after `ms`. The default only waits for the stream
+   * to be ready or to end, with room for a loaded worker; a wait that measures a requirement passes its own bound.
+   */
+  const until = async (ok: () => boolean, ms = 10_000) => {
     const start = Date.now();
     while (!ok()) {
       if (Date.now() - start > ms) throw new Error("timed out waiting for the stream");
@@ -402,7 +405,8 @@ describe("production line stream", () => {
     const j = job(ctx, "x", { status: "running", station: "build", attempt: 1 });
     const attempt = span(ctx, j.id, "zero.attempt", { attrs: { "zero.attempt": 1 } });
     const build = span(ctx, j.id, "zero.station.build", { parent: attempt });
-    const { abort, stream } = await open(ctx, { watchMs: 1000 });
+    // A short watch interval keeps the 2 s bound while leaving margin for a late tick on a loaded worker.
+    const { abort, stream } = await open(ctx, { watchMs: 100 });
     await stream.until(() => stream.data.length > 0);
     ctx.store.updateJob(j.id, { station: "verify" });
     ctx.store.endSpan(build, at(2), "ok", {});
