@@ -19,7 +19,7 @@ interface FakePr {
 }
 
 /** GitHub with several pull requests of one repository; records what the factory did to each. */
-function fakeGitHub(prs: Record<number, FakePr>, opts: { refuse?: "updateBranch" | "rerun" } = {}) {
+function fakeGitHub(prs: Record<number, FakePr>, opts: { refuse?: "updateBranch" | "rerun"; why?: string } = {}) {
   const did: string[] = [];
   const api: MergeApi = {
     pullRequest: async (n) => prs[n]!.pr,
@@ -36,7 +36,8 @@ function fakeGitHub(prs: Record<number, FakePr>, opts: { refuse?: "updateBranch"
       return Object.values(prs).find((p) => p.pr.headSha === sha)!.behind;
     },
     updateBranch: async (n, sha) => {
-      if (opts.refuse === "updateBranch") throw new Error("merge conflict between base and head");
+      did.push(`ask update #${n} @${sha}`);
+      if (opts.refuse === "updateBranch") throw new Error(opts.why ?? "Validation Failed");
       did.push(`update #${n} @${sha}`);
     },
     rerun: async (run) => {
@@ -44,7 +45,7 @@ function fakeGitHub(prs: Record<number, FakePr>, opts: { refuse?: "updateBranch"
       did.push(`rerun ${run}`);
     },
   };
-  return { api, did, acts: () => did.filter((d) => !d.startsWith("behind")) };
+  return { api, did, acts: () => did.filter((d) => !d.startsWith("behind") && !d.startsWith("ask")) };
 }
 
 const pull = (headSha: string, checks: Check[], behind: boolean): FakePr => ({ pr: { open: true, merged: false, mergeable: true, headSha, base: "main" }, checks, behind });
@@ -141,6 +142,44 @@ describe("a pull request whose checks failed against an older base", () => {
     expect(state(10)).toMatchObject({ status: "blocked", why: "fallaron los checks e2e" });
     expect(state(10).refreshes).toBeUndefined();
     expect(gh.acts().filter((d) => d.startsWith("comment"))).toHaveLength(1);
+  });
+});
+
+describe("a pull request in conflict with its base", () => {
+  it("is never updated nor run again while GitHub reports it unmergeable, even with failed checks", async () => {
+    const { ctx, clock, state } = await factoryWith([10]);
+    const prs = { 10: { ...pull("abc", red(77), true), pr: { ...pull("abc", [], true).pr, mergeable: false } } };
+    const gh = fakeGitHub(prs);
+    await pollMerges(ctx, () => gh.api);
+    clock.ms += 10 * MINUTE;
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did.filter((d) => !d.startsWith("comment"))).toEqual([]);
+    expect(gh.did).toEqual([expect.stringMatching(/^comment #10: .*en conflicto con la rama base/)]);
+    expect(state(10)).toMatchObject({ status: "blocked", why: "en conflicto con la rama base", backoff: { mergeable: false } });
+  });
+
+  it("remembers a head GitHub refused to update over a conflict and asks for nothing more at it", async () => {
+    const { ctx, clock, state } = await factoryWith([10]);
+    const prs = { 10: pull("abc", red(77), true) };
+    const gh = fakeGitHub(prs, { refuse: "updateBranch", why: "merge conflict between base and head" });
+    await pollMerges(ctx, () => gh.api);
+    expect(state(10)).toMatchObject({ status: "blocked", why: "en conflicto con la rama base", conflict: "abc" });
+    expect(gh.did.filter((d) => d.startsWith("ask"))).toEqual(["ask update #10 @abc"]);
+
+    for (let i = 0; i < 3; i++) {
+      clock.ms += 2 * 60 * MINUTE;
+      await pollMerges(ctx, () => gh.api);
+    }
+    expect(gh.did.filter((d) => d.startsWith("ask") || d.startsWith("rerun") || d.startsWith("behind"))).toEqual(["behind main abc", "ask update #10 @abc"]);
+    expect(state(10)).toMatchObject({ status: "blocked", conflict: "abc" });
+    expect(state(10).why).toMatch(/^en conflicto con la rama base/);
+    expect(gh.did.filter((d) => d.startsWith("comment"))).toHaveLength(1);
+
+    // A new head with passing checks merges as usual.
+    prs[10] = pull("def", green, false);
+    clock.ms += 2 * 60 * MINUTE;
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did.at(-1)).toBe("merge #10 @def");
   });
 });
 

@@ -348,7 +348,7 @@ export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
 /**
  * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
  * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict gets its attempts reset
- * and its MergeState's `resolving` and `backoff` dropped, so the merges pass takes it back. Anything else is refused.
+ * and its MergeState's `resolving`, `resolutions`, `conflict` and `backoff` dropped, so the merges pass takes it back. Anything else is refused.
  */
 export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
   const job = getJob(ctx, id);
@@ -362,8 +362,8 @@ export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
   if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
     const raw = ctx.store.getKv(mergeKey(job.id));
     const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
-    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving)) {
-      const { resolving: _resolving, backoff: _backoff, ...rest } = state;
+    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving || state.conflict)) {
+      const { resolving: _resolving, backoff: _backoff, resolutions: _resolutions, conflict: _conflict, ...rest } = state;
       ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
       return { kind: "pull-request", job: ctx.store.updateJob(id, { attempt: 0 }) };
     }

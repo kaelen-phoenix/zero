@@ -157,12 +157,16 @@ const FIRST_BACKOFF_MS = 5 * 60_000;
 const LAST_BACKOFF_MS = 60 * 60_000;
 /** How many times the factory brings the base branch into one pull request with failed checks, in its whole life. */
 export const MAX_REFRESHES = 3;
+/** How many times the job of one pull request goes back to the queue to resolve a conflict with its base, in its whole life. */
+export const MAX_RESOLUTIONS = 2;
 /** A refresh whose checks did not finish in this long no longer holds up the other pull requests of its repository. */
 const REFRESH_HOLD_MS = 2 * 3_600_000;
 /** How long GitHub is given to show the tip of a refresh before it is asked for again. */
 const REFRESH_SHOWS_MS = 10 * 60_000;
 /** How long GitHub is given to show that the runs it was asked to run again are under way. */
 const RERUN_SHOWS_MS = 2 * 60_000;
+
+const CONFLICT = "en conflicto con la rama base";
 
 export type MergeDecision =
   | { kind: "merge" }
@@ -173,13 +177,14 @@ export type MergeDecision =
 /** What to do with a pull request now. Pure, so every case is tested without GitHub. */
 export function mergeDecision(pr: PullRequestState, checks: Check[], sinceDeliveryMs: number): MergeDecision {
   if (pr.merged || !pr.open) return { kind: "gone", merged: pr.merged };
+  // No check or rerun gets a branch in conflict merged: only resolving it does.
+  if (pr.mergeable === false) return { kind: "blocked", key: `conflict:${pr.headSha}`, why: CONFLICT };
   const failedChecks = checks.filter((c) => c.done && !c.ok);
   const failed = failedChecks.map((c) => c.name);
   if (failed.length) return { kind: "blocked", key: `checks:${pr.headSha}:${failed.join(",")}`, why: `fallaron los checks ${failed.join(", ")}`, failed: failedChecks };
   if (checks.some((c) => !c.done)) return { kind: "wait", why: "esperando checks" };
   if (!checks.length && sinceDeliveryMs < CHECKS_GRACE_MS) return { kind: "wait", why: "esperando que aparezcan los checks" };
   if (pr.mergeable === null) return { kind: "wait", why: "GitHub todavía está calculando si se puede fundir" };
-  if (!pr.mergeable) return { kind: "blocked", key: `conflict:${pr.headSha}`, why: "tiene conflictos con la rama base" };
   return { kind: "merge" };
 }
 
@@ -201,6 +206,10 @@ export interface MergeState {
   rerun?: string;
   /** The last pull request tip whose job went back to the queue to merge the base in. */
   resolving?: string;
+  /** How many times its job went back to the queue to resolve a conflict with the base (see `takeBack`). */
+  resolutions?: number;
+  /** A tip GitHub refused to update with its base over a merge conflict, though it may not report it as unmergeable. */
+  conflict?: string;
   /** The `since` of the environment outage of its repository that held it (see `ChecksOutage`). */
   outage?: string;
   /** Held because GitHub refused to start some of its checks over the account's billing (see `ChecksBilling`). */
@@ -285,6 +294,10 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
     }
   } catch (err) {
     if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    if (/merge conflict/i.test(err instanceof Error ? err.message : String(err))) {
+      log.info("pull request in conflict with its base; not updated again at this tip", { job: job.id, head: pr.headSha });
+      return { kind: "conflict" };
+    }
     log.warn("could not unblock a pull request; left as it is", { job: job.id, error: err instanceof Error ? err.message : String(err) });
   }
   return undefined;
@@ -293,7 +306,7 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
 /** What an environment that came back changes for a pull request: failures until `since` are not counted, and `again` allows one more run. */
 type Recovery = { since?: number; again: boolean };
 
-type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string } | { kind: "outage"; failed: Check[] };
+type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string } | { kind: "outage"; failed: Check[] } | { kind: "conflict" };
 
 /** Whether GitHub is still to show what the factory asked for this tip (a refresh or a second run). */
 function showing(state: MergeState, head: string, now: number): boolean {
@@ -529,26 +542,34 @@ function followRemoteTip(ctx: FactoryContext, job: Job) {
 
 /**
  * Puts the job of a pull request in conflict back in the queue to merge the
- * base in, or returns false when it is not the factory's to touch or there is
- * nothing left to try. State is saved first: should the rest not happen, the
- * tip counts as tried and the pull request is only told about it.
+ * base in, or says why not (with what is missing, when the owner can act on
+ * it). The conflict comes from what reached the base, not from the job, so it
+ * has its own limit (`MAX_RESOLUTIONS`) instead of the build's attempts, and
+ * the job goes back with at least one attempt left. State is saved first:
+ * should the rest not happen, the tip counts as tried and the pull request is
+ * only told about it.
  */
-function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void): boolean {
+function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void): true | { why?: string } {
   const line = ctx.config.lines.find((l) => l.name === job.line);
-  if (!line?.autoMerge || !job.spec || job.attempt >= line.maxAttempts || state.resolving === head) return false;
+  if (!line?.autoMerge || !job.spec) return {};
+  const resolutions = state.resolutions ?? 0;
+  if (resolutions >= MAX_RESOLUTIONS) {
+    return { why: `${CONFLICT}; ya se usaron las ${MAX_RESOLUTIONS} resoluciones automáticas: falta resolverlo a mano o correr \`zero reintentar ${job.id}\`` };
+  }
+  if (state.resolving === head) return { why: `${CONFLICT}; falló la resolución automática de este head` };
   // Its last work copy is still waiting to be removed: the job would start in a half-removed folder. The tip stays untried, so a later look takes it back.
-  if (ctx.store.getKv(cleanupKey(job.id))) return false;
-  if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return false;
+  if (ctx.store.getKv(cleanupKey(job.id))) return {};
+  if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return {};
   const fetched = spawnGit(["fetch", "-q", line.remote, line.baseBranch], line.repo, { timeout: 120_000 });
   if (fetched.status !== 0) {
     log.warn("cannot fetch the base branch; pull request left as it is", { job: job.id, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
-    return false;
+    return {};
   }
-  save({ reported: state.reported, status: "waiting", why: "actualizándolo con la rama base", resolving: head });
+  save({ reported: state.reported, status: "waiting", why: "actualizándolo con la rama base", resolving: head, resolutions: resolutions + 1 });
   ctx.store.setKv(prRefreshKey(job.id), JSON.stringify({ head, ...(job.approvals.integrate && { approved: true }) } satisfies PrRefresh));
   // Approving the earlier code does not cover what the merge brings in.
   const { integrate: _approved, ...approvals } = job.approvals;
-  ctx.store.updateJob(job.id, { status: "queued", checkpoint: "review", station: "integrate", finishedAt: null, stopRequested: false, base: `${line.remote}/${line.baseBranch}`, approvals });
+  ctx.store.updateJob(job.id, { status: "queued", checkpoint: "review", station: "integrate", finishedAt: null, stopRequested: false, base: `${line.remote}/${line.baseBranch}`, approvals, attempt: Math.min(job.attempt, line.maxAttempts - 1) });
   log.info("pull request in conflict; job back in the queue to update it", { job: job.id, head });
   return true;
 }
@@ -560,6 +581,8 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   // What the factory already did for this pull request outlives every other change of its state.
   const kept = (): Partial<MergeState> => ({
     ...(state.resolving && { resolving: state.resolving }),
+    ...(state.resolutions && { resolutions: state.resolutions }),
+    ...(state.conflict && { conflict: state.conflict }),
     ...(state.refreshes && { refreshes: state.refreshes }),
     ...(state.refreshing && { refreshing: state.refreshing }),
     ...(state.rerun && { rerun: state.rerun }),
@@ -578,11 +601,21 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
     return save({ ...state, status: "blocked", why: unchanged.why });
   }
-  if (pr.open && !pr.merged && pr.mergeable === false && since <= WATCH_MS && takeBack(ctx, job, pr.headSha, state, save)) return;
-  const checks = pr.open ? await gh.checks(pr.headSha) : [];
+  // A tip GitHub refused to update over a conflict is in conflict, whatever `mergeable` says.
+  if (state.conflict && state.conflict !== pr.headSha) delete state.conflict;
+  const conflicted = pr.open && !pr.merged && (pr.mergeable === false || state.conflict === pr.headSha);
+  let refused: string | undefined;
+  if (conflicted && since <= WATCH_MS) {
+    const taken = takeBack(ctx, job, pr.headSha, state, save);
+    if (taken === true) return;
+    refused = taken.why;
+  }
+  // No update or rerun gets a branch in conflict merged, so its checks are not even asked for.
+  const checks = pr.open && !conflicted ? await gh.checks(pr.headSha) : [];
   seenPassing(passed, repository, checks);
   seenStarted(started, repository, checks);
-  const decision = mergeDecision(pr, checks, since);
+  let decision = mergeDecision(conflicted ? { ...pr, mergeable: false } : pr, checks, since);
+  if (decision.kind === "blocked" && conflicted && refused) decision = { ...decision, why: refused };
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
   if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
@@ -643,6 +676,11 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
       // The one more run after the environment came back is spent.
       if (did.refreshed && again) delete state.outage;
       return save({ reported: state.reported, status: "waiting", why: did.why });
+    }
+    if (did?.kind === "conflict") {
+      // Taken back on the next look, like any pull request GitHub reports in conflict.
+      state.conflict = pr.headSha;
+      decision = { kind: "blocked", key: `conflict:${pr.headSha}`, why: CONFLICT };
     }
     if (did?.kind === "turn") {
       // Not told to the pull request yet: it may still merge on its own. Looked at again soon, without asking GitHub on every pass.

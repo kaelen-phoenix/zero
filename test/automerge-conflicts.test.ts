@@ -130,6 +130,20 @@ describe("a pull request in conflict with its base", () => {
     expect(f.did).toEqual([]);
   });
 
+  it("resolves it even when the first build spent every attempt", async () => {
+    const f = await delivered();
+    f.ctx.store.updateJob(f.job.id, { attempt: 3 });
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", attempt: 2 });
+    expect(f.merge()).toMatchObject({ resolving: f.head, resolutions: 1 });
+    f.setBuild(resolves());
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3, delivery: f.delivery });
+    expect(f.remoteTip()).not.toBe(f.head);
+    expect(run("git", ["show", `${f.remoteTip()}:shared.txt`], f.bare)).toBe("resolved");
+    expect(f.opened).toHaveLength(1);
+  });
+
   it("concludes the merge with two parents even when the resolution equals HEAD", async () => {
     const f = await delivered();
     f.moveBase();
@@ -247,7 +261,7 @@ describe("conflict markers", () => {
     await f.pass();
     await f.pass();
     expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
-    expect(f.did).toEqual([expect.stringMatching(/^comment: .*tiene conflictos con la rama base/)]);
+    expect(f.did).toEqual([expect.stringMatching(/^comment: .*en conflicto con la rama base/)]);
 
     // A person fixes it with a push: it merges like any other.
     f.state.pr = { ...f.state.pr, mergeable: true, headSha: "fixed" };
@@ -479,7 +493,7 @@ describe("what is not pushed", () => {
     expect(await f.again()).toMatchObject({ status: "delivered", attempt: 1, delivery: f.delivery });
     expect(f.remoteTip()).toBe(f.head);
     await f.pass();
-    expect(f.did).toEqual([expect.stringMatching(/conflictos con la rama base/)]);
+    expect(f.did).toEqual([expect.stringMatching(/en conflicto con la rama base; falló la resolución automática de este head/)]);
   });
 });
 

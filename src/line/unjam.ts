@@ -168,7 +168,7 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
     } else if (j.status === "delivered" && j.delivery?.autoMerge && j.delivery.url) {
       const state = readJson<MergeState>(ctx.store, mergeKey(j.id));
       if (state?.status !== "blocked") continue;
-      const conflict = state.backoff?.mergeable === false;
+      const conflict = state.backoff?.mergeable === false || (Boolean(state.conflict) && state.conflict === state.backoff?.sha);
       const detail = [`attempts used: ${j.attempt}`, state.backoff ? `head ${state.backoff.sha}` : "", state.resolving ? `conflict resolution already tried at ${state.resolving}` : ""].filter(Boolean).join("; ");
       jams.push({ id: `pr:${j.id}`, line: line.name, kind: "pull-request", job: j.id, url: j.delivery.url, conflict, text: `pull request ${j.delivery.url} of ${jobName(j)} does not merge: ${state.why ?? "blocked"}${conflict ? " (in conflict with the base branch)" : ""}`, detail });
     }

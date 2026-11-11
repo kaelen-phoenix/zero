@@ -59,7 +59,7 @@ describe("collecting jams", () => {
   it("a failed job and a pull request in conflict", () => {
     const { ctx } = factory();
     const failed = failedJob(ctx);
-    const pr = blockedPr(ctx, 7, { why: "tiene conflictos con la rama base", backoff: { sha: "abc", mergeable: false, why: "conflicto", delayMs: 1, nextChecksAt: at(4).toISOString() } });
+    const pr = blockedPr(ctx, 7, { why: "en conflicto con la rama base", backoff: { sha: "abc", mergeable: false, why: "conflicto", delayMs: 1, nextChecksAt: at(4).toISOString() } });
     const jams = collectJams(ctx, ctx.config.lines[0]!, at(3));
     expect(jams.find((j) => j.kind === "failed-job")).toMatchObject({ id: `job:${failed.id}`, job: failed.id });
     expect(jams.find((j) => j.kind === "failed-job")!.text).toContain("verify falló");

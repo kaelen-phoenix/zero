@@ -134,7 +134,7 @@ describe("when it is not ready", () => {
   it("says it has conflicts", async () => {
     const { ctx, job } = await delivered();
     const gh = fakeGitHub(green, { mergeable: false });
-    expect(await mergePullRequest(ctx, job.id, { via: "cli", api: () => gh.api })).toMatchObject({ merged: false, why: "tiene conflictos con la rama base" });
+    expect(await mergePullRequest(ctx, job.id, { via: "cli", api: () => gh.api })).toMatchObject({ merged: false, why: "en conflicto con la rama base" });
     expect(writes(gh.did)).toEqual([]);
   });
 
