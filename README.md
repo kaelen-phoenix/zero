@@ -846,6 +846,27 @@ On GitHub lines each note is also published as an issue in the line's repo, with
 
 Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
 
+## Unjam
+
+The `unjam` station looks at what holds the factory up and clears it on its own. It runs with the night shift's rules (factory idle, inside `nightShift.hours`, andon off, budget left, sharing `limits.usdPerNight` with `scout` and `research`), after `scout`, at most once per line per night-shift period, and never calls a model for a line with nothing stuck.
+
+zero gathers each line's jams from its own records: jobs that failed in the last 7 days with their last problem, jobs waiting for you, pull requests of `autoMerge` lines that do not merge (with the end of the failed GitHub Actions log, read once per repository and check, and whether GitHub reports a conflict), checks environments that are down or refused over billing, intake problems (GitHub, Linear, Jira, security alerts), pending cleanups and, with `isolation: container`, a box that is not ready. The read-only station groups the jams that share a cause (the same checks failing in fifteen pull requests are one problem of the repository, not fifteen), and tells apart code, flaky tests, CI, the GitHub account and the machine.
+
+For each cause that code can fix, zero opens a single night-shift proposal on the line (origin `unjam`): update the branch and resolve conflicts, fix the CI, stabilize a flaky test. It follows the line's autonomy: at `build` or `auto` it becomes a low-priority job on its own, within `unjam.maxJobsPerDay` (and `nightShift.maxAutoJobsPerDay`); at `propose` it waits for you. A cause with an open job, or whose proposal you rejected, is not repeated, and one touching protected paths or asking for new credentials opens nothing. A cause fixed elsewhere can send a job back to the queue from its checkpoint (`retry`), once in its life. What code cannot fix (installing Podman or Docker, permissions, GitHub billing) comes with what to do.
+
+```yaml
+unjam:                    # or `unjam: off` to turn it off
+  maxJobsPerDay: 2        # fix jobs and retries the station opens per day, across lines
+stations:
+  unjam: { timeoutMinutes: 15 }
+```
+
+```sh
+zero reintentar <job>     # a failed job back to the queue from its checkpoint, or a pull request in conflict back to the line
+```
+
+You see the causes under `Trabas:` in `zero status` (and `zero_status` in the chat) and in the panel's summary, one per line with its kind, how many jams it groups and its open job or proposal or what to do; in the briefing under `## Trabas`; and the monthly report of each line has a "Trabas" section with what only you can solve.
+
 ## Isolation box
 
 Everything that runs code from the project or from an agent runs in the box: the `setup`, the agents and verification. The box is a container (Podman or Docker). zero does the integration outside.

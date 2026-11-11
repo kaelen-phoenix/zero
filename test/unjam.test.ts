@@ -1,14 +1,17 @@
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_ACCESS, agentName, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, approveProposal, retryJob } from "../src/app.js";
+import { ANDON_KEY, approveProposal, briefing, factoryStatus, monthlyReport, retryJob } from "../src/app.js";
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
 import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { scoutSpent } from "../src/line/scout.js";
-import { collectJams, readDiagnosis, unjamLine, unjamPass, unjamRetriedKey } from "../src/line/unjam.js";
+import { collectJams, readDiagnosis, unjamKey, unjamLine, unjamPass, unjamRetriedKey } from "../src/line/unjam.js";
 import { cleanupKey } from "../src/line/cleanup.js";
+import { formatStatus } from "../src/format.js";
+import { overviewPage } from "../src/panel/html.js";
+import { reportHtml, reportMarkdown } from "../src/report.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory, validSpec } from "./helpers.js";
 
@@ -436,5 +439,81 @@ describe("retrying a job", () => {
     expect(ctx.store.getJob(job.id)!.status).toBe("failed");
     expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.todo).toContain(`zero reintentar ${job.id}`);
     expect(ctx.store.getKv(unjamRetriedKey(job.id))).toBeUndefined();
+  });
+});
+
+describe("jams in sight", () => {
+  function diagnosed(causes: unknown[]) {
+    const { ctx } = factory();
+    ctx.store.setKv(unjamKey("tienda"), JSON.stringify({ at: at(3).toISOString(), causes }));
+    return ctx;
+  }
+  function withOpenJob() {
+    const ctx = diagnosed([]);
+    const job = ctx.store.createJob({ line: "tienda", kind: "request", request: "arreglar el CI", budgetUsd: 1 });
+    const prs = Array.from({ length: 15 }, (_, i) => `pr:${i}`);
+    ctx.store.setKv(unjamKey("tienda"), JSON.stringify({ at: at(3).toISOString(), causes: [cause({ kind: "ci", action: "fix", jams: prs, job: job.id, todo: undefined })] }));
+    return { ctx, job };
+  }
+
+  it("is a Trabas block in zero status, one line per cause", () => {
+    const { ctx, job } = withOpenJob();
+    const s = factoryStatus(ctx);
+    expect(s.jams).toEqual([{ line: "tienda", title: "Checks de android rotos", kind: "ci", action: "fix", jams: 15, job: job.id, at: at(3).toISOString() }]);
+    const text = formatStatus(s);
+    expect(text).toContain("Trabas:");
+    expect(text).toContain(`- tienda · Checks de android rotos · 15 trabas · CI · trabajo ${job.id}`);
+  });
+
+  it("shows what to do once the job is over", () => {
+    const { ctx, job } = withOpenJob();
+    ctx.store.updateJob(job.id, { status: "delivered", finishedAt: at(4).toISOString() });
+    const s = factoryStatus(ctx);
+    expect(s.jams[0]!.job).toBeUndefined();
+    const machine = diagnosed([cause({ kind: "machine", jams: ["box"], todo: "Instalá Podman o Docker" })]);
+    expect(formatStatus(factoryStatus(machine))).toContain("tienda · Checks de android rotos · 1 traba · máquina · qué hacer: Instalá Podman o Docker");
+  });
+
+  it("is in the panel's overview", () => {
+    const { ctx } = withOpenJob();
+    const html = overviewPage(factoryStatus(ctx), ["tienda"], "nonce");
+    expect(html).toContain("Trabas:");
+    expect(html).toContain("Checks de android rotos");
+  });
+
+  it("says nothing without a diagnosis", () => {
+    const { ctx } = factory();
+    const s = factoryStatus(ctx);
+    expect(s.jams).toEqual([]);
+    expect(formatStatus(s)).not.toContain("Trabas:");
+    expect(overviewPage(s, ["tienda"], "nonce")).not.toContain("Trabas:");
+  });
+
+  it("is a section of the briefing", async () => {
+    const { ctx } = withOpenJob();
+    const body = (await briefing(ctx)).body;
+    expect(body).toContain("## Trabas");
+    expect(body).toContain("Checks de android rotos");
+    const { ctx: none } = factory();
+    expect((await briefing(none)).body).not.toContain("## Trabas");
+  });
+
+  it("is a section of the monthly report with what to do, only for causes code cannot fix", () => {
+    const ctx = diagnosed([cause({ kind: "machine", jams: ["box"], title: "Sin caja de aislamiento", todo: "Instalá Podman o Docker" }), cause({ action: "fix", title: "Arreglar el CI", todo: undefined })]);
+    const [line] = monthlyReport(ctx, { line: "tienda", month: "2026-09" }).lines;
+    expect(line!.jams).toEqual([{ title: "Sin caja de aislamiento", kind: "máquina", todo: "Instalá Podman o Docker" }]);
+    for (const text of [reportMarkdown(line!), reportHtml(line!)]) {
+      expect(text).toContain("Trabas");
+      expect(text).toContain("Instalá Podman o Docker");
+      expect(text).not.toContain("Arreglar el CI");
+    }
+  });
+
+  it("leaves the report without Trabas when every cause can be fixed with code", () => {
+    const ctx = diagnosed([cause({ action: "fix", todo: undefined })]);
+    const [line] = monthlyReport(ctx, { line: "tienda", month: "2026-09" }).lines;
+    expect(line!.jams).toBeUndefined();
+    expect(reportMarkdown(line!)).not.toContain("Trabas");
+    expect(reportHtml(line!)).not.toContain("Trabas");
   });
 });

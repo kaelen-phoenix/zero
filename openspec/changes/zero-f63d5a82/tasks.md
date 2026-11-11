@@ -33,9 +33,9 @@
 
 ## 5. Etapa 5: Visibilidad: status, panel, chat, resumen, informe y documentación
 
-- [ ] 5.1 app.ts: `FactoryStatus.jams` leído de los kv `unjam:<line>` de las líneas configuradas (causa, tipo, cantidad de trabas, acción, propuesta o trabajo, qué hacer, fecha del diagnóstico).
-- [ ] 5.2 format.ts: `jamLine` (tipos en español: código, test intermitente, CI, cuenta de GitHub, máquina) y el bloque `Trabas:` en `formatStatus`; mostrar lo mismo en el resumen del panel (`src/panel/html.ts`) con `esc`.
-- [ ] 5.3 briefing.ts: nuevo parámetro opcional al final de `renderBriefing` con la sección `## Trabas`, alimentado desde `factoryStatus` en `briefing()` de app.ts.
-- [ ] 5.4 report.ts: sección `Trabas` por línea (Markdown en `reportMarkdown` y HTML en `reportSection`/`reportHtml`), solo con las causas de acción `none` y su qué hacer, limpiadas con `reportText`; `monthlyReport` le pasa las causas de cada línea.
-- [ ] 5.5 Documentar el destrabador, `unjam` en el archivo de la fábrica y `zero reintentar` en README.md y README.es.md con la misma estructura, y agregar el módulo a AGENTS.md. Respetar `test/wording.test.ts` (vos / la persona responsable).
-- [ ] 5.6 Tests de formatStatus, del panel, del resumen y del informe con y sin trabas. Correr `npm run typecheck`, `npm test` y `npx openspec validate --all`.
+- [x] 5.1 app.ts: `FactoryStatus.jams` leído de los kv `unjam:<line>` de las líneas configuradas (causa, tipo, cantidad de trabas, acción, propuesta o trabajo, qué hacer, fecha del diagnóstico).
+- [x] 5.2 format.ts: `jamLine` (tipos en español: código, test intermitente, CI, cuenta de GitHub, máquina) y el bloque `Trabas:` en `formatStatus`; mostrar lo mismo en el resumen del panel (`src/panel/html.ts`) con `esc`.
+- [x] 5.3 briefing.ts: nuevo parámetro opcional al final de `renderBriefing` con la sección `## Trabas`, alimentado desde `factoryStatus` en `briefing()` de app.ts.
+- [x] 5.4 report.ts: sección `Trabas` por línea (Markdown en `reportMarkdown` y HTML en `reportSection`/`reportHtml`), solo con las causas de acción `none` y su qué hacer, limpiadas con `reportText`; `monthlyReport` le pasa las causas de cada línea.
+- [x] 5.5 Documentar el destrabador, `unjam` en el archivo de la fábrica y `zero reintentar` en README.md y README.es.md con la misma estructura, y agregar el módulo a AGENTS.md. Respetar `test/wording.test.ts` (vos / la persona responsable).
+- [x] 5.6 Tests de formatStatus, del panel, del resumen y del informe con y sin trabas. Correr `npm run typecheck`, `npm test` y `npx openspec validate --all`.

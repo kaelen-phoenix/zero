@@ -31,6 +31,7 @@ import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
+import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
@@ -348,6 +349,8 @@ export interface FactoryStatus {
   outages: Outage[];
   /** Repositories whose checks GitHub does not start over the account's billing; the pull requests they hold are left out of `merges`. */
   billing: BillingHold[];
+  /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
+  jams: JamView[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -444,6 +447,46 @@ export interface BillingHold {
   pulls: string[];
 }
 
+/** A cause of a line's last unjam diagnosis, as the person in charge sees it. */
+export interface JamView {
+  line: string;
+  title: string;
+  kind: Cause["kind"];
+  action: Cause["action"];
+  /** How many jams it groups. */
+  jams: number;
+  /** The job working on it, while it is not finished. */
+  job?: string;
+  /** Its unjam proposal while it waits for the person in charge. */
+  proposal?: string;
+  todo?: string;
+  /** When the line was diagnosed. */
+  at: string;
+}
+
+/** The causes stored by the unjam station for every configured line, with the job or proposal still open. */
+export function jamViews(ctx: FactoryContext): JamView[] {
+  return ctx.config.lines.flatMap((l) => {
+    const diagnosis = readDiagnosis(ctx.store, l.name);
+    if (!diagnosis) return [];
+    return diagnosis.causes.map((c): JamView => {
+      const job = c.job ? ctx.store.getJob(c.job) : undefined;
+      const proposal = c.proposal ? ctx.store.getProposal(c.proposal) : undefined;
+      return {
+        line: l.name,
+        title: c.title,
+        kind: c.kind,
+        action: c.action,
+        jams: c.jams.length,
+        ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
+        ...(proposal?.status === "pending" && { proposal: proposal.id }),
+        ...(c.todo && { todo: c.todo }),
+        at: diagnosis.at,
+      };
+    });
+  });
+}
+
 /** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
 function mergeViews(ctx: FactoryContext) {
   const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
@@ -490,6 +533,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
     outages,
     billing,
+    jams: jamViews(ctx),
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -604,7 +648,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -655,7 +699,7 @@ export function monthlyReport(ctx: FactoryContext, input: { line?: string; month
       const jobs = finished.filter((j) => j.line === name);
       const repository = config && jobs.some((j) => j.delivery?.commit) ? lineRepository(config) : undefined;
       const services = lineServices(config).map((service) => ({ service, record: parseBillingRecord(ctx.store.getKv(billingKey(name, service, month)), service, month) }));
-      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services });
+      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services, jams: config ? readDiagnosis(ctx.store, name)?.causes : undefined });
     }),
   };
 }
