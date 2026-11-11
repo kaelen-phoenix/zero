@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_ACCESS, agentName, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY } from "../src/app.js";
+import { ANDON_KEY, approveProposal } from "../src/app.js";
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
 import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { scoutSpent } from "../src/line/scout.js";
-import { collectJams, readDiagnosis, unjamPass } from "../src/line/unjam.js";
+import { collectJams, readDiagnosis, unjamLine, unjamPass } from "../src/line/unjam.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
 
@@ -282,5 +282,87 @@ describe("what unjam keeps", () => {
     const agents = diagnosing([]);
     await unjamPass(ctx, agents.runner, at(3, 0, 30));
     expect(agents.calls[0]!.prompt).toContain("- Checks de android rotos (ci, action none, 1 jam");
+  });
+});
+
+describe("fix jobs from unjam", () => {
+  const fix = (over: Record<string, unknown> = {}) => cause({ title: "Actualizar el workflow de android", action: "fix", todo: null, request: "Arreglá el workflow de android", paths: ["android/app/build.gradle"], estimatedUsd: 0.5, needsNewCredentials: false, ...over });
+  const lineOf = (ctx: Ctx) => ctx.config.lines[0]!;
+  const unjamProposals = (ctx: Ctx) => ctx.store.listProposals({ line: "tienda" }).filter((p) => p.origin === "unjam");
+
+  it("on a build line opens a low-priority night-shift job of origin unjam", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" } });
+    const pr = blockedPr(ctx, 1);
+    await unjamPass(ctx, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
+    const [proposal] = unjamProposals(ctx);
+    expect(proposal).toMatchObject({ status: "approved", decidedBy: "night-shift", why: "El workflow de android falla", change: "Arreglá el workflow de android", paths: ["android/app/build.gradle"] });
+    const job = ctx.store.getJob(proposal!.jobId!)!;
+    expect(job).toMatchObject({ status: "queued", priority: "baja", source: { kind: "night-shift", proposal: proposal!.id, autonomy: "build", origin: "unjam" } });
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ proposal: proposal!.id, job: job.id });
+  });
+
+  it("on a propose line leaves the proposal pending", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" } });
+    const pr = blockedPr(ctx, 1);
+    await unjamPass(ctx, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
+    const [proposal] = unjamProposals(ctx);
+    expect(proposal).toMatchObject({ status: "pending", origin: "unjam" });
+    expect(proposal!.jobId).toBeUndefined();
+    expect(ctx.store.listJobs({ status: ["queued"] })).toHaveLength(0);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.proposal).toBe(proposal!.id);
+  });
+
+  it("opens at most unjam.maxJobsPerDay jobs, and the rest wait", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" }, unjam: { maxJobsPerDay: 1 } });
+    const a = blockedPr(ctx, 1);
+    const b = blockedPr(ctx, 2);
+    await unjamPass(ctx, diagnosing([fix({ jams: [`pr:${a.id}`] }), fix({ title: "Estabilizar el test del panel", jams: [`pr:${b.id}`] })]).runner, at(3));
+    expect(unjamProposals(ctx).map((p) => p.status)).toEqual(["approved", "pending"]);
+    expect(ctx.store.listJobs({ status: ["queued"] })).toHaveLength(1);
+  });
+
+  it("does not repeat a cause whose job is still open, or one the owner rejected", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" } });
+    const pr = blockedPr(ctx, 1);
+    const jams = collectJams(ctx, lineOf(ctx), at(3));
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
+    const [first] = unjamProposals(ctx);
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ title: "actualizar el workflow de  Android", jams: [`pr:${pr.id}`] })]).runner, at(4));
+    expect(unjamProposals(ctx)).toHaveLength(1);
+    expect(ctx.store.listJobs({ status: ["queued"] })).toHaveLength(1);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ proposal: first!.id, job: first!.jobId });
+
+    const rejected = ctx.store.createProposal({ line: "tienda", title: "Estabilizar el test del panel", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam" });
+    ctx.store.updateProposal(rejected.id, { status: "rejected", decidedBy: "owner" });
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ title: "Estabilizar el test del panel", jams: [`pr:${pr.id}`] })]).runner, at(5));
+    expect(unjamProposals(ctx)).toHaveLength(2);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.proposal).toBeUndefined();
+  });
+
+  it("proposes again once the earlier job finished", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" } });
+    const pr = blockedPr(ctx, 1);
+    const jams = collectJams(ctx, lineOf(ctx), at(3));
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
+    ctx.store.updateJob(unjamProposals(ctx)[0]!.jobId!, { status: "failed", finishedAt: at(4).toISOString() });
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(5));
+    expect(unjamProposals(ctx)).toHaveLength(2);
+  });
+
+  it("drops a fix on protected paths or with new credentials", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" }, limits: { protectedPaths: ["infra/**"] } });
+    const pr = blockedPr(ctx, 1);
+    const jams = collectJams(ctx, lineOf(ctx), at(3));
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ paths: ["infra/ci.tf"], jams: [`pr:${pr.id}`] }), fix({ title: "Token nuevo", needsNewCredentials: true, jams: [`pr:${pr.id}`] })]).runner, at(3));
+    expect(unjamProposals(ctx)).toHaveLength(0);
+    expect(ctx.store.listJobs({ status: ["queued"] })).toHaveLength(0);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes).toHaveLength(2);
+  });
+
+  it("keeps the origin when the owner approves a pending one", () => {
+    const { ctx } = factory();
+    const proposal = ctx.store.createProposal({ line: "tienda", title: "Arreglar CI", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam" });
+    const { job } = approveProposal(ctx, proposal.id);
+    expect(job.source).toEqual({ kind: "night-shift", proposal: proposal.id, origin: "unjam" });
   });
 });

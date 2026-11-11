@@ -6,11 +6,12 @@ import type { LineConfig } from "../config.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
-import type { Job, Store } from "../state/store.js";
+import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/store.js";
+import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
 import { pendingCleanups } from "./cleanup.js";
 import { scrubLocal } from "./research.js";
-import { insideHours, normalizeTitle, periodStart, scoutSpent } from "./scout.js";
+import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
 import { ALWAYS_PROTECTED } from "./verify.js";
 
 /** Causes kept per line per diagnosis, whatever the agent returns. */
@@ -81,6 +82,10 @@ export interface Cause {
   estimatedUsd: number;
   needsNewCredentials: boolean;
   todo?: string;
+  /** For `fix`: the unjam proposal that carries it, new or already open. */
+  proposal?: string;
+  /** The job working on it, while it is not finished. */
+  job?: string;
 }
 
 /** A line's last diagnosis. */
@@ -93,6 +98,18 @@ export interface Diagnosis {
 export const unjamKey = (line: string) => `unjam:${line}`;
 /** When the line was last diagnosed: once per night shift period. */
 export const unjamPassKey = (line: string) => `unjam-pass:${line}`;
+
+/** A job the unjam station retried, with when (ISO): once in each job's life. */
+export const unjamRetriedKey = (job: string) => `unjam:retried:${job}`;
+
+/** Fix jobs and retries the unjam station may still open today, across every line. */
+export function unjamJobsLeft(ctx: FactoryContext, now: Date): number {
+  const unjam = ctx.config.unjam;
+  if (unjam === "off") return 0;
+  const since = startOfDay(now);
+  const retries = ctx.store.kvWithPrefix(unjamRetriedKey("")).filter(([, at]) => at >= since.toISOString()).length;
+  return unjam.maxJobsPerDay - ctx.store.unjamJobsSince(since) - retries;
+}
 
 export function readDiagnosis(store: Store, line: string): Diagnosis | undefined {
   const raw = store.getKv(unjamKey(line));
@@ -280,6 +297,45 @@ export function acceptCauses(drafts: UnjamOutput["causes"], jams: Jam[], line: P
   return [...byTitle.values()];
 }
 
+/** An unjam proposal that still holds its title: waiting, turned down, reverted, or approved with its job unfinished. */
+function holdsTitle(ctx: FactoryContext, p: Proposal): boolean {
+  if (p.status !== "approved") return true;
+  const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
+  return !!job && !FINAL_STATUSES.includes(job.status);
+}
+
+/**
+ * One night-shift proposal per `fix` cause, unless the line already has an unjam proposal of that title holding it, or
+ * the cause touches protected paths or asks for new credentials. Each one follows the line's autonomy through
+ * `takeOnItsOwn`, within the unjam station's daily cap. The cause records the proposal and its open job.
+ */
+export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[], now: Date): void {
+  const own = ctx.store.listProposals({ line: line.name }).filter((p) => p.origin === "unjam" && holdsTitle(ctx, p));
+  const byTitle = new Map(own.map((p) => [normalizeTitle(p.title), p]));
+  for (const cause of causes) {
+    if (cause.action !== "fix" || !cause.request) continue;
+    try {
+      const held = byTitle.get(normalizeTitle(cause.title));
+      if (held) {
+        if (held.status === "pending" || held.status === "approved") cause.proposal = held.id;
+        if (held.status === "approved" && held.jobId) cause.job = held.jobId;
+        continue;
+      }
+      if (!acceptableChange(cause, ctx.config.limits.protectedPaths)) {
+        log.info("unjam left a cause without a proposal: protected paths or new credentials", { line: line.name, title: cause.title });
+        continue;
+      }
+      const proposal = ctx.store.createProposal({ line: line.name, title: cause.title, why: cause.diagnosis, change: cause.request, estimatedUsd: cause.estimatedUsd, paths: cause.paths, origin: "unjam" });
+      byTitle.set(normalizeTitle(proposal.title), proposal);
+      cause.proposal = proposal.id;
+      const job = takeOnItsOwn(ctx, line, proposal, now);
+      if (job) cause.job = job;
+    } catch (err) {
+      log.warn("unjam could not open a fix", { line: line.name, title: cause.title, error: String(err) });
+    }
+  }
+}
+
 /** One diagnosis of one line: asks the agent, then keeps only what zero accepts as the line's diagnosis. */
 export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam[], runAgent: AgentRunner, now: Date, opts: { maxBudgetUsd?: number; signal?: AbortSignal } = {}): Promise<Cause[] | undefined> {
   const choice = pickEngine(ctx.store, ctx.config, "unjam", now);
@@ -299,6 +355,7 @@ export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam
     return undefined;
   }
   const causes = acceptCauses(run.output.causes, jams, line);
+  openFixes(ctx, line, causes, now);
   const diagnosis: Diagnosis = { at: now.toISOString(), causes };
   ctx.store.setKv(unjamKey(line.name), JSON.stringify(diagnosis));
   log.info("unjam stored a diagnosis", { line: line.name, jams: jams.length, causes: causes.length, dropped: run.output.causes.length - causes.length });

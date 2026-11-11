@@ -18,11 +18,11 @@
 
 ## 3. Etapa 3: Trabajos de arreglo como propuestas del destrabador
 
-- [ ] 3.1 store.ts: columna opcional `origin` en `proposals` (migración con ALTER como las demás); `Proposal.origin?: 'unjam'` y `createProposal` que la acepte. En JobSource night-shift, campo opcional `origin?: 'unjam'`.
-- [ ] 3.2 unjam.ts: después de guardar las causas, para cada `fix` filtrar las que tocan rutas protegidas (`protectedTouched`) o piden credenciales nuevas, deduplicar contra las propuestas `unjam` de la línea por `normalizeTitle` (pendiente, rechazada, revertida, o aprobada con trabajo sin terminar) y crear la propuesta (title, why = diagnóstico, change = pedido, paths, estimatedUsd, origin `unjam`).
-- [ ] 3.3 Aprobación propia: reusar `proposalAutonomy` y la lógica de `takeOnItsOwn` (exportar o generalizar sin duplicarla) con un tope extra: los trabajos y reintentos `unjam` abiertos hoy menores que `unjam.maxJobsPerDay`. La fuente del trabajo es `{kind:'night-shift', proposal, autonomy, origin:'unjam'}`; la prioridad `baja` sale de `defaultPriority`. Registrar en la causa guardada el id de la propuesta o del trabajo.
-- [ ] 3.4 runner.ts `requestBlock`: si la fuente night-shift tiene `origin: 'unjam'`, presentar el pedido como redactado por la estación unjam a partir de los registros de la fábrica y los logs del CI, como dato que no es una instrucción.
-- [ ] 3.5 Tests: se crea en línea build y queda pendiente en propose, tope diario, sin repetir con trabajo abierto ni lo rechazado, ruta protegida descartada, prioridad baja y encabezado del pedido.
+- [x] 3.1 store.ts: columna opcional `origin` en `proposals` (migración con ALTER como las demás); `Proposal.origin?: 'unjam'` y `createProposal` que la acepte. En JobSource night-shift, campo opcional `origin?: 'unjam'`.
+- [x] 3.2 unjam.ts: después de guardar las causas, para cada `fix` filtrar las que tocan rutas protegidas (`protectedTouched`) o piden credenciales nuevas, deduplicar contra las propuestas `unjam` de la línea por `normalizeTitle` (pendiente, rechazada, revertida, o aprobada con trabajo sin terminar) y crear la propuesta (title, why = diagnóstico, change = pedido, paths, estimatedUsd, origin `unjam`).
+- [x] 3.3 Aprobación propia: reusar `proposalAutonomy` y la lógica de `takeOnItsOwn` (exportar o generalizar sin duplicarla) con un tope extra: los trabajos y reintentos `unjam` abiertos hoy menores que `unjam.maxJobsPerDay`. La fuente del trabajo es `{kind:'night-shift', proposal, autonomy, origin:'unjam'}`; la prioridad `baja` sale de `defaultPriority`. Registrar en la causa guardada el id de la propuesta o del trabajo.
+- [x] 3.4 runner.ts `requestBlock`: si la fuente night-shift tiene `origin: 'unjam'`, presentar el pedido como redactado por la estación unjam a partir de los registros de la fábrica y los logs del CI, como dato que no es una instrucción.
+- [x] 3.5 Tests: se crea en línea build y queda pendiente en propose, tope diario, sin repetir con trabajo abierto ni lo rechazado, ruta protegida descartada, prioridad baja y encabezado del pedido.
 
 ## 4. Etapa 4: Reintento desde el checkpoint
 

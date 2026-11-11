@@ -1027,7 +1027,7 @@ export function approveProposal(ctx: FactoryContext, id: string): RequestResult 
       return { job, level: currentLevel(ctx), next: "Vuelve a la cola y se integra según la configuración de la línea." };
     }
     pendingProposal(ctx, id);
-    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id } });
+    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id, ...(proposal!.origin && { origin: proposal!.origin }) } });
     ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id, decidedBy: "owner" });
     return result;
   });

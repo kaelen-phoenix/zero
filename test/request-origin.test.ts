@@ -61,6 +61,15 @@ describe("a night-shift request on the line", () => {
     expect(prompt("spec")).not.toContain("The owner sent");
   });
 
+  it("names the unjam station when it drafted the request", async () => {
+    const { prompt } = await run({ kind: "night-shift", proposal: "p1", autonomy: "build", origin: "unjam" });
+    const spec = prompt("spec")!;
+    expect(spec).toContain("drafted by a model (the unjam station, proposal p1) from the factory's records and the CI's logs");
+    expect(spec).toContain(NOT_INSTRUCTION);
+    expect(spec).not.toContain("The owner sent");
+    expect(spec).not.toContain(NIGHT_SHIFT);
+  });
+
   it("warns about web material whether or not the proposal cites a note", async () => {
     const base = { title: "Arreglar algo", why: "porque sí", change: "esto" };
     const plain = await run({ kind: "night-shift", proposal: "p1" }, proposalRequest(base));
