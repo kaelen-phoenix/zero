@@ -206,7 +206,25 @@ export function shutdownOutcome(r: ShutdownResult): { text: string; code: number
   return { text: `La fábrica no se apagó: ${who} sigue encendido. Se va a apagar cuando termine lo que está haciendo; si no lo hace, vas a tener que terminar ese proceso a mano.`, code: 1 };
 }
 
-const daemonState = (d: DaemonInfo) => (d.alive ? "en marcha" : d.lockHeld ? `no responde${d.pid ? ` (proceso ${d.pid})` : ""}` : "apagada (arranca sola con el próximo pedido)");
+/** "14:37", or "10/11 14:37" when it was not today. */
+function clock(iso: string, now: Date): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, "0");
+  const time = `${two(d.getHours())}:${two(d.getMinutes())}`;
+  return d.toDateString() === now.toDateString() ? time : `${two(d.getDate())}/${two(d.getMonth() + 1)} ${time}`;
+}
+
+function daemonState(d: DaemonInfo, running: number, now: Date): string {
+  const state = d.state ?? (d.alive ? "running" : d.lockHeld ? "unresponsive" : "stopped");
+  if (state === "running") return "en marcha";
+  if (state === "unresponsive") return `no responde${d.pid ? ` (proceso ${d.pid})` : ""}`;
+  if (state === "crashed") {
+    const jobs = running ? ` con ${running} ${running === 1 ? "trabajo" : "trabajos"} en curso que nadie hace` : "";
+    return `se cayó (último latido ${d.since ? clock(d.since, now) : "desconocido"})${jobs}; se vuelve a encender con el próximo comando de zero si hay trabajo pendiente`;
+  }
+  return `apagada${d.since ? ` a propósito desde ${clock(d.since, now)}` : ""} (arranca sola con el próximo pedido)`;
+}
 
 /** Starts with `GitHub:`, so `zero box status`, which filters by prefix, leaves it out. */
 function githubLine(g: GithubStatus, now: Date): string {
@@ -248,7 +266,7 @@ export const describeOnDemandRun = (r: OnDemandRun, now = new Date()) => `${r.st
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
-    `Fábrica: ${s.andon ? "DETENIDA (andon)" : daemonState(s.daemon)} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
+    `Fábrica: ${s.andon ? "DETENIDA (andon)" : daemonState(s.daemon, s.running.length, now)} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
   ];
   if (s.level.reason) out.push(`  ${s.level.reason}`);
   if ((s.daemonProcesses?.length ?? 0) > 1) out.push(`AVISO: hay ${s.daemonProcesses!.length} procesos daemon de zero en esta máquina (${s.daemonProcesses!.join(", ")}). Pueden tomar el mismo trabajo, salvo que uno sea de otra fábrica porque usás otro ZERO_HOME; si no, terminá a mano el que sobra.`);

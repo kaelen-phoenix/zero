@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
-import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, LAUNCH_KEY, readGate, SHUTDOWN_KEY, STOPPED_KEY, waitsForBox, type DaemonStopReason, type FactoryContext, type StopRecord } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
@@ -153,6 +153,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const beat = () => store.setKv(DAEMON_KEY, JSON.stringify({ pid: process.pid, beatAt: now().toISOString() }));
   beat();
   store.deleteKv(SHUTDOWN_KEY);
+  store.deleteKv(STOPPED_KEY);
+  store.deleteKv(LAUNCH_KEY);
 
   for (const job of store.listJobs({ status: ["running"] })) {
     log.info("resuming interrupted job", { job: job.id, checkpoint: job.checkpoint, station: job.station });
@@ -408,11 +410,14 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (demanding = undefined));
   };
 
+  // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
+  let stopped: DaemonStopReason | undefined;
   try {
     while (!stopping) {
       beat();
       if (store.getKv(SHUTDOWN_KEY)) {
         shutdown();
+        stopped = "shutdown";
         break;
       }
       try {
@@ -498,9 +503,13 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         idlePasses();
       }
 
-      if (opts.once && !running.size && !startable) break;
+      if (opts.once && !running.size && !startable) {
+        stopped = "once";
+        break;
+      }
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
+    stopped ??= "signal";
   } finally {
     // A shutdown cuts research and the packages' stations short, scheduled and on-demand passes included; a `once` run lets them finish.
     if (stopping) researchStop.abort();
@@ -525,8 +534,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     process.removeListener("SIGINT", shutdown);
     process.removeListener("SIGTERM", shutdown);
     const mine = daemonInfo(store, now());
-    if (mine.pid === process.pid) store.deleteKv(DAEMON_KEY);
-    log.info("factory stopped", { pid: process.pid });
+    if (stopped && mine.pid === process.pid) {
+      store.deleteKv(DAEMON_KEY);
+      store.setKv(STOPPED_KEY, JSON.stringify({ at: now().toISOString(), reason: stopped } satisfies StopRecord));
+    }
+    log.info(stopped ? "factory stopped" : "factory ended by an error", { pid: process.pid });
   }
 }
 

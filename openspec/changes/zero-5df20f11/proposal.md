@@ -21,6 +21,7 @@ The factory will recover on its own when the machine restarts or the daemon dies
 
 ### Modified Capabilities
 - `factory-daemon`: The factory starts again on its own after a reboot or a daemon crash
+- `factory-config`: The `autostart` option in the factory file
 
 ## Impact
 

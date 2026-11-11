@@ -2,13 +2,13 @@
 
 ## 1. Etapa 1: Daemon state, status texts and crash revival
 
-- [ ] 1.1 OpenSpec change zero-5df20f11 with the factory-daemon and factory-config deltas for the whole request
-- [ ] 1.2 daemon.ts: stop record on clean exit, keep the heartbeat on error exit, clear the stop record on start
-- [ ] 1.3 app.ts: DaemonInfo.state/since in factoryStatus, and reviveDaemon with an injectable starter
-- [ ] 1.4 format.ts: texts for stopped and crashed
-- [ ] 1.5 cli.ts: revival after every command except start and shutdown (message on stderr)
-- [ ] 1.6 mcp/server.ts: revival in withFactory and at startup when autoStart is on, with an injectable starter
-- [ ] 1.7 Tests for states, error exit, reviveDaemon, formatStatus and MCP revival
+- [x] 1.1 OpenSpec change zero-5df20f11 with the factory-daemon and factory-config deltas for the whole request
+- [x] 1.2 daemon.ts: stop record on clean exit, keep the heartbeat on error exit, clear the stop record on start
+- [x] 1.3 app.ts: DaemonInfo.state/since in factoryStatus, and reviveDaemon with an injectable starter
+- [x] 1.4 format.ts: texts for stopped and crashed
+- [x] 1.5 cli.ts: revival after every command except start and shutdown (message on stderr)
+- [x] 1.6 mcp/server.ts: revival in withFactory and at startup when autoStart is on, with an injectable starter
+- [x] 1.7 Tests for states, error exit, reviveDaemon, formatStatus and MCP revival
 
 ## 2. Etapa 2: Login autostart registration
 

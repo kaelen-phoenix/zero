@@ -46,17 +46,6 @@ Every CLI command that opens the factory, except `start` and `shutdown`, SHALL c
 - **WHEN** the same call is made with `autoStart: false`
 - **THEN** the starter is not called
 
-### Requirement: Opción autostart en el archivo
-The factory file SHALL accept a top-level boolean `autostart` (default false). No chat tool MUST change it; it SHALL be changed only by `zero autostart on|off`, by `zero setup` or by editing the file.
-
-#### Scenario: Valor por defecto
-- **WHEN** a factory file without `autostart` is parsed
-- **THEN** `config.autostart` is false
-
-#### Scenario: Valor inválido
-- **WHEN** a factory file has `autostart: "si"`
-- **THEN** parsing fails with a validation error
-
 ### Requirement: Registro de arranque al iniciar sesión
 `syncAutostart(home, enabled, deps)` in `src/autostart.ts` SHALL make the user-level login entry for this ZERO_HOME exist exactly when `enabled` is true, without administrator rights. On win32 that entry is a `.cmd` file in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`; on darwin a plist in `~/Library/LaunchAgents` with `RunAtLoad`; on linux a unit in `~/.config/systemd/user` enabled through `systemctl --user enable`. Each entry runs `<node> <dist/cli.js> start --detach` with `ZERO_HOME` set, and its name includes a short hash of the home's root. The function MUST be idempotent and MUST do nothing when `inContainer()` is true.
 
