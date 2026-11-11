@@ -408,6 +408,45 @@ describe("sitio del proyecto: FIG. 1", () => {
     }
   });
 
+  it("muestra a la persona como un ícono de cabeza y hombros en el color de acento", () => {
+    const owner = /<g class="owner">([\s\S]*?)<\/g>/.exec(svg);
+    expect(owner).not.toBeNull();
+    expect(owner![1]).toMatch(/<circle\b/);
+    expect(owner![1]).toMatch(/<path\b/);
+    expect(svg).not.toMatch(/<circle class="owner"/);
+    const rules = [...css.matchAll(/\.line-fig \.owner\b(?!-)[^{]*\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(rules.some((r) => /(?:fill|stroke):\s*var\(--accent\)/.test(r))).toBe(true);
+    for (const rule of rules) {
+      for (const color of rule.matchAll(/(?:^|;)\s*(?:fill|stroke):\s*([^;]+)/g)) expect(color[1]!.trim()).toMatch(/^(var\(--[\w-]+\)|none)$/);
+    }
+  });
+
+  it("conserva el pulso suave de la persona", () => {
+    const rule = /\.line-fig \.owner \{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/animation:[^;]*\bpulse\b/);
+    expect(rule).toMatch(/transform-origin:\s*360px 46px/);
+    const pulse = /@keyframes pulse\s*\{([\s\S]*?)\n\}/.exec(css)![1]!;
+    const scales = [...pulse.matchAll(/scale\(([\d.]+)\)/g)].map((m) => Number(m[1]));
+    expect(scales.length).toBeGreaterThan(0);
+    for (const n of scales) expect(n).toBeLessThanOrEqual(1.35);
+  });
+
+  it("muestra el rótulo de la persona más grande y con más peso, también en celular", () => {
+    const outside = css.replace(/@media[^{]*\{[\s\S]*?\n\}/g, "");
+    const rule = /\.line-fig \.owner-label \{([^}]*)\}/.exec(outside)![1]!;
+    expect(Number(/font-size:\s*(\d+)px/.exec(rule)![1])).toBeGreaterThanOrEqual(15);
+    expect(Number(/font-weight:\s*(\d+)/.exec(rule)![1])).toBeGreaterThanOrEqual(600);
+    expect(rule).toMatch(/fill:\s*var\(--accent\)/);
+    const mobile = /@media \(max-width: 40rem\)\s*\{([\s\S]*?)\n\}/.exec(css)![1]!;
+    const small = /\.line-fig \.owner-label \{([^}]*)\}/.exec(mobile)![1]!;
+    expect(Number(/font-size:\s*(\d+)px/.exec(small)![1])).toBeGreaterThanOrEqual(20);
+    expect(svg).toMatch(/<text class="owner-label"[^>]*data-i18n="fig\.owner">vos<\/text>/);
+    expect(loadSite().EN["fig.owner"]).toBe("you");
+    const label = Number(/<text class="owner-label"[^>]*\by="([\d.]+)"/.exec(svg)![1]);
+    const head = /<g class="owner">[\s\S]*?<circle\b[^>]*\bcy="([\d.]+)"[^>]*\br="([\d.]+)"/.exec(svg)!;
+    expect(label).toBeLessThan(Number(head[1]) - Number(head[2]));
+  });
+
   it("detiene las animaciones con prefers-reduced-motion", () => {
     const block = /@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
     expect(block).not.toBeNull();
