@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -7,10 +9,17 @@ import { mergePullRequest, trace, type FactoryContext } from "../src/app.js";
 import { mergeKey, pollMerges, watchedJobs, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
+import { jobPage } from "../src/panel/html.js";
+import { panelKey, sessionFor } from "../src/panel/key.js";
+import { createPanelServer } from "../src/panel/server.js";
 import type { Job, JobSource } from "../src/state/store.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
-afterEach(cleanup);
+const servers: Server[] = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((s) => new Promise((r) => (s.closeAllConnections(), s.close(r)))));
+  cleanup();
+});
 
 const green: Check[] = [{ name: "ci", done: true, ok: true }];
 
@@ -231,5 +240,77 @@ describe("from the chat and the CLI", () => {
 
   it("lists zero fusionar in the CLI usage", () => {
     expect(readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8")).toContain("zero fusionar <trabajo | url>");
+  });
+});
+
+describe("from the panel", () => {
+  async function panel(ctx: FactoryContext, api: MergeApi) {
+    const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), merges: () => api });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const cookie = `zero_panel=${sessionFor(panelKey(ctx.secrets))}`;
+    return (path: string, form: Record<string, string> = {}) =>
+      fetch(base + path, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", cookie }, body: new URLSearchParams(form).toString(), redirect: "manual" });
+  }
+
+  it("shows Fundir only on a delivered pull request not yet merged or closed", async () => {
+    const { ctx } = await delivered({ number: 6 });
+    const job = ctx.store.listJobs({ status: ["delivered"] })[0]!;
+    const html = jobPage(job, "", "n");
+    expect(html).toContain(`action="/job/${job.id}/merge"`);
+    expect(html).toContain("Fundir");
+    expect(jobPage(job, "", "n", undefined, false, "merged")).not.toContain("/merge\"");
+    expect(jobPage(job, "", "n", undefined, false, "closed")).not.toContain("/merge\"");
+    expect(jobPage(job, "", "n", undefined, false, "blocked")).toContain("/merge\"");
+
+    const running = ctx.store.createJob({ line: "demo", kind: "request", request: "y", budgetUsd: 3 });
+    expect(jobPage(running, "", "n")).not.toContain("/merge\"");
+    const mergeMode = await deliver(ctx, { mode: "merge" });
+    expect(jobPage(mergeMode, "", "n")).not.toContain("/merge\"");
+  });
+
+  it("hides it on the job page once the factory recorded the merge", async () => {
+    const { ctx, job } = await delivered();
+    const gh = fakeGitHub();
+    await panel(ctx, gh.api);
+    await mergePullRequest(ctx, job.id, { via: "cli", api: () => gh.api });
+    const cookie = `zero_panel=${sessionFor(panelKey(ctx.secrets))}`;
+    const server = servers.at(-1)!;
+    const html = await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/job/${job.id}`, { headers: { cookie } })).text();
+    expect(html).not.toContain(`/job/${job.id}/merge`);
+  });
+
+  it("asks for confirmation before merging", async () => {
+    const { ctx, job } = await delivered();
+    const gh = fakeGitHub();
+    const post = await panel(ctx, gh.api);
+    const r = await post(`/job/${job.id}/merge`);
+    expect(r.status).toBe(200);
+    const html = await r.text();
+    expect(html).toContain('<input type="hidden" name="confirm" value="1">');
+    expect(gh.did.filter((d) => d.startsWith("merge"))).toEqual([]);
+  });
+
+  it("merges once confirmed, records the panel and goes back to the job", async () => {
+    const { ctx, job } = await delivered();
+    const gh = fakeGitHub();
+    const post = await panel(ctx, gh.api);
+    const r = await post(`/job/${job.id}/merge`, { confirm: "1" });
+    expect(r.status).toBe(303);
+    const location = r.headers.get("location")!;
+    expect(location.startsWith(`/job/${job.id}`)).toBe(true);
+    expect(new URL(location, "http://x").searchParams.get("msg")).toContain("Fundí");
+    expect(gh.did.filter((d) => d.startsWith("merge"))).toEqual(["merge #5 @abc"]);
+    expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.merge")!.attrs["zero.merge.via"]).toBe("panel");
+  });
+
+  it("says why it did not merge, without forcing", async () => {
+    const { ctx, job } = await delivered();
+    const gh = fakeGitHub([{ name: "e2e", done: true, ok: false }]);
+    const post = await panel(ctx, gh.api);
+    const r = await post(`/job/${job.id}/merge`, { confirm: "1" });
+    expect(new URL(r.headers.get("location")!, "http://x").searchParams.get("msg")).toMatch(/^No lo fundí: .*fallaron los checks e2e/);
+    expect(gh.did).toEqual([]);
   });
 });

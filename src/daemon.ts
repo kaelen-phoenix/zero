@@ -184,7 +184,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   // The panel is fixed to the port the factory started with; changing it needs a restart.
   const port = (opts.panel ?? !opts.once) ? ctx.config.panel.port : 0;
-  const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets) }) : undefined;
+  const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets), merges: (repository, line) => (opts.merges ?? realMerges(ctx, meter, "merges"))(repository, line) }) : undefined;
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
   const host = ctx.config.panel.host;
   panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));

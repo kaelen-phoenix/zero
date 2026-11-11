@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
 import { budgetLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
+import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
@@ -360,7 +361,13 @@ ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="
   );
 }
 
-export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false): string {
+/** Whether the job page offers to merge: a delivered GitHub pull request the factory has not seen merged or closed. */
+function mergeable(job: Job, mergeStatus?: MergeState["status"]): boolean {
+  const url = job.delivery?.url;
+  return job.status === "delivered" && url !== undefined && pullRequestOf(url) !== undefined && mergeStatus !== "merged" && mergeStatus !== "closed";
+}
+
+export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"]): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
     jobName(job),
@@ -371,6 +378,7 @@ ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(jo
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
 ${job.question ? `<h2>Pregunta para vos</h2><pre>${esc(job.question.text)}</pre>${answerForms(job)}` : ""}
 ${!final ? `<form method="post" action="/job/${esc(job.id)}/stop"><button class="danger">Detener este trabajo</button></form>` : ""}
+${mergeable(job, mergeStatus) ? `<form method="post" action="/job/${esc(job.id)}/merge"><button class="primary">Fundir</button></form>` : ""}
 <h2>Pedido</h2><pre>${esc(job.request)}</pre></div>
 <div class="card"><h2>Traza</h2><pre>${esc(traceText)}</pre></div>`,
     { nonce, flash, refresh: !final },
@@ -616,6 +624,18 @@ export function confirmStopPage(j: Job, nonce: string): string {
 <form method="post" action="/requests/${esc(j.id)}/stop"><input type="hidden" name="confirm" value="1"><button class="danger">Sí, frenarlo</button></form>
 <p><a href="/requests">Cancelar</a></p></div>`,
     { nonce, active: "/requests" },
+  );
+}
+
+/** The step before merging a delivered pull request from the panel: the owner confirms it. */
+export function confirmMergePage(j: Job, nonce: string): string {
+  const url = j.delivery?.url ?? "";
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Fundir «${esc(jobName(j))}»?</h1><p>La fábrica funde <a href="${esc(url)}">${esc(url)}</a> en la rama base solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, te dice por qué sin forzar nada.</p>
+<form method="post" action="/job/${esc(j.id)}/merge"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, fundirlo</button></form>
+<p><a href="/job/${esc(j.id)}">Cancelar</a></p></div>`,
+    { nonce },
   );
 }
 
