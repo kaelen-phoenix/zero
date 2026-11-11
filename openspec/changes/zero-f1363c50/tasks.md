@@ -14,9 +14,9 @@
 
 ## 3. Etapa 3: Pasada diaria del daemon
 
-- [ ] 3.1 Implement `billingPass` with the once-per-local-day mark and the previous-month closing read.
-- [ ] 3.2 Wire it into src/daemon.ts with `DaemonOptions.billing`, off in `once` runs unless injected.
-- [ ] 3.3 Tests with fake readers and a moving clock.
+- [x] 3.1 Implement `billingPass` with the once-per-local-day mark and the previous-month closing read.
+- [x] 3.2 Wire it into src/daemon.ts with `DaemonOptions.billing`, off in `once` runs unless injected.
+- [x] 3.3 Tests with fake readers and a moving clock.
 
 ## 4. Etapa 4: Documentación
 

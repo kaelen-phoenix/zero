@@ -16,6 +16,9 @@ import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
+import { billingPass } from "./billing/pass.js";
+import { billingReaders } from "./billing/readers.js";
+import { lineServices, type BillingReader, type BillingService } from "./billing/records.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
 import { factoryConfig } from "./packages.js";
 import { effectivePriority, priorityRank } from "./priority.js";
@@ -56,6 +59,8 @@ export interface DaemonOptions {
   jira?: (line: LineConfig, credentials: JiraCredentials) => JiraApi | undefined;
   /** GitHub's Dependabot alerts, per line; tests inject a fake. Without it, `once` runs do not read alerts. */
   alerts?: (repository: string, line?: LineConfig) => AlertApi | undefined;
+  /** What the lines' external services cost, one reader per service; tests inject fakes. Without it, `once` runs do not read billing. */
+  billing?: Partial<Record<BillingService, BillingReader>>;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
@@ -89,6 +94,9 @@ const realAlerts = (meter: GithubMeter) => (repository: string) => {
   const token = githubToken();
   return token ? githubAlerts(token, repository, meter.client(token, "alerts")) : undefined;
 };
+
+/** The real billing readers, straight from zero's process: read-only calls with each service's token from the secret store. */
+const realBilling = (ctx: FactoryContext) => billingReaders({ fetch: globalThis.fetch, secrets: ctx.secrets, githubToken: () => githubToken(process.env, ctx.secrets) });
 
 /** The real Linear adapter, with the key from the secret store; pollLinear signs its comments. */
 const realLinear = (ctx: FactoryContext) => () => {
@@ -287,6 +295,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // What the lines' external services cost this month; the pass itself keeps each service to once a local day.
+  let billingAt = 0;
+  let readingBilling: Promise<void> | undefined;
+  const readBilling = () => {
+    if (readingBilling || (opts.once && !opts.billing) || !ctx.config.lines.some((l) => lineServices(l).length) || Date.now() - billingAt < (opts.once ? 0 : INTAKE_MS)) return;
+    billingAt = Date.now();
+    readingBilling = billingPass(ctx, opts.billing ?? realBilling(ctx), now())
+      .catch((err) => log.warn("billing pass failed", { error: err instanceof Error ? err.name : "error" }))
+      .finally(() => (readingBilling = undefined));
+  };
+
   // Work copies a finished job could not remove (a locked folder on Windows), tried again in the background.
   let cleanupsAt = 0;
   let cleaning: Promise<void> | undefined;
@@ -384,6 +403,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       takeLinear();
       takeJira();
       retryCleanups();
+      readBilling();
       exportTraces();
       runSchedules();
       lookForPackageUpdates();
@@ -459,6 +479,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await checkingReverts;
     await readingAlerts;
     await cleaning;
+    await readingBilling;
     await exporting;
     await scheduling;
     await looking;
