@@ -90,7 +90,7 @@ export const ManifestSchema = z
 export type PackageManifest = z.output<typeof ManifestSchema>;
 
 /** Why a path of the manifest is refused before looking at the disk. */
-function pathProblem(path: string, folder = "del paquete"): string | undefined {
+export function pathProblem(path: string, folder = "del paquete"): string | undefined {
   if (isAbsolute(path) || win32.isAbsolute(path) || /^[a-z]:/i.test(path)) return `la ruta "${path}" tiene que ser relativa a la carpeta ${folder}`;
   if (path.split(/[\\/]/).includes("..")) return `la ruta "${path}" no puede salir de la carpeta ${folder} con ".."`;
   return undefined;

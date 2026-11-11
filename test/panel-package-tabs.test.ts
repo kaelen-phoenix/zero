@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { packageDataDir, factoryConfig } from "../src/packages.js";
-import { safeUrl } from "../src/package-tabs.js";
+import { downloadName, readTabData, safeUrl } from "../src/package-tabs.js";
 import { loginPage } from "../src/panel/html.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
@@ -199,6 +199,74 @@ describe("a package's tab page", () => {
     const p = await panel({ data: { items } });
     const r = await fetch(p.base + TAB, { method: "POST", headers: { cookie: p.cookie, origin: p.base, "content-type": "application/x-www-form-urlencoded" }, body: "categoria=a", redirect: "manual" });
     expect(r.status).toBe(404);
+  });
+});
+
+describe("a package tab's downloads", () => {
+  const FILE = `${TAB}/files/out/a%20b.zip`;
+  async function withFile(extra: unknown[] = []) {
+    const p = await panel({ data: { items: [{ title: "Entrega", file: "out/a b.zip" }, { title: "Falta", file: "out/no.zip" }, ...extra] } });
+    mkdirSync(join(p.data, "out"), { recursive: true });
+    writeFileSync(join(p.data, "out", "a b.zip"), "PK-bytes");
+    return p;
+  }
+
+  it("links a listed file that is there, and not one that is missing", async () => {
+    const html = await (await withFile()).text(TAB);
+    expect(html).toContain(`<a href="${FILE}" download>Descargar</a>`);
+    expect(html.match(/Descargar/g)).toHaveLength(1);
+    expect(html).toContain("Falta");
+  });
+
+  it("serves a listed file as an attachment", async () => {
+    const r = await (await withFile()).get(FILE);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("application/octet-stream");
+    expect(r.headers.get("content-disposition")).toBe(`attachment; filename="a_b.zip"`);
+    expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(r.headers.get("content-length")).toBe("8");
+    expect(await r.text()).toBe("PK-bytes");
+  });
+
+  it("answers 404 for a file no item lists, a missing one or another tab's", async () => {
+    const p = await withFile();
+    writeFileSync(join(p.data, "out", "otro.zip"), "x");
+    for (const path of [`${TAB}/files/out/otro.zip`, `${TAB}/files/out/no.zip`, `${TAB}/files/items.json`, `/packages/hello/otra/files/out/a%20b.zip`, `${TAB}/files/out/%E0%A4%A.zip`, `${TAB}/files/..%2Fitems.json`])
+      expect((await p.get(path)).status).toBe(404);
+  });
+
+  it("asks for the session", async () => {
+    const p = await withFile();
+    const r = await p.get(FILE, {});
+    expect(r.status).toBe(401);
+    expect(await r.text()).not.toContain("PK-bytes");
+  });
+
+  it("does not follow a link out of the data folder", async (t) => {
+    const p = await panel({ data: { items: [{ title: "Archivo", file: "x.zip" }, { title: "Carpeta", file: "sub/y.zip" }] } });
+    const outside = tempDir();
+    writeFileSync(join(outside, "x.zip"), "secreto");
+    writeFileSync(join(outside, "y.zip"), "secreto");
+    try {
+      symlinkSync(join(outside, "x.zip"), join(p.data, "x.zip"));
+      symlinkSync(outside, join(p.data, "sub"), "junction");
+    } catch {
+      return t.skip();
+    }
+    for (const path of [`${TAB}/files/x.zip`, `${TAB}/files/sub/y.zip`]) expect((await p.get(path)).status).toBe(404);
+    expect(await p.text(TAB)).not.toContain("Descargar");
+  });
+
+  it.each(["../x.zip", "out/../../x.zip", "/etc/x.zip", "C:/x.zip", "c:x.zip", "\\\\server\\x.zip", "..\\x.zip", ""])("makes the data invalid for the file %j", (file) => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "items.json"), JSON.stringify({ items: [{ title: "Uno", file }] }));
+    expect(readTabData(dir, { data: "items.json" }).state).toBe("invalid");
+  });
+
+  it("names the download after the file's base name, safely", () => {
+    expect(downloadName("out/a b.zip")).toBe("a_b.zip");
+    expect(downloadName('x/"; evil.zip')).toBe("___evil.zip");
+    expect(downloadName("..")).toBe("descarga");
   });
 });
 

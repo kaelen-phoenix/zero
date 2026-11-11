@@ -1,10 +1,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { log } from "../log.js";
+import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
 import { sessionFor } from "./key.js";
@@ -117,6 +119,44 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     // The tab being shown is marked in the menu by its address, which only the request knows.
     const shown = (res.req.url ?? "").split(/[?#]/)[0];
     res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx), shown)) : html);
+  };
+
+  /** Hands out a file a package tab lists, as an attachment; false (nothing sent) for anything else. */
+  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string): boolean => {
+    let file: string;
+    try {
+      file = encoded.split("/").map(decodeURIComponent).join("/");
+    } catch {
+      return false;
+    }
+    const real = packageTabFile(ctx, pkg, tab, file);
+    if (!real) return false;
+    let fd: number;
+    try {
+      fd = openSync(real, "r");
+    } catch {
+      return false;
+    }
+    let size: number;
+    try {
+      // Judged again on what was opened, in case the file changed after the check.
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_DOWNLOAD_BYTES) throw new Error("not a file to hand out");
+      size = stat.size;
+    } catch {
+      closeSync(fd);
+      return false;
+    }
+    res.writeHead(200, {
+      ...headers(nonce),
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${downloadName(file)}"`,
+      "Content-Length": String(size),
+    });
+    createReadStream("", { fd, start: 0, end: Math.max(size - 1, 0) })
+      .on("error", () => res.destroy())
+      .pipe(res);
+    return true;
   };
 
   // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
@@ -256,6 +296,8 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         const view = packageTabView(ctx, tab[1]!, tab[2]!, url.searchParams.get("categoria") || undefined);
         if (view) return send(res, 200, packageTabPage(view, nonce), nonce);
       }
+      const tabDownload = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)\/files\/(.+)$/.exec(path);
+      if (tabDownload && sendTabFile(res, tabDownload[1]!, tabDownload[2]!, tabDownload[3]!, nonce)) return;
       return send(res, 404, page("No existe", `<div class="card">Esa página no existe. <a href="/">Volver</a></div>`, { nonce }), nonce);
     }
 

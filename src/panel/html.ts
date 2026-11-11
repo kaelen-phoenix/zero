@@ -218,7 +218,7 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
-/** A package's read-only tab: a third party's data, so every text is escaped and only http(s) links get an href. */
+/** A package's read-only tab: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
 export function packageTabPage(view: PackageTabView, nonce: string): string {
   const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
   const filter = view.categories.length
@@ -228,7 +228,8 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
     const href = safeUrl(i.url);
     const title = href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(i.title)}</a>` : esc(i.title);
     const meta = [i.category, i.date].filter(Boolean).map(esc).join(" · ");
-    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}</li>`;
+    const download = i.download ? `<br><a href="${esc(i.download)}" download>Descargar</a>` : "";
+    return `<li><b>${title}</b>${meta ? `<br><span class="muted">${meta}</span>` : ""}${i.description ? `<br>${esc(i.description)}` : ""}${download}</li>`;
   };
   const body =
     view.state === "missing"

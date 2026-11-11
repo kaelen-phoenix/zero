@@ -19,7 +19,7 @@ import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
-import { readTabData, type TabData, type TabItem } from "./package-tabs.js";
+import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
@@ -1752,7 +1752,8 @@ export interface PackageTabView extends PackageTabLink {
   categories: string[];
   /** The chosen category; absent: all of them. */
   category?: string;
-  items: TabItem[];
+  /** `download`: the panel's address for the item's file, only when that file is there to hand out. */
+  items: (TabItem & { download?: string })[];
 }
 
 /** A package tab's data, read only through its schema; undefined when the package did not load or does not declare it. */
@@ -1760,18 +1761,29 @@ export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, ca
   const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
   const t = p?.tabs.find((x) => x.name === tab);
   if (!p || !t) return undefined;
-  const data = readTabData(packageDataDir(ctx.home, p.name), t);
+  const dir = packageDataDir(ctx.home, p.name);
+  const data = readTabData(dir, t);
+  const href = `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}`;
+  const download = (file: string) => `${href}/files/${file.split("/").map(encodeURIComponent).join("/")}`;
+  const items = (category ? data.items.filter((i) => i.category === category) : data.items).map((i) => (i.file && dataFile(dir, i.file) ? { ...i, download: download(i.file) } : i));
   const categories = t.categories ?? [...new Set(data.items.flatMap((i) => (i.category ? [i.category] : [])))];
   return {
     package: p.name,
     name: t.name,
     title: t.title,
-    href: `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}`,
+    href,
     state: data.state,
     categories,
     ...(category && { category }),
-    items: category ? data.items.filter((i) => i.category === category) : data.items,
+    items,
   };
+}
+
+/** The real path of a file a package tab offers, only when the tab's current data lists exactly that `file` and it stays a regular file inside the package's data folder. */
+export function packageTabFile(ctx: FactoryContext, pkg: string, tab: string, file: string): string | undefined {
+  const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
+  const t = p?.tabs.find((x) => x.name === tab);
+  return p && t ? tabFile(packageDataDir(ctx.home, p.name), t, file) : undefined;
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
