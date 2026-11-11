@@ -418,6 +418,20 @@ describe("zero, CI and quality tools", () => {
     expect(esCi).toContain("ningún check");
   });
 
+  it("explains merging on request and the billing reruns next to the auto-merge bullet of both", () => {
+    for (const [text, part, start, billing] of [
+      [en, enCi, "- **It merges only when GitHub says so.**", "billing"],
+      [es, esCi, "- **Solo funde cuando GitHub lo dice.**", "facturación"],
+    ] as const) {
+      const lines = part.split("\n");
+      const at = lines.findIndex((l) => l.startsWith(start));
+      expect(at).toBeGreaterThan(-1);
+      const next = lines.slice(at + 1, at + 3).join("\n");
+      for (const word of ["zero fusionar", "zero_merge", "Fundir", billing, "rerun --failed"]) expect(next, word).toContain(word);
+      expect(blocks(text).some((b) => b.info === "sh" && b.body.includes("zero fusionar <job | url>"))).toBe(true);
+    }
+  });
+
   it("recommends CI and static analysis", () => {
     expect(enCi).toContain("Recommendation");
     expect(enCi).toContain("static analysis");
