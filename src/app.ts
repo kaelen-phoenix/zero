@@ -20,7 +20,7 @@ import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageData
 import { readTabData, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
-import { pendingCleanups } from "./line/cleanup.js";
+import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
@@ -277,6 +277,35 @@ export function setPriority(ctx: FactoryContext, id: string, level: string): Job
   const job = getJob(ctx, id);
   if (FINAL_STATUSES.includes(job.status)) throw new Error(`El trabajo ${id} ya terminó: no se le puede cambiar la prioridad.`);
   return ctx.store.updateJob(id, { priority });
+}
+
+/** What `retryJob` did: a failed job back in the queue, or a pull request in conflict left for the merges pass to take back. */
+export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
+
+/**
+ * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
+ * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict gets its attempts reset
+ * and its MergeState's `resolving` and `backoff` dropped, so the merges pass takes it back. Anything else is refused.
+ */
+export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
+  const job = getJob(ctx, id);
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line) throw new Error(`La línea ${job.line} del trabajo ${id} ya no está configurada.`);
+  if (ctx.store.getKv(cleanupKey(job.id))) throw new Error(`La copia de trabajo de ${id} todavía no se pudo borrar: reintentalo cuando se limpie.`);
+  if (job.status === "failed") {
+    if (!job.spec) throw new Error(`El trabajo ${id} falló sin especificación: pedilo de nuevo en lugar de reintentarlo.`);
+    return { kind: "queued", job: ctx.store.updateJob(id, { status: "queued", attempt: 0, feedback: null, finishedAt: null, stopRequested: false }) };
+  }
+  if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
+    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving)) {
+      const { resolving: _resolving, backoff: _backoff, ...rest } = state;
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
+      return { kind: "pull-request", job: ctx.store.updateJob(id, { attempt: 0 }) };
+    }
+  }
+  throw new Error(`El trabajo ${id} está ${job.status}: solo se reintenta un trabajo fallido o un pull request en conflicto.`);
 }
 
 export async function answer(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<Job> {

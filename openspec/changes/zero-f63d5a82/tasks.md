@@ -26,10 +26,10 @@
 
 ## 4. Etapa 4: Reintento desde el checkpoint
 
-- [ ] 4.1 app.ts: `retryJob(ctx, id)` según el requisito (fallido con spec: `queued`, attempt 0, feedback null, finishedAt null, stopRequested false, mismo checkpoint y etapas; entregado con PR `autoMerge` bloqueado en conflicto: attempt 0 y MergeState sin `resolving` ni `backoff`, guardando el resto; otros casos: error en español). Si hay limpieza pendiente (`cleanupKey`), rechazar.
-- [ ] 4.2 cli.ts: comando `zero reintentar <trabajo>` que llama `retryJob` e imprime el resultado en español.
-- [ ] 4.3 unjam.ts: para causas `retry` en líneas build/auto y dentro del tope diario, llamar `retryJob` sobre cada trabajo de sus trabas, una vez en la vida de cada uno (kv `unjam:retried:<job>`), registrando errores sin cortar la pasada. Con `propose`, completar el qué hacer de la causa con `zero reintentar <id>`.
-- [ ] 4.4 Tests: fallido vuelve a la cola desde su checkpoint, PR en conflicto queda listo para `takeBack` (y la pasada de fusión lo devuelve a la cola con el `fakeGitHub` de los tests de automerge), rechazo sin spec, una sola vez por trabajo y nada en propose.
+- [x] 4.1 app.ts: `retryJob(ctx, id)` según el requisito (fallido con spec: `queued`, attempt 0, feedback null, finishedAt null, stopRequested false, mismo checkpoint y etapas; entregado con PR `autoMerge` bloqueado en conflicto: attempt 0 y MergeState sin `resolving` ni `backoff`, guardando el resto; otros casos: error en español). Si hay limpieza pendiente (`cleanupKey`), rechazar.
+- [x] 4.2 cli.ts: comando `zero reintentar <trabajo>` que llama `retryJob` e imprime el resultado en español.
+- [x] 4.3 unjam.ts: para causas `retry` en líneas build/auto y dentro del tope diario, llamar `retryJob` sobre cada trabajo de sus trabas, una vez en la vida de cada uno (kv `unjam:retried:<job>`), registrando errores sin cortar la pasada. Con `propose`, completar el qué hacer de la causa con `zero reintentar <id>`.
+- [x] 4.4 Tests: fallido vuelve a la cola desde su checkpoint, PR en conflicto queda listo para `takeBack` (y la pasada de fusión lo devuelve a la cola con el `fakeGitHub` de los tests de automerge), rechazo sin spec, una sola vez por trabajo y nada en propose.
 
 ## 5. Etapa 5: Visibilidad: status, panel, chat, resumen, informe y documentación
 

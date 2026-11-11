@@ -1,15 +1,16 @@
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_ACCESS, agentName, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, approveProposal } from "../src/app.js";
+import { ANDON_KEY, approveProposal, retryJob } from "../src/app.js";
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
 import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { scoutSpent } from "../src/line/scout.js";
-import { collectJams, readDiagnosis, unjamLine, unjamPass } from "../src/line/unjam.js";
+import { collectJams, readDiagnosis, unjamLine, unjamPass, unjamRetriedKey } from "../src/line/unjam.js";
+import { cleanupKey } from "../src/line/cleanup.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
-import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, fakeAgents, gitRepo, testFactory, validSpec } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -364,5 +365,76 @@ describe("fix jobs from unjam", () => {
     const proposal = ctx.store.createProposal({ line: "tienda", title: "Arreglar CI", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam" });
     const { job } = approveProposal(ctx, proposal.id);
     expect(job.source).toEqual({ kind: "night-shift", proposal: proposal.id, origin: "unjam" });
+  });
+});
+
+describe("retrying a job", () => {
+  const specFailed = (ctx: Ctx, finishedAt = at(2, 0, 28)) => {
+    const job = failedJob(ctx, "verify falló", finishedAt);
+    return ctx.store.updateJob(job.id, { spec: validSpec(), checkpoint: "spec", stagesDone: 1 });
+  };
+
+  it("puts a failed job with a spec back in the queue from its checkpoint", () => {
+    const { ctx } = factory();
+    const job = specFailed(ctx);
+    expect(retryJob(ctx, job.id).kind).toBe("queued");
+    const after = ctx.store.getJob(job.id)!;
+    expect(after).toMatchObject({ status: "queued", attempt: 0, checkpoint: "spec", stagesDone: 1, stopRequested: false });
+    expect(after.finishedAt).toBeUndefined();
+    expect(after.feedback).toBeUndefined();
+  });
+
+  it("refuses a failed job without a spec, other statuses and a pending cleanup, changing nothing", () => {
+    const { ctx } = factory();
+    const noSpec = failedJob(ctx);
+    expect(() => retryJob(ctx, noSpec.id)).toThrow(/sin especificación/);
+    expect(ctx.store.getJob(noSpec.id)).toEqual(noSpec);
+
+    const stopped = ctx.store.createJob({ line: "tienda", kind: "request", request: "x", budgetUsd: 1 });
+    ctx.store.updateJob(stopped.id, { status: "stopped" });
+    expect(() => retryJob(ctx, stopped.id)).toThrow(/solo se reintenta/);
+
+    const pr = blockedPr(ctx, 3);
+    expect(() => retryJob(ctx, pr.id)).toThrow(/solo se reintenta/);
+
+    const busy = specFailed(ctx);
+    ctx.store.setKv(cleanupKey(busy.id), JSON.stringify({ repo: "r", path: "p" }));
+    expect(() => retryJob(ctx, busy.id)).toThrow(/no se pudo borrar/);
+    expect(ctx.store.getJob(busy.id)!.status).toBe("failed");
+  });
+
+  const retry = (jams: string[]) => cause({ title: "Test intermitente del panel", kind: "flaky-test", action: "retry", todo: null, jams });
+
+  it("unjam retries each job once in its life on a build line", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" } });
+    const job = specFailed(ctx);
+    const line = ctx.config.lines[0]!;
+    await unjamLine(ctx, line, collectJams(ctx, line, at(3)), diagnosing([retry([`job:${job.id}`])]).runner, at(3));
+    expect(ctx.store.getJob(job.id)!.status).toBe("queued");
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.job).toBe(job.id);
+    expect(ctx.store.getKv(unjamRetriedKey(job.id))).toBe(at(3).toISOString());
+
+    ctx.store.updateJob(job.id, { status: "failed", attempt: 3, finishedAt: at(4).toISOString() });
+    await unjamLine(ctx, line, collectJams(ctx, line, at(3, 0, 30)), diagnosing([retry([`job:${job.id}`])]).runner, at(3, 0, 30));
+    expect(ctx.store.getJob(job.id)!).toMatchObject({ status: "failed", attempt: 3 });
+  });
+
+  it("counts retries in the daily cap", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" }, unjam: { maxJobsPerDay: 1 } });
+    const a = specFailed(ctx);
+    const b = specFailed(ctx);
+    const line = ctx.config.lines[0]!;
+    await unjamLine(ctx, line, collectJams(ctx, line, at(3)), diagnosing([retry([`job:${a.id}`, `job:${b.id}`])]).runner, at(3));
+    expect([a, b].map((j) => ctx.store.getJob(j.id)!.status).sort()).toEqual(["failed", "queued"]);
+  });
+
+  it("on a propose line retries nothing and says how", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" } });
+    const job = specFailed(ctx);
+    const line = ctx.config.lines[0]!;
+    await unjamLine(ctx, line, collectJams(ctx, line, at(3)), diagnosing([retry([`job:${job.id}`])]).runner, at(3));
+    expect(ctx.store.getJob(job.id)!.status).toBe("failed");
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.todo).toContain(`zero reintentar ${job.id}`);
+    expect(ctx.store.getKv(unjamRetriedKey(job.id))).toBeUndefined();
   });
 });

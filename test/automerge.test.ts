@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefing, factoryStatus } from "../src/app.js";
+import { briefing, factoryStatus, retryJob } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { formatStatus } from "../src/format.js";
 import { GithubHalted } from "../src/github-quota.js";
@@ -343,6 +343,25 @@ describe("a pull request in conflict", () => {
     await noSpec.pass();
     expect(noSpec.current().status).toBe("delivered");
     expect(noSpec.comments()).toHaveLength(1);
+  });
+
+  it("goes back to the queue after zero reintentar, once the head was tried and the attempts ran out", async () => {
+    const { head, ctx, job, current, state, pass } = await conflicted();
+    await pass();
+    await finalizeJob(ctx, current(), "failed", { reason: "se agotaron los intentos" });
+    ctx.store.updateJob(job.id, { attempt: 3 });
+    await pass();
+    expect(state()).toMatchObject({ status: "blocked", resolving: head, backoff: { mergeable: false } });
+    expect(current().status).toBe("delivered");
+
+    expect(retryJob(ctx, job.id)).toMatchObject({ kind: "pull-request", job: { status: "delivered", attempt: 0 } });
+    expect(state().resolving).toBeUndefined();
+    expect(state().backoff).toBeUndefined();
+    expect(state().status).toBe("blocked");
+
+    await pass();
+    expect(current()).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate" });
+    expect(state()).toMatchObject({ status: "waiting", resolving: head });
   });
 
   it("does not spend the head when the base cannot be fetched, and tries again later", async () => {

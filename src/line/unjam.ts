@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
-import { ANDON_KEY, currentBox, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { ANDON_KEY, currentBox, retryJob, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
-import type { LineConfig } from "../config.js";
+import { lineAutonomy, type LineConfig } from "../config.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
@@ -336,6 +336,36 @@ export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[]
   }
 }
 
+/**
+ * The jobs of each `retry` cause go back through `retryJob`, each at most once in its life, on lines at `build` or
+ * `auto` and within the unjam station's daily cap. On a line at `propose` nothing is retried: the cause tells the
+ * person in charge how to do it.
+ */
+export function retryCauses(ctx: FactoryContext, line: LineConfig, causes: Cause[], jams: Jam[], now: Date): void {
+  const byId = new Map(jams.map((j) => [j.id, j]));
+  const autonomous = lineAutonomy(ctx.config, line) !== "propose";
+  for (const cause of causes) {
+    if (cause.action !== "retry") continue;
+    const jobs = [...new Set(cause.jams.map((id) => byId.get(id)).filter((j): j is Jam => !!j?.job && (j.kind === "failed-job" || j.kind === "pull-request")).map((j) => j.job!))];
+    if (!autonomous) {
+      if (jobs.length) cause.todo = [cause.todo, jobs.map((id) => `zero reintentar ${id}`).join(", ")].filter(Boolean).join(" ");
+      continue;
+    }
+    for (const id of jobs) {
+      if (ctx.store.getKv(unjamRetriedKey(id))) continue;
+      if (unjamJobsLeft(ctx, now) <= 0) return;
+      try {
+        retryJob(ctx, id);
+        ctx.store.setKv(unjamRetriedKey(id), now.toISOString());
+        cause.job ??= id;
+        log.info("unjam retried a job", { line: line.name, job: id, title: cause.title });
+      } catch (err) {
+        log.warn("unjam could not retry a job", { line: line.name, job: id, error: String(err) });
+      }
+    }
+  }
+}
+
 /** One diagnosis of one line: asks the agent, then keeps only what zero accepts as the line's diagnosis. */
 export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam[], runAgent: AgentRunner, now: Date, opts: { maxBudgetUsd?: number; signal?: AbortSignal } = {}): Promise<Cause[] | undefined> {
   const choice = pickEngine(ctx.store, ctx.config, "unjam", now);
@@ -356,6 +386,7 @@ export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam
   }
   const causes = acceptCauses(run.output.causes, jams, line);
   openFixes(ctx, line, causes, now);
+  retryCauses(ctx, line, causes, jams, now);
   const diagnosis: Diagnosis = { at: now.toISOString(), causes };
   ctx.store.setKv(unjamKey(line.name), JSON.stringify(diagnosis));
   log.info("unjam stored a diagnosis", { line: line.name, jams: jams.length, causes: causes.length, dropped: run.output.causes.length - causes.length });
