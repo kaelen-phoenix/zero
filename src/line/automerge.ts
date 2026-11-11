@@ -42,6 +42,10 @@ export interface Check {
   run?: number;
   /** When it finished, when GitHub says. */
   at?: string;
+  /** When GitHub started it, only once it is in progress or completed: a run GitHub refused never started. */
+  started?: string;
+  /** Failed because GitHub refused to start it over the account's payments or spending limit (see `billingRefusal`). */
+  billing?: true;
 }
 
 /** The slice of GitHub automatic merging needs; tests use a fake. */
@@ -75,8 +79,26 @@ export function githubMerges(token: string, repository: string, client?: Octokit
     async checks(sha) {
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
       const statuses = (await gh.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses;
+      const refused = async (r: (typeof runs)[number]) => {
+        if (r.status !== "completed" || PASSED.has(r.conclusion ?? "")) return false;
+        if ([r.output?.title, r.output?.summary, r.output?.text].some((t) => billingRefusal(t))) return true;
+        if (!r.output?.annotations_count) return false;
+        const notes = await gh.paginate(gh.checks.listAnnotations, { owner, repo, check_run_id: r.id, per_page: 100 });
+        return notes.some((a) => billingRefusal(a.message) || billingRefusal(a.title));
+      };
+      const read = await Promise.all(
+        runs.map(async (r) => ({
+          name: r.name,
+          done: r.status === "completed",
+          ok: PASSED.has(r.conclusion ?? ""),
+          ...actionsRun(r.details_url),
+          ...(r.completed_at && { at: r.completed_at }),
+          ...((r.status === "in_progress" || r.status === "completed") && r.started_at && { started: r.started_at }),
+          ...((await refused(r)) && { billing: true as const }),
+        })),
+      );
       return [
-        ...runs.map((r) => ({ name: r.name, done: r.status === "completed", ok: PASSED.has(r.conclusion ?? ""), ...actionsRun(r.details_url), ...(r.completed_at && { at: r.completed_at }) })),
+        ...read,
         ...statuses.map((s) => ({ name: s.context, done: s.state !== "pending", ok: s.state === "success", ...(s.updated_at && { at: s.updated_at }) })),
       ];
     },
@@ -99,6 +121,11 @@ export function githubMerges(token: string, repository: string, client?: Octokit
       await gh.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: run });
     },
   };
+}
+
+/** Whether a text is GitHub refusing to start a job over the account's payments or spending limit. */
+export function billingRefusal(text: string | null | undefined): boolean {
+  return /recent account payments have failed|your spending limit needs to be increased/i.test(text ?? "");
 }
 
 /** The GitHub Actions run of a check, from the address of its details (`…/actions/runs/<run>/job/<job>`). */
@@ -162,6 +189,10 @@ export interface MergeState {
   resolving?: string;
   /** The `since` of the environment outage of its repository that held it (see `ChecksOutage`). */
   outage?: string;
+  /** Held because GitHub refused to start some of its checks over the account's billing (see `ChecksBilling`). */
+  billing?: true;
+  /** The runs refused over billing that the factory already ran again for it: each at most once in its life. */
+  billingRerun?: number[];
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -361,6 +392,49 @@ export function outageText(repository: string, since: string, checks: string[]):
   return `entorno caído en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())} (checks: ${checks.join(", ")})`;
 }
 
+/**
+ * GitHub refuses to start the checks of a repository's pull requests because the account's payments failed or
+ * its spending limit was reached. One record per repository, whatever the number of pull requests it holds.
+ */
+export interface ChecksBilling {
+  /** The earliest refusal. */
+  since: string;
+  /** The latest refusal: only a check started after it says GitHub lets runs start again. */
+  last: string;
+  /** The jobs whose pull requests it holds. */
+  jobs: string[];
+  /** When the checks of the base branch were last read to see whether GitHub lets runs start again. */
+  baseLookAt?: string;
+}
+
+export const checksBillingKey = (repository: string) => `checks-billing:${repository}`;
+
+export function readBilling(ctx: FactoryContext, repository: string): ChecksBilling | undefined {
+  const raw = ctx.store.getKv(checksBillingKey(repository));
+  return raw ? (JSON.parse(raw) as ChecksBilling) : undefined;
+}
+
+/** The one wording of checks GitHub does not start over billing, everywhere it is shown, in local time. */
+export function billingText(repository: string, since: string): string {
+  const d = new Date(since);
+  return `GitHub no arranca los checks en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())}: revisá los pagos o el límite de gasto de la cuenta (Billing & plans); la fábrica los vuelve a correr sola cuando GitHub deje`;
+}
+
+/** Records the billing refusal of a repository, or widens the one known, with a pull request's refused checks. */
+function recordBilling(ctx: FactoryContext, repository: string, job: string, refused: Check[], now: number): ChecksBilling {
+  const known = readBilling(ctx, repository);
+  const times = refused.map((c) => c.at ?? iso(now)).sort((x, y) => Date.parse(x) - Date.parse(y));
+  const first = times[0]!;
+  const latest = times[times.length - 1]!;
+  const record: ChecksBilling = known ?? { since: first, last: latest, jobs: [] };
+  if (Date.parse(first) < Date.parse(record.since)) record.since = first;
+  if (Date.parse(latest) > Date.parse(record.last)) record.last = latest;
+  if (!record.jobs.includes(job)) record.jobs.push(job);
+  ctx.store.setKv(checksBillingKey(repository), JSON.stringify(record));
+  if (!known) log.warn("GitHub does not start the checks of a repository over the account's billing; its pull requests wait without spending", { repository, since: record.since });
+  return record;
+}
+
 /** Records the outage of a repository, or widens the one under way, with these failures. */
 function recordOutage(ctx: FactoryContext, repository: string, failures: { check: string; at: string }[], base?: string): ChecksOutage {
   const known = readOutage(ctx, repository);
@@ -468,6 +542,8 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     ...(state.refreshing && { refreshing: state.refreshing }),
     ...(state.rerun && { rerun: state.rerun }),
     ...(state.outage && { outage: state.outage }),
+    ...(state.billing && { billing: state.billing }),
+    ...(state.billingRerun && { billingRerun: state.billingRerun }),
   });
   const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
@@ -497,6 +573,13 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     if (!state.refreshing.rerun) followRemoteTip(ctx, job);
     delete state.refreshing;
     if (!refreshedElsewhere(ctx, job, repository, now)) refreshing.delete(repository);
+  }
+  // GitHub did not start some of its checks over the account's billing: nothing the change, a comment or a rerun can fix until it lets runs start again.
+  if (decision.kind === "blocked" && decision.failed?.some((c) => c.billing)) {
+    const record = recordBilling(ctx, repository, job.id, decision.failed.filter((c) => c.billing), now);
+    const why = billingText(repository, record.since);
+    const delayMs = unchanged ? Math.min(unchanged.delayMs * 2, LAST_BACKOFF_MS) : FIRST_BACKOFF_MS;
+    return save({ status: "blocked", why, reported: state.reported, billing: true, backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs, nextChecksAt: iso(now + delayMs) } });
   }
   // Held by an outage: told nothing, nothing spent, looked at again like any blocked one.
   const held = (outage: ChecksOutage) => {

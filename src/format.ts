@@ -3,7 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
-import { outageText, type MergeOutcome } from "./line/automerge.js";
+import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
@@ -284,6 +284,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
+  for (const b of s.billing) out.push(billingLine(b));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
@@ -346,6 +347,11 @@ export function formatEgress(r: EgressReport): string {
   out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
   out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
+}
+
+/** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */
+export function billingLine(b: FactoryStatus["billing"][number]): string {
+  return `${billingText(b.repository, b.since)}${b.pulls.length ? ` · ${b.pulls.length} ${b.pulls.length === 1 ? "pull request espera" : "pull requests esperan"}` : ""}`;
 }
 
 /** One line per environment outage: «Entorno caído en <repo> desde HH:MM (checks: a, b) · N pull requests esperan». */

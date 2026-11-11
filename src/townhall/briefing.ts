@@ -1,6 +1,6 @@
-import type { FactoryStatus, OnDemandRun, Outage } from "../app.js";
+import type { BillingHold, FactoryStatus, OnDemandRun, Outage } from "../app.js";
 import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, jobOrigin, resetTime } from "../format.js";
-import { outageText } from "../line/automerge.js";
+import { billingText, outageText } from "../line/automerge.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
@@ -55,7 +55,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -133,6 +133,7 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     ...ofKind("blocker").map((p) => `- **Bloqueado**${ref(p)}: ${p.topic}. ${p.body}`),
     ...ofKind("proposal").map((p) => `- **Propuesta**${ref(p)}: ${p.body}`),
     ...outages.map((o) => `- **E${outageText(o.repository, o.since, o.checks).slice(1)}**: no se gasta nada en sus pull requests hasta que vuelva.`),
+    ...billing.map((b) => `- **${billingText(b.repository, b.since)}**.`),
     ...unmerged.map((m) => `- **Sin fundir**: ${m.url}: ${m.why ?? "no se puede fundir"}.`),
     ...(egress?.sites ?? [])
       .filter((s) => s.suspicious)

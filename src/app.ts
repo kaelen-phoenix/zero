@@ -25,7 +25,7 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, githubMerges, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
@@ -316,6 +316,8 @@ export interface FactoryStatus {
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   /** Environment outages under way, one per repository; the pull requests they hold are left out of `merges`. */
   outages: Outage[];
+  /** Repositories whose checks GitHub does not start over the account's billing; the pull requests they hold are left out of `merges`. */
+  billing: BillingHold[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -405,16 +407,29 @@ export interface Outage {
   pulls: string[];
 }
 
+export interface BillingHold {
+  repository: string;
+  since: string;
+  /** The pull requests it holds. */
+  pulls: string[];
+}
+
 /** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
 function mergeViews(ctx: FactoryContext) {
   const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
+  const refused = new Map(ctx.store.kvWithPrefix("checks-billing:").map(([key, raw]) => [key.slice("checks-billing:".length), JSON.parse(raw) as ChecksBilling]));
   const outages = new Map<string, Outage>();
+  const billing = new Map([...refused].map(([repository, b]) => [repository, { repository, since: b.since, pulls: [] as string[] } satisfies BillingHold]));
   const merges = watchedJobs(ctx).map((job) => {
     const raw = ctx.store.getKv(mergeKey(job.id));
     const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
     const url = job.delivery!.url!;
     const repository = pullRequestOf(url)?.repository;
     const outage = repository ? known.get(repository) : undefined;
+    if (repository && state.billing && refused.get(repository)?.jobs.includes(job.id)) {
+      billing.get(repository)!.pulls.push(url);
+      return { job: job.id, url, status: "blocked" as const, why: state.why, heldBy: repository };
+    }
     const heldBy = outage && state.status === "blocked" && state.outage === outage.since ? repository : undefined;
     if (heldBy) {
       const o = outages.get(heldBy) ?? { repository: heldBy, since: outage!.since, checks: outage!.checks, pulls: [] };
@@ -425,14 +440,14 @@ function mergeViews(ctx: FactoryContext) {
   });
   // An outage whose pull requests are not marked yet still says so; it is forgotten once none is left.
   for (const [repository, o] of known) if (!outages.has(repository)) outages.set(repository, { repository, since: o.since, checks: o.checks, pulls: [] });
-  return { merges, outages: [...outages.values()] };
+  return { merges, outages: [...outages.values()], billing: [...billing.values()] };
 }
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
   const box = currentBox(ctx);
-  const { merges, outages } = mergeViews(ctx);
+  const { merges, outages, billing } = mergeViews(ctx);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -444,6 +459,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     securityAlerts: securityAlerts(ctx),
     merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
     outages,
+    billing,
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -558,7 +574,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
