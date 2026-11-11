@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -97,6 +97,7 @@ Fábrica:
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
+  zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
 
@@ -456,6 +457,11 @@ Informe: ${r.report}`);
           return 0;
         }
         console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
+        return 0;
+      }
+      case "autostart": {
+        if (rest[0] !== "on" && rest[0] !== "off") throw new Error("Indicá on u off: zero autostart on|off");
+        console.log((await setAutostart(ctx, rest[0] === "on")).message);
         return 0;
       }
       case "trace":

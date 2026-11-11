@@ -5,6 +5,7 @@ import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, LAUNCH_KEY, readGate, SH
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
@@ -21,6 +22,7 @@ import { billingPass } from "./billing/pass.js";
 import { billingReaders } from "./billing/readers.js";
 import { lineServices, type BillingReader, type BillingService } from "./billing/records.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
+import type { FactoryHome } from "./home.js";
 import { factoryConfig } from "./packages.js";
 import { effectivePriority, priorityRank } from "./priority.js";
 import { beingGuarded } from "./readonly-guard.js";
@@ -80,6 +82,8 @@ export interface DaemonOptions {
   packageUpdates?: boolean;
   /** Kills the processes an interrupted job left in its work copy; defaults to the real one. */
   killLeftovers?: (folder: string) => number;
+  /** Makes the login entry match the file's `autostart`; tests inject a fake. Without it, `once` runs leave the entry alone. */
+  autostart?: (home: FactoryHome, enabled: boolean) => AutostartResult;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -155,6 +159,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   store.deleteKv(SHUTDOWN_KEY);
   store.deleteKv(STOPPED_KEY);
   store.deleteKv(LAUNCH_KEY);
+
+  // The login entry follows the file: at start, and whenever a reloaded definition changes `autostart`. A failure is only logged.
+  const autostart = opts.autostart ?? (opts.once ? undefined : syncAutostart);
+  let autostartSynced: boolean | undefined;
+  const followAutostart = () => {
+    if (!autostart || autostartSynced === ctx.config.autostart) return;
+    autostartSynced = ctx.config.autostart;
+    try {
+      const result = autostart(ctx.home, ctx.config.autostart);
+      if (result.status === "created" || result.status === "removed") log.info("login autostart entry updated", { status: result.status, path: result.path });
+    } catch (err) {
+      log.warn("cannot update the login autostart entry", { error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  followAutostart();
 
   for (const job of store.listJobs({ status: ["running"] })) {
     log.info("resuming interrupted job", { job: job.id, checkpoint: job.checkpoint, station: job.station });
@@ -422,6 +441,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       }
       try {
         ctx.config = await factoryConfig(ctx.home);
+        followAutostart();
       } catch (err) {
         log.error("cannot load factory definition; not starting new jobs", { error: String(err) });
         await sleep(pollMs);

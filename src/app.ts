@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
+import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
@@ -1443,6 +1444,12 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
   return mode === "allowlist"
     ? `Modo allowlist: la caja solo sale a tus sitios permitidos (${ctx.config.egress.allow.join(", ") || "ninguno todavía"}) y a los de tus motores.`
     : "Modo blocklist: la caja sale a todo salvo lo sospechoso y lo que bloquees.";
+}
+
+/** Writes `autostart` to the factory file and makes the login entry match it. Terminal only: no chat tool calls it. */
+export async function setAutostart(ctx: FactoryContext, enabled: boolean, deps?: AutostartDeps): Promise<AutostartResult> {
+  ctx.config = await editConfig(ctx, (doc) => doc.set("autostart", enabled));
+  return syncAutostart(ctx.home, enabled, deps);
 }
 
 export function lines(config: FactoryConfig) {

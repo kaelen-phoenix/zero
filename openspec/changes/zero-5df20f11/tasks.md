@@ -12,11 +12,11 @@
 
 ## 2. Etapa 2: Login autostart registration
 
-- [ ] 2.1 config.ts: `autostart` boolean, default false
-- [ ] 2.2 src/autostart.ts: per-platform entries and an idempotent syncAutostart with injected fs, runner, platform and env; no-op in a container
-- [ ] 2.3 app.ts setAutostart and the CLI command `zero autostart on|off` (no MCP tool)
-- [ ] 2.4 daemon.ts: syncAutostart at start and when the config value changes, with failures only logged
-- [ ] 2.5 test/autostart.test.ts and config tests
+- [x] 2.1 config.ts: `autostart` boolean, default false
+- [x] 2.2 src/autostart.ts: per-platform entries and an idempotent syncAutostart with injected fs, runner, platform and env; no-op in a container
+- [x] 2.3 app.ts setAutostart and the CLI command `zero autostart on|off` (no MCP tool)
+- [x] 2.4 daemon.ts: syncAutostart at start and when the config value changes, with failures only logged
+- [x] 2.5 test/autostart.test.ts and config tests
 
 ## 3. Etapa 3: Setup wizard and documentation
 
