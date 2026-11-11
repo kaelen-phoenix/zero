@@ -1,10 +1,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
+import { formatMerge } from "../format.js";
+import { mergeKey, type MergeState } from "../line/automerge.js";
 import { log } from "../log.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -76,6 +78,8 @@ export interface PanelOptions {
   watchMs?: number;
   /** Longest silence on a line stream before a comment keeps proxies and tunnels from cutting it. */
   heartbeatMs?: number;
+  /** GitHub adapters for merging on request; the daemon passes its metered real ones. */
+  merges?: MergeApiFactory;
 }
 
 /** One open `/line/events` stream: the session it was opened with and the last fragment it got. */
@@ -201,7 +205,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, requestsPage(view, nonce, flash), nonce);
       }
       const job = /^\/job\/([0-9a-f]{8})$/.exec(path)?.[1];
-      if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine)), nonce);
+      if (job) {
+        const merge = JSON.parse(ctx.store.getKv(mergeKey(job)) ?? "{}") as Partial<MergeState>;
+        return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine), merge.status), nonce);
+      }
       if (path === "/egress") {
         const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90);
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
@@ -286,9 +293,15 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       else await stop(ctx);
       return back(res, "/", form.get("state") === "off" ? "Fábrica reanudada." : "Fábrica detenida: nada nuevo empieza hasta que la reanudes.");
     }
-    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
+    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop|merge)$/.exec(path);
     if (jobAction) {
       const [, id, action] = jobAction as unknown as [string, string, string];
+      if (action === "merge") {
+        // Merging cannot be undone, so the first press only asks for confirmation.
+        if (form.get("confirm") !== "1") return send(res, 200, confirmMergePage(getJob(ctx, id), nonce), nonce);
+        const r = await mergePullRequest(ctx, id, { via: "panel", ...(opts.merges && { api: opts.merges }) });
+        return back(res, `/job/${id}`, formatMerge(r));
+      }
       if (action === "stop") {
         await stop(ctx, id);
         return back(res, `/job/${id}`, "Deteniendo el trabajo.");

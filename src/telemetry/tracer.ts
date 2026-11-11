@@ -103,6 +103,7 @@ function describe(s: SpanRow): string {
   if (a["zero.skills"]) parts.push(`skills: ${a["zero.skills"]}`);
   if (a["zero.skills.missing"]) parts.push(`skills faltantes: ${a["zero.skills.missing"]}`);
   if (a["process.command_line"]) parts.push(`\`${a["process.command_line"]}\` → ${a["process.exit.code"]}`);
+  if (a["zero.merge.via"]) parts.push(`fundido a pedido (${a["zero.merge.via"]})${a["zero.merge.commit"] ? ` en ${String(a["zero.merge.commit"]).slice(0, 12)}` : ""}`);
   if (a["zero.outcome"]) parts.push(String(a["zero.outcome"]));
   if (a["error.message"]) parts.push(`error: ${a["error.message"]}`);
   return parts.join(" · ");

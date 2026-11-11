@@ -11,7 +11,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
@@ -26,7 +26,9 @@ import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type Ledg
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, mergeKey, pullRequestOf, watchedJobs, type ChecksOutage, type MergeState } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { githubToken } from "./line/integrate.js";
+import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
@@ -316,6 +318,8 @@ export interface FactoryStatus {
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
   /** Environment outages under way, one per repository; the pull requests they hold are left out of `merges`. */
   outages: Outage[];
+  /** Repositories whose checks GitHub does not start over the account's billing; the pull requests they hold are left out of `merges`. */
+  billing: BillingHold[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -407,16 +411,29 @@ export interface Outage {
   pulls: string[];
 }
 
+export interface BillingHold {
+  repository: string;
+  since: string;
+  /** The pull requests it holds. */
+  pulls: string[];
+}
+
 /** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
 function mergeViews(ctx: FactoryContext) {
   const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
+  const refused = new Map(ctx.store.kvWithPrefix("checks-billing:").map(([key, raw]) => [key.slice("checks-billing:".length), JSON.parse(raw) as ChecksBilling]));
   const outages = new Map<string, Outage>();
+  const billing = new Map([...refused].map(([repository, b]) => [repository, { repository, since: b.since, pulls: [] as string[] } satisfies BillingHold]));
   const merges = watchedJobs(ctx).map((job) => {
     const raw = ctx.store.getKv(mergeKey(job.id));
     const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
     const url = job.delivery!.url!;
     const repository = pullRequestOf(url)?.repository;
     const outage = repository ? known.get(repository) : undefined;
+    if (repository && state.billing && refused.get(repository)?.jobs.includes(job.id)) {
+      billing.get(repository)!.pulls.push(url);
+      return { job: job.id, url, status: "blocked" as const, why: state.why, heldBy: repository };
+    }
     const heldBy = outage && state.status === "blocked" && state.outage === outage.since ? repository : undefined;
     if (heldBy) {
       const o = outages.get(heldBy) ?? { repository: heldBy, since: outage!.since, checks: outage!.checks, pulls: [] };
@@ -427,7 +444,7 @@ function mergeViews(ctx: FactoryContext) {
   });
   // An outage whose pull requests are not marked yet still says so; it is forgotten once none is left.
   for (const [repository, o] of known) if (!outages.has(repository)) outages.set(repository, { repository, since: o.since, checks: o.checks, pulls: [] });
-  return { merges, outages: [...outages.values()] };
+  return { merges, outages: [...outages.values()], billing: [...billing.values()] };
 }
 
 export interface SelfUpdateStatus {
@@ -453,7 +470,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
   const box = currentBox(ctx);
-  const { merges, outages } = mergeViews(ctx);
+  const { merges, outages, billing } = mergeViews(ctx);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -465,6 +482,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     securityAlerts: securityAlerts(ctx),
     merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
     outages,
+    billing,
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -581,7 +599,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, selfUpdates);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, selfUpdates);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -1066,6 +1084,46 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
     log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
   }
   return proposal;
+}
+
+/** Builds the GitHub adapter of a repository for a line, or nothing without access. */
+export type MergeApiFactory = (repository: string, line?: LineConfig) => MergeApi | undefined;
+
+/** The real signed adapter, outside the daemon's meter, like the CLI's own calls to GitHub. */
+const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
+  const token = githubToken(process.env, ctx.secrets);
+  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+  const wanted = pullRequestOf(target.trim());
+  if (!wanted) {
+    const job = getJob(ctx, target.trim());
+    if (job.status !== "delivered") throw new Error(`El trabajo ${job.id} no está entregado: no hay nada que fundir.`);
+    if (!job.delivery?.url || !pullRequestOf(job.delivery.url)) throw new Error(`El trabajo ${job.id} no se entregó como pull request de GitHub: no hay nada que fundir.`);
+    return job;
+  }
+  const same = (url: string | undefined) => {
+    const pr = url ? pullRequestOf(url) : undefined;
+    return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
+  };
+  const job = ctx.store.listJobs({ status: ["delivered"], limit: 1000 }).find((j) => same(j.delivery?.url));
+  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
+  return job;
+}
+
+/**
+ * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
+ * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ */
+export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
+  const job = deliveredPullRequest(ctx, target);
+  const url = job.delivery!.url!;
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
+  if (!gh) return { job: job.id, url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+  return mergeRequested(ctx, job, gh, opts.via);
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

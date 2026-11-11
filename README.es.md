@@ -84,12 +84,13 @@ zero approve <id>              # aprobar (o --reject --note "por qué")
 zero trace <id>                # paso a paso: estaciones, intentos, agentes, comandos, costo
 zero briefing                  # informe: producción, costo, aprendizajes, lo que te necesita
 zero informe [line] [--mes AAAA-MM] [--html]   # informe mensual por línea, para compartir con su cliente
+zero fusionar <job | url>      # funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda, con un `request` opcional), y `zero_egress` y `zero_egress_block` (salidas a internet).
+Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda, con un `request` opcional), `zero_merge` (funde un pull request que entregó la fábrica, cuando GitHub dice que está listo), y `zero_egress` y `zero_egress_block` (salidas a internet).
 
 ## Instalar con Docker
 
@@ -284,6 +285,8 @@ pedido
 
 - **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar. Cada comando tiene un tiempo límite: `verifyTimeoutMinutes` de la línea (20 por defecto), y nunca menos que el doble de lo que tardó la más lenta de sus últimas 5 corridas aprobadas en esa línea, así una suite que crece o una máquina lenta no hacen fallar trabajos cuyos tests pasan. Los comandos de setup y verify de distintos trabajos se turnan en tu máquina (`commandConcurrency`), un setup que falla se prueba una vez más en una copia nueva, un comando de verify cuya falla parece de la máquina y no del cambio (un test que superó su propio tiempo, falta de memoria, un archivo trabado, un corte de red) se corre una vez más antes de gastar un intento, y un comando cortado por su límite se mata con todo lo que había arrancado.
 - **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
+- **Fundir a pedido.** En cualquier línea, con o sin `autoMerge`, podés pedirle a la fábrica que funda un pull request que entregó: `zero fusionar <job | url>` en la terminal, `zero_merge` en el chat o el botón **Fundir** en la página del trabajo en el panel (que primero pide confirmación). Funde solo cuando GitHub dice que el pull request está listo (todos los checks bien, sin conflictos); si no, te dice por qué y no fuerza nada. Cada fusión queda en la traza del trabajo y en el townhall de la línea.
+- **Checks que GitHub no arrancó por facturación.** Cuando GitHub no arranca los jobs de un pull request porque fallaron los pagos de la cuenta o se llegó a su límite de gasto, zero no comenta, no actualiza ni lo cuenta como un entorno caído: te avisa una vez por repositorio (en `zero status`, el panel y el briefing) y, apenas GitHub vuelve a arrancar corridas en ese repositorio, vuelve a correr solo los jobs fallidos de esas corridas (`rerun --failed`), de a un pull request y como mucho una vez por corrida.
 - **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
 - **Los despliegues los sigue haciendo la plataforma** (por ejemplo Vercel o los workflows de GitHub), no zero.

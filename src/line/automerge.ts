@@ -42,6 +42,10 @@ export interface Check {
   run?: number;
   /** When it finished, when GitHub says. */
   at?: string;
+  /** When GitHub started it, only once it is in progress or completed: a run GitHub refused never started. */
+  started?: string;
+  /** Failed because GitHub refused to start it over the account's payments or spending limit (see `billingRefusal`). */
+  billing?: true;
 }
 
 /** The slice of GitHub automatic merging needs; tests use a fake. */
@@ -75,8 +79,26 @@ export function githubMerges(token: string, repository: string, client?: Octokit
     async checks(sha) {
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
       const statuses = (await gh.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses;
+      const refused = async (r: (typeof runs)[number]) => {
+        if (r.status !== "completed" || PASSED.has(r.conclusion ?? "")) return false;
+        if ([r.output?.title, r.output?.summary, r.output?.text].some((t) => billingRefusal(t))) return true;
+        if (!r.output?.annotations_count) return false;
+        const notes = await gh.paginate(gh.checks.listAnnotations, { owner, repo, check_run_id: r.id, per_page: 100 });
+        return notes.some((a) => billingRefusal(a.message) || billingRefusal(a.title));
+      };
+      const read = await Promise.all(
+        runs.map(async (r) => ({
+          name: r.name,
+          done: r.status === "completed",
+          ok: PASSED.has(r.conclusion ?? ""),
+          ...actionsRun(r.details_url),
+          ...(r.completed_at && { at: r.completed_at }),
+          ...((r.status === "in_progress" || r.status === "completed") && r.started_at && { started: r.started_at }),
+          ...((await refused(r)) && { billing: true as const }),
+        })),
+      );
       return [
-        ...runs.map((r) => ({ name: r.name, done: r.status === "completed", ok: PASSED.has(r.conclusion ?? ""), ...actionsRun(r.details_url), ...(r.completed_at && { at: r.completed_at }) })),
+        ...read,
         ...statuses.map((s) => ({ name: s.context, done: s.state !== "pending", ok: s.state === "success", ...(s.updated_at && { at: s.updated_at }) })),
       ];
     },
@@ -99,6 +121,11 @@ export function githubMerges(token: string, repository: string, client?: Octokit
       await gh.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: run });
     },
   };
+}
+
+/** Whether a text is GitHub refusing to start a job over the account's payments or spending limit. */
+export function billingRefusal(text: string | null | undefined): boolean {
+  return /recent account payments have failed|your spending limit needs to be increased/i.test(text ?? "");
 }
 
 /** The GitHub Actions run of a check, from the address of its details (`…/actions/runs/<run>/job/<job>`). */
@@ -162,6 +189,10 @@ export interface MergeState {
   resolving?: string;
   /** The `since` of the environment outage of its repository that held it (see `ChecksOutage`). */
   outage?: string;
+  /** Held because GitHub refused to start some of its checks over the account's billing (see `ChecksBilling`). */
+  billing?: true;
+  /** The runs refused over billing that the factory already ran again for it: each at most once in its life. */
+  billingRerun?: number[];
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -361,6 +392,57 @@ export function outageText(repository: string, since: string, checks: string[]):
   return `entorno caído en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())} (checks: ${checks.join(", ")})`;
 }
 
+/**
+ * GitHub refuses to start the checks of a repository's pull requests because the account's payments failed or
+ * its spending limit was reached. One record per repository, whatever the number of pull requests it holds.
+ */
+export interface ChecksBilling {
+  /** The earliest refusal. */
+  since: string;
+  /** The latest refusal: only a check started after it says GitHub lets runs start again. */
+  last: string;
+  /** The jobs whose pull requests it holds. */
+  jobs: string[];
+  /** When the checks of the base branch were last read to see whether GitHub lets runs start again. */
+  baseLookAt?: string;
+  /** When a check was seen started after the latest refusal: GitHub lets runs start again. */
+  recovered?: string;
+}
+
+export const checksBillingKey = (repository: string) => `checks-billing:${repository}`;
+
+export function readBilling(ctx: FactoryContext, repository: string): ChecksBilling | undefined {
+  const raw = ctx.store.getKv(checksBillingKey(repository));
+  return raw ? (JSON.parse(raw) as ChecksBilling) : undefined;
+}
+
+/** The one wording of checks GitHub does not start over billing, everywhere it is shown, in local time. */
+export function billingText(repository: string, since: string): string {
+  const d = new Date(since);
+  return `GitHub no arranca los checks en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())}: revisá los pagos o el límite de gasto de la cuenta (Billing & plans); la fábrica los vuelve a correr sola cuando GitHub deje`;
+}
+
+/**
+ * Records the billing refusal of a repository, or widens the one known, with a pull request's refused checks.
+ * Without `join` the pull request is not held by it (its refused runs were already run again once): it only
+ * widens a record that exists. A refusal later than the recovery seen means GitHub refuses again.
+ */
+function recordBilling(ctx: FactoryContext, repository: string, job: string, refused: Check[], now: number, join = true): ChecksBilling | undefined {
+  const known = readBilling(ctx, repository);
+  if (!join && !known) return undefined;
+  const times = refused.map((c) => c.at ?? iso(now)).sort((x, y) => Date.parse(x) - Date.parse(y));
+  const first = times[0]!;
+  const latest = times[times.length - 1]!;
+  const record: ChecksBilling = known ?? { since: first, last: latest, jobs: [] };
+  if (Date.parse(first) < Date.parse(record.since)) record.since = first;
+  if (Date.parse(latest) > Date.parse(record.last)) record.last = latest;
+  if (record.recovered && Date.parse(record.last) > Date.parse(record.recovered)) delete record.recovered;
+  if (join && !record.jobs.includes(job)) record.jobs.push(job);
+  ctx.store.setKv(checksBillingKey(repository), JSON.stringify(record));
+  if (!known) log.warn("GitHub does not start the checks of a repository over the account's billing; its pull requests wait without spending", { repository, since: record.since });
+  return record;
+}
+
 /** Records the outage of a repository, or widens the one under way, with these failures. */
 function recordOutage(ctx: FactoryContext, repository: string, failures: { check: string; at: string }[], base?: string): ChecksOutage {
   const known = readOutage(ctx, repository);
@@ -457,7 +539,7 @@ function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState
   return true;
 }
 
-async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number, repository = "", refreshing: Refreshing = new Set(), passed: Passed = new Map()) {
+async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number, repository = "", refreshing: Refreshing = new Set(), passed: Passed = new Map(), started: Passed = new Map()) {
   const key = mergeKey(job.id);
   const raw = ctx.store.getKv(key);
   const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
@@ -468,6 +550,8 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     ...(state.refreshing && { refreshing: state.refreshing }),
     ...(state.rerun && { rerun: state.rerun }),
     ...(state.outage && { outage: state.outage }),
+    ...(state.billing && { billing: state.billing }),
+    ...(state.billingRerun && { billingRerun: state.billingRerun }),
   });
   const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
@@ -483,6 +567,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (pr.open && !pr.merged && pr.mergeable === false && since <= WATCH_MS && takeBack(ctx, job, pr.headSha, state, save)) return;
   const checks = pr.open ? await gh.checks(pr.headSha) : [];
   seenPassing(passed, repository, checks);
+  seenStarted(started, repository, checks);
   const decision = mergeDecision(pr, checks, since);
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
@@ -497,6 +582,19 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     if (!state.refreshing.rerun) followRemoteTip(ctx, job);
     delete state.refreshing;
     if (!refreshedElsewhere(ctx, job, repository, now)) refreshing.delete(repository);
+  }
+  // GitHub did not start some of its checks over the account's billing: nothing the change, a comment or a rerun can fix until it lets runs start again.
+  // Until the rerun asked for shows, what is seen is the refusal it answers.
+  if (decision.kind === "blocked" && decision.failed?.some((c) => c.billing) && !showing(state, pr.headSha, now)) {
+    const refused = decision.failed.filter((c) => c.billing);
+    const runs = refused.flatMap((c) => (c.run ? [c.run] : []));
+    // Each refused run is run again at most once in its life: one refused again is only told, and the record no longer waits for it.
+    const spent = runs.length > 0 && runs.every((run) => state.billingRerun?.includes(run));
+    const record = recordBilling(ctx, repository, job.id, refused, now, !spent);
+    const why = billingText(repository, record?.since ?? refused[0]!.at ?? iso(now));
+    const delayMs = unchanged ? Math.min(unchanged.delayMs * 2, LAST_BACKOFF_MS) : FIRST_BACKOFF_MS;
+    if (spent) delete state.billing;
+    return save({ status: "blocked", why, reported: state.reported, ...(!spent && { billing: true as const }), backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs, nextChecksAt: iso(now + delayMs) } });
   }
   // Held by an outage: told nothing, nothing spent, looked at again like any blocked one.
   const held = (outage: ChecksOutage) => {
@@ -560,12 +658,82 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   }
 }
 
+/** Where the person in charge asked for a merge. */
+export type MergeVia = "cli" | "chat" | "panel";
+
+export interface MergeOutcome {
+  job: string;
+  url: string;
+  merged: boolean;
+  /** The merge commit, once merged. */
+  commit?: string;
+  /** Why it was not merged. */
+  why?: string;
+}
+
+const ON_REQUEST = "fundido a pedido de quien está a cargo";
+
+/**
+ * Merges a delivered pull request because the person in charge asked for it, whether or not its line has
+ * `autoMerge`, but only when `mergeDecision` says it is ready: otherwise it says why and touches nothing on
+ * GitHub. A refusal of the merge itself comes back as not merged. What follows a merge (branch, issue,
+ * townhall) is best effort and never turns it into a failure.
+ */
+export async function mergeRequested(ctx: FactoryContext, job: Job, gh: MergeApi, via: MergeVia): Promise<MergeOutcome> {
+  const url = job.delivery!.url!;
+  const number = pullRequestOf(url)!.number;
+  const key = mergeKey(job.id);
+  const raw = ctx.store.getKv(key);
+  const { backoff: _backoff, ...state }: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
+  const save = (status: MergeState["status"], why: string) => ctx.store.setKv(key, JSON.stringify({ ...state, status, why } satisfies MergeState));
+  const now = (ctx.now ?? (() => new Date()))().getTime();
+  const not = (why: string): MergeOutcome => ({ job: job.id, url, merged: false, why });
+
+  const pr = await gh.pullRequest(number);
+  const checks = pr.open ? await gh.checks(pr.headSha) : [];
+  const decision = mergeDecision(pr, checks, now - Date.parse(job.finishedAt ?? job.updatedAt));
+  if (decision.kind === "gone") {
+    if (decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
+    save(decision.merged ? "merged" : "closed", decision.merged ? "fundido por otra persona" : "cerrado sin fundir");
+    return not(decision.merged ? "ya estaba fundido" : "está cerrado sin fundir");
+  }
+  if (decision.kind !== "merge") return not(decision.why);
+
+  let commit: string | undefined;
+  try {
+    commit = await gh.merge(number, pr.headSha);
+  } catch (err) {
+    if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    return not(`GitHub no lo dejó fundir: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  recordMergeCommit(ctx, job, commit);
+  save("merged", ON_REQUEST);
+  ctx.tracer.start("zero.merge", { jobId: job.id, parentId: ctx.tracer.jobSpanId(job.id), attrs: { "zero.merge.via": via, "zero.merge.commit": commit, "zero.merge.url": url } }).end("ok");
+  log.info("pull request merged on request", { job: job.id, url, via });
+  await gh.deleteBranch(job.delivery!.branch).catch((err) => log.warn("could not delete merged branch", { job: job.id, error: String(err) }));
+  if (job.source?.kind === "github-issue") {
+    await gh.comment(job.source.number, `La fábrica fundió ${url}: el cambio ya está en la rama base.`).catch((err) => log.warn("could not tell the issue about the merge", { job: job.id, error: String(err) }));
+  }
+  try {
+    await ctx.townhall.publish([{ kind: "lesson", line: job.line, job: job.id, topic: "fundido a pedido", source: "", body: `${url} fundido a pedido de quien está a cargo${commit ? ` (commit ${commit})` : ""}.` }]);
+  } catch (err) {
+    log.warn("cannot record the merge in the townhall", { job: job.id, error: String(err) });
+  }
+  return { job: job.id, url, merged: true, ...(commit && { commit }) };
+}
+
 /** The checks that ended well at the tips looked at in a pass, per repository: what tells an environment is back. */
 type Passed = Map<string, Check[]>;
 
 function seenPassing(passed: Passed, repository: string, checks: Check[]) {
   const ok = checks.filter((c) => c.done && c.ok && c.at);
   if (ok.length) passed.set(repository, [...(passed.get(repository) ?? []), ...ok]);
+}
+
+/** The checks GitHub did start at the tips looked at in a pass, per repository: what tells it lets runs start again. */
+function seenStarted(started: Passed, repository: string, checks: Check[]) {
+  const ran = checks.filter((c) => c.started && !c.billing);
+  if (ran.length) started.set(repository, [...(started.get(repository) ?? []), ...ran]);
 }
 
 /**
@@ -594,6 +762,7 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const refreshing: Refreshing = new Set();
   const passed: Passed = new Map();
+  const started: Passed = new Map();
   for (const job of watchedJobs(ctx)) {
     const repository = pullRequestOf(job.delivery!.url!)?.repository;
     if (repository && holds(JSON.parse(ctx.store.getKv(mergeKey(job.id)) ?? "{}") as MergeState, now)) refreshing.add(repository);
@@ -606,7 +775,7 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
       continue;
     }
     try {
-      await watch(ctx, job, gh, pr.number, pr.repository, refreshing, passed);
+      await watch(ctx, job, gh, pr.number, pr.repository, refreshing, passed, started);
     } catch (err) {
       // A pause is not news about this pull request, and the ones left would only spend more or fail the same way.
       if (err instanceof GithubHalted || isRateLimit(err)) {
@@ -629,6 +798,93 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
       log.warn("could not follow the environment outage of a repository", { repository, error: String(err) });
     }
   }
+  for (const [key] of ctx.store.kvWithPrefix("checks-billing:")) {
+    const repository = key.slice("checks-billing:".length);
+    try {
+      await followBilling(ctx, api, repository, refreshing, started.get(repository) ?? [], now);
+    } catch (err) {
+      if (err instanceof GithubHalted || isRateLimit(err)) {
+        log.warn("billing follow-up cut short by the GitHub limit", { repository, error: String(err) });
+        return;
+      }
+      log.warn("could not follow the billing refusal of a repository", { repository, error: String(err) });
+    }
+  }
+}
+
+/** When a check GitHub started after the latest refusal did, if one did. */
+function startedAfter(record: ChecksBilling, seen: Check[]): number | undefined {
+  const times = seen.filter((c) => !c.billing && c.started && Date.parse(c.started) > Date.parse(record.last)).map((c) => Date.parse(c.started!));
+  return times.length ? Math.max(...times) : undefined;
+}
+
+/**
+ * What follows a billing refusal after the pull requests of its repository were looked at: forgotten once no
+ * pull request it holds is left; once GitHub started a check after the latest refusal (at a watched tip or at
+ * the tip of the base branch, read at most every `BASE_LOOK_MS`), the refused runs of the oldest held pull
+ * request are run again, one pull request per pass and only with the repository free, each run at most once in its life.
+ */
+async function followBilling(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined, repository: string, refreshing: Refreshing, started: Check[], now: number) {
+  const record = readBilling(ctx, repository);
+  if (!record) return;
+  const watched = watchedJobs(ctx)
+    .filter((j) => pullRequestOf(j.delivery!.url!)?.repository === repository)
+    .map((j) => ({ job: j, state: JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "{}") as MergeState }));
+  const held = watched
+    .filter((w) => w.state.billing)
+    .sort((a, b) => Date.parse(a.job.finishedAt ?? a.job.updatedAt) - Date.parse(b.job.finishedAt ?? b.job.updatedAt));
+  const forget = () => {
+    ctx.store.deleteKv(checksBillingKey(repository));
+    log.info("billing refusal forgotten: no pull request it held is left", { repository });
+  };
+  if (!held.length) return forget();
+  const line = ctx.config.lines.find((l) => l.name === held[0]!.job.line);
+  const gh = api(repository, line);
+  if (!gh) return;
+  const save = () => ctx.store.setKv(checksBillingKey(repository), JSON.stringify(record));
+
+  if (!record.recovered) {
+    let back = startedAfter(record, started);
+    const base = line?.baseBranch;
+    if (back === undefined && base && (!record.baseLookAt || now - Date.parse(record.baseLookAt) >= BASE_LOOK_MS)) {
+      record.baseLookAt = iso(now);
+      save();
+      back = startedAfter(record, await gh.checks(base));
+    }
+    if (back === undefined) return;
+    record.recovered = iso(back);
+    save();
+    log.info("GitHub starts the checks of a repository again; the runs it refused are run again, one pull request at a time", { repository });
+  }
+
+  if (!gh.rerun) return;
+  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
+  if (busy) return;
+  const released = new Set<string>();
+  for (const { job, state } of held) {
+    const number = pullRequestOf(job.delivery!.url!)!.number;
+    const pr = await gh.pullRequest(number);
+    if (!pr.open || pr.merged) continue;
+    const checks = await gh.checks(pr.headSha);
+    if (checks.some((c) => !c.done)) continue;
+    const runs = [...new Set(checks.filter((c) => c.billing && !c.ok).flatMap((c) => (c.run ? [c.run] : [])))].filter((run) => !state.billingRerun?.includes(run));
+    const { backoff: _backoff, billing: _billing, ...rest } = state;
+    released.add(job.id);
+    record.jobs = record.jobs.filter((id) => id !== job.id);
+    if (!runs.length) {
+      // Nothing of its own left to run again: no longer held, and looked at again on the next pass.
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
+      continue;
+    }
+    for (const run of runs) await gh.rerun(run);
+    const at = iso(now);
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...rest, status: "waiting", why: "GitHub volvió a arrancar los checks: los que frenó la facturación corren de nuevo", billingRerun: [...(state.billingRerun ?? []), ...runs], refreshing: { head: pr.headSha, at, rerun: true } } satisfies MergeState));
+    refreshing.add(repository);
+    log.info("checks GitHub refused over billing run again", { repository, job: job.id, head: pr.headSha, runs });
+    break;
+  }
+  if (held.every((w) => released.has(w.job.id))) return forget();
+  save();
 }
 
 /**
