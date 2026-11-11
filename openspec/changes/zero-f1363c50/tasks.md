@@ -9,8 +9,8 @@
 
 ## 2. Etapa 2: Adaptadores de GitHub, Vercel y Supabase
 
-- [ ] 2.1 Implement the three readers with injected fetch, 10 s timeout, secrets from SecretStore (`GITHUB_BILLING_TOKEN` falling back to the factory GitHub token, `VERCEL_TOKEN`, `SUPABASE_ACCESS_TOKEN`), fixed sin-dato reasons and no token/body in logs.
-- [ ] 2.2 Tests with fake fetch in test/billing.test.ts.
+- [x] 2.1 Implement the three readers with injected fetch, 10 s timeout, secrets from SecretStore (`GITHUB_BILLING_TOKEN` falling back to the factory GitHub token, `VERCEL_TOKEN`, `SUPABASE_ACCESS_TOKEN`), fixed sin-dato reasons and no token/body in logs.
+- [x] 2.2 Tests with fake fetch in test/billing.test.ts.
 
 ## 3. Etapa 3: Pasada diaria del daemon
 
