@@ -1,10 +1,13 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { FactoryContext } from "./app.js";
 import { mergeKey, type MergeState } from "./line/automerge.js";
 import { log } from "./log.js";
 import { findGit, gitEnv, lockProblemAt, npmCiArgs, runNpm, runProcess, type GitRunner } from "./package-install.js";
+import { resultPath, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
 import { tryGit } from "./shell.js";
 import type { Store } from "./state/store.js";
 
@@ -45,6 +48,8 @@ export interface SelfUpdateState {
   problem?: string;
   /** Commits whose preparation or start failed; never prepared again. */
   failed?: string[];
+  /** When the switch process was launched (ISO). */
+  switchingAt?: string;
 }
 
 export type SelfUpdateOutcome = "updated" | "rolled-back" | "failed";
@@ -241,3 +246,91 @@ export const realSelfUpdateDeps = (): SelfUpdateDeps => ({
   npm: (args, cwd) => runNpm([...args, "--prefix", cwd], STEP_TIMEOUT_MS),
   node: ([script = "", ...args], cwd) => runProcess(`node ${script}`, process.execPath, [join(cwd, script), ...args], { env: { ...process.env }, timeout: STEP_TIMEOUT_MS }),
 });
+
+/** Starts the switch to a prepared version as a process of its own that outlives this daemon; tests inject a fake. */
+export type SwitchLauncher = (ctx: FactoryContext, state: SelfUpdateState) => Promise<void>;
+
+/** A switch that left no result after this long is taken for dead, and the factory stays on what runs. */
+export const SWITCH_STALE_MS = 30 * 60_000;
+
+/**
+ * Copies the switch script out of the install folder it is about to replace, writes its plan and starts it detached,
+ * with the daemon log as its output, like `ensureDaemon` starts the daemon.
+ */
+export const launchSwitch: SwitchLauncher = async (ctx, state) => {
+  const install = installFolder();
+  const git = findGit();
+  if (!git) throw new Error("No encontré git en el PATH.");
+  if (!state.from || !state.to || !state.dir) throw new Error("la actualización preparada está incompleta");
+  const branch = ctx.config.selfUpdate.branch ?? tryGit(["rev-parse", "--abbrev-ref", "HEAD"], install);
+  if (!branch) throw new Error(`no sé en qué rama está ${install}`);
+  const dir = selfUpdateDir(ctx);
+  await mkdir(dir, { recursive: true });
+  const script = join(dir, "switch.mjs");
+  await copyFile(fileURLToPath(new URL("./self-update-switch.js", import.meta.url)), script);
+  const plan: SwitchPlan = {
+    home: ctx.home.root,
+    install,
+    prepared: state.dir,
+    from: state.from,
+    to: state.to,
+    branch,
+    timeoutMs: ctx.config.selfUpdate.startTimeoutSeconds * 1000,
+    log: ctx.home.daemonLog,
+    node: process.execPath,
+    git,
+  };
+  const planFile = join(dir, "plan.json");
+  await writeFile(planFile, JSON.stringify(plan, null, 2));
+  const out = openSync(ctx.home.daemonLog, "a");
+  const child = spawn(process.execPath, [script, planFile], { cwd: dir, detached: true, stdio: ["ignore", out, out], windowsHide: true, env: { ...process.env, ZERO_HOME: ctx.home.root } });
+  child.unref();
+};
+
+const OUTCOMES: readonly string[] = ["updated", "rolled-back", "failed"];
+
+/**
+ * Records what the last switch did, from the result it left: an entry in the history and the state back to idle, with a
+ * target that did not start (or could not be put in place) kept among the failed ones. Called when the daemon starts and
+ * on its passes, since the switch writes its result only after the new daemon took the lock. Never throws.
+ */
+export async function importSwitchResult(ctx: FactoryContext): Promise<SelfUpdateEntry | undefined> {
+  const file = resultPath(ctx.home.root);
+  const at = (ctx.now ?? (() => new Date()))();
+  const { state } = readSelfUpdate(ctx.store);
+  if (!existsSync(file)) {
+    // A switch that died without a word must not hold the factory forever.
+    const since = state.switchingAt ? Date.parse(state.switchingAt) : NaN;
+    if (state.status !== "switching" || !(at.getTime() - since >= SWITCH_STALE_MS)) return undefined;
+    const entry: SelfUpdateEntry = { from: state.from ?? "", to: state.to ?? "", at: at.toISOString(), outcome: "failed", reason: "el cambio de versión no dejó resultado" };
+    log.warn("self-update switch left no result; staying on what runs", { from: entry.from, to: entry.to });
+    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry), entry });
+    return entry;
+  }
+  let result: SwitchResult | undefined;
+  try {
+    const parsed = JSON.parse(await readFile(file, "utf8")) as SwitchResult;
+    if (parsed && typeof parsed.from === "string" && typeof parsed.to === "string" && typeof parsed.at === "string" && OUTCOMES.includes(parsed.outcome)) result = parsed;
+  } catch (err) {
+    log.warn("cannot read the self-update result", { error: String(err) });
+  }
+  await rm(file, { force: true }).catch((err) => log.warn("cannot remove the self-update result", { error: String(err) }));
+  if (!result) return undefined;
+  const entry: SelfUpdateEntry = { from: result.from, to: result.to, at: result.at, outcome: result.outcome, ...(result.reason ? { reason: result.reason } : {}) };
+  if (entry.outcome === "updated") log.info("self-update done", { from: entry.from, to: entry.to });
+  else log.warn("self-update did not go through; running the previous version", { from: entry.from, to: entry.to, outcome: entry.outcome, reason: entry.reason });
+  recordSelfUpdate(ctx.store, { state: idleAfter(state, entry), entry });
+  // What is left of the prepared folder is no longer needed: its build is in place or was given up.
+  if (state.dir) await rm(state.dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir: state.dir, error: String(err) }));
+  return entry;
+}
+
+function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry): SelfUpdateState {
+  const failed = entry.outcome === "updated" || !entry.to || state.failed?.includes(entry.to) ? state.failed : [...(state.failed ?? []), entry.to].slice(-HISTORY_LIMIT);
+  return {
+    status: "idle",
+    ...(state.checkedAt ? { checkedAt: state.checkedAt } : {}),
+    ...(failed?.length ? { failed } : {}),
+    ...(entry.outcome === "updated" ? {} : { problem: entry.outcome === "rolled-back" ? `volví a ${entry.from.slice(0, 12)}: ${entry.reason ?? `${entry.to.slice(0, 12)} no arrancó`}` : (entry.reason ?? "el cambio de versión falló") }),
+  };
+}
