@@ -115,7 +115,7 @@ describe("a pull request whose checks GitHub did not start over billing", () => 
     expect(s.billing).toBe(true);
     expect(s.why).toBe(billingText("kaelen/demo", "2026-11-10T11:30:00Z"));
     expect(s.backoff).toBeDefined();
-    expect(record()).toEqual({ since: "2026-11-10T11:30:00Z", last: "2026-11-10T11:30:00Z", jobs: [jobs[5]] });
+    expect(record()).toMatchObject({ since: "2026-11-10T11:30:00Z", last: "2026-11-10T11:30:00Z", jobs: [jobs[5]] });
     expect(ctx.store.kvWithPrefix("checks-outage:")).toEqual([]);
     expect(ctx.store.kvWithPrefix("checks-failures:")).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe("a pull request whose checks GitHub did not start over billing", () => 
     const gh = fakeGitHub({ 5: pull("a", refused("2026-11-10T11:30:00Z", 42)), 6: pull("b", refused("2026-11-10T11:40:00Z", 43)) });
     await pollMerges(ctx, () => gh.api);
     expect(ctx.store.kvWithPrefix("checks-billing:")).toHaveLength(1);
-    expect(record()).toEqual({ since: "2026-11-10T11:30:00Z", last: "2026-11-10T11:40:00Z", jobs: [jobs[5], jobs[6]] });
+    expect(record()).toMatchObject({ since: "2026-11-10T11:30:00Z", last: "2026-11-10T11:40:00Z", jobs: [jobs[5], jobs[6]] });
     expect(state(5).billing).toBe(true);
     expect(state(6).billing).toBe(true);
     expect(gh.did).toEqual([]);
@@ -183,5 +183,125 @@ describe("telling a billing refusal", () => {
     expect(formatStatus(s)).not.toContain("GitHub no arranca los checks");
     expect(overviewPage(s, ["demo"], "nonce")).not.toContain("GitHub no arranca los checks");
     expect((await briefing(ctx)).body).not.toContain("GitHub no arranca los checks");
+  });
+});
+
+describe("running again the checks GitHub refused over billing", () => {
+  const minutes = (clock: { ms: number }, n: number) => void (clock.ms += n * 60_000);
+  const started = (at: string): Check => ({ name: "deploy", done: true, ok: true, at, started: at });
+
+  it("runs nothing again while GitHub gives no sign of starting runs", async () => {
+    const { ctx, clock, state } = await factoryWith([5]);
+    const base = { checks: [{ name: "deploy", done: true, ok: true, at: "2026-11-10T11:20:00Z", started: "2026-11-10T11:20:00Z" }] };
+    const gh = fakeGitHub({ 5: pull("a", refused("2026-11-10T11:30:00Z", 42)) }, base);
+    await pollMerges(ctx, () => gh.api);
+    for (let i = 0; i < 4; i++) {
+      minutes(clock, 30);
+      await pollMerges(ctx, () => gh.api);
+    }
+    expect(gh.did).toEqual([]);
+    expect(state(5).billing).toBe(true);
+    expect(state(5).status).toBe("blocked");
+  });
+
+  it("runs the refused runs again once a check started after the refusal at the base", async () => {
+    const { ctx, clock, state, record } = await factoryWith([5]);
+    const base = { checks: [] as Check[] };
+    const gh = fakeGitHub({ 5: pull("a", refused("2026-11-10T11:30:00Z", 42)) }, base);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual([]);
+    base.checks = [started("2026-11-10T12:03:00Z")];
+    minutes(clock, 5);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 42"]);
+    const s = state(5);
+    expect(s.status).toBe("waiting");
+    expect(s.refreshing?.rerun).toBe(true);
+    expect(s.billingRerun).toEqual([42]);
+    expect(s.billing).toBeUndefined();
+    // No held pull request is left: the record is forgotten and nothing is told.
+    expect(record()).toBeUndefined();
+    expect(formatStatus(factoryStatus(ctx))).not.toContain("GitHub no arranca los checks");
+  });
+
+  it("takes a check started at another watched tip as the sign, without reading the base", async () => {
+    const { ctx, clock, state } = await factoryWith([5, 6]);
+    const prs = { 5: pull("a", refused("2026-11-10T11:30:00Z", 42)), 6: pull("b", [{ name: "ci", done: false, ok: false }]) };
+    const gh = fakeGitHub(prs);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual([]);
+    // The other pull request's checks did start, and passed: it merges, and the repository is free.
+    prs[6] = pull("b", [started("2026-11-10T12:01:00Z")]);
+    minutes(clock, 1);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["merge #6 @b", "rerun 42"]);
+    expect(state(5).billingRerun).toEqual([42]);
+  });
+
+  it("runs again one pull request at a time, the oldest first", async () => {
+    const { ctx, clock, state, record, jobs } = await factoryWith([5, 6]);
+    const prs = { 5: pull("a", refused("2026-11-10T11:30:00Z", 42)), 6: pull("b", refused("2026-11-10T11:40:00Z", 43)) };
+    const base = { checks: [] as Check[] };
+    const gh = fakeGitHub(prs, base);
+    await pollMerges(ctx, () => gh.api);
+    base.checks = [started("2026-11-10T12:04:00Z")];
+    minutes(clock, 5);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 42"]);
+    expect(record()?.jobs).toEqual([jobs[6]]);
+    expect(state(6).billing).toBe(true);
+    // While the first one's checks run, the second waits.
+    prs[5] = pull("a", [{ name: "ci", done: true, ok: true }, { name: "build", done: false, ok: false, run: 42 }]);
+    minutes(clock, 1);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 42"]);
+    // Once they all ended, the first merges and the second gets its turn.
+    prs[5] = pull("a", [{ name: "ci", done: true, ok: true }, { name: "build", done: true, ok: true, run: 42 }]);
+    minutes(clock, 5);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 42", "merge #5 @a", "rerun 43"]);
+    expect(state(6).billingRerun).toEqual([43]);
+    expect(record()).toBeUndefined();
+  });
+
+  it("runs each refused run again only once in its life", async () => {
+    const { ctx, clock, state } = await factoryWith([5]);
+    const prs = { 5: pull("a", refused("2026-11-10T11:30:00Z", 42)) };
+    const base = { checks: [] as Check[] };
+    const gh = fakeGitHub(prs, base);
+    await pollMerges(ctx, () => gh.api);
+    base.checks = [started("2026-11-10T12:04:00Z")];
+    minutes(clock, 5);
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.did).toEqual(["rerun 42"]);
+    // Refused again, then GitHub starts runs again later.
+    prs[5] = pull("a", refused("2026-11-10T12:08:00Z", 42));
+    minutes(clock, 5);
+    await pollMerges(ctx, () => gh.api);
+    base.checks = [started("2026-11-10T12:30:00Z")];
+    for (let i = 0; i < 3; i++) {
+      minutes(clock, 30);
+      await pollMerges(ctx, () => gh.api);
+    }
+    expect(gh.did).toEqual(["rerun 42"]);
+    const s = state(5);
+    expect(s.status).toBe("blocked");
+    expect(s.why).toBe(billingText("kaelen/demo", "2026-11-10T12:08:00Z"));
+    expect(s.billingRerun).toEqual([42]);
+  });
+
+  it("forgets the record once the pull requests it held are no longer watched", async () => {
+    const { ctx, clock, record } = await factoryWith([5]);
+    const prs = { 5: pull("a", refused("2026-11-10T11:30:00Z", 42)) };
+    const gh = fakeGitHub(prs);
+    await pollMerges(ctx, () => gh.api);
+    expect(record()).toBeDefined();
+    prs[5] = { ...prs[5], pr: { ...prs[5].pr, open: false, headSha: "a2" } };
+    minutes(clock, 10);
+    await pollMerges(ctx, () => gh.api);
+    expect(record()).toBeUndefined();
+    expect(factoryStatus(ctx).billing).toEqual([]);
+    expect(formatStatus(factoryStatus(ctx))).not.toContain("GitHub no arranca los checks");
+    expect(gh.did).toEqual([]);
   });
 });
