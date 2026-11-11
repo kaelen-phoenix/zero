@@ -295,16 +295,21 @@ function checkPriority(name: string): JobPriority {
 
 export function requestWork(
   ctx: FactoryContext,
-  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string },
+  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string; budgetUsd?: number },
 ): RequestResult {
   const text = input.type !== undefined ? typedRequest(input.type, input.title, input.description) : (input.text ?? "").trim();
   if (!text) throw new Error("El pedido está vacío.");
+  const cap = ctx.config.limits.usdPerJob;
+  const budgetUsd = input.budgetUsd ?? cap;
+  if (typeof budgetUsd !== "number" || !Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > cap) {
+    throw new Error(`El tope de costo tiene que ser un número mayor que 0 y no mayor que limits.usdPerJob (${cap}).`);
+  }
   const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
   // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
   if (priority === "urgente" && input.source) throw new Error("Solo vos podés marcar un trabajo como urgente.");
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
-  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob, source: input.source, priority });
+  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd, source: input.source, priority });
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
     jobId: job.id,

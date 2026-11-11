@@ -60,8 +60,25 @@ export interface StationContext {
   state: { get<T = unknown>(name: string): T | undefined; set(name: string, value: unknown): void };
   /** No job ids, branches or local paths. */
   deliveredJobs(since: Date): DeliveredJob[];
-  /** Opens a normal job on one of `lines`, if the manifest's `requests` allows it; never throws. */
-  requestJob(req: { line: string; text: string }): JobRequestResult;
+  /** Opens a normal job on one of `lines`, if the manifest's `requests` allows it; `maxUsd` caps its cost, never above `limits.usdPerJob`. Never throws. */
+  requestJob(req: { line: string; text: string; maxUsd?: number }): JobRequestResult;
+  /** A job this package opened with `requestJob`; undefined for any other id. Never throws. */
+  job(id: string): PackageJobView | undefined;
+}
+
+/** A package's own job as its stations may read it. */
+export interface PackageJobView {
+  id: string;
+  line: string;
+  status: Job["status"];
+  costUsd: number;
+  budgetUsd: number;
+  /** It waits for an answer of the person in charge. */
+  waiting: boolean;
+  finishedAt?: string;
+  /** Why it ended as it did, cleaned. */
+  reason?: string;
+  delivery?: { mode: "merge" | "branch" | "pull-request"; commit?: string };
 }
 
 /** The new job, or why there is none. */
@@ -197,6 +214,30 @@ function deliveredJobs(ctx: FactoryContext, since: Date): DeliveredJob[] {
     });
 }
 
+/** `ctx.job`: only jobs the station's own package opened. */
+function packageJob(ctx: FactoryContext, station: PackageStation, id: unknown): PackageJobView | undefined {
+  try {
+    if (typeof id !== "string") return undefined;
+    const job = ctx.store.getJob(id);
+    const source = job?.source;
+    if (!job || source?.kind !== "package" || source.package !== station.package) return undefined;
+    const repos = ctx.config.lines.map((l) => l.repo);
+    return {
+      id: job.id,
+      line: job.line,
+      status: job.status,
+      costUsd: job.costUsd,
+      budgetUsd: job.budgetUsd,
+      waiting: job.status === "waiting",
+      ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
+      ...(job.reason ? { reason: jobText(withoutSecrets(job.reason, ctx, station), job, repos) } : {}),
+      ...(job.delivery ? { delivery: { mode: job.delivery.mode, ...(job.delivery.commit ? { commit: job.delivery.commit } : {}) } } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** `ctx.runAgent`: read-only and recorded under the station's name; without an engine or night cap left, the engine is never called. */
 function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: PackageStation, now: Date, signal: AbortSignal): StationContext["runAgent"] {
   const key = stationKey(station);
@@ -244,10 +285,10 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
 }
 
 /** A station's request as it came; reading it runs the station's code when it is not a plain object. */
-function readRequest(req: unknown): { line?: unknown; text?: unknown } {
+function readRequest(req: unknown): { line?: unknown; text?: unknown; maxUsd?: unknown } {
   try {
-    const { line, text } = req as { line?: unknown; text?: unknown };
-    return { line, text };
+    const { line, text, maxUsd } = req as { line?: unknown; text?: unknown; maxUsd?: unknown };
+    return { line, text, maxUsd };
   } catch {
     return {};
   }
@@ -267,8 +308,12 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
     try {
       if (signal.aborted) return { reason: "la pasada ya terminó" };
       if (!station.requests) return { reason: "la estación no declara requests en su manifiesto" };
-      const { line, text } = readRequest(req);
+      const { line, text, maxUsd } = readRequest(req);
       if (typeof line !== "string" || typeof text !== "string") return { reason: "el pedido necesita line y text, como texto" };
+      const cap = ctx.config.limits.usdPerJob;
+      if (maxUsd !== undefined && (typeof maxUsd !== "number" || !Number.isFinite(maxUsd) || maxUsd <= 0 || maxUsd > cap)) {
+        return { reason: `maxUsd tiene que ser un número mayor que 0 y no mayor que limits.usdPerJob (${cap})` };
+      }
       if (!ctx.config.lines.some((l) => l.name === line)) return { reason: `no existe la línea "${withoutSecrets(line, ctx, station)}"` };
       if (ctx.store.getKv(ANDON_KEY) === "on") return { reason: "la fábrica está detenida" };
       if (budgetState(ctx.store, ctx.config, now).reached) return { reason: "se alcanzó el presupuesto" };
@@ -278,7 +323,7 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
       if (used >= station.requests.perLinePerDay) return { reason: `ya pidió ${used} de ${station.requests.perLinePerDay} trabajos de hoy en la línea "${line}"` };
       const clean = stationText(text, ctx, station);
       if (!clean) return { reason: "el pedido está vacío" };
-      const { job } = requestWork(ctx, { text: clean, line, source: { kind: "package", package: station.package, station: station.name } });
+      const { job } = requestWork(ctx, { text: clean, line, source: { kind: "package", package: station.package, station: station.name }, budgetUsd: maxUsd });
       ctx.store.setKv(quotaKey, JSON.stringify({ day, count: used + 1 }));
       log.info(`${key} requested a job`, { job: job.id, line });
       return { id: job.id };
@@ -322,6 +367,7 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
     },
     deliveredJobs: (since) => deliveredJobs(ctx, since),
     requestJob: stationRequest(ctx, station, now, signal),
+    job: (id) => packageJob(ctx, station, id),
   };
 }
 
