@@ -20,5 +20,5 @@
 
 ## 4. Etapa 4: Documentación
 
-- [ ] 4.1 Document services, secrets, daily read and sin dato in README.md and README.es.md with identical structure and code blocks; update AGENTS.md.
-- [ ] 4.2 Run test/docs.test.ts and test/wording.test.ts.
+- [x] 4.1 Document services, secrets, daily read and sin dato in README.md and README.es.md with identical structure and code blocks; update AGENTS.md.
+- [x] 4.2 Run test/docs.test.ts and test/wording.test.ts.

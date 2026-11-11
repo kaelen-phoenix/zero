@@ -346,6 +346,33 @@ zero informe tienda --mes 2026-10 --html    # saves a standalone HTML document i
 - The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML; each download also leaves a copy in `ZERO_HOME/reports`. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
 - Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
 
+### External services (`services`)
+
+Besides what the factory spent on agents, the report can show what the services each line's app uses cost that month. You say which ones in the line, with their identifiers only:
+
+```yaml
+lines:
+  - name: tienda
+    services:
+      github: {}                                   # GitHub Actions of the line's repository; account and repository come from its remote
+      vercel: { project: prj_1, team: team_1 }     # the Vercel project (team optional)
+      supabase: { project: abcd }                  # the Supabase project ref (organization optional)
+```
+
+```sh
+zero secret set GITHUB_BILLING_TOKEN    # optional: without it, the factory's GitHub token
+zero secret set VERCEL_TOKEN
+zero secret set SUPABASE_ACCESS_TOKEN
+```
+
+- GitHub: `github: { account: acme, type: organization, repository: acme/tienda }` when the account or the repository is not the remote's (`type` is `user` by default). It reads GitHub's billing usage API for the account and keeps only the Actions items of the line's repository: gross minutes and dollars, what the plan's included usage covered and what was billed, which is the cost.
+- Vercel: the billed cost of the month's charges attributed to the project. Supabase: the project's organization plan and any usage the Management API gives; it gives no cost, so the cost says "sin dato".
+- Tokens are secrets in the store, never in the file (the section refuses any other key), argv or logs. Every call only reads.
+- The daemon reads each service at most once per local day, for the current month and, until it is read after the month closed, for the previous one, and keeps the answer in `state.db`. The report reads only that: it calls no API and no model.
+- A missing token, a service that does not answer in 10 seconds or answers with an error, or an answer without the cost leaves that service as "sin dato", with the reason. The report never fails because of it and never makes up a number.
+- Each service shows its figures, its source and the date it was read, and a "Total del mes (fábrica + servicios)" row adds the factory's cost and the known service costs, naming the ones that are "sin dato". Lines without `services` show the report as before.
+- New services (Expo/EAS, Google Play, Mercado Pago fees) are added in `src/billing/`: an entry in `BILLING_SERVICES`, a key in `services` and a reader.
+
 ## Regeneration drill
 
 Measures whether a line's specifications are enough to rebuild part of its code. You name the line, the capability (its spec is `openspec/specs/<capability>/spec.md` on the base branch) and the files to remove.
