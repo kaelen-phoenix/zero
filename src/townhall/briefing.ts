@@ -1,5 +1,5 @@
-import type { Outage } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, jobOrigin } from "../format.js";
+import type { FactoryStatus, OnDemandRun, Outage } from "../app.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, jobOrigin, resetTime } from "../format.js";
 import { outageText } from "../line/automerge.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
@@ -29,6 +29,12 @@ export interface BriefingAlert {
   jobStatus?: Job["status"];
 }
 
+/** On-demand station runs: the ones still pending and the ones that started or ended in the period. */
+export interface BriefingOnDemand {
+  pending: FactoryStatus["onDemand"];
+  runs: OnDemandRun[];
+}
+
 export interface Briefing {
   title: string;
   body: string;
@@ -49,7 +55,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], outages: Outage[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -94,6 +100,16 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   }
   if (alerts.length) {
     sections.push(["## Alertas de seguridad", ...alerts.map((a) => `- (${a.line}) ${describeAlert(a)}`)].join("\n"));
+  }
+  if (onDemand.pending.length || onDemand.runs.length) {
+    const now = new Date(metrics.to);
+    sections.push(
+      [
+        "## Corridas a demanda",
+        ...onDemand.pending.map((d) => `- ${d.station}: pendiente desde ${resetTime(d.since, now)}`),
+        ...onDemand.runs.map((r) => `- ${describeOnDemandRun(r, now)}`),
+      ].join("\n"),
+    );
   }
   sections.push(
     `Período: ${metrics.from} → ${metrics.to}`,

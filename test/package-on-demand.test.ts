@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANDON_KEY, factoryStatus, packageList, requestStationRun, requestWork, waitStationStart, type FactoryContext, type PackageList } from "../src/app.js";
+import { ANDON_KEY, briefing, factoryStatus, packageList, requestStationRun, requestWork, waitStationStart, type FactoryContext, type PackageList } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
-import { onDemandPending, packagesPass, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationRunKey } from "../src/line/packages.js";
+import { onDemandPass, onDemandPending, packagesPass, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandLastKey, stationOnDemandRequestKey, stationRunKey } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
+import { overviewPage } from "../src/panel/html.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { factoryConfig } from "../src/packages.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
@@ -47,6 +48,7 @@ async function factory(dir: string, over: Record<string, unknown> = {}, allowCod
 }
 
 const key = stationOnDemandKey("hello", "nota");
+const lastRun = stationOnDemandLastKey("hello", "nota");
 
 describe("declaring onDemand in the manifest", () => {
   it("carries true to the loaded station", async () => {
@@ -117,60 +119,76 @@ describe("asking for an on-demand run", () => {
   });
 });
 
-describe("the daemon runs a pending request", () => {
+describe("onDemandPass runs a pending request", () => {
+  const pass = () => fakeAgents({}).runner;
+  const record = (ctx: FactoryContext) => JSON.parse(ctx.store.getKv(lastRun)!) as Record<string, unknown>;
+
   it("runs before its period, once, with { onDemand: true }, leaving the period as it was", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     const last = new Date(Date.now() - 60_000).toISOString();
     ctx.store.setKv(stationLastKey("hello", "nota"), last);
     expect(requestStationRun(ctx, "hello/nota").ok).toBe(true);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
     expect(ctx.store.getKv(key)).toBeUndefined();
     expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBe(last);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toHaveLength(1);
   });
 
-  it("does not also run the regular turn in the same pass", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true });
-    const ctx = await factory(dir);
-    requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
-    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true }), "null"]);
-  });
-
-  it("calls a regular pass with no second argument", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(...args) { note(String(args.length) + ":" + String(args[1])); }` });
-    const ctx = await factory(dir);
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual(["1:undefined"]);
-  });
-
-  it("waits for the andon, then runs", async () => {
-    const { dir, calls } = stationPackage({ onDemand: true });
-    const ctx = await factory(dir);
-    requestStationRun(ctx, "hello/nota");
-    ctx.store.setKv(ANDON_KEY, "on");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([]);
-    expect(ctx.store.getKv(key)).toBeDefined();
-    ctx.store.setKv(ANDON_KEY, "off");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
-    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
-  });
-
-  it("waits for queued jobs", async () => {
+  it("runs with a queued job", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
     requestWork(ctx, { text: "algo", line: "web" });
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+    expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+
+  it("runs with a running job", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    const { job } = requestWork(ctx, { text: "algo", line: "web" });
+    ctx.store.updateJob(job.id, { status: "running" });
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+  });
+
+  it("calls nothing without a pending request", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+  });
+
+  it("waits for the andon, then runs, recording nothing meanwhile", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    ctx.store.setKv(ANDON_KEY, "on");
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+    ctx.store.setKv(ANDON_KEY, "off");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
+  });
+
+  it("waits for the budget", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir, { limits: { usdPerDay: 1 } });
+    requestStationRun(ctx, "hello/nota");
+    ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "build", "zero.engine": "claude", "zero.billing": "api" } }).end("ok", { "zero.cost.usd": 5 });
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
   });
 
   it("waits for a missing secret", async () => {
@@ -178,9 +196,10 @@ describe("the daemon runs a pending request", () => {
     const { dir, calls } = stationPackage({ onDemand: true, secrets: ["NOTA_TOKEN"] });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
   });
 
   it("keeps the night cap on ctx.runAgent", async () => {
@@ -194,20 +213,54 @@ describe("the daemon runs a pending request", () => {
     ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "scout" } }).end("ok", { "zero.cost.usd": 0.3 });
     requestStationRun(ctx, "hello/nota");
     const agents = fakeAgents({});
-    await packagesPass(ctx, agents.runner, new Date());
+    await onDemandPass(ctx, agents.runner, new Date());
     expect(agents.calls).toEqual([]);
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ ok: false, text: expect.stringContaining("limits.usdPerNight") });
   });
 
-  it("clears the request of a module without pass and warns", async () => {
+  it("records a run that ended fine", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    requestStationRun(ctx, "hello/nota");
+    const asked = ctx.store.getKv(key);
+    await onDemandPass(ctx, pass(), new Date());
+    const r = record(ctx);
+    expect(r).toMatchObject({ asked, outcome: "ok", startedAt: expect.any(String), endedAt: expect.any(String) });
+    expect(Date.parse(r.endedAt as string)).toBeGreaterThanOrEqual(Date.parse(r.startedAt as string));
+  });
+
+  it("records a pass that threw", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export async function pass() { throw new Error("mal"); }` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(record(ctx)).toMatchObject({ outcome: "failed", startedAt: expect.any(String), endedAt: expect.any(String) });
+  });
+
+  it("records a pass cut by shutdown", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, module: `export function pass() { return new Promise(() => {}); }` }).dir);
+    requestStationRun(ctx, "hello/nota");
+    const stop = new AbortController();
+    const done = onDemandPass(ctx, pass(), new Date(), { signal: stop.signal });
+    await vi.waitFor(() => expect(ctx.store.getKv(lastRun)).toBeDefined());
+    expect(record(ctx).endedAt).toBeUndefined();
+    stop.abort();
+    await done;
+    expect(record(ctx)).toMatchObject({ outcome: "stopped", startedAt: expect.any(String), endedAt: expect.any(String) });
+  });
+
+  it("clears the request of a module without pass, warns and records it as not run", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
     const { dir, calls } = stationPackage({ onDemand: true, module: `export async function scheduled() { note("scheduled"); }` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const asked = ctx.store.getKv(key);
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeUndefined();
     expect(warn.mock.calls.some(([m]) => String(m).includes("hello/nota") && String(m).includes("pass"))).toBe(true);
+    const r = record(ctx);
+    expect(r).toMatchObject({ asked, outcome: "not-run" });
+    expect(r.startedAt).toBeUndefined();
   });
 
   it("clears the request when parseConfig throws", async () => {
@@ -215,16 +268,76 @@ describe("the daemon runs a pending request", () => {
     const { dir, calls } = stationPackage({ onDemand: true, module: `export function parseConfig() { throw new Error("mal"); }\n${DEFAULT_MODULE}` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, pass(), new Date());
     expect(calls()).toEqual([]);
     expect(ctx.store.getKv(key)).toBeUndefined();
+    expect(record(ctx)).toMatchObject({ outcome: "not-run" });
   });
 
-  it("is picked up by the daemon within its throttle", async () => {
+  it("waits while the station's regular pass is running, then runs", async () => {
+    const gate = join(tempDir(), "gate.txt");
+    const { dir, calls } = stationPackage({
+      onDemand: true,
+      module: `import { existsSync } from "node:fs";
+export async function pass(ctx, arg) {
+  note(JSON.stringify(arg ?? null));
+  if (!arg) while (!existsSync(${JSON.stringify(gate)})) await new Promise((r) => setTimeout(r, 10));
+}`,
+    });
+    const ctx = await factory(dir);
+    const regular = packagesPass(ctx, pass(), new Date());
+    await vi.waitFor(() => expect(calls()).toEqual(["null"]));
+    requestStationRun(ctx, "hello/nota");
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["null"]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(lastRun)).toBeUndefined();
+    writeFileSync(gate, "");
+    await regular;
+    await onDemandPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["null", JSON.stringify({ onDemand: true })]);
+  });
+});
+
+describe("the idle pass and the daemon", () => {
+  const pass = () => fakeAgents({}).runner;
+
+  it("the idle pass leaves a pending request alone, and runs the regular turn after it", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeUndefined();
+    await onDemandPass(ctx, pass(), new Date());
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual([JSON.stringify({ onDemand: true }), "null"]);
+    expect(ctx.store.getKv(stationLastKey("hello", "nota"))).toBeDefined();
+  });
+
+  it("calls a regular pass with no second argument", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(...args) { note(String(args.length) + ":" + String(args[1])); }` });
+    const ctx = await factory(dir);
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls()).toEqual(["1:undefined"]);
+  });
+
+  it("the daemon picks it up", async () => {
     const { dir, calls } = stationPackage({ onDemand: true });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
     await runDaemon(ctx, { once: true, pollMs: 5, packages: true, panel: false, agentRunner: () => fakeAgents({}).runner });
+    expect(calls()).toContain(JSON.stringify({ onDemand: true }));
+  });
+
+  it("the daemon runs it without scout or research while a low-priority job waits its turn", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    requestWork(ctx, { text: "primero", line: "web", priority: "alta" });
+    requestWork(ctx, { text: "después", line: "web", priority: "baja" });
+    await runDaemon(ctx, { once: true, pollMs: 5, packages: true, scout: false, research: false, panel: false, agentRunner: () => fakeAgents({}).runner });
     expect(calls()).toContain(JSON.stringify({ onDemand: true }));
   });
 });
@@ -239,7 +352,7 @@ describe("a request text", () => {
     const repo = ctx.config.lines[0]!.repo;
     const r = requestStationRun(ctx, "hello/nota", new Date(), `revisar ${SECRET} en ${join(repo, "src", "a.ts")} ${"x".repeat(5000)}`);
     expect(r).toMatchObject({ ok: true, requestedAt: ctx.store.getKv(key) });
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     const arg = JSON.parse(calls()[0]!) as { onDemand: boolean; request: string };
     expect(arg.onDemand).toBe(true);
     expect(arg.request).toContain("revisar");
@@ -253,7 +366,7 @@ describe("a request text", () => {
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota", new Date(), "   ");
     expect(ctx.store.getKv(stationOnDemandRequestKey("hello", "nota"))).toBeUndefined();
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     expect(calls()).toEqual([JSON.stringify({ onDemand: true })]);
   });
 
@@ -261,7 +374,7 @@ describe("a request text", () => {
     const { dir, calls } = stationPackage({ onDemand: true, module: `export async function pass(...args) { note(String(args.length) + ":" + JSON.stringify(args[1] ?? null)); }` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota", new Date(), "revisar precios");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     expect(ctx.store.getKv(stationOnDemandRequestKey("hello", "nota"))).toBeUndefined();
     await packagesPass(ctx, fakeAgents({}).runner, new Date());
     expect(calls()).toEqual([`2:${JSON.stringify({ onDemand: true, request: "revisar precios" })}`, "1:null"]);
@@ -285,7 +398,7 @@ describe("the record of an on-demand run", () => {
     const { dir } = stationPackage({ onDemand: true, module: `import { writeFileSync } from "node:fs";\nexport async function pass(ctx) { writeFileSync(${JSON.stringify(seen)}, "x"); await new Promise((r) => setTimeout(r, 300)); }` });
     const ctx = await factory(dir);
     const r = requestStationRun(ctx, "hello/nota", new Date(), "revisar precios");
-    const run = packagesPass(ctx, fakeAgents({}).runner, new Date());
+    const run = onDemandPass(ctx, fakeAgents({}).runner, new Date());
     await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
     expect(record(ctx)).toMatchObject({ state: "running", requestedAt: r.ok && r.requestedAt, request: "revisar precios", startedAt: expect.any(String) });
     await run;
@@ -300,7 +413,7 @@ describe("the record of an on-demand run", () => {
     const ctx = await factory(dir);
     ctx.secrets.set("NOTA_TOKEN", SECRET);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     expect(record(ctx)).toMatchObject({ state: "ended", outcome: "failed", error: expect.stringContaining("se cayó") });
     expect(record(ctx)!.error).not.toContain(SECRET);
     expect(record(ctx)!.error!.length).toBeLessThanOrEqual(600);
@@ -311,7 +424,7 @@ describe("the record of an on-demand run", () => {
     const { dir } = stationPackage({ onDemand: true, module: `export async function scheduled() {}` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     expect(record(ctx)).toMatchObject({ state: "ended", outcome: "failed" });
   });
 
@@ -320,7 +433,7 @@ describe("the record of an on-demand run", () => {
     const { dir } = stationPackage({ onDemand: true, timeoutMinutes: 0.002, module: `export function pass() { return new Promise(() => undefined); }` });
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
-    await packagesPass(ctx, fakeAgents({}).runner, new Date());
+    await onDemandPass(ctx, fakeAgents({}).runner, new Date());
     expect(record(ctx)).toMatchObject({ state: "ended", outcome: "timeout", startedAt: expect.any(String) });
   });
 
@@ -330,7 +443,7 @@ describe("the record of an on-demand run", () => {
     const ctx = await factory(dir);
     requestStationRun(ctx, "hello/nota");
     const outer = new AbortController();
-    const run = packagesPass(ctx, fakeAgents({}).runner, new Date(), { signal: outer.signal });
+    const run = onDemandPass(ctx, fakeAgents({}).runner, new Date(), { signal: outer.signal });
     await vi.waitFor(() => expect(existsSync(seen)).toBe(true));
     outer.abort();
     await run;
@@ -399,6 +512,118 @@ describe("seeing a pending request", () => {
     const status = factoryStatus(ctx);
     expect(status.onDemand).toEqual([]);
     expect(formatStatus(status, now)).not.toContain("Corridas a demanda pendientes");
+  });
+});
+
+describe("seeing demand runs", () => {
+  const now = new Date(2026, 10, 7, 12, 0);
+  const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+  const recent = (s: string) => s.split("\n").filter((l) => l.startsWith("Corridas a demanda recientes: "));
+
+  async function at(record?: Record<string, unknown>) {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    ctx.now = () => now;
+    if (record) ctx.store.setKv(lastRun, JSON.stringify(record));
+    return ctx;
+  }
+
+  it("zero status shows a run that ended fine", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns).toEqual([{ station: "hello/nota", asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" }]);
+    const lines = recent(formatStatus(status, now));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("hello/nota");
+    expect(lines[0]).toContain("terminó bien");
+  });
+
+  it("zero status shows a run under way", async () => {
+    const ctx = await at({ asked: ago(2), startedAt: ago(1) });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain("corriendo desde");
+  });
+
+  it("zero status says a run past its time with no end has no result", async () => {
+    const ctx = await at({ asked: ago(200), startedAt: ago(180) });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns[0]).toMatchObject({ stale: true });
+    expect(recent(formatStatus(status, now))[0]).toContain("sin resultado");
+  });
+
+  it.each([
+    ["failed", "falló"],
+    ["timeout", "superó su tiempo"],
+    ["stopped", "se cortó al apagar la fábrica"],
+  ])("zero status tells outcome %s", async (outcome, text) => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain(text);
+  });
+
+  it("zero status tells a run that could not run", async () => {
+    const ctx = await at({ asked: ago(15), endedAt: ago(10), outcome: "not-run" });
+    expect(recent(formatStatus(factoryStatus(ctx), now))[0]).toContain("no pudo correr");
+  });
+
+  it("hides a record that ended 2 days ago", async () => {
+    const ctx = await at({ asked: ago(2 * 1440 + 5), startedAt: ago(2 * 1440 + 3), endedAt: ago(2 * 1440), outcome: "ok" });
+    const status = factoryStatus(ctx);
+    expect(status.onDemandRuns).toEqual([]);
+    expect(formatStatus(status, now)).not.toContain("Corridas a demanda recientes");
+  });
+
+  it("keeps the pending list unchanged next to a recorded run", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    requestStationRun(ctx, "hello/nota", now);
+    const status = factoryStatus(ctx);
+    expect(status.onDemand).toEqual([{ station: "hello/nota", since: now.toISOString() }]);
+    expect(formatStatus(status, now)).toContain("Corridas a demanda pendientes: ");
+  });
+
+  it("the status reads the record onDemandPass wrote", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    await onDemandPass(ctx, fakeAgents({}).runner, now);
+    expect(factoryStatus(ctx).onDemandRuns).toEqual([expect.objectContaining({ station: "hello/nota", outcome: "ok" })]);
+  });
+
+  it("the panel shows a pending run", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    const html = overviewPage(factoryStatus(ctx), ["web"], "n");
+    expect(html).toContain("hello/nota");
+    expect(html).toContain("pendiente");
+  });
+
+  it("the panel shows a failed run", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "failed" });
+    const html = overviewPage(factoryStatus(ctx), ["web"], "n");
+    expect(html).toContain("hello/nota");
+    expect(html).toContain("falló");
+  });
+
+  it("the panel says nothing about demand runs without any", async () => {
+    const ctx = await at();
+    expect(overviewPage(factoryStatus(ctx), ["web"], "n")).not.toContain("a demanda");
+  });
+
+  it("the briefing lists a run of the day", async () => {
+    const ctx = await at({ asked: ago(15), startedAt: ago(12), endedAt: ago(10), outcome: "ok" });
+    const b = (await briefing(ctx, 1)).body;
+    expect(b).toContain("## Corridas a demanda");
+    expect(b).toContain("hello/nota");
+    expect(b).toContain("terminó bien");
+  });
+
+  it("the briefing lists a pending run", async () => {
+    const ctx = await at();
+    requestStationRun(ctx, "hello/nota", now);
+    const b = (await briefing(ctx, 1)).body;
+    expect(b).toContain("## Corridas a demanda");
+    expect(b).toMatch(/- hello\/nota: pendiente/);
+  });
+
+  it("the briefing has no section without runs in the period", async () => {
+    const ctx = await at({ asked: ago(2 * 1440 + 5), startedAt: ago(2 * 1440 + 3), endedAt: ago(2 * 1440), outcome: "ok" });
+    expect((await briefing(ctx, 1)).body).not.toContain("Corridas a demanda");
   });
 });
 
@@ -481,7 +706,7 @@ describe("waiting for the run to start", () => {
     const ctx = await factory(stationPackage({ onDemand: true }).dir);
     const r = requestStationRun(ctx, "hello/nota");
     if (!r.ok) throw new Error(r.reason);
-    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 1000, pollMs: 100, sleep: () => packagesPass(ctx, fakeAgents({}).runner, new Date()) });
+    const w = await waitStationStart(ctx, "hello/nota", r.requestedAt, { timeoutMs: 1000, pollMs: 100, sleep: () => onDemandPass(ctx, fakeAgents({}).runner, new Date()) });
     expect(w.started).toBe(true);
   });
 

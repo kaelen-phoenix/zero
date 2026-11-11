@@ -26,7 +26,7 @@ import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, mergeKey, pullRequestOf, watchedJobs, type ChecksOutage, type MergeState } from "./line/automerge.js";
-import { readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type StationRunRecord } from "./line/packages.js";
+import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
@@ -325,6 +325,8 @@ export interface FactoryStatus {
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
   onDemand: { station: string; since: string; request?: string }[];
+  /** The last on-demand run of each station, when it started or ended in the last 24 hours or is still running. */
+  onDemandRuns: OnDemandRun[];
   /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
   stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
@@ -339,6 +341,36 @@ export interface FactoryStatus {
   queued: Job[];
   waiting: Job[];
   recent: Job[];
+}
+
+/** A station's last on-demand run, as `<package>/<station>`; `stale` when it never ended and is past the station's time limit. */
+export interface OnDemandRun extends OnDemandRecord {
+  station: string;
+  stale?: boolean;
+}
+
+/** The recorded last on-demand run of each loaded `onDemand` station that started or ended at or after `since`, or still runs. */
+export function onDemandRuns(ctx: FactoryContext, since: Date, now: Date): OnDemandRun[] {
+  return (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+    if (!s.onDemand) return [];
+    const record = onDemandRecord(ctx, s.package, s.name);
+    if (!record) return [];
+    const stale = Boolean(record.startedAt && !record.endedAt && now.getTime() - Date.parse(record.startedAt) > s.timeoutMinutes * 60_000);
+    const recent = [record.startedAt, record.endedAt].some((t) => t !== undefined && Date.parse(t) >= since.getTime() && Date.parse(t) <= now.getTime());
+    const running = Boolean(record.startedAt && !record.endedAt && !stale);
+    if (!recent && !running) return [];
+    return [{ station: `${s.package}/${s.name}`, ...record, ...(stale && { stale }) }];
+  });
+}
+
+/** On-demand station runs asked for and not run yet. */
+function pendingOnDemand(ctx: FactoryContext): FactoryStatus["onDemand"] {
+  return (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+    const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
+    if (since === undefined) return [];
+    const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
+    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
+  });
 }
 
 export interface LineAlerts {
@@ -415,12 +447,8 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
     packages: ctx.config.loadedPackages?.problems ?? [],
-    onDemand: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
-      const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
-      if (since === undefined) return [];
-      const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
-      return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
-    }),
+    onDemand: pendingOnDemand(ctx),
+    onDemandRuns: onDemandRuns(ctx, new Date(now.getTime() - 86_400_000), now),
     stationRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
       const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
@@ -527,7 +555,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, status.outages);
+  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -1604,7 +1633,7 @@ export type StationRunResult = { ok: true; text: string; requestedAt: string } |
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
- * station; the daemon still waits for an idle factory and keeps every gate.
+ * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
  */
 export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
@@ -1630,7 +1659,7 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   else ctx.store.deleteKv(requestKey);
   const requestedAt = now.toISOString();
   ctx.store.setKv(key, requestedAt);
-  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez apenas la fábrica esté libre.`, requestedAt };
+  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
 }
 
 export interface StationWait {
@@ -1660,7 +1689,7 @@ export async function waitStationStart(ctx: FactoryContext, ref: string, request
     await sleep(step);
     waited += step;
   }
-  return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre apenas la fábrica esté libre.` };
+  return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre en la próxima pasada del daemon.` };
 }
 
 function hourMinute(iso: string): string {
