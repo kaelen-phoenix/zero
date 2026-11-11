@@ -508,6 +508,8 @@ export interface PackageStation {
   requests?: { perLinePerDay: number };
   /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
   onDemand: boolean;
+  /** Absent: nothing can be uploaded to it. Extensions in lower case, with the dot. */
+  uploads?: { maxMb: number; extensions: string[] };
   entry: PackageEntry;
 }
 

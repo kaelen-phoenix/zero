@@ -15,6 +15,11 @@ import { createZeroMcpServer } from "../src/mcp/server.js";
 import { factoryConfig } from "../src/packages.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
+import { readdirSync } from "node:fs";
+import { uploadToStation } from "../src/app.js";
+import { stationUploadKey } from "../src/line/packages.js";
+import { packageDataDir } from "../src/packages.js";
+import { makeZip } from "./zip.js";
 
 afterEach(() => {
   cleanup();
@@ -25,13 +30,14 @@ const passes = `node -e "process.exit(0)"`;
 const DEFAULT_MODULE = `export async function pass(ctx, arg) { note(JSON.stringify(arg ?? null)); }`;
 
 /** A package whose station `nota` notes each call to `pass` and the argument it got. */
-function stationPackage(opts: { onDemand?: unknown; module?: string; secrets?: string[]; instructions?: boolean; timeoutMinutes?: number } = {}) {
+function stationPackage(opts: { onDemand?: unknown; module?: string; secrets?: string[]; instructions?: boolean; timeoutMinutes?: number; uploads?: unknown } = {}) {
   const dir = tempDir("zero-pkg-");
   const marker = join(tempDir("zero-marker-"), "calls.txt");
   const onDemand = opts.onDemand === undefined ? {} : { onDemand: opts.onDemand };
   const timeout = opts.timeoutMinutes === undefined ? {} : { timeoutMinutes: opts.timeoutMinutes };
+  const uploads = opts.uploads === undefined ? {} : { uploads: opts.uploads };
   writeTree(dir, {
-    "zero-package.yaml": stringify({ interface: 1, name: "hello", version: "1.0.0", stations: [{ name: "nota", module: "nota.mjs", secrets: opts.secrets ?? [], ...(opts.instructions && { instructions: "nota.md" }), ...onDemand, ...timeout }] }),
+    "zero-package.yaml": stringify({ interface: 1, name: "hello", version: "1.0.0", stations: [{ name: "nota", module: "nota.mjs", secrets: opts.secrets ?? [], ...(opts.instructions && { instructions: "nota.md" }), ...onDemand, ...timeout, ...uploads }] }),
     "nota.md": "Write a sentence.\n",
     "nota.mjs": `import { appendFileSync } from "node:fs";
 const note = (text) => appendFileSync(${JSON.stringify(marker)}, text + "\\n");
@@ -731,5 +737,132 @@ describe("waiting for the run to start", () => {
     expect(cli).toContain("requestStationRun(ctx, name, new Date(), values.pedido)");
     expect(cli).toContain("const STATION_WAIT_MS = 120_000;");
     expect(cli).toMatch(/waitStationStart\(ctx, name, r\.requestedAt, \{ timeoutMs: STATION_WAIT_MS \}\)/);
+  });
+});
+
+describe("uploads to a station", () => {
+  const pass = () => fakeAgents({}).runner;
+  const zip = makeZip([{ name: "src/a.txt", data: "hola" }, { name: "README.md", data: "# léeme" }]);
+  const uploadsDir = (ctx: FactoryContext) => join(packageDataDir(ctx.home, "hello"), "uploads", "nota");
+  const files = (ctx: FactoryContext) => (existsSync(uploadsDir(ctx)) ? readdirSync(uploadsDir(ctx)) : []);
+  /** Notes what the station receives and unpacks its upload into `work`. */
+  const UPLOAD_MODULE = `export async function pass(ctx, arg) {
+  const r = ctx.upload ? await ctx.unzip(ctx.upload.path, "work") : null;
+  note(JSON.stringify({ arg: arg ?? null, upload: ctx.upload ?? null, unzip: r }));
+}`;
+
+  it("loads the station's limit with the default extensions", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: { maxMb: 10 } }).dir);
+    expect(ctx.config.loadedPackages!.stations[0]!.uploads).toEqual({ maxMb: 10, extensions: [".zip"] });
+  });
+
+  it("refuses a manifest that declares uploads without onDemand", async () => {
+    const ctx = await factory(stationPackage({ uploads: { maxMb: 10 } }).dir);
+    expect(ctx.config.loadedPackages!.stations).toEqual([]);
+    expect(ctx.config.loadedPackages!.problems[0]).toMatchObject({ reason: expect.stringContaining("uploads") });
+  });
+
+  it.each([{ maxMb: 0 }, { maxMb: 101 }, { maxMb: 5, otro: 1 }])("refuses uploads %j", async (uploads) => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads }).dir);
+    expect(ctx.config.loadedPackages!.problems[0]).toMatchObject({ reason: expect.stringContaining("uploads") });
+  });
+
+  it("stores the file under a clean name, asks for a run, and the run receives it and can unzip it", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true, uploads: {}, module: UPLOAD_MODULE });
+    const ctx = await factory(dir);
+    const r = await uploadToStation(ctx, "hello/nota", { name: "../evil name.zip", content: zip, request: "construilo" });
+    expect(r).toMatchObject({ ok: true });
+    const stored = files(ctx);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatch(/evil-name\.zip$/);
+    expect(stored[0]).not.toMatch(/[\\/]/);
+    expect(ctx.store.getKv(key)).toBeDefined();
+    expect(ctx.store.getKv(stationUploadKey("hello", "nota"))).toBeDefined();
+    await onDemandPass(ctx, pass(), new Date());
+    const got = JSON.parse(calls()[0]!) as { arg: unknown; upload: { name: string; path: string; sizeBytes: number; at: string }; unzip: unknown };
+    expect(got.arg).toEqual({ onDemand: true, request: "construilo" });
+    expect(got.upload).toMatchObject({ name: "evil-name.zip", path: join(uploadsDir(ctx), stored[0]!), sizeBytes: zip.length, at: expect.any(String) });
+    expect(got.unzip).toEqual({ files: ["src/a.txt", "README.md"] });
+    expect(readFileSync(join(packageDataDir(ctx.home, "hello"), "work", "src", "a.txt"), "utf8")).toBe("hola");
+    expect(ctx.store.getKv(stationUploadKey("hello", "nota"))).toBeUndefined();
+  });
+
+  it("streams the content", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: {} }).dir);
+    async function* chunks() {
+      yield zip.subarray(0, 3);
+      yield zip.subarray(3);
+    }
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: chunks() })).toMatchObject({ ok: true });
+    expect(files(ctx)).toHaveLength(1);
+  });
+
+  it("refuses past maxMb, leaving no file", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: { maxMb: 0.001 } }).dir);
+    const big = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048)]);
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: big })).toMatchObject({ ok: false, reason: expect.stringContaining("MB") });
+    expect(files(ctx)).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+
+  it("refuses a wrong extension, writing nothing", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: {} }).dir);
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.exe", content: zip })).toMatchObject({ ok: false, reason: expect.stringContaining(".zip") });
+    expect(files(ctx)).toEqual([]);
+    expect(ctx.store.getKv(key)).toBeUndefined();
+  });
+
+  it("refuses a .zip without the zip signature", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: {} }).dir);
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: Buffer.from("MZ no soy un zip") })).toMatchObject({ ok: false, reason: expect.stringContaining("zip") });
+    expect(files(ctx)).toEqual([]);
+  });
+
+  it("refuses a station without uploads", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true }).dir);
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: zip })).toMatchObject({ ok: false, reason: expect.stringContaining("uploads") });
+    expect(files(ctx)).toEqual([]);
+  });
+
+  it("refuses while a run is pending, writing nothing", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: {} }).dir);
+    requestStationRun(ctx, "hello/nota");
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: zip })).toMatchObject({ ok: false, reason: expect.stringContaining("pendiente") });
+    expect(files(ctx)).toEqual([]);
+    expect(ctx.store.getKv(stationUploadKey("hello", "nota"))).toBeUndefined();
+  });
+
+  it("refuses with the andon on", async () => {
+    const ctx = await factory(stationPackage({ onDemand: true, uploads: {} }).dir);
+    ctx.store.setKv(ANDON_KEY, "on");
+    expect(await uploadToStation(ctx, "hello/nota", { name: "a.zip", content: zip })).toMatchObject({ ok: false });
+    expect(files(ctx)).toEqual([]);
+  });
+
+  it("gives no ctx.upload to a plain on-demand run or a regular pass", async () => {
+    const { dir, calls } = stationPackage({ onDemand: true, uploads: {}, module: UPLOAD_MODULE });
+    const ctx = await factory(dir);
+    requestStationRun(ctx, "hello/nota");
+    await onDemandPass(ctx, pass(), new Date());
+    await packagesPass(ctx, pass(), new Date());
+    expect(calls().map((c) => (JSON.parse(c) as { upload: unknown }).upload)).toEqual([null, null]);
+  });
+
+  it("keeps ctx.unzip inside the data folder", async () => {
+    const outside = tempDir("zero-outside-");
+    writeFileSync(join(outside, "x.zip"), zip);
+    const module = `export async function pass(ctx) {
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(ctx.dataDir + "/in.zip", Buffer.from(${JSON.stringify(zip.toString("base64"))}, "base64"));
+  note(JSON.stringify([await ctx.unzip("in.zip", ${JSON.stringify(join(outside, "dest"))}), await ctx.unzip("in.zip", "../fuera"), await ctx.unzip(${JSON.stringify(join(outside, "x.zip"))}, "work"), await ctx.unzip(undefined, "work")]));
+}`;
+    const { dir, calls } = stationPackage({ module });
+    const ctx = await factory(dir);
+    await packagesPass(ctx, pass(), new Date());
+    const results = JSON.parse(calls()[0]!) as unknown[];
+    expect(results).toHaveLength(4);
+    for (const r of results) expect(r).toMatchObject({ reason: expect.any(String) });
+    expect(readdirSync(outside)).toEqual(["x.zip"]);
+    expect(existsSync(join(packageDataDir(ctx.home, "hello"), "work"))).toBe(false);
   });
 });

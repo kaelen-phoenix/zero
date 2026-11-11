@@ -1,6 +1,6 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
@@ -8,11 +8,12 @@ import { ANDON_KEY, requestWork, type FactoryContext } from "../app.js";
 import { budgetState, pickAgentEngine } from "../budget.js";
 import type { PackageStation } from "../config.js";
 import { log } from "../log.js";
-import { packageDataDir, warnOnce } from "../packages.js";
+import { isInside, packageDataDir, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
 import { startOfDay } from "../telemetry/metrics.js";
+import { unzip } from "../unzip.js";
 import { PACKAGE_AGENT_PREFIX, periodStart, scoutSpent } from "./scout.js";
 
 const CHARS_PER_TEXT = 600;
@@ -35,6 +36,19 @@ export interface DeliveredJob {
   /** When it was delivered, ISO 8601. */
   at: string;
 }
+
+/** A file the person in charge uploaded to a station; `path` is absolute, inside the package's data folder. */
+export interface StationUpload {
+  /** Its cleaned base name. */
+  name: string;
+  path: string;
+  sizeBytes: number;
+  /** When it was uploaded, ISO 8601. */
+  at: string;
+}
+
+/** What `ctx.unzip` wrote, relative to its destination, or why it wrote nothing. */
+export type UnzipOutcome = { files: string[] } | { reason: string };
 
 /** All a station receives from the factory: interface 1 of the package format. */
 export interface StationContext {
@@ -64,6 +78,10 @@ export interface StationContext {
   requestJob(req: { line: string; text: string; maxUsd?: number }): JobRequestResult;
   /** A job this package opened with `requestJob`; undefined for any other id. Never throws. */
   job(id: string): PackageJobView | undefined;
+  /** The file this on-demand run answers; absent in every other turn. */
+  upload?: StationUpload;
+  /** Unpacks a zip of `dataDir` into a folder of `dataDir` (relative paths are taken from it); refuses the whole archive on links, paths leaving it, encryption, zip64 or too much. Never throws. */
+  unzip(zip: string, dest: string): Promise<UnzipOutcome>;
 }
 
 /** A package's own job as its stations may read it. */
@@ -157,6 +175,21 @@ export function readStationRun(ctx: FactoryContext, pkg: string, name: string): 
   if (raw === undefined) return undefined;
   try {
     return JSON.parse(raw) as StationRunRecord;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The file a pending on-demand run answers, as a `StationUpload`; written only with the request itself. */
+export const stationUploadKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:upload`;
+
+/** The upload a pending on-demand run answers, if there is one and it can be read. */
+export function readStationUpload(ctx: FactoryContext, pkg: string, name: string): StationUpload | undefined {
+  const raw = ctx.store.getKv(stationUploadKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    const u = JSON.parse(raw) as StationUpload;
+    return typeof u?.name === "string" && typeof u.path === "string" && typeof u.sizeBytes === "number" && typeof u.at === "string" ? { name: u.name, path: u.path, sizeBytes: u.sizeBytes, at: u.at } : undefined;
   } catch {
     return undefined;
   }
@@ -337,7 +370,29 @@ function stationRequest(ctx: FactoryContext, station: PackageStation, now: Date,
   };
 }
 
-function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal): StationContext {
+/** `ctx.unzip`: both paths inside the data folder, the zip a real regular file there. */
+async function stationUnzip(dataDir: string, zip: unknown, dest: unknown): Promise<UnzipOutcome> {
+  try {
+    if (typeof zip !== "string" || typeof dest !== "string" || !zip || !dest) return { reason: "unzip necesita la ruta del zip y la del destino, como texto" };
+    const root = realpathSync(dataDir);
+    const from = resolve(root, zip);
+    const to = resolve(root, dest);
+    if (!isInside(from, root) || !isInside(to, root)) return { reason: "el zip y el destino tienen que estar en la carpeta de datos del paquete" };
+    let real: string;
+    try {
+      real = realpathSync(from);
+    } catch {
+      return { reason: "el zip no existe" };
+    }
+    if (!isInside(real, root) || !statSync(real).isFile()) return { reason: "el zip tiene que ser un archivo de la carpeta de datos del paquete" };
+    const r = await unzip(real, to, root);
+    return r.ok ? { files: r.files } : { reason: r.reason };
+  } catch (err) {
+    return { reason: `no se pudo descomprimir: ${errorText(err)}` };
+  }
+}
+
+function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"], station: PackageStation, config: unknown, now: Date, signal: AbortSignal, upload?: StationUpload): StationContext {
   const key = stationKey(station);
   const stateKey = (name: string) => `${key}:state:${name}`;
   const dataDir = packageDataDir(ctx.home, station.package);
@@ -368,6 +423,8 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
     deliveredJobs: (since) => deliveredJobs(ctx, since),
     requestJob: stationRequest(ctx, station, now, signal),
     job: (id) => packageJob(ctx, station, id),
+    ...(upload && { upload: { ...upload } }),
+    unzip: (zip, dest) => (signal.aborted ? Promise.resolve({ reason: "la pasada ya terminó" }) : stationUnzip(dataDir, zip, dest)),
   };
 }
 
@@ -500,11 +557,14 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
   const clock = () => (ctx.now ?? (() => new Date()))().toISOString();
   const asked = ctx.store.getKv(onDemandKey) ?? now.toISOString();
   const request = ctx.store.getKv(requestKey) || undefined;
+  const uploadKey = stationUploadKey(station.package, station.name);
+  const upload = readStationUpload(ctx, station.package, station.name);
   const base = { requestedAt: asked, ...(request && { request }) };
   let startedAt: string | undefined;
   const clear = () => {
     ctx.store.deleteKv(onDemandKey);
     ctx.store.deleteKv(requestKey);
+    ctx.store.deleteKv(uploadKey);
   };
   const write = (record: OnDemandRecord) => ctx.store.setKv(recordKey, JSON.stringify(record));
   await runTurn(
@@ -534,7 +594,7 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
         if (error) record.error = stationText(error, ctx, station, CHARS_PER_TEXT);
         ctx.store.setKv(runKey, JSON.stringify(record));
       },
-      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal), { onDemand: true, ...(request && { request }) }),
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal, upload), { onDemand: true, ...(request && { request }) }),
     },
     outer,
   );

@@ -9,6 +9,11 @@ import { factoryConfig } from "../src/packages.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
 import { cleanup, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { stationUploadKey } from "../src/line/packages.js";
+import { packageDataDir } from "../src/packages.js";
+import { makeZip } from "./zip.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -20,7 +25,7 @@ afterEach(async () => {
 async function panel() {
   const dir = tempDir("zero-pkg-");
   writeTree(dir, {
-    "zero-package.yaml": stringify({ interface: 1, name: "hello", version: "1.0.0", stations: [{ name: "pedible", module: "a.mjs", onDemand: true }, { name: "normal", module: "a.mjs" }] }),
+    "zero-package.yaml": stringify({ interface: 1, name: "hello", version: "1.0.0", stations: [{ name: "pedible", module: "a.mjs", onDemand: true, uploads: { maxMb: 1 } }, { name: "normal", module: "a.mjs" }] }),
     "a.mjs": "export async function pass() {}\n",
   });
   const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "tienda", repo: gitRepo() }], packages: [{ path: dir, allowCode: true }] });
@@ -34,7 +39,8 @@ async function panel() {
   const get = (path: string, headers: Record<string, string> = { cookie }) => fetch(base + path, { headers, redirect: "manual" });
   const post = (path: string, form: Record<string, string>, headers: Record<string, string> = { cookie }) =>
     fetch(base + path, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, body: new URLSearchParams(form).toString(), redirect: "manual" });
-  return { ctx, get, post };
+  const upload = (form: FormData, headers: Record<string, string> = { cookie }, query = "?station=hello%2Fpedible") => fetch(`${base}/packages/upload${query}`, { method: "POST", headers, body: form, redirect: "manual", duplex: "half" } as RequestInit);
+  return { ctx, get, post, upload };
 }
 
 const message = (r: Response) => new URL(r.headers.get("location")!, "http://panel").searchParams.get("msg") ?? "";
@@ -128,5 +134,95 @@ describe("zero status", () => {
     expect(factoryStatus(p.ctx).onDemand).toEqual([{ station: "hello/pedible", since }]);
     expect(JSON.stringify(factoryStatus(p.ctx).onDemand)).toBe(JSON.stringify([{ station: "hello/pedible", since }]));
     expect(factoryStatus(p.ctx).stationRuns).toEqual([]);
+  });
+});
+
+describe("POST /packages/upload", () => {
+  const zip = makeZip([{ name: "a.txt", data: "hola" }]);
+  const form = (data: Buffer = zip, name = "entrega.zip") => {
+    const f = new FormData();
+    f.set("station", "hello/pedible");
+    f.set("file", new Blob([new Uint8Array(data)]), name);
+    f.set("pedido", "construilo");
+    return f;
+  };
+  const stored = (p: Awaited<ReturnType<typeof panel>>) => {
+    const dir = join(packageDataDir(p.ctx.home, "hello"), "uploads", "pedible");
+    return existsSync(dir) ? readdirSync(dir) : [];
+  };
+
+  it("shows the upload form only on the station that takes uploads", async () => {
+    const p = await panel();
+    const html = await (await p.get("/packages")).text();
+    const forms = html.match(/<form method="post" action="\/packages\/upload[^"]*" enctype="multipart\/form-data">[\s\S]*?<\/form>/g) ?? [];
+    expect(forms).toHaveLength(1);
+    expect(forms[0]).toContain(`value="hello/pedible"`);
+    expect(forms[0]).toContain(`type="file"`);
+  });
+
+  it("stores the file and asks for the run, going back to /packages", async () => {
+    const p = await panel();
+    const r = await p.upload(form());
+    expect(r.status).toBe(303);
+    expect(r.headers.get("location")!.startsWith("/packages?")).toBe(true);
+    expect(message(r)).toContain("entrega.zip");
+    expect(stored(p)).toHaveLength(1);
+    expect(p.ctx.store.getKv(stationOnDemandKey("hello", "pedible"))).toBeDefined();
+    expect(p.ctx.store.getKv(stationOnDemandRequestKey("hello", "pedible"))).toBe("construilo");
+    expect(JSON.parse(p.ctx.store.getKv(stationUploadKey("hello", "pedible"))!)).toMatchObject({ name: "entrega.zip", sizeBytes: zip.length });
+  });
+
+  it("goes back with the refusal for a station without uploads", async () => {
+    const p = await panel();
+    const f = form();
+    f.set("station", "hello/normal");
+    const r = await p.upload(f, undefined, "");
+    expect(r.status).toBe(303);
+    expect(message(r)).toContain("no acepta");
+    expect(p.ctx.store.getKv(stationOnDemandKey("hello", "normal"))).toBeUndefined();
+    expect(existsSync(join(packageDataDir(p.ctx.home, "hello"), "uploads", "normal"))).toBe(false);
+  });
+
+  it("refuses a body over the station's limit, storing nothing", async () => {
+    const p = await panel();
+    const r = await p.upload(form(Buffer.alloc(3 * 1024 * 1024)));
+    expect(r.status).toBe(413);
+    expect(stored(p)).toEqual([]);
+    expect(p.ctx.store.getKv(stationOnDemandKey("hello", "pedible"))).toBeUndefined();
+  });
+
+  it("stops reading a body without length once it goes over the limit", async () => {
+    const p = await panel();
+    const big = new Uint8Array(3 * 1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < big.length; i += 64 * 1024) controller.enqueue(big.subarray(i, i + 64 * 1024));
+        controller.close();
+      },
+    });
+    const r = await p.upload(body as unknown as FormData, { cookie: `zero_panel=${sessionFor(panelKey(p.ctx.secrets))}`, "content-type": "multipart/form-data; boundary=x" });
+    expect(r.status).toBe(413);
+    expect(stored(p)).toEqual([]);
+  });
+
+  it("refuses a cross-site post with 403, storing nothing", async () => {
+    const p = await panel();
+    const r = await p.upload(form(), { cookie: `zero_panel=${sessionFor(panelKey(p.ctx.secrets))}`, "sec-fetch-site": "cross-site" });
+    expect(r.status).toBe(403);
+    expect(stored(p)).toEqual([]);
+    expect(p.ctx.store.getKv(stationOnDemandKey("hello", "pedible"))).toBeUndefined();
+  });
+
+  it("refuses without a session", async () => {
+    const p = await panel();
+    const r = await p.upload(form(), {});
+    expect(r.status).toBe(401);
+    expect(stored(p)).toEqual([]);
+  });
+
+  it("keeps the 64 KB limit on other routes", async () => {
+    const p = await panel();
+    await p.post("/packages/run", { station: "hello/pedible", pedido: "x".repeat(70 * 1024) });
+    expect(p.ctx.store.getKv(stationOnDemandKey("hello", "pedible"))).toBeUndefined();
   });
 });

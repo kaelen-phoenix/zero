@@ -15,6 +15,8 @@ export const MANIFEST = "zero-package.yaml";
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 const NAME_RULE = "usá minúsculas, dígitos y guiones";
 const SCHEDULE_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+/** The largest upload a station may declare. */
+export const MAX_UPLOAD_MB = 100;
 
 /** No `engine` or `model` here: which engine runs a third party's agent is up to the package's entry, so they are refused as unknown keys. */
 const ManifestAgentSchema = z
@@ -51,8 +53,20 @@ const ManifestStationSchema = z
     requests: z.object({ perLinePerDay: z.number().int().positive() }).strict().optional(),
     /** Permission for the person in charge to ask for a run of `pass` outside its period. */
     onDemand: z.boolean().default(false),
+    /** Permission for the person in charge to upload a file to it, which asks for an on-demand run. */
+    uploads: z
+      .object({
+        maxMb: z.number().positive().max(MAX_UPLOAD_MB).default(20),
+        extensions: z
+          .array(z.string().regex(/^\.[a-z0-9]+$/i, "va una extensión como .zip"))
+          .min(1)
+          .default([".zip"]),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((s) => !s.uploads || s.onDemand, { message: "uploads necesita onDemand: true", path: ["uploads"] });
 
 const ManifestTabSchema = z
   .object({
@@ -221,6 +235,7 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       maxTurns: s.maxTurns,
       ...(s.requests && { requests: s.requests }),
       onDemand: s.onDemand,
+      ...(s.uploads && { uploads: { maxMb: s.uploads.maxMb, extensions: s.uploads.extensions.map((e) => e.toLowerCase()) } }),
       entry,
     };
   });

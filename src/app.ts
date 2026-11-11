@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
@@ -13,7 +14,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
@@ -30,7 +31,7 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
-import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
+import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
 import { readDiagnosis, type Cause } from "./line/unjam.js";
@@ -1854,6 +1855,11 @@ export type StationRunResult = { ok: true; text: string; requestedAt: string } |
  * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
  */
 export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
+  return askStationRun(ctx, ref, now, request);
+}
+
+/** The station a run may be asked of right now, or why not; nothing is written. */
+function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: PackageStation } | { ok: false; reason: string } {
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
   if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
   const [, pkg, name] = match as unknown as [string, string, string];
@@ -1864,20 +1870,107 @@ export function requestStationRun(ctx: FactoryContext, ref: string, now = new Da
   const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
-  const key = stationOnDemandKey(pkg, name);
-  const pending = ctx.store.getKv(key);
+  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
+  return { station };
+}
+
+/** `requestStationRun`, plus the upload the run answers when it comes from `uploadToStation`. */
+function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: string, upload?: StationUpload): StationRunResult {
+  const found = stationForRun(ctx, ref, now);
+  if (!("station" in found)) return found;
+  const { station } = found;
+  const pkg = station.package;
+  const name = station.name;
+  const key = stationOnDemandKey(pkg, name);
   // Cleaned like a station's own request: it reaches third-party code.
   const text = request === undefined ? "" : stationText(request, ctx, station);
   const requestKey = stationOnDemandRequestKey(pkg, name);
   // The text goes first: the daemon reads it only once the request itself is there.
   if (text) ctx.store.setKv(requestKey, text);
   else ctx.store.deleteKv(requestKey);
+  const uploadKey = stationUploadKey(pkg, name);
+  if (upload) ctx.store.setKv(uploadKey, JSON.stringify(upload));
+  else ctx.store.deleteKv(uploadKey);
   const requestedAt = now.toISOString();
   ctx.store.setKv(key, requestedAt);
   return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** What can be uploaded: a buffer, or the bytes as they arrive (a request body). */
+export type UploadContent = Uint8Array | AsyncIterable<Uint8Array>;
+
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+
+/** A file name as it may be kept: its base name only, in safe characters, never hidden or empty. */
+export function uploadName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? "";
+  const clean = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").replace(/-{2,}/g, "-");
+  const ext = extname(clean);
+  const stem = clean.slice(0, clean.length - ext.length).slice(0, 80) || "archivo";
+  return `${stem}${ext.slice(0, 16)}`;
+}
+
+/**
+ * Stores a file the person in charge uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
+ * for an on-demand run of that station that receives it as `ctx.upload`. Everything that can refuse is checked before
+ * writing; past the station's `maxMb` or on any refusal after it, nothing is left behind. Third-party content: it is
+ * never opened here beyond its first bytes.
+ */
+export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string }, now = new Date()): Promise<StationRunResult> {
+  const found = stationForRun(ctx, ref, now);
+  if (!("station" in found)) return found;
+  const { station } = found;
+  const label = `${station.package}/${station.name}`;
+  if (!station.uploads) return { ok: false, reason: `la estación ${label} no acepta archivos: su manifiesto no declara uploads` };
+  const name = uploadName(file.name);
+  const ext = extname(name).toLowerCase();
+  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}` };
+  const maxBytes = Math.floor(station.uploads.maxMb * 1024 * 1024);
+  const dataDir = packageDataDir(ctx.home, station.package);
+  const dir = join(dataDir, "uploads", station.name);
+  await mkdir(dir, { recursive: true });
+  if (!isInside(realpathSync(dir), realpathSync(dataDir))) return { ok: false, reason: `la carpeta de archivos de ${label} sale de la carpeta de datos del paquete` };
+  const temp = join(dir, `.subiendo-${randomUUID()}`);
+  const final = join(dir, `${now.toISOString().replace(/[:.]/g, "-")}-${name}`);
+  let size = 0;
+  let head = Buffer.alloc(0);
+  let refused: string | undefined;
+  try {
+    const out = await open(temp, "wx");
+    try {
+      const chunks: AsyncIterable<Uint8Array> | Uint8Array[] = file.content instanceof Uint8Array ? [file.content] : file.content;
+      for await (const chunk of chunks) {
+        size += chunk.length;
+        if (size > maxBytes) {
+          refused = `el archivo pasa de ${station.uploads.maxMb} MB, el máximo de ${label}`;
+          break;
+        }
+        if (head.length < ZIP_SIGNATURE.length) head = Buffer.concat([head, Buffer.from(chunk.subarray(0, ZIP_SIGNATURE.length - head.length))]);
+        await out.write(chunk);
+      }
+    } finally {
+      await out.close();
+    }
+    if (!refused && size === 0) refused = "el archivo está vacío";
+    if (!refused && ext === ".zip" && !head.equals(ZIP_SIGNATURE)) refused = "el archivo no es un zip";
+    if (refused) {
+      await rm(temp, { force: true });
+      return { ok: false, reason: refused };
+    }
+    await rename(temp, final);
+  } catch (err) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    return { ok: false, reason: `no se pudo guardar el archivo: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const r = askStationRun(ctx, ref, now, file.request, { name, path: final, sizeBytes: size, at: now.toISOString() });
+  if (!r.ok) {
+    await rm(final, { force: true }).catch(() => undefined);
+    return r;
+  }
+  return { ...r, text: `Archivo ${name} (${size} bytes) guardado para ${label}. ${r.text}` };
 }
 
 export interface StationWait {
