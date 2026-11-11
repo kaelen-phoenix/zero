@@ -32,6 +32,7 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
+import { realSelfUpdateDeps, selfUpdateCheck, type SelfUpdateDeps } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -73,6 +74,8 @@ export interface DaemonOptions {
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
   packageUpdates?: boolean;
+  /** git, npm and node for zero's own update; tests inject fakes. Without it, `once` runs do not look. */
+  selfUpdate?: SelfUpdateDeps;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -337,6 +340,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
+  // zero's own new version, prepared off to the side when the person in charge turned it on; the check itself keeps to once a day or after an own merge.
+  let selfCheckedAt = 0;
+  let selfChecking: Promise<void> | undefined;
+  const checkSelfUpdate = () => {
+    if (selfChecking || (opts.once && !opts.selfUpdate) || !ctx.config.selfUpdate.enabled || Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    selfCheckedAt = Date.now();
+    selfChecking = selfUpdateCheck(ctx, opts.selfUpdate ?? realSelfUpdateDeps())
+      .catch((err) => log.warn("self-update check failed", { error: String(err) }))
+      .finally(() => (selfChecking = undefined));
+  };
+
   // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
@@ -419,6 +433,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       runSchedules();
       runOnDemand();
       lookForPackageUpdates();
+      checkSelfUpdate();
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -496,6 +511,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await scheduling;
     await demanding;
     await looking;
+    await selfChecking;
     await idle;
     tunnel.stop();
     panel?.close();
