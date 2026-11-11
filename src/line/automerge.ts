@@ -40,6 +40,8 @@ export interface Check {
   ok: boolean;
   /** The GitHub Actions run it belongs to, when it is one: what can be run again. */
   run?: number;
+  /** When it finished, when GitHub says. */
+  at?: string;
 }
 
 /** The slice of GitHub automatic merging needs; tests use a fake. */
@@ -74,8 +76,8 @@ export function githubMerges(token: string, repository: string, client?: Octokit
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
       const statuses = (await gh.repos.getCombinedStatusForRef({ owner, repo, ref: sha })).data.statuses;
       return [
-        ...runs.map((r) => ({ name: r.name, done: r.status === "completed", ok: PASSED.has(r.conclusion ?? ""), ...actionsRun(r.details_url) })),
-        ...statuses.map((s) => ({ name: s.context, done: s.state !== "pending", ok: s.state === "success" })),
+        ...runs.map((r) => ({ name: r.name, done: r.status === "completed", ok: PASSED.has(r.conclusion ?? ""), ...actionsRun(r.details_url), ...(r.completed_at && { at: r.completed_at }) })),
+        ...statuses.map((s) => ({ name: s.context, done: s.state !== "pending", ok: s.state === "success", ...(s.updated_at && { at: s.updated_at }) })),
       ];
     },
     async merge(number, sha) {
@@ -158,6 +160,8 @@ export interface MergeState {
   rerun?: string;
   /** The last pull request tip whose job went back to the queue to merge the base in. */
   resolving?: string;
+  /** The `since` of the environment outage of its repository that held it (see `ChecksOutage`). */
+  outage?: string;
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -208,23 +212,28 @@ function ended(started: NonNullable<MergeState["refreshing"]>, head: string, now
  * keeps one run waiting and cancels the others, so a run started on top of another loses one of the two.
  * Returns what it did, or undefined when there is nothing left to try. Never throws: a GitHub that refuses means nothing was done.
  */
-async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestState, failed: Check[], state: MergeState, busy: boolean, now: number): Promise<Unblocking | undefined> {
+async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestState, failed: Check[], state: MergeState, busy: boolean, now: number, after: Recovery): Promise<Unblocking | undefined> {
   try {
     // GitHub takes a moment to make the new tip: until it shows, the refresh asked for this one is still under way.
     const started = state.refreshing;
-    if (started?.head === pr.headSha && now - Date.parse(started.at) < (started.rerun ? RERUN_SHOWS_MS : REFRESH_SHOWS_MS)) {
-      return { kind: "done", why: started.rerun ? "sus checks fallidos corren de nuevo" : "actualizándose con la rama base", patch: {} };
+    if (showing(state, pr.headSha, now)) {
+      return { kind: "done", why: started!.rerun ? "sus checks fallidos corren de nuevo" : "actualizándose con la rama base", patch: {} };
     }
     const refreshes = state.refreshes ?? 0;
     if (pr.base && gh.behind && gh.updateBranch && refreshes < MAX_REFRESHES && (await gh.behind(pr.base, pr.headSha))) {
       if (busy) return { kind: "turn", why: "espera su turno para actualizarse con la rama base" };
+      const down = await baseFailures(gh, pr.base, failed, after.since);
+      if (down.length) return { kind: "outage", failed: down };
       await gh.updateBranch(number, pr.headSha);
       log.info("pull request brought up to date with its base; its checks run again", { job: job.id, head: pr.headSha, refresh: refreshes + 1 });
       return { kind: "done", why: "actualizado con la rama base; esperando sus checks", patch: { refreshes: refreshes + 1, refreshing: { head: pr.headSha, at: new Date(now).toISOString() } }, refreshed: true };
     }
     const runs = [...new Set(failed.flatMap((c) => (c.run ? [c.run] : [])))];
-    if (gh.rerun && runs.length && state.rerun !== pr.headSha) {
+    // A run spent while the environment was down does not count: once it is back, a held pull request gets one more.
+    if (gh.rerun && runs.length && (state.rerun !== pr.headSha || after.again)) {
       if (busy) return { kind: "turn", why: "espera su turno para correr de nuevo sus checks" };
+      const down = await baseFailures(gh, pr.base, failed, after.since);
+      if (down.length) return { kind: "outage", failed: down };
       for (const run of runs) await gh.rerun(run);
       log.info("failed checks of a pull request run again", { job: job.id, head: pr.headSha, runs });
       return { kind: "done", why: "sus checks fallidos corren de nuevo", patch: { rerun: pr.headSha, refreshing: { head: pr.headSha, at: new Date(now).toISOString(), rerun: true } }, refreshed: true };
@@ -236,7 +245,32 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
   return undefined;
 }
 
-type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string };
+/** What an environment that came back changes for a pull request: failures until `since` are not counted, and `again` allows one more run. */
+type Recovery = { since?: number; again: boolean };
+
+type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string } | { kind: "outage"; failed: Check[] };
+
+/** Whether GitHub is still to show what the factory asked for this tip (a refresh or a second run). */
+function showing(state: MergeState, head: string, now: number): boolean {
+  const started = state.refreshing;
+  return started?.head === head && now - Date.parse(started.at) < (started.rerun ? RERUN_SHOWS_MS : REFRESH_SHOWS_MS);
+}
+
+/**
+ * The failed checks of a pull request that also ended failed at the tip of its base branch: the environment,
+ * not the change. A base that cannot be read says nothing, so the pull request goes on as before.
+ */
+async function baseFailures(gh: MergeApi, base: string | undefined, failed: Check[], recovered?: number): Promise<Check[]> {
+  if (!base) return [];
+  const names = new Set(failed.map((c) => c.name));
+  try {
+    return (await gh.checks(base)).filter((c) => c.done && !c.ok && names.has(c.name) && !before(c.at, recovered));
+  } catch (err) {
+    if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    log.warn("cannot read the checks of the base branch", { base, error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
 
 /** The other watched pull requests of the repository, with what the factory knows of each. */
 function elsewhere(ctx: FactoryContext, job: Job, repository: string): { job: Job; state: MergeState }[] {
@@ -256,6 +290,130 @@ function refreshedElsewhere(ctx: FactoryContext, job: Job, repository: string, n
  */
 function firstChecksElsewhere(ctx: FactoryContext, job: Job, repository: string, now: number): boolean {
   return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
+}
+
+/** A failed check seen at the tip of a pull request, remembered for a day to tell an environment down from a change. */
+export interface CheckFailure {
+  check: string;
+  job: string;
+  head: string;
+  /** When it ended, when GitHub says: only these are compared in time. */
+  at?: string;
+  seen: string;
+}
+
+/**
+ * A shared environment the checks of a repository use is down: the same check failed in several pull requests
+ * a short while apart, or at the tip of the base branch too. While it lasts nothing is spent on the pull
+ * requests it holds (no refresh, no second run, no comment).
+ */
+export interface ChecksOutage {
+  /** The earliest failure. */
+  since: string;
+  checks: string[];
+  /** The latest failure of each check. */
+  lastFailure: Record<string, string>;
+  /** The base branch whose checks failed too, when that is how it was seen. */
+  base?: string;
+  probe?: { job: string; head: string; at: string };
+  probeDelayMs?: number;
+  nextProbeAt?: string;
+  baseLookAt?: string;
+}
+
+export const checksFailuresKey = (repository: string) => `checks-failures:${repository}`;
+export const checksOutageKey = (repository: string) => `checks-outage:${repository}`;
+/** When the environment of a repository was last seen back: failures that ended before then were its outage's. */
+export const checksRecoveredKey = (repository: string) => `checks-recovered:${repository}`;
+/** Failures of one check in different pull requests this close in time are the environment's. */
+export const OUTAGE_WINDOW_MS = 2 * 3_600_000;
+const FAILURES_KEPT_MS = 24 * 3_600_000;
+/** How long after the last failure the recovery is first tried. */
+const FIRST_PROBE_MS = 30 * 60_000;
+/** Each probe that fails again doubles the wait for the next, up to this. */
+const LAST_PROBE_MS = 240 * 60_000;
+/** While an outage lasts, the checks of the base branch are read at most this often. */
+const BASE_LOOK_MS = 5 * 60_000;
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const two = (n: number) => String(n).padStart(2, "0");
+/** Whether a failure ended no later than the moment the environment was seen back. */
+const before = (at: string | undefined, recovered: number | undefined) => recovered !== undefined && at !== undefined && Date.parse(at) <= recovered;
+
+function recoveredAt(ctx: FactoryContext, repository: string): number | undefined {
+  const raw = ctx.store.getKv(checksRecoveredKey(repository));
+  return raw ? Date.parse(raw) : undefined;
+}
+
+export function readOutage(ctx: FactoryContext, repository: string): ChecksOutage | undefined {
+  const raw = ctx.store.getKv(checksOutageKey(repository));
+  return raw ? (JSON.parse(raw) as ChecksOutage) : undefined;
+}
+
+/** What a pull request held by an outage says, in local time. */
+export function outageWhy(repository: string, outage: ChecksOutage): string {
+  return outageText(repository, outage.since, outage.checks);
+}
+
+/** «entorno caído en <repo> desde HH:MM (checks: a, b)», the one wording of an outage everywhere it is shown. */
+export function outageText(repository: string, since: string, checks: string[]): string {
+  const d = new Date(since);
+  return `entorno caído en ${repository} desde ${two(d.getHours())}:${two(d.getMinutes())} (checks: ${checks.join(", ")})`;
+}
+
+/** Records the outage of a repository, or widens the one under way, with these failures. */
+function recordOutage(ctx: FactoryContext, repository: string, failures: { check: string; at: string }[], base?: string): ChecksOutage {
+  const known = readOutage(ctx, repository);
+  const outage: ChecksOutage = known ?? { since: failures[0]!.at, checks: [], lastFailure: {} };
+  for (const { check, at } of failures) {
+    if (Date.parse(at) < Date.parse(outage.since)) outage.since = at;
+    if (!outage.checks.includes(check)) outage.checks.push(check);
+    const last = outage.lastFailure[check];
+    if (!last || Date.parse(at) > Date.parse(last)) outage.lastFailure[check] = at;
+  }
+  if (base) outage.base = base;
+  const last = Math.max(...Object.values(outage.lastFailure).map((at) => Date.parse(at)));
+  outage.nextProbeAt = iso(last + (outage.probeDelayMs ?? FIRST_PROBE_MS));
+  ctx.store.setKv(checksOutageKey(repository), JSON.stringify(outage));
+  if (!known) log.warn("the environment of the checks of a repository looks down; nothing is spent on its pull requests meanwhile", { repository, checks: outage.checks, since: outage.since, ...(base && { base }) });
+  return outage;
+}
+
+/**
+ * Remembers the failed checks of a pull request's tip and returns those that also failed, close in time, in
+ * other watched pull requests of the repository, with them and the jobs they belong to.
+ */
+function sameFailures(ctx: FactoryContext, job: Job, repository: string, head: string, failed: Check[], now: number): { failures: { check: string; at: string }[]; jobs: string[] } {
+  const key = checksFailuresKey(repository);
+  const recovered = recoveredAt(ctx, repository);
+  failed = failed.filter((c) => !before(c.at, recovered));
+  const names = new Set(failed.map((c) => c.name));
+  const earlier = (JSON.parse(ctx.store.getKv(key) ?? "[]") as CheckFailure[]).filter((f) => now - Date.parse(f.seen) < FAILURES_KEPT_MS && !(f.job === job.id && f.head === head && names.has(f.check)));
+  const mine: CheckFailure[] = failed.map((c) => ({ check: c.name, job: job.id, head, ...(c.at && { at: c.at }), seen: iso(now) }));
+  ctx.store.setKv(key, JSON.stringify([...earlier, ...mine]));
+  const watched = new Set(elsewhere(ctx, job, repository).map((other) => other.job.id));
+  const failures: { check: string; at: string }[] = [];
+  const jobs = new Set<string>();
+  for (const m of mine) {
+    if (!m.at) continue;
+    const near = earlier.filter((f) => f.check === m.check && f.job !== job.id && watched.has(f.job) && f.at && !before(f.at, recovered) && Math.abs(Date.parse(f.at) - Date.parse(m.at!)) <= OUTAGE_WINDOW_MS);
+    if (!near.length) continue;
+    failures.push({ check: m.check, at: m.at }, ...near.map((f) => ({ check: f.check, at: f.at! })));
+    for (const f of near) jobs.add(f.job);
+  }
+  return { failures, jobs: [...jobs] };
+}
+
+/** Marks other pull requests as held by the outage, so they are not told about checks that failed for its reason. */
+function markHeld(ctx: FactoryContext, jobs: string[], repository: string, outage: ChecksOutage) {
+  const why = outageWhy(repository, outage);
+  for (const id of jobs) {
+    const raw = ctx.store.getKv(mergeKey(id));
+    const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
+    if (FINAL.has(state.status)) continue;
+    const blocked = state.status === "blocked" && { why, ...(state.backoff && { backoff: { ...state.backoff, why } }) };
+    ctx.store.setKv(mergeKey(id), JSON.stringify({ ...state, ...blocked, outage: outage.since } satisfies MergeState));
+  }
 }
 
 /**
@@ -299,7 +457,7 @@ function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState
   return true;
 }
 
-async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number, repository = "", refreshing: Refreshing = new Set()) {
+async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number, repository = "", refreshing: Refreshing = new Set(), passed: Passed = new Map()) {
   const key = mergeKey(job.id);
   const raw = ctx.store.getKv(key);
   const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
@@ -309,6 +467,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     ...(state.refreshes && { refreshes: state.refreshes }),
     ...(state.refreshing && { refreshing: state.refreshing }),
     ...(state.rerun && { rerun: state.rerun }),
+    ...(state.outage && { outage: state.outage }),
   });
   const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
@@ -323,6 +482,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   }
   if (pr.open && !pr.merged && pr.mergeable === false && since <= WATCH_MS && takeBack(ctx, job, pr.headSha, state, save)) return;
   const checks = pr.open ? await gh.checks(pr.headSha) : [];
+  seenPassing(passed, repository, checks);
   const decision = mergeDecision(pr, checks, since);
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
@@ -338,12 +498,38 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     delete state.refreshing;
     if (!refreshedElsewhere(ctx, job, repository, now)) refreshing.delete(repository);
   }
+  // Held by an outage: told nothing, nothing spent, looked at again like any blocked one.
+  const held = (outage: ChecksOutage) => {
+    const why = outageWhy(repository, outage);
+    const delayMs = unchanged ? Math.min(unchanged.delayMs * 2, LAST_BACKOFF_MS) : FIRST_BACKOFF_MS;
+    return save({ status: "blocked", why, reported: state.reported, outage: outage.since, backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs, nextChecksAt: iso(now + delayMs) } });
+  };
+  if (decision.kind === "blocked" && decision.failed && !showing(state, pr.headSha, now)) {
+    const failed = decision.failed;
+    const same = sameFailures(ctx, job, repository, pr.headSha, failed, now);
+    const known = readOutage(ctx, repository);
+    const ours = failed.filter((c) => known?.checks.includes(c.name));
+    if (same.failures.length || ours.length) {
+      if (known && probeFailed(known, job, pr.headSha, ours, now)) ctx.store.setKv(checksOutageKey(repository), JSON.stringify(known));
+      const outage = recordOutage(ctx, repository, [...same.failures, ...ours.map((c) => ({ check: c.name, at: c.at ?? iso(now) }))]);
+      markHeld(ctx, same.jobs, repository, outage);
+      return held(outage);
+    }
+  }
   if (decision.kind === "blocked" && decision.failed) {
     const busy = (refreshing.has(repository) && !state.refreshing) || firstChecksElsewhere(ctx, job, repository, now);
-    const did = await unblock(job, gh, number, pr, decision.failed, state, busy, now);
+    const again = Boolean(state.outage) && !readOutage(ctx, repository);
+    const did = await unblock(job, gh, number, pr, decision.failed, state, busy, now, { since: recoveredAt(ctx, repository), again });
+    if (did?.kind === "outage") {
+      const names = new Set(did.failed.map((c) => c.name));
+      const failures = [...did.failed, ...decision.failed.filter((c) => names.has(c.name))].map((c) => ({ check: c.name, at: c.at ?? iso(now) }));
+      return held(recordOutage(ctx, repository, failures, pr.base));
+    }
     if (did?.kind === "done") {
       if (did.refreshed) refreshing.add(repository);
       Object.assign(state, did.patch);
+      // The one more run after the environment came back is spent.
+      if (did.refreshed && again) delete state.outage;
       return save({ reported: state.reported, status: "waiting", why: did.why });
     }
     if (did?.kind === "turn") {
@@ -374,6 +560,28 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   }
 }
 
+/** The checks that ended well at the tips looked at in a pass, per repository: what tells an environment is back. */
+type Passed = Map<string, Check[]>;
+
+function seenPassing(passed: Passed, repository: string, checks: Check[]) {
+  const ok = checks.filter((c) => c.done && c.ok && c.at);
+  if (ok.length) passed.set(repository, [...(passed.get(repository) ?? []), ...ok]);
+}
+
+/**
+ * Whether the probe of an outage, run on this pull request, failed again: then the probe is over and the next
+ * one waits twice as long. Changes `outage` in place.
+ */
+function probeFailed(outage: ChecksOutage, job: Job, head: string, failed: Check[], now: number): boolean {
+  const probe = outage.probe;
+  if (!probe || probe.job !== job.id || probe.head !== head) return false;
+  if (!failed.some((c) => Date.parse(c.at ?? iso(now)) > Date.parse(probe.at))) return false;
+  delete outage.probe;
+  outage.probeDelayMs = Math.min((outage.probeDelayMs ?? FIRST_PROBE_MS) * 2, LAST_PROBE_MS);
+  log.info("the environment of the checks is still down; next probe later", { job: job.id, delayMinutes: outage.probeDelayMs / 60_000 });
+  return true;
+}
+
 /** Keeps what the pull request was already told, so a problem reaching GitHub never repeats a comment. */
 function waiting(ctx: FactoryContext, job: Job, why: string) {
   const raw = ctx.store.getKv(mergeKey(job.id));
@@ -385,6 +593,7 @@ function waiting(ctx: FactoryContext, job: Job, why: string) {
 export async function pollMerges(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined): Promise<void> {
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const refreshing: Refreshing = new Set();
+  const passed: Passed = new Map();
   for (const job of watchedJobs(ctx)) {
     const repository = pullRequestOf(job.delivery!.url!)?.repository;
     if (repository && holds(JSON.parse(ctx.store.getKv(mergeKey(job.id)) ?? "{}") as MergeState, now)) refreshing.add(repository);
@@ -397,7 +606,7 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
       continue;
     }
     try {
-      await watch(ctx, job, gh, pr.number, pr.repository, refreshing);
+      await watch(ctx, job, gh, pr.number, pr.repository, refreshing, passed);
     } catch (err) {
       // A pause is not news about this pull request, and the ones left would only spend more or fail the same way.
       if (err instanceof GithubHalted || isRateLimit(err)) {
@@ -408,4 +617,96 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
       waiting(ctx, job, `no se pudo consultar GitHub: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  for (const [key] of ctx.store.kvWithPrefix("checks-outage:")) {
+    const repository = key.slice("checks-outage:".length);
+    try {
+      await followOutage(ctx, api, repository, refreshing, passed.get(repository) ?? [], now);
+    } catch (err) {
+      if (err instanceof GithubHalted || isRateLimit(err)) {
+        log.warn("environment outage follow-up cut short by the GitHub limit", { repository, error: String(err) });
+        return;
+      }
+      log.warn("could not follow the environment outage of a repository", { repository, error: String(err) });
+    }
+  }
+}
+
+/**
+ * What follows an environment outage after the pull requests of its repository were looked at: forgotten once
+ * no pull request it held is left; over once one of its checks ended well after its last failure, at a watched
+ * tip or at the tip of the base branch; otherwise probed now and then by running the failed checks of a single
+ * held pull request again, when nothing else runs in the repository.
+ */
+async function followOutage(ctx: FactoryContext, api: (repository: string, line?: LineConfig) => MergeApi | undefined, repository: string, refreshing: Refreshing, passed: Check[], now: number) {
+  const outage = readOutage(ctx, repository);
+  if (!outage) return;
+  const watched = watchedJobs(ctx)
+    .filter((j) => pullRequestOf(j.delivery!.url!)?.repository === repository)
+    .map((j) => ({ job: j, state: JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "{}") as MergeState }));
+  const held = watched.filter((w) => w.state.outage);
+  if (!held.length) {
+    ctx.store.deleteKv(checksOutageKey(repository));
+    log.info("environment outage forgotten: no pull request it held is left", { repository });
+    return;
+  }
+  const line = ctx.config.lines.find((l) => l.name === held[0]!.job.line);
+  const gh = api(repository, line);
+  if (!gh) return;
+  const save = () => ctx.store.setKv(checksOutageKey(repository), JSON.stringify(outage));
+
+  let seen = passed;
+  const base = outage.base ?? line?.baseBranch;
+  if (!backAt(outage, seen) && base && (!outage.baseLookAt || now - Date.parse(outage.baseLookAt) >= BASE_LOOK_MS)) {
+    outage.baseLookAt = iso(now);
+    save();
+    seen = [...seen, ...(await gh.checks(base)).filter((c) => c.done && c.ok && c.at)];
+  }
+  const back = backAt(outage, seen);
+  if (back !== undefined) {
+    ctx.store.deleteKv(checksOutageKey(repository));
+    ctx.store.setKv(checksRecoveredKey(repository), iso(back));
+    // Looked at again on the next pass, without waiting out what the outage left them.
+    for (const { job, state } of held) {
+      const { backoff: _backoff, ...rest } = state;
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
+    }
+    log.info("the environment of the checks is back; the pull requests it held get their failed checks run again, one at a time", { repository, checks: outage.checks });
+    return;
+  }
+
+  // A probe that never showed its end in the time a run is given counts as failed.
+  if (outage.probe && (now - Date.parse(outage.probe.at) >= REFRESH_HOLD_MS || !held.some((w) => w.job.id === outage.probe!.job))) {
+    delete outage.probe;
+    outage.probeDelayMs = Math.min((outage.probeDelayMs ?? FIRST_PROBE_MS) * 2, LAST_PROBE_MS);
+    outage.nextProbeAt = iso(now + outage.probeDelayMs);
+    save();
+  }
+  if (outage.probe || !gh.rerun || (outage.nextProbeAt && now < Date.parse(outage.nextProbeAt))) return;
+  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
+  if (busy) return;
+  for (const { job, state } of held) {
+    const number = pullRequestOf(job.delivery!.url!)!.number;
+    const pr = await gh.pullRequest(number);
+    if (!pr.open || pr.merged) continue;
+    const checks = await gh.checks(pr.headSha);
+    if (checks.some((c) => !c.done)) continue;
+    const runs = [...new Set(checks.filter((c) => !c.ok).flatMap((c) => (c.run ? [c.run] : [])))];
+    if (!runs.length) continue;
+    for (const run of runs) await gh.rerun(run);
+    const at = iso(now);
+    outage.probe = { job: job.id, head: pr.headSha, at };
+    save();
+    // Its own second run stays untouched: the probe is the outage's, not the pull request's.
+    const { backoff: _backoff, ...rest } = state;
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...rest, status: "waiting", why: "probando si el entorno se recuperó: sus checks fallidos corren de nuevo", refreshing: { head: pr.headSha, at, rerun: true } } satisfies MergeState));
+    refreshing.add(repository);
+    log.info("probing whether the environment of the checks is back", { repository, job: job.id, head: pr.headSha, runs });
+    return;
+  }
+}
+
+/** When one of the outage's checks ended well after its last failure, if it did. */
+function backAt(outage: ChecksOutage, passed: Check[]): number | undefined {
+  const times = passed.filter((c) => outage.checks.includes(c.name) && c.at && Date.parse(c.at) > Date.parse(outage.lastFailure[c.name] ?? outage.since)).map((c) => Date.parse(c.at!));
+  return times.length ? Math.max(...times) : undefined;
 }
