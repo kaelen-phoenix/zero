@@ -20,6 +20,6 @@
 
 ## 3. Etapa 3: Setup wizard and documentation
 
-- [ ] 3.1 setup.ts: consent question outside a container, written to the file, syncAutostart injectable through SetupDeps; cli.ts passes the real one
-- [ ] 3.2 setup-wizard tests for yes, no and container
-- [ ] 3.3 README.md and README.es.md sections in parallel, AGENTS.md updated; typecheck, tests and openspec validate pass
+- [x] 3.1 setup.ts: consent question outside a container, written to the file, syncAutostart injectable through SetupDeps; cli.ts passes the real one
+- [x] 3.2 setup-wizard tests for yes, no and container
+- [x] 3.3 README.md and README.es.md sections in parallel, AGENTS.md updated; typecheck, tests and openspec validate pass
