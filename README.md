@@ -84,6 +84,7 @@ zero approve <id>              # approve (or --reject --note "why")
 zero trace <id>                # step by step: stations, attempts, agents, commands, cost
 zero briefing                  # report: production, cost, lessons, what needs you
 zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to share with its client
+zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -284,6 +285,8 @@ request
 
 - **Local verification first.** zero runs the line's verification locally before delivering anything. Each command has a time limit: `verifyTimeoutMinutes` of the line (20 by default), and never less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a slow machine does not fail jobs whose tests pass. Setup and verify commands of different jobs take turns on your machine (`commandConcurrency`), a setup that fails is tried once more in a fresh copy, a verify command whose failure reads like the machine and not the change (a test over its own timeout, no memory, a locked file, a network cut) is run once more before it costs an attempt, and a command cut by its limit is killed with everything it started.
 - **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
+- **Merging on request.** On any line, with or without `autoMerge`, you can ask the factory to merge a pull request it delivered: `zero fusionar <job | url>` on the terminal, `zero_merge` in the chat, or the **Fundir** button on the job's page in the panel (which asks for confirmation first). It merges only when GitHub says the pull request is ready (every check passed, no conflicts); otherwise it tells you why and forces nothing. Each merge is recorded in the job's trace and in the line's townhall.
+- **Checks GitHub did not start because of billing.** When GitHub refuses to start a pull request's jobs because the account's payments failed or its spending limit was reached, zero does not comment, refresh or count it as a broken environment: it tells you once per repository (in `zero status`, the panel and the briefing) and, as soon as GitHub starts runs on that repository again, reruns the failed jobs of those runs on its own (`rerun --failed`), one pull request at a time and at most once per run.
 - **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
 - **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
 - **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
