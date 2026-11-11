@@ -1,5 +1,7 @@
 import { BILLING_SERVICES, MISSING_TEXT, type BillingRecord, type BillingService } from "./billing/records.js";
 import { scrubLocal } from "./line/research.js";
+import { JAM_KIND_TEXT } from "./format.js";
+import type { Cause } from "./line/unjam.js";
 import { esc } from "./panel/html.js";
 import type { Job, SpanRow } from "./state/store.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
@@ -71,6 +73,15 @@ export interface LineReport {
   /** Only for a line that declares services. */
   services?: ReportService[];
   total?: ReportGrandTotal;
+  /** Only for a line whose last unjam diagnosis has causes code cannot fix: what to do about each. */
+  jams?: ReportJam[];
+}
+
+/** A cause of the line's jams that code cannot fix (action `none`), with what the person in charge has to do. */
+export interface ReportJam {
+  title: string;
+  kind: string;
+  todo: string;
 }
 
 export interface MonthlyReport {
@@ -201,6 +212,8 @@ export interface LineReportInput {
   repository?: string;
   /** The services the line declares, with the month's stored record when there is one. */
   services?: { service: BillingService; record?: BillingRecord }[];
+  /** The causes of the line's last unjam diagnosis. */
+  jams?: Cause[];
 }
 
 const NO_RECORD = "todavía no se leyó";
@@ -240,7 +253,14 @@ export function buildLineReport(input: LineReportInput): LineReport {
       summary: clean(storedSummary(j)).trim() || NO_SUMMARY,
       link: deliveryLink(j, input.repository, clean),
     }));
-  const report: LineReport = { line: clean(input.line), month: input.month, jobs, totals };
+  const stuck = (input.jams ?? []).filter((c) => c.action === "none");
+  const report: LineReport = {
+    line: clean(input.line),
+    month: input.month,
+    jobs,
+    totals,
+    ...(stuck.length && { jams: stuck.map((c): ReportJam => ({ title: clean(c.title), kind: JAM_KIND_TEXT[c.kind], todo: clean(c.todo ?? c.diagnosis) })) }),
+  };
   if (!input.services?.length) return report;
   const services = input.services.map((s) => reportService(s, clean));
   const known = services.reduce((sum, s) => sum + (s.costUsd ?? 0), 0);
@@ -292,6 +312,8 @@ const SERVICES_NOTE = "Cada servicio se lee una vez por día; las cifras del mes
 
 const INFORMATIVE = (t: ReportTotals) => `Aparte, como información y no como trabajo hecho: fallidos: ${t.failed}, detenidos: ${t.stopped}.`;
 const SUMS_NOTE = "Intentos, tiempo y costo suman todos los trabajos terminados en el mes, incluidos los fallidos y los detenidos. El tiempo va del pedido al cierre e incluye las esperas.";
+const JAMS_NOTE = "Lo que la fábrica no puede destrabar con código y queda en manos de la persona responsable.";
+const jamText = (j: ReportJam) => `${j.title} (${j.kind}): ${j.todo}`;
 const NOTHING = "No hubo trabajos entregados en este mes.";
 const reportTitle = (l: LineReport) => `Informe mensual de ${l.line}: ${monthName(l.month)}`;
 
@@ -313,6 +335,7 @@ export function reportMarkdown(l: LineReport): string {
     ...(l.services
       ? ["## Servicios", [...l.services.map((s) => `- ${mdText(serviceText(s))}`), `- ${mdText(`${GRAND_TOTAL}: ${grandTotalText(l)}`)}`].join("\n"), SERVICES_NOTE]
       : []),
+    ...(l.jams ? ["## Trabas", JAMS_NOTE, l.jams.map((j) => `- ${mdText(jamText(j))}`).join("\n")] : []),
   ].join("\n\n");
 }
 
@@ -339,6 +362,13 @@ ${jobs.length ? `<ul>${jobs.join("")}</ul>` : `<p>${NOTHING}</p>`}
 <h2>Servicios</h2>
 <ul>${l.services.map((s) => `<li>${esc(serviceText(s))}</li>`).join("")}<li><b>${esc(GRAND_TOTAL)}</b>: ${esc(grandTotalText(l))}</li></ul>
 <p>${esc(SERVICES_NOTE)}</p>`
+      : ""
+  }${
+    l.jams
+      ? `
+<h2>Trabas</h2>
+<p>${esc(JAMS_NOTE)}</p>
+<ul>${l.jams.map((j) => `<li>${esc(jamText(j))}</li>`).join("")}</ul>`
       : ""
   }`;
 }

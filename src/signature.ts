@@ -42,5 +42,6 @@ export function signedMerges(api: MergeApi, signature?: Signature): MergeApi {
     ...(api.behind && { behind: (base: string, sha: string) => api.behind!(base, sha) }),
     ...(api.updateBranch && { updateBranch: (number: number, sha: string) => api.updateBranch!(number, sha) }),
     ...(api.rerun && { rerun: (run: number) => api.rerun!(run) }),
+    ...(api.failedLog && { failedLog: (run: number, check: string) => api.failedLog!(run, check) }),
   };
 }

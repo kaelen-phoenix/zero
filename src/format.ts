@@ -295,6 +295,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     out.push("", `${title}:`);
     for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`);
   };
+  if (s.jams.length) out.push("", "Trabas:", ...s.jams.map((j) => `- ${jamLine(j)}`));
   list("Esperando tu respuesta", s.waiting);
   list("Trabajando", s.running);
   list("En cola", s.queued);
@@ -347,6 +348,21 @@ export function formatEgress(r: EgressReport): string {
   out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
   out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
+}
+
+/** The kinds of cause the unjam station tells apart, as the person in charge reads them. */
+export const JAM_KIND_TEXT: Record<FactoryStatus["jams"][number]["kind"], string> = {
+  code: "código",
+  "flaky-test": "test intermitente",
+  ci: "CI",
+  "github-account": "cuenta de GitHub",
+  machine: "máquina",
+};
+
+/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué hacer». */
+export function jamLine(j: FactoryStatus["jams"][number]): string {
+  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? `qué hacer: ${j.todo}` : undefined;
+  return [j.line, j.title, `${j.jams} ${j.jams === 1 ? "traba" : "trabas"}`, JAM_KIND_TEXT[j.kind], next].filter(Boolean).join(" · ");
 }
 
 /** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */

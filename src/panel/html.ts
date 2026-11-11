@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, jamLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
@@ -345,6 +345,7 @@ ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><
 <p class="muted">${esc(budgetLine(s.budget))}</p>
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
+${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
 ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma los issues con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
@@ -901,6 +902,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     name: "Investigación (research)",
     does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
     cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
+  },
+  unjam: {
+    name: "Destrabador (unjam)",
+    does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
+    cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
   },
 };
 

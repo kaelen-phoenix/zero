@@ -20,7 +20,7 @@ import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageData
 import { readTabData, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
-import { pendingCleanups } from "./line/cleanup.js";
+import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
@@ -31,6 +31,7 @@ import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, type OnDemandRecord, type StationRunRecord } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage } from "./line/spec.js";
+import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
@@ -279,6 +280,35 @@ export function setPriority(ctx: FactoryContext, id: string, level: string): Job
   return ctx.store.updateJob(id, { priority });
 }
 
+/** What `retryJob` did: a failed job back in the queue, or a pull request in conflict left for the merges pass to take back. */
+export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
+
+/**
+ * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
+ * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict gets its attempts reset
+ * and its MergeState's `resolving` and `backoff` dropped, so the merges pass takes it back. Anything else is refused.
+ */
+export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
+  const job = getJob(ctx, id);
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line) throw new Error(`La línea ${job.line} del trabajo ${id} ya no está configurada.`);
+  if (ctx.store.getKv(cleanupKey(job.id))) throw new Error(`La copia de trabajo de ${id} todavía no se pudo borrar: reintentalo cuando se limpie.`);
+  if (job.status === "failed") {
+    if (!job.spec) throw new Error(`El trabajo ${id} falló sin especificación: pedilo de nuevo en lugar de reintentarlo.`);
+    return { kind: "queued", job: ctx.store.updateJob(id, { status: "queued", attempt: 0, feedback: null, finishedAt: null, stopRequested: false }) };
+  }
+  if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
+    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving)) {
+      const { resolving: _resolving, backoff: _backoff, ...rest } = state;
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
+      return { kind: "pull-request", job: ctx.store.updateJob(id, { attempt: 0 }) };
+    }
+  }
+  throw new Error(`El trabajo ${id} está ${job.status}: solo se reintenta un trabajo fallido o un pull request en conflicto.`);
+}
+
 export async function answer(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<Job> {
   return answerJob(ctx, getJob(ctx, id), decision, note);
 }
@@ -319,6 +349,8 @@ export interface FactoryStatus {
   outages: Outage[];
   /** Repositories whose checks GitHub does not start over the account's billing; the pull requests they hold are left out of `merges`. */
   billing: BillingHold[];
+  /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
+  jams: JamView[];
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -415,6 +447,46 @@ export interface BillingHold {
   pulls: string[];
 }
 
+/** A cause of a line's last unjam diagnosis, as the person in charge sees it. */
+export interface JamView {
+  line: string;
+  title: string;
+  kind: Cause["kind"];
+  action: Cause["action"];
+  /** How many jams it groups. */
+  jams: number;
+  /** The job working on it, while it is not finished. */
+  job?: string;
+  /** Its unjam proposal while it waits for the person in charge. */
+  proposal?: string;
+  todo?: string;
+  /** When the line was diagnosed. */
+  at: string;
+}
+
+/** The causes stored by the unjam station for every configured line, with the job or proposal still open. */
+export function jamViews(ctx: FactoryContext): JamView[] {
+  return ctx.config.lines.flatMap((l) => {
+    const diagnosis = readDiagnosis(ctx.store, l.name);
+    if (!diagnosis) return [];
+    return diagnosis.causes.map((c): JamView => {
+      const job = c.job ? ctx.store.getJob(c.job) : undefined;
+      const proposal = c.proposal ? ctx.store.getProposal(c.proposal) : undefined;
+      return {
+        line: l.name,
+        title: c.title,
+        kind: c.kind,
+        action: c.action,
+        jams: c.jams.length,
+        ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
+        ...(proposal?.status === "pending" && { proposal: proposal.id }),
+        ...(c.todo && { todo: c.todo }),
+        at: diagnosis.at,
+      };
+    });
+  });
+}
+
 /** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
 function mergeViews(ctx: FactoryContext) {
   const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
@@ -461,6 +533,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
     outages,
     billing,
+    jams: jamViews(ctx),
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -575,7 +648,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -626,7 +699,7 @@ export function monthlyReport(ctx: FactoryContext, input: { line?: string; month
       const jobs = finished.filter((j) => j.line === name);
       const repository = config && jobs.some((j) => j.delivery?.commit) ? lineRepository(config) : undefined;
       const services = lineServices(config).map((service) => ({ service, record: parseBillingRecord(ctx.store.getKv(billingKey(name, service, month)), service, month) }));
-      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services });
+      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services, jams: config ? readDiagnosis(ctx.store, name)?.causes : undefined });
     }),
   };
 }
@@ -816,7 +889,7 @@ export interface MonitorView {
 }
 
 /** The fixed agents the monitor always shows, even without activity. */
-const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research"];
+const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam"];
 const OPEN_PR_GONE = new Set<MergeState["status"]>(["merged", "closed", "expired"]);
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1027,7 +1100,7 @@ export function approveProposal(ctx: FactoryContext, id: string): RequestResult 
       return { job, level: currentLevel(ctx), next: "Vuelve a la cola y se integra según la configuración de la línea." };
     }
     pendingProposal(ctx, id);
-    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id } });
+    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id, ...(proposal!.origin && { origin: proposal!.origin }) } });
     ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id, decidedBy: "owner" });
     return result;
   });

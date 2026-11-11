@@ -63,7 +63,12 @@ export interface MergeApi {
   updateBranch?(number: number, sha: string): Promise<void>;
   /** Runs the failed jobs of a GitHub Actions run again. */
   rerun?(run: number): Promise<void>;
+  /** The end of the log of a GitHub Actions run's failed job named `check` (else its first failed job), when there is one. */
+  failedLog?(run: number, check: string): Promise<string | undefined>;
 }
+
+/** Characters of a failed job's log `githubMerges` keeps: its end, where the failure is. */
+export const FAILED_LOG_CHARS = 20_000;
 
 const QUIET = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 const PASSED = new Set(["success", "neutral", "skipped"]);
@@ -119,6 +124,15 @@ export function githubMerges(token: string, repository: string, client?: Octokit
     },
     async rerun(run) {
       await gh.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: run });
+    },
+    async failedLog(run, check) {
+      const jobs = await gh.paginate(gh.actions.listJobsForWorkflowRun, { owner, repo, run_id: run, filter: "latest", per_page: 100 });
+      const failed = jobs.filter((j) => j.status === "completed" && !PASSED.has(j.conclusion ?? ""));
+      const job = failed.find((j) => j.name === check) ?? failed[0];
+      if (!job) return undefined;
+      const { data } = await gh.actions.downloadJobLogsForWorkflowRun({ owner, repo, job_id: job.id });
+      const text = typeof data === "string" ? data : data instanceof ArrayBuffer ? new TextDecoder().decode(data) : String(data ?? "");
+      return text ? text.slice(-FAILED_LOG_CHARS) : undefined;
     },
   };
 }

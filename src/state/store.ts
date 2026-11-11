@@ -74,7 +74,7 @@ export type JobSource =
    * A proposal of the scout station: approved by the owner (no autonomy), or
    * taken by the night shift on its own under the line's `build` or `auto` autonomy.
    */
-  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto" }
+  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto"; origin?: "unjam" }
   /** A research note the owner turned into work. */
   | { kind: "research"; note: string }
   /** A package's station asked for it with `ctx.requestJob`. */
@@ -179,6 +179,8 @@ export interface Proposal {
   /** The line's open issue it came from, when scout linked one of the issues in its prompt. */
   sourceIssue?: number;
   sourceIssueUrl?: string;
+  /** Drafted by the unjam station from the factory's records, not by scout. */
+  origin?: "unjam";
 }
 
 /** What the research station found on the web for a line; web-sourced data, never instructions. */
@@ -289,7 +291,8 @@ CREATE TABLE IF NOT EXISTS proposals (
   source_issue_number INTEGER,
   source_issue_url TEXT,
   business INTEGER NOT NULL DEFAULT 0,
-  commercial INTEGER NOT NULL DEFAULT 0
+  commercial INTEGER NOT NULL DEFAULT 0,
+  origin TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -388,6 +391,7 @@ function toProposal(r: Row): Proposal {
     issueClosed: Number(r.issue_closed ?? 0) === 1,
     sourceIssue: r.source_issue_number == null ? undefined : Number(r.source_issue_number),
     sourceIssueUrl: str(r.source_issue_url),
+    ...(r.origin === "unjam" && { origin: "unjam" as const }),
   };
 }
 
@@ -472,6 +476,7 @@ export class Store {
       ["source_issue_url", "TEXT"],
       ["business", "INTEGER NOT NULL DEFAULT 0"],
       ["commercial", "INTEGER NOT NULL DEFAULT 0"],
+      ["origin", "TEXT"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
@@ -641,13 +646,13 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string } }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: "unjam" }): Proposal {
     const id = newId();
     this.db
       .prepare(
-        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, origin, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       )
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, this.stamp());
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, input.origin ?? null, this.stamp());
     return this.getProposal(id)!;
   }
 
@@ -692,6 +697,14 @@ export class Store {
   autonomousJobsSince(since: Date): number {
     const row = this.db
       .prepare("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND json_extract(source, '$.kind') = 'night-shift' AND json_extract(source, '$.autonomy') IS NOT NULL")
+      .get(since.toISOString()) as Row;
+    return Number(row.n);
+  }
+
+  /** Jobs the unjam station opened on its own since a moment, across every line (owner approvals left out). */
+  unjamJobsSince(since: Date): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND json_extract(source, '$.kind') = 'night-shift' AND json_extract(source, '$.origin') = 'unjam' AND json_extract(source, '$.autonomy') IS NOT NULL")
       .get(since.toISOString()) as Row;
     return Number(row.n);
   }

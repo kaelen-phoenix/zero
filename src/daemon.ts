@@ -34,6 +34,7 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
+import { unjamPass } from "./line/unjam.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -69,6 +70,8 @@ export interface DaemonOptions {
   panel?: boolean;
   /** Run the night shift (scout) while the factory is idle. Defaults to on, except in `once` runs. */
   scout?: boolean;
+  /** Run the unjam station (diagnosis of what holds the lines up) while the factory is idle. Defaults to on, except in `once` runs. */
+  unjam?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
@@ -349,7 +352,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
-  // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and the
+  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line) and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
   let idle: Promise<void> | undefined;
@@ -358,15 +361,22 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const idlePasses = () => {
     if (idle || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
+    const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
     const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
-    if (!scouts && !researches && !stations) return;
+    if (!scouts && !unjams && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
       if (scouts) {
         await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
         meter.endRun("scout");
+      }
+      if (unjams && !researchStop.signal.aborted) {
+        // The failed checks' logs are read through the meter, and not at all while GitHub holds a pause.
+        const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+        await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal, merges).catch((err) => log.warn("unjam failed", { error: String(err) }));
+        meter.endRun("unjam");
       }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));

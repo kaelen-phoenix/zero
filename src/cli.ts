@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
@@ -37,6 +37,8 @@ Uso diario (también desde el chat):
   zero approve <trabajo>         Aprueba una consulta   [--reject] [--note "<motivo>"]
   zero stop [trabajo]            Andon: detiene un trabajo, o toda la fábrica
   zero resume                    Reanuda la fábrica
+  zero reintentar <trabajo>      Vuelve a poner en cola desde su checkpoint un trabajo fallido, o deja que la
+                                 fábrica vuelva a actualizar un pull request en conflicto
   zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
                                  solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
@@ -261,6 +263,14 @@ async function main(argv: string[]): Promise<number> {
       case "priority": {
         if (!rest[0] || !rest[1]) throw new Error("Indicá el trabajo y la prioridad: zero priority <trabajo> <baja|media|alta|urgente>");
         console.log(formatJob(setPriority(ctx, rest[0], rest[1]), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        return 0;
+      }
+      case "reintentar": {
+        if (!rest[0]) throw new Error("Indicá el trabajo: zero reintentar <trabajo>");
+        const r = retryJob(ctx, rest[0]);
+        console.log(r.kind === "queued" ? `El trabajo ${r.job.id} volvió a la cola desde su checkpoint (${r.job.checkpoint}).` : `El trabajo ${r.job.id} tiene sus intentos de nuevo: la fábrica volverá a actualizar su pull request con la rama base.`);
+        const started = await ensureDaemon(ctx);
+        if (started) console.log("La fábrica estaba apagada: la encendí.");
         return 0;
       }
       case "status":

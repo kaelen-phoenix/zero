@@ -845,6 +845,27 @@ En las líneas de GitHub cada nota se publica también como issue en el repo de 
 
 Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
 
+## Destrabador
+
+La estación `unjam` mira lo que traba a la fábrica y lo destraba sola. Corre con las reglas del turno nocturno (fábrica libre, dentro de `nightShift.hours`, andon apagado, con presupuesto, compartiendo `limits.usdPerNight` con `scout` y `research`), después de `scout`, a lo sumo una vez por línea por período del turno nocturno, y nunca llama a un modelo para una línea sin trabas.
+
+zero junta las trabas de cada línea de sus propios registros: trabajos que fallaron en los últimos 7 días con su último problema, trabajos que esperan tu respuesta, pull requests de líneas `autoMerge` que no se funden (con el final del log de GitHub Actions que falló, leído una vez por repositorio y check, y si GitHub informa un conflicto), entornos de checks caídos o rechazados por facturación, problemas de intake (GitHub, Linear, Jira, alertas de seguridad), limpiezas pendientes y, con `isolation: container`, la caja que no está lista. La estación, de solo lectura, agrupa las trabas que tienen la misma causa (los mismos checks fallando en quince pull requests son un problema del repositorio, no quince) y distingue código, tests intermitentes, CI, la cuenta de GitHub y la máquina.
+
+Por cada causa que se arregla con código, zero abre una sola propuesta del turno nocturno en la línea (origen `unjam`): actualizar la rama y resolver conflictos, arreglar el CI, estabilizar un test intermitente. Sigue la autonomía de la línea: con `build` o `auto` se vuelve sola un trabajo de baja prioridad, dentro de `unjam.maxJobsPerDay` (y de `nightShift.maxAutoJobsPerDay`); con `propose` espera tu decisión. Una causa con trabajo abierto, o cuya propuesta rechazaste, no se repite, y una que toca rutas protegidas o pide credenciales nuevas no abre nada. Una causa ya arreglada puede devolver un trabajo a la cola desde su checkpoint (`retry`), una vez en su vida. Lo que no se arregla con código (instalar Podman o Docker, permisos, la facturación de GitHub) viene con qué hacer.
+
+```yaml
+unjam:                    # o `unjam: off` para apagarlo
+  maxJobsPerDay: 2        # trabajos de arreglo y reintentos que abre por día, entre todas las líneas
+stations:
+  unjam: { timeoutMinutes: 15 }
+```
+
+```sh
+zero reintentar <job>     # un trabajo fallido vuelve a la cola desde su checkpoint, o un pull request en conflicto vuelve a la línea
+```
+
+Ves las causas bajo `Trabas:` en `zero status` (y `zero_status` en el chat) y en el resumen del panel, una por renglón con su tipo, cuántas trabas agrupa y su trabajo o propuesta abierta o qué hacer; en el informe diario bajo `## Trabas`; y el informe mensual de cada línea tiene una sección "Trabas" con lo que solo vos podés resolver.
+
 ## Caja de aislamiento
 
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
