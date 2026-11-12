@@ -3,6 +3,7 @@ import type { AgentRunner } from "../agent.js";
 import { ANDON_KEY, currentBox, retryJob, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type LineConfig } from "../config.js";
+import { installBehind, readInstallFreshness } from "../install-freshness.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
@@ -24,7 +25,7 @@ export const FEEDBACK_CHARS = 1500;
 export const LOG_CHARS = 3000;
 const DAY = 86_400_000;
 
-export type JamKind = "failed-job" | "waiting-job" | "pull-request" | "checks-outage" | "checks-billing" | "intake" | "cleanup" | "box";
+export type JamKind = "failed-job" | "waiting-job" | "pull-request" | "checks-outage" | "checks-billing" | "intake" | "cleanup" | "box" | "install";
 
 /** Something that holds a line up, computed by zero from its own records. */
 export interface Jam {
@@ -86,6 +87,8 @@ export interface Cause {
   proposal?: string;
   /** The job working on it, while it is not finished. */
   job?: string;
+  /** Consecutive diagnoses the cause appeared in: the earlier diagnosis's same-title cause plus one, otherwise 1. */
+  seen?: number;
 }
 
 /** A line's last diagnosis. */
@@ -134,15 +137,20 @@ function readJson<T>(store: Store, key: string): T | undefined {
   }
 }
 
-/** The GitHub repositories of a line: its remote's and those of its pull requests. */
-function lineRepositories(line: LineConfig, jobs: Job[]): string[] {
-  const out = new Set<string>();
+/** The GitHub repository of a line's remote, if git can read it. */
+function ownRepository(line: LineConfig): string | undefined {
   try {
-    const own = lineRepository(line);
-    if (own) out.add(own);
+    return lineRepository(line);
   } catch {
-    // A repository git cannot read still has its pull requests' repositories.
+    return undefined;
   }
+}
+
+/** The GitHub repositories of a line: its remote's and those of its pull requests. */
+function lineRepositories(own: string | undefined, jobs: Job[]): string[] {
+  const out = new Set<string>();
+  // A repository git cannot read still has its pull requests' repositories.
+  if (own) out.add(own);
   for (const j of jobs) {
     const pr = j.delivery?.url && pullRequestOf(j.delivery.url);
     if (pr) out.add(pr.repository);
@@ -153,7 +161,8 @@ function lineRepositories(line: LineConfig, jobs: Job[]): string[] {
 /**
  * What holds one line up, from its own records and without a model: failed jobs of the last days with their last
  * problem, waiting jobs, auto-merge pull requests blocked, the checks' outages and billing refusals of its
- * repositories, its intake problems, its pending cleanups and, in the box, a box that is not ready.
+ * repositories, its intake problems, its pending cleanups, an installed copy of zero behind its own repository's
+ * merged work and, in the box, a box that is not ready.
  */
 export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): Jam[] {
   const jams: Jam[] = [];
@@ -173,7 +182,8 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
       jams.push({ id: `pr:${j.id}`, line: line.name, kind: "pull-request", job: j.id, url: j.delivery.url, conflict, text: `pull request ${j.delivery.url} of ${jobName(j)} does not merge: ${state.why ?? "blocked"}${conflict ? " (in conflict with the base branch)" : ""}`, detail });
     }
   }
-  for (const repository of lineRepositories(line, jobs)) {
+  const repo = ownRepository(line);
+  for (const repository of lineRepositories(repo, jobs)) {
     const outage = readJson<ChecksOutage>(ctx.store, checksOutageKey(repository));
     if (outage) jams.push({ id: `outage:${repository}`, line: line.name, kind: "checks-outage", text: `the environment of ${repository}'s checks is down since ${outage.since} (checks: ${outage.checks.join(", ")})` });
     const billing = readJson<ChecksBilling>(ctx.store, checksBillingKey(repository));
@@ -193,6 +203,14 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
   for (const { job, cleanup } of pendingCleanups(ctx.store)) {
     const owner = job.replace(/-merge$/, "");
     if (own.has(owner) || cleanup.repo === line.repo) jams.push({ id: `cleanup:${job}`, line: line.name, kind: "cleanup", job: owner, text: `the work copy of job ${owner} could not be removed (${cleanup.path})` });
+  }
+  const install = readInstallFreshness(ctx.store);
+  if (!line.package && installBehind(install) && install.repository && repo === install.repository) {
+    const missing = [
+      install.behind ? `${install.behind} merged commit${install.behind === 1 ? "" : "s"} of ${install.upstream ?? "its upstream"} missing` : "",
+      install.staleBuild ? "its build (dist/cli.js) older than its code under src/" : "",
+    ].filter(Boolean);
+    jams.push({ id: "install", line: line.name, kind: "install", text: `the installed copy of zero that runs the factory is behind: ${missing.join(", ")} (checked ${install.checkedAt})` });
   }
   if (ctx.config.isolation === "container") {
     const box = currentBox(ctx).availability;
@@ -297,6 +315,45 @@ export function acceptCauses(drafts: UnjamOutput["causes"], jams: Jam[], line: P
   return [...byTitle.values()];
 }
 
+/** Each cause's `seen`: the earlier diagnosis's cause of the same normalized title plus one, otherwise 1. */
+export function countSeen(causes: Cause[], earlier: Diagnosis | undefined): void {
+  const before = new Map((earlier?.causes ?? []).map((c) => [normalizeTitle(c.title), c.seen ?? 1]));
+  for (const cause of causes) cause.seen = (before.get(normalizeTitle(cause.title)) ?? 0) + 1;
+}
+
+/**
+ * What backs a cause, computed by zero from its jams and never by the agent: how many jams, which jobs, which pull
+ * requests and in how many consecutive diagnoses it appeared.
+ */
+export function evidenceText(cause: Cause, jams: Jam[]): string {
+  const byId = new Map(jams.map((j) => [j.id, j]));
+  const mine = cause.jams.map((id) => byId.get(id)).filter((j): j is Jam => !!j);
+  const jobs = [...new Set(mine.map((j) => j.job).filter((id): id is string => !!id))];
+  const urls = [...new Set(mine.map((j) => j.url).filter((u): u is string => !!u))];
+  const seen = cause.seen ?? 1;
+  const items = [
+    `${cause.jams.length} ${cause.jams.length === 1 ? "traba" : "trabas"} (${cause.jams.join(", ")})`,
+    ...(jobs.length ? [`trabajos: ${jobs.join(", ")}`] : []),
+    ...(urls.length ? [`pull requests: ${urls.join(", ")}`] : []),
+    seen === 1 ? "vista en 1 revisión" : `vista en ${seen} revisiones seguidas`,
+  ];
+  return ["Evidencia:", ...items.map((i) => `- ${i}`)].join("\n");
+}
+
+/**
+ * One townhall lesson per cause that repeats, with two jams or more or seen in two diagnoses or more. A townhall that
+ * fails is logged and never fails the diagnosis.
+ */
+export async function publishLessons(ctx: FactoryContext, line: LineConfig, causes: Cause[], jams: Jam[]): Promise<void> {
+  const repeated = causes.filter((c) => c.jams.length >= 2 || (c.seen ?? 1) >= 2);
+  if (!repeated.length) return;
+  try {
+    await ctx.townhall.publish(repeated.map((c) => ({ kind: "lesson" as const, line: line.name, topic: `traba repetida: ${c.title}`, source: "", body: `${c.diagnosis}\n${evidenceText(c, jams)}` })));
+  } catch (err) {
+    log.warn("unjam could not publish its lessons in the townhall", { line: line.name, error: String(err) });
+  }
+}
+
 /** An unjam proposal that still holds its title: waiting, turned down, reverted, or approved with its job unfinished. */
 function holdsTitle(ctx: FactoryContext, p: Proposal): boolean {
   if (p.status !== "approved") return true;
@@ -307,9 +364,10 @@ function holdsTitle(ctx: FactoryContext, p: Proposal): boolean {
 /**
  * One night-shift proposal per `fix` cause, unless the line already has an unjam proposal of that title holding it, or
  * the cause touches protected paths or asks for new credentials. Each one follows the line's autonomy through
- * `takeOnItsOwn`, within the unjam station's daily cap. The cause records the proposal and its open job.
+ * `takeOnItsOwn`, within the unjam station's daily cap. The proposal's why is the diagnosis followed by zero's evidence
+ * from the cause's jams. The cause records the proposal and its open job.
  */
-export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[], now: Date): void {
+export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[], now: Date, jams: Jam[] = []): void {
   const own = ctx.store.listProposals({ line: line.name }).filter((p) => p.origin === "unjam" && holdsTitle(ctx, p));
   const byTitle = new Map(own.map((p) => [normalizeTitle(p.title), p]));
   for (const cause of causes) {
@@ -325,7 +383,7 @@ export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[]
         log.info("unjam left a cause without a proposal: protected paths or new credentials", { line: line.name, title: cause.title });
         continue;
       }
-      const proposal = ctx.store.createProposal({ line: line.name, title: cause.title, why: cause.diagnosis, change: cause.request, estimatedUsd: cause.estimatedUsd, paths: cause.paths, origin: "unjam" });
+      const proposal = ctx.store.createProposal({ line: line.name, title: cause.title, why: `${cause.diagnosis}\n\n${evidenceText(cause, jams)}`, change: cause.request, estimatedUsd: cause.estimatedUsd, paths: cause.paths, origin: "unjam" });
       byTitle.set(normalizeTitle(proposal.title), proposal);
       cause.proposal = proposal.id;
       const job = takeOnItsOwn(ctx, line, proposal, now);
@@ -385,10 +443,12 @@ export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam
     return undefined;
   }
   const causes = acceptCauses(run.output.causes, jams, line);
-  openFixes(ctx, line, causes, now);
+  countSeen(causes, readDiagnosis(ctx.store, line.name));
+  openFixes(ctx, line, causes, now, jams);
   retryCauses(ctx, line, causes, jams, now);
   const diagnosis: Diagnosis = { at: now.toISOString(), causes };
   ctx.store.setKv(unjamKey(line.name), JSON.stringify(diagnosis));
+  await publishLessons(ctx, line, causes, jams);
   log.info("unjam stored a diagnosis", { line: line.name, jams: jams.length, causes: causes.length, dropped: run.output.causes.length - causes.length });
   return causes;
 }

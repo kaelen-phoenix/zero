@@ -9,10 +9,10 @@
 
 ## 2. Etapa 2: Evidence, repeated causes and the install jam
 
-- [ ] 2.1 JamKind install with its text, and the install jam in collectJams for lines matching the record's repository.
-- [ ] 2.2 Cause.seen, evidenceText appended to the why of unjam proposals in openFixes.
-- [ ] 2.3 Townhall lessons for causes with at least 2 jams or seen of at least 2, resilient to townhall failure.
-- [ ] 2.4 Update agents/unjam.md for the install jam; tests for all of the above.
+- [x] 2.1 JamKind install with its text, and the install jam in collectJams for lines matching the record's repository.
+- [x] 2.2 Cause.seen, evidenceText appended to the why of unjam proposals in openFixes.
+- [x] 2.3 Townhall lessons for causes with at least 2 jams or seen of at least 2, resilient to townhall failure.
+- [x] 2.4 Update agents/unjam.md for the install jam; tests for all of the above.
 
 ## 3. Etapa 3: Missing-capability proposals and resend
 
