@@ -138,7 +138,15 @@ function unfinishedJob(ctx: FactoryContext, line: string, repository: string, al
 
 const status = (err: unknown) => (err as { status?: number } | undefined)?.status;
 
-function readProblem(err: unknown): string {
+/** GitHub's 403 when the repository has Dependabot alerts turned off, which no token permission fixes. */
+function alertsDisabled(err: unknown): boolean {
+  const said = [err instanceof Error ? err.message : "", (err as { response?: { data?: { message?: unknown } } } | undefined)?.response?.data?.message];
+  return said.some((m) => typeof m === "string" && /dependabot alerts are disabled/i.test(m));
+}
+
+function readProblem(err: unknown, repository: string): string {
+  if (status(err) === 403 && alertsDisabled(err))
+    return `las alertas de Dependabot están desactivadas en el repositorio: activalas en https://github.com/${repository}/settings/security_analysis`;
   if (status(err) === 403) return "GitHub no deja leer las alertas de Dependabot: el token necesita permiso de lectura de alertas de Dependabot (o de seguridad) en el repositorio";
   if (status(err) === 404) return "GitHub no encuentra las alertas de Dependabot: revisá que estén activadas en el repositorio y que el token lo vea";
   return `no se pudieron leer las alertas de Dependabot: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300);
@@ -197,7 +205,7 @@ export async function pollSecurityAlerts(ctx: FactoryContext, api: (repository: 
       alerts = await gh.openAlerts();
     } catch (err) {
       if (err instanceof GithubHalted || isRateLimit(err)) throw err;
-      ctx.store.setKv(problem, readProblem(err));
+      ctx.store.setKv(problem, readProblem(err, repository));
       continue;
     }
     if (line.securityAlerts.mode === "jobs") takeAlerts(ctx, line, repository, alerts);
