@@ -34,7 +34,7 @@ const cleanError = (text: string) => cleanText(redact(text).replace(/:\/\/[^/\s@
 
 export { findOnPath };
 
-const findGit = () => findOnPath("git", process.platform === "win32" ? [".com", ".exe"] : [""]);
+export const findGit = () => findOnPath("git", process.platform === "win32" ? [".com", ".exe"] : [""]);
 
 /** How to start npm without a shell: through this Node when npm-cli.js is at hand, since Windows only starts a .cmd through cmd.exe, and a shell looks in the current folder first. */
 export function npmCommand(path?: string): string[] {
@@ -46,7 +46,7 @@ export function npmCommand(path?: string): string[] {
   return [found];
 }
 
-function runProcess(label: string, command: string, args: string[], opts: { env: NodeJS.ProcessEnv; timeout: number }): Promise<string> {
+export function runProcess(label: string, command: string, args: string[], opts: { env: NodeJS.ProcessEnv; timeout: number }): Promise<string> {
   return new Promise((resolve, reject) => {
     // stdin closed: nothing it starts can sit waiting for an answer.
     const child = spawn(command, args, { cwd: TRUSTED_CWD, env: opts.env, shell: false, windowsHide: true, timeout: opts.timeout, stdio: ["ignore", "pipe", "pipe"] });
