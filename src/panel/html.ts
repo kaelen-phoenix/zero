@@ -505,6 +505,7 @@ function proposalCard(p: ProposalView): string {
 <p class="muted">Costo estimado ${usd(p.estimatedUsd)}${p.paths.length ? ` · ${esc(p.paths.join(", "))}` : ""}${by ? ` · aprobada por ${by}` : ""}</p>
 ${p.researchNote ? `<p class="muted">Nació de la nota de investigación ${esc(p.researchNote)}${p.thirdParty ? " · agrega algo de terceros" : ""}${p.business ? " · de negocio: espera tu decisión" : ""}</p>` : ""}
 ${p.sourceIssueUrl ? `<p class="muted">Nació del issue #${esc(String(p.sourceIssue ?? ""))}: <a href="${esc(p.sourceIssueUrl)}">${esc(p.sourceIssueUrl)}</a></p>` : ""}
+${p.forJobs?.length ? `<p class="muted">Agrega la capacidad que les faltó a ${esc(p.forJobs.join(", "))}: se reenvían cuando entre.</p>` : ""}
 ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.issueUrl)}</a></p>` : ""}
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
 }

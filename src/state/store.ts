@@ -181,6 +181,8 @@ export interface Proposal {
   sourceIssueUrl?: string;
   /** Drafted by the unjam station from the factory's records, not by scout. */
   origin?: "unjam";
+  /** For a missing capability: the jobs refused at spec for want of it, resent once its job enters the base branch. */
+  forJobs?: string[];
 }
 
 /** What the research station found on the web for a line; web-sourced data, never instructions. */
@@ -292,7 +294,8 @@ CREATE TABLE IF NOT EXISTS proposals (
   source_issue_url TEXT,
   business INTEGER NOT NULL DEFAULT 0,
   commercial INTEGER NOT NULL DEFAULT 0,
-  origin TEXT
+  origin TEXT,
+  for_jobs TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -392,6 +395,7 @@ function toProposal(r: Row): Proposal {
     sourceIssue: r.source_issue_number == null ? undefined : Number(r.source_issue_number),
     sourceIssueUrl: str(r.source_issue_url),
     ...(r.origin === "unjam" && { origin: "unjam" as const }),
+    ...(r.for_jobs != null && { forJobs: json<string[]>(r.for_jobs) ?? [] }),
   };
 }
 
@@ -477,6 +481,7 @@ export class Store {
       ["business", "INTEGER NOT NULL DEFAULT 0"],
       ["commercial", "INTEGER NOT NULL DEFAULT 0"],
       ["origin", "TEXT"],
+      ["for_jobs", "TEXT"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
@@ -646,13 +651,13 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: "unjam" }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: "unjam"; forJobs?: string[] }): Proposal {
     const id = newId();
     this.db
       .prepare(
-        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, origin, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, origin, for_jobs, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       )
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, input.origin ?? null, this.stamp());
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, input.origin ?? null, input.forJobs?.length ? JSON.stringify(input.forJobs) : null, this.stamp());
     return this.getProposal(id)!;
   }
 

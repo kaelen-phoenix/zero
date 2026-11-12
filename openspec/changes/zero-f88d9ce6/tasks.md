@@ -16,8 +16,8 @@
 
 ## 3. Etapa 3: Missing-capability proposals and resend
 
-- [ ] 3.1 Export the spec-refusal prefix constant from runner.ts and use it there.
-- [ ] 3.2 Add the proposals column for_jobs (migration, Proposal.forJobs, createProposal) and show it in the proposals view.
-- [ ] 3.3 Add UnjamOutput action capability with line, list the lines in unjamPrompt, and add openCapabilities with validation, downgrade, dedupe and takeOnItsOwn on the target line.
-- [ ] 3.4 Add resendAfterCapability with the entered check, the install gate and kv unjam:resent, wire it into the daemon, and add a townhall lesson on resend.
-- [ ] 3.5 Update agents/unjam.md and AGENTS.md; tests for acceptance, dedupe, resend once, wait for install, unmerged pull request.
+- [x] 3.1 Export the spec-refusal prefix constant from runner.ts and use it there.
+- [x] 3.2 Add the proposals column for_jobs (migration, Proposal.forJobs, createProposal) and show it in the proposals view.
+- [x] 3.3 Add UnjamOutput action capability with line, list the lines in unjamPrompt, and add openCapabilities with validation, downgrade, dedupe and takeOnItsOwn on the target line.
+- [x] 3.4 Add resendAfterCapability with the entered check, the install gate and kv unjam:resent, wire it into the daemon, and add a townhall lesson on resend.
+- [x] 3.5 Update agents/unjam.md and AGENTS.md; tests for acceptance, dedupe, resend once, wait for install, unmerged pull request.
