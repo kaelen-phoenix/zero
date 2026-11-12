@@ -24,6 +24,7 @@ interface Script {
   store?: SecretStore;
   interactive?: boolean;
   file?: string;
+  autostartFails?: boolean;
 }
 
 function wizard(script: Script) {
@@ -39,6 +40,7 @@ function wizard(script: Script) {
   const confirms = [...(script.confirms ?? [])];
   const env = script.env ?? { ZERO_CONTAINER: "1" };
   const secrets = script.store ?? new SecretStore(home, memoryKeyring(), env);
+  const autostarts: boolean[] = [];
   const deps: SetupDeps = {
     interactive: script.interactive ?? true,
     ask: async (q) => {
@@ -63,12 +65,18 @@ function wizard(script: Script) {
     secrets,
     cwd: tempDir("zero-cwd-"),
     env,
+    syncAutostart: (_home, enabled) => {
+      autostarts.push(enabled);
+      if (script.autostartFails) throw new Error("systemctl no respondió");
+      return { status: enabled ? "created" : "removed", message: enabled ? "Registré el arranque." : "Borré el arranque." };
+    },
   };
   return {
     home,
     said,
     commands,
     secrets,
+    autostarts,
     left: () => ({ answers, typed, confirms }),
     run: () => runSetup(home, deps),
     file: () => readFileSync(home.config, "utf8"),
@@ -306,7 +314,7 @@ describe("zero setup: isolation", () => {
   });
 
   it("outside a container it does not ask, and leaves isolation alone", async () => {
-    const w = wizard({ env: {}, file: "isolation: worktree\nlines: []\n", answers: ["api", "claude", "", "", PORT, NO_GH], secrets: [KEY] });
+    const w = wizard({ env: {}, file: "isolation: worktree\nlines: []\n", answers: ["api", "claude", "", "", PORT, NO_GH], secrets: [KEY], confirms: [false] });
     await w.run();
     expect(w.config().isolation).toBe("worktree");
     expect(w.config().panel.host).toBe("127.0.0.1");
@@ -331,6 +339,43 @@ describe("zero setup: panel", () => {
     const w = wizard({ answers: [CAJA, "api", "claude", "", "", "99999", "8081", NO_GH], secrets: [KEY] });
     await w.run();
     expect(w.config().panel.port).toBe(8081);
+  });
+});
+
+describe("zero setup: start at login", () => {
+  const OUTSIDE = { env: {}, answers: ["api", "claude", "", "", PORT, NO_GH], secrets: [KEY] };
+
+  it("outside a container, yes: writes autostart true and registers the entry", async () => {
+    const w = wizard({ ...OUTSIDE, confirms: [true] });
+    await w.run();
+    expect(w.config().autostart).toBe(true);
+    expect(w.autostarts).toEqual([true]);
+    expect(w.text()).toContain("Registré el arranque.");
+    expect(w.left().confirms).toEqual([]);
+  });
+
+  it("outside a container, no: writes autostart false and removes the entry", async () => {
+    const w = wizard({ ...OUTSIDE, confirms: [false] });
+    await w.run();
+    expect(w.config().autostart).toBe(false);
+    expect(w.file()).toContain("autostart: false");
+    expect(w.autostarts).toEqual([false]);
+  });
+
+  it("a registration that fails: the file keeps the answer and the command for later is shown", async () => {
+    const w = wizard({ ...OUTSIDE, confirms: [true], autostartFails: true });
+    await w.run();
+    expect(w.config().autostart).toBe(true);
+    expect(w.text()).toContain("systemctl no respondió");
+    expect(w.text()).toContain("zero autostart on");
+  });
+
+  it("in a container: does not ask and registers nothing", async () => {
+    const w = wizard({ answers: [CAJA, "api", "claude", "", "", PORT, NO_GH], secrets: [KEY] });
+    await w.run();
+    expect(w.autostarts).toEqual([]);
+    expect(w.file()).not.toContain("autostart");
+    expect(w.text()).not.toMatch(/iniciar sesión/);
   });
 });
 

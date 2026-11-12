@@ -155,7 +155,7 @@ p { max-width: 42rem; }
 .line-fig .owner-path { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 5 5; }
 .line-fig .node rect { fill: var(--bg); stroke: var(--fg); stroke-width: 2; }
 .line-fig text { fill: var(--muted); font: 12px var(--mono); text-anchor: middle; }
-.line-fig .owner-label { fill: var(--accent); }
+.line-fig .owner-label { fill: var(--accent); font-size: 15px; font-weight: 700; }
 .line-fig .work { fill: var(--fg); animation: advance 4s ease-in-out infinite; }
 .line-fig .work:nth-of-type(odd) { animation-delay: -2s; }
 .line-fig .owner { fill: var(--accent); animation: pulse 3s ease-in-out infinite; transform-origin: 360px 46px; }
@@ -285,6 +285,7 @@ button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-co
   .cards { grid-template-columns: minmax(0, 1fr); }
   .training .button { flex: 1 1 auto; padding: 0.75rem 1rem; }
   .foot .switch { margin-left: 0; }
+  .line-fig .owner-label { font-size: 20px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

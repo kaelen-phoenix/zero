@@ -1,12 +1,13 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefing, factoryStatus } from "../src/app.js";
+import { briefing, factoryStatus, retryJob } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { formatStatus } from "../src/format.js";
 import { GithubHalted } from "../src/github-quota.js";
 import { mergeDecision, mergeKey, pollMerges, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
-import { finalizeJob } from "../src/line/finish.js";
+import { finalizeJob, prRefreshKey } from "../src/line/finish.js";
 import type { JobSource } from "../src/state/store.js";
-import { cleanup, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, gitIn, gitRepo, run, tempDir, testFactory, validSpec } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -20,7 +21,8 @@ describe("when a pull request can be merged", () => {
     expect(mergeDecision(pr(), [...green, { name: "e2e", done: false, ok: false }], HOUR)).toMatchObject({ kind: "wait" });
     expect(mergeDecision(pr(), [...green, { name: "e2e", done: true, ok: false }], HOUR)).toMatchObject({ kind: "blocked", why: "fallaron los checks e2e" });
     expect(mergeDecision(pr({ mergeable: null }), green, HOUR)).toMatchObject({ kind: "wait" });
-    expect(mergeDecision(pr({ mergeable: false }), green, HOUR)).toMatchObject({ kind: "blocked", why: expect.stringMatching(/conflictos/) });
+    expect(mergeDecision(pr({ mergeable: false }), green, HOUR)).toMatchObject({ kind: "blocked", why: "en conflicto con la rama base" });
+    expect(mergeDecision(pr({ mergeable: false }), [{ name: "e2e", done: true, ok: false }, { name: "ci", done: false, ok: false }], HOUR)).toEqual({ kind: "blocked", key: "conflict:abc", why: "en conflicto con la rama base" });
   });
 
   it("gives CI a moment to register its checks", () => {
@@ -201,7 +203,9 @@ describe("waiting on a blocked pull request", () => {
     expect(state().backoff!.delayMs).toBe(10 * MINUTE);
     gh.state.pr = pr({ mergeable: false });
     await pass();
-    expect(asked).toHaveLength(3);
+    // In conflict its checks are not even asked for: they change nothing.
+    expect(asked).toHaveLength(2);
+    expect(state().why).toBe("en conflicto con la rama base");
     expect(state().backoff).toMatchObject({ mergeable: false, delayMs: 5 * MINUTE });
   });
 
@@ -262,6 +266,212 @@ describe("waiting on a blocked pull request", () => {
     await pass();
     expect(asked).toHaveLength(1);
     expect(state()).toMatchObject({ status: "blocked", why: "fallaron los checks check" });
+  });
+});
+
+describe("a pull request in conflict", () => {
+  const MINUTE = 60_000;
+
+  /** A delivered job whose branch is at the pull request's head, on a line whose base can be fetched unless told otherwise. */
+  async function conflicted(opts: { maxAttempts?: number; attempt?: number; spec?: boolean; branch?: boolean; remote?: string } = {}) {
+    const clock = { ms: Date.now() };
+    const repo = gitRepo();
+    const bare = tempDir("zero-remote-");
+    run("git", ["init", "-q", "--bare", "-b", "main"], bare);
+    gitIn(repo, "remote", "add", "origin", opts.remote ?? bare);
+    if (!opts.remote) gitIn(repo, "push", "-q", "origin", "main");
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request", autoMerge: true, maxAttempts: opts.maxAttempts ?? 3 }] }, () => new Date(clock.ms));
+    const job = ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 });
+    const branch = `zero/${job.id}`;
+    const delivery = { mode: "pull-request" as const, branch, url: "https://github.com/kaelen/demo/pull/10", autoMerge: true };
+    ctx.store.updateJob(job.id, { attempt: opts.attempt ?? 1, approvals: { spec: true, integrate: true }, ...(opts.spec !== false && { spec: validSpec() }) });
+    await finalizeJob(ctx, ctx.store.getJob(job.id)!, "delivered", { delivery });
+    if (opts.branch !== false) gitIn(repo, "branch", branch);
+    const head = gitIn(repo, "rev-parse", "HEAD");
+    const gh = fakeGitHub(green);
+    gh.state.pr = pr({ mergeable: false, headSha: head });
+    const state = () => JSON.parse(ctx.store.getKv(mergeKey(job.id))!) as MergeState;
+    const current = () => ctx.store.getJob(job.id)!;
+    const comments = () => gh.did.filter((d) => d.startsWith("comment"));
+    return { ctx, job, repo, head, gh, delivery, clock, state, current, comments, pass: () => pollMerges(ctx, () => gh.api) };
+  }
+
+  it("goes back to the queue without a comment, keeping its delivery and clearing the approval", async () => {
+    const { head, gh, delivery, state, current, pass, ctx, job } = await conflicted();
+    await pass();
+    expect(current()).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate", delivery, base: "origin/main" });
+    expect(current().finishedAt).toBeUndefined();
+    expect(current().approvals).toEqual({ spec: true });
+    expect(gh.did).toEqual([]);
+    expect(state()).toMatchObject({ status: "waiting", resolving: head });
+    expect(JSON.parse(ctx.store.getKv(prRefreshKey(job.id))!)).toEqual({ head, approved: true });
+  });
+
+  it.each<[string, Check[]]>([
+    ["failed", [{ name: "check", done: true, ok: false }]],
+    ["pending", [{ name: "check", done: false, ok: false }]],
+  ])("goes back to the queue with %s checks too", async (_name, checks) => {
+    const { gh, current, pass } = await conflicted();
+    gh.state.checks = checks;
+    await pass();
+    expect(current().status).toBe("queued");
+  });
+
+  it("leaves it delivered and says so once when the head is someone else's", async () => {
+    const { gh, current, comments, state, pass, repo } = await conflicted();
+    gh.state.pr = pr({ mergeable: false, headSha: "someone-elses" });
+    await pass();
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(comments()).toEqual([expect.stringMatching(/en conflicto con la rama base/)]);
+    expect(state().resolving).toBeUndefined();
+    expect(gitIn(repo, "worktree", "list")).not.toContain("zero/");
+  });
+
+  it("leaves it delivered and says so once when the local branch is gone", async () => {
+    const { current, comments, pass } = await conflicted({ branch: false });
+    await pass();
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(comments()).toHaveLength(1);
+  });
+
+  it("goes back to the queue with one attempt left when its build spent them all", async () => {
+    const { head, ctx, job, current, state, pass } = await conflicted({ maxAttempts: 3, attempt: 3 });
+    await pass();
+    expect(current()).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate", attempt: 2 });
+    expect(state()).toMatchObject({ status: "waiting", resolving: head, resolutions: 1 });
+    expect(ctx.store.getKv(prRefreshKey(job.id))).toBeDefined();
+
+    const early = await conflicted({ attempt: 1 });
+    await early.pass();
+    expect(early.current()).toMatchObject({ status: "queued", attempt: 1 });
+  });
+
+  it("keeps the count of resolutions through later saves", async () => {
+    const { gh, ctx, job, state, pass } = await conflicted();
+    await pass();
+    ctx.store.updateJob(job.id, { status: "delivered" });
+    gh.state.pr = pr({ headSha: "next" });
+    gh.state.checks = [{ name: "check", done: false, ok: false }];
+    await pass();
+    expect(state()).toMatchObject({ status: "waiting", resolutions: 1 });
+    gh.state.checks = [{ name: "check", done: true, ok: false }];
+    await pass();
+    expect(state()).toMatchObject({ status: "blocked", resolutions: 1 });
+    expect(ctx.store.getJob(job.id)!.status).toBe("delivered");
+  });
+
+  it("is not taken back once its resolutions are used up, and says what is missing", async () => {
+    const { ctx, job, gh, current, state, comments, pass } = await conflicted({ attempt: 3 });
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "blocked", resolutions: 2, resolving: "older" } satisfies MergeState));
+    gh.state.checks = [{ name: "check", done: true, ok: false }];
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(ctx.store.getKv(prRefreshKey(job.id))).toBeUndefined();
+    expect(state()).toMatchObject({ status: "blocked", resolutions: 2, backoff: { mergeable: false } });
+    expect(state().why).toMatch(/^en conflicto con la rama base; ya se usaron las 2 resoluciones automáticas/);
+    expect(comments()).toHaveLength(1);
+    const line = formatStatus(factoryStatus(ctx)).split("\n").find((l) => l.includes("Fusión automática"))!;
+    expect(line).toContain("NO SE FUNDE: en conflicto con la rama base");
+    expect(line).toContain(`zero reintentar ${job.id}`);
+    expect(line).not.toContain("fallaron los checks");
+  });
+
+  it("takes back a head GitHub refused to update over a conflict, though it reports it mergeable", async () => {
+    const { ctx, job, head, gh, current, state, pass } = await conflicted();
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "blocked", conflict: head } satisfies MergeState));
+    gh.state.pr = pr({ mergeable: true, headSha: head });
+    await pass();
+    expect(current()).toMatchObject({ status: "queued", station: "integrate" });
+    expect(state()).toMatchObject({ resolving: head, resolutions: 1, conflict: head });
+    expect(gh.did).toEqual([]);
+  });
+
+  it("says the automatic resolution of the head failed when that head was tried", async () => {
+    const { ctx, job, head, current, state, pass } = await conflicted();
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "blocked", resolutions: 1, resolving: head } satisfies MergeState));
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(state().why).toBe("en conflicto con la rama base; falló la resolución automática de este head");
+  });
+
+  it("leaves it delivered when it has no spec", async () => {
+    const noSpec = await conflicted({ spec: false });
+    await noSpec.pass();
+    expect(noSpec.current().status).toBe("delivered");
+    expect(noSpec.comments()).toHaveLength(1);
+  });
+
+  it("goes back to the queue after zero reintentar, once the head was tried and the attempts ran out", async () => {
+    const { head, ctx, job, current, state, pass } = await conflicted();
+    await pass();
+    await finalizeJob(ctx, current(), "failed", { reason: "se agotaron los intentos" });
+    ctx.store.updateJob(job.id, { attempt: 3 });
+    await pass();
+    expect(state()).toMatchObject({ status: "blocked", resolving: head, backoff: { mergeable: false } });
+    expect(current().status).toBe("delivered");
+
+    expect(retryJob(ctx, job.id)).toMatchObject({ kind: "pull-request", job: { status: "delivered", attempt: 0 } });
+    expect(state().resolving).toBeUndefined();
+    expect(state().resolutions).toBeUndefined();
+    expect(state().conflict).toBeUndefined();
+    expect(state().backoff).toBeUndefined();
+    expect(state().status).toBe("blocked");
+
+    await pass();
+    expect(current()).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate" });
+    expect(state()).toMatchObject({ status: "waiting", resolving: head });
+  });
+
+  it("does not spend the head when the base cannot be fetched, and tries again later", async () => {
+    const f = await conflicted({ remote: join(tempDir(), "missing.git") });
+    await f.pass();
+    expect(f.current().status).toBe("delivered");
+    expect(f.state().resolving).toBeUndefined();
+    expect(f.state().status).toBe("blocked");
+    expect(f.comments()).toEqual([expect.stringMatching(/en conflicto con la rama base/)]);
+  });
+
+  it("takes each head back once, keeping it through blocked passes, and merges after a later fix", async () => {
+    const { head, gh, current, comments, state, pass, clock, ctx, job, delivery } = await conflicted();
+    await pass();
+    await finalizeJob(ctx, current(), "failed", { reason: "se agotaron los intentos" });
+    expect(current()).toMatchObject({ status: "delivered", delivery });
+    expect(ctx.store.getKv(prRefreshKey(job.id))).toBeUndefined();
+
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(comments()).toHaveLength(1);
+    expect(state()).toMatchObject({ status: "blocked", resolving: head });
+
+    clock.ms += 5 * MINUTE;
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(comments()).toHaveLength(1);
+    expect(state().resolving).toBe(head);
+
+    // Its checks running change nothing while it is in conflict.
+    gh.state.checks = [{ name: "check", done: false, ok: false }];
+    clock.ms += 10 * MINUTE;
+    await pass();
+    expect(state()).toMatchObject({ status: "blocked", resolving: head });
+    expect(current().status).toBe("delivered");
+    expect(comments()).toHaveLength(1);
+
+    gh.state.checks = green;
+    gh.state.pr = pr({ headSha: "fixed" });
+    await pass();
+    expect(gh.did.at(-2)).toBe("merge #10 @fixed");
+    expect(state().status).toBe("merged");
+  });
+
+  it("is told as before after 14 days instead of going back to the queue", async () => {
+    const { current, state, pass, clock } = await conflicted();
+    clock.ms += 15 * 24 * 60 * MINUTE;
+    await pass();
+    expect(current().status).toBe("delivered");
+    expect(state().status).toBe("expired");
   });
 });
 

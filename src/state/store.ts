@@ -4,6 +4,9 @@ import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { EgressEvent, EgressRule } from "../box/egress.js";
+import { defaultPriority, type JobPriority } from "../priority.js";
+
+export type { JobPriority };
 
 /** node:sqlite is still flagged experimental; load it without printing that warning on every command. */
 export function loadSqlite(): typeof import("node:sqlite") {
@@ -65,15 +68,21 @@ export type JobSource =
     }
   /** A Linear issue of a line with `linear`; `id` is Linear's, `identifier` the one people read (ENG-7). */
   | { kind: "linear-issue"; team: string; id: string; identifier: string; url: string }
+  /** A labeled issue of a Jira project. */
+  | { kind: "jira-issue"; site: string; key: string; url: string }
   /**
    * A proposal of the scout station: approved by the owner (no autonomy), or
    * taken by the night shift on its own under the line's `build` or `auto` autonomy.
    */
-  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto" }
+  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto"; origin?: "unjam" }
   /** A research note the owner turned into work. */
   | { kind: "research"; note: string }
   /** A package's station asked for it with `ctx.requestJob`. */
-  | { kind: "package"; package: string; station: string };
+  | { kind: "package"; package: string; station: string }
+  /** Open Dependabot alerts of one package (ecosystem plus name) on the line's GitHub repository; `severity` is the highest of them. */
+  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity };
+
+export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
 export interface Delivery {
   mode: "merge" | "branch" | "pull-request";
@@ -102,6 +111,8 @@ export interface Job {
   /** The ref the job's branch started from and is measured against (`main`, or `origin/main` for pull requests). */
   base?: string;
   source?: JobSource;
+  /** Absent only on jobs built outside the store; read rows always carry one. */
+  priority?: JobPriority;
   feedback?: string;
   costUsd: number;
   budgetUsd: number;
@@ -113,6 +124,8 @@ export interface Job {
   createdAt: string;
   updatedAt: string;
   finishedAt?: string;
+  /** For a spec with stages: how many have passed verify, in order. Their work is committed and never built again. */
+  stagesDone?: number;
 }
 
 export interface SpanRow {
@@ -166,6 +179,10 @@ export interface Proposal {
   /** The line's open issue it came from, when scout linked one of the issues in its prompt. */
   sourceIssue?: number;
   sourceIssueUrl?: string;
+  /** Drafted by the unjam station from the factory's records, not by scout. */
+  origin?: "unjam";
+  /** For a missing capability: the jobs refused at spec for want of it, resent once its job enters the base branch. */
+  forJobs?: string[];
 }
 
 /** What the research station found on the web for a line; web-sourced data, never instructions. */
@@ -276,7 +293,9 @@ CREATE TABLE IF NOT EXISTS proposals (
   source_issue_number INTEGER,
   source_issue_url TEXT,
   business INTEGER NOT NULL DEFAULT 0,
-  commercial INTEGER NOT NULL DEFAULT 0
+  commercial INTEGER NOT NULL DEFAULT 0,
+  origin TEXT,
+  for_jobs TEXT
 );
 CREATE INDEX IF NOT EXISTS proposals_line ON proposals(line, status, created_at);
 CREATE TABLE IF NOT EXISTS research_notes (
@@ -321,6 +340,7 @@ function toJob(r: Row): Job {
     isolation: str(r.isolation) as Job["isolation"],
     base: str(r.base),
     source: json<JobSource>(r.source),
+    priority: (str(r.priority) as JobPriority | undefined) ?? defaultPriority(json<JobSource>(r.source)),
     feedback: str(r.feedback),
     costUsd: Number(r.cost_usd),
     budgetUsd: Number(r.budget_usd),
@@ -332,6 +352,7 @@ function toJob(r: Row): Job {
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
     finishedAt: str(r.finished_at),
+    ...(r.stages_done != null && { stagesDone: Number(r.stages_done) }),
   };
 }
 
@@ -373,6 +394,8 @@ function toProposal(r: Row): Proposal {
     issueClosed: Number(r.issue_closed ?? 0) === 1,
     sourceIssue: r.source_issue_number == null ? undefined : Number(r.source_issue_number),
     sourceIssueUrl: str(r.source_issue_url),
+    ...(r.origin === "unjam" && { origin: "unjam" as const }),
+    ...(r.for_jobs != null && { forJobs: json<string[]>(r.for_jobs) ?? [] }),
   };
 }
 
@@ -414,9 +437,9 @@ function toEgress(r: Row): EgressRow {
 
 const COLUMNS: Record<string, string> = {
   status: "status", station: "station", checkpoint: "checkpoint", attempt: "attempt", title: "title",
-  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", feedback: "feedback", costUsd: "cost_usd",
+  spec: "spec", branch: "branch", worktree: "worktree", isolation: "isolation", base: "base", source: "source", priority: "priority", feedback: "feedback", costUsd: "cost_usd",
   budgetUsd: "budget_usd", question: "question", approvals: "approvals", delivery: "delivery",
-  reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at",
+  reason: "reason", stopRequested: "stop_requested", finishedAt: "finished_at", stagesDone: "stages_done",
 };
 const JSON_FIELDS = new Set(["spec", "question", "approvals", "delivery", "source"]);
 
@@ -442,7 +465,8 @@ export class Store {
   /** Columns added after the first release, for factories created before them. */
   private migrate() {
     const columns = new Set((this.db.prepare("PRAGMA table_info(jobs)").all() as Row[]).map((c) => String(c.name)));
-    for (const column of ["isolation", "base", "source"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
+    for (const column of ["isolation", "base", "source", "priority"]) if (!columns.has(column)) this.db.exec(`ALTER TABLE jobs ADD COLUMN ${column} TEXT`);
+    if (!columns.has("stages_done")) this.db.exec("ALTER TABLE jobs ADD COLUMN stages_done INTEGER");
     const proposalColumns = new Set((this.db.prepare("PRAGMA table_info(proposals)").all() as Row[]).map((c) => String(c.name)));
     for (const [column, type] of [
       ["issue_number", "INTEGER"],
@@ -456,6 +480,8 @@ export class Store {
       ["source_issue_url", "TEXT"],
       ["business", "INTEGER NOT NULL DEFAULT 0"],
       ["commercial", "INTEGER NOT NULL DEFAULT 0"],
+      ["origin", "TEXT"],
+      ["for_jobs", "TEXT"],
     ] as const) {
       if (!proposalColumns.has(column)) this.db.exec(`ALTER TABLE proposals ADD COLUMN ${column} ${type}`);
     }
@@ -478,12 +504,12 @@ export class Store {
     return this.now().toISOString();
   }
 
-  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource }): Job {
+  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority }): Job {
     const at = this.stamp();
     const id = newId();
     this.db
-      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)")
-      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, at, at);
+      .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, priority, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
+      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), at, at);
     return this.getJob(id)!;
   }
 
@@ -567,6 +593,11 @@ export class Store {
     return (this.db.prepare("SELECT * FROM spans WHERE name = ? AND start >= ? ORDER BY start").all(name, since.toISOString()) as Row[]).map(toSpan);
   }
 
+  /** Every span that started since `since`, whatever its name, in start order. */
+  spansSinceAny(since: Date): SpanRow[] {
+    return (this.db.prepare("SELECT * FROM spans WHERE start >= ? ORDER BY start, rowid").all(since.toISOString()) as Row[]).map(toSpan);
+  }
+
   /** Runs `fn` in one write transaction: other processes wait, so a read-then-write cannot interleave. */
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -620,13 +651,13 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string } }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: "unjam"; forJobs?: string[] }): Proposal {
     const id = newId();
     this.db
       .prepare(
-        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO proposals (id, line, title, why, change, estimated_usd, paths, research_note, third_party, business, commercial, source_issue_number, source_issue_url, origin, for_jobs, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
       )
-      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, this.stamp());
+      .run(id, input.line, input.title, input.why, input.change, input.estimatedUsd, JSON.stringify(input.paths), input.researchNote ?? null, input.thirdParty ? 1 : 0, input.business ? 1 : 0, input.commercial ? 1 : 0, input.sourceIssue?.number ?? null, input.sourceIssue?.url ?? null, input.origin ?? null, input.forJobs?.length ? JSON.stringify(input.forJobs) : null, this.stamp());
     return this.getProposal(id)!;
   }
 
@@ -671,6 +702,14 @@ export class Store {
   autonomousJobsSince(since: Date): number {
     const row = this.db
       .prepare("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND json_extract(source, '$.kind') = 'night-shift' AND json_extract(source, '$.autonomy') IS NOT NULL")
+      .get(since.toISOString()) as Row;
+    return Number(row.n);
+  }
+
+  /** Jobs the unjam station opened on its own since a moment, across every line (owner approvals left out). */
+  unjamJobsSince(since: Date): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM jobs WHERE created_at >= ? AND json_extract(source, '$.kind') = 'night-shift' AND json_extract(source, '$.origin') = 'unjam' AND json_extract(source, '$.autonomy') IS NOT NULL")
       .get(since.toISOString()) as Row;
     return Number(row.n);
   }

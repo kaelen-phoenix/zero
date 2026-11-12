@@ -302,14 +302,37 @@ describe("sitio del proyecto: contenido", () => {
     for (const word of ["stars", "estrellas", "testimonio", "testimonial", "clientes satisfechos", "customers", "usuarios activos", "descargas"]) expect(text).not.toContain(word);
   });
 
-  it("marca como en camino lo de las próximas etapas", () => {
+  it("marca como en camino solo lo que falta de las próximas etapas", () => {
     const soon = [...html.matchAll(/<span class="soon" data-i18n="soon">([^<]*)<\/span>/g)];
-    expect(soon.length).toBeGreaterThanOrEqual(2);
     for (const s of soon) expect(s[1]).toBe("en camino");
-    expect(loadSite().EN["soon"]).toBe("coming");
+    // Hoy no queda nada en camino, así que su traducción tampoco: vuelve con el próximo ítem pendiente.
+    expect(loadSite().EN["soon"] !== undefined).toBe(soon.length > 0);
     const lines = html.split("\n").filter((l) => l.includes('class="soon"'));
+    // Los motores ACP/OpenCode, Linear, Jira, el simulacro y el instalador ya están: ninguno sigue en camino.
     expect(lines.filter((l) => /instalador|installer/i.test(l))).toEqual([]);
-    for (const item of ["next.engines", "next.intake"]) expect(lines.some((l) => l.includes(`data-i18n="${item}"`)), item).toBe(true);
+    for (const item of ["next.engines", "next.linear", "next.intake", "next.regen"]) expect(lines.filter((l) => l.includes(`data-i18n="${item}"`)), item).toEqual([]);
+  });
+
+  it("da los motores ACP y OpenCode como disponibles, no en camino", () => {
+    expect(html.split("\n").filter((l) => l.includes("next.engines") && l.includes('class="soon"'))).toEqual([]);
+    const engines = html.split("\n").filter((l) => l.includes('data-i18n="next.engines"'));
+    expect(engines).toHaveLength(1);
+    expect(engines[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+  });
+
+  it("da los pedidos desde Jira como disponibles, no en camino", () => {
+    const lines = html.split("\n");
+    expect(lines.filter((l) => l.includes('class="soon"') && l.includes("Jira"))).toEqual([]);
+    const intake = lines.filter((l) => l.includes('data-i18n="next.intake"'));
+    expect(intake).toHaveLength(1);
+    expect(/data-i18n="next\.intake">([^<]*)</.exec(intake[0]!)![1]).toBe("Pedidos desde Jira");
+    expect(intake[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
+    expect(loadSite().EN["next.intake"]).toBe("Requests from Jira");
+    const request = /<p data-i18n="workflow\.request">([^<]*)<\/p>/.exec(html)![1]!;
+    for (const tracker of ["GitHub", "Linear", "Jira"]) {
+      expect(request).toContain(tracker);
+      expect(loadSite().EN["workflow.request"]).toContain(tracker);
+    }
   });
 
   it("da la exportación OTLP como disponible, no en camino", () => {
@@ -320,10 +343,9 @@ describe("sitio del proyecto: contenido", () => {
     expect(loadSite().EN["workflow.trace"]).toContain("OTLP");
   });
 
-  it("da los pedidos desde Linear como disponibles y Jira sigue en camino", () => {
+  it("da los pedidos desde Linear como disponibles, no en camino", () => {
     const lines = html.split("\n");
     expect(lines.filter((l) => l.includes('class="soon"') && /linear/i.test(l))).toEqual([]);
-    expect(lines.some((l) => l.includes('class="soon"') && l.includes("Jira"))).toBe(true);
     const linear = lines.filter((l) => l.includes('data-i18n="next.linear"'));
     expect(linear).toHaveLength(1);
     expect(linear[0]).toContain('<span class="ready" data-i18n="ready">disponible</span>');
@@ -384,6 +406,45 @@ describe("sitio del proyecto: FIG. 1", () => {
     for (const rule of rules) {
       for (const color of rule.matchAll(/(?:^|;)\s*(?:fill|stroke|color):\s*([^;]+)/g)) expect(color[1]!.trim()).toMatch(/^(var\(--[\w-]+\)|none)$/);
     }
+  });
+
+  it("muestra a la persona como un ícono de cabeza y hombros en el color de acento", () => {
+    const owner = /<g class="owner">([\s\S]*?)<\/g>/.exec(svg);
+    expect(owner).not.toBeNull();
+    expect(owner![1]).toMatch(/<circle\b/);
+    expect(owner![1]).toMatch(/<path\b/);
+    expect(svg).not.toMatch(/<circle class="owner"/);
+    const rules = [...css.matchAll(/\.line-fig \.owner\b(?!-)[^{]*\{([^}]*)\}/g)].map((m) => m[1]!);
+    expect(rules.some((r) => /(?:fill|stroke):\s*var\(--accent\)/.test(r))).toBe(true);
+    for (const rule of rules) {
+      for (const color of rule.matchAll(/(?:^|;)\s*(?:fill|stroke):\s*([^;]+)/g)) expect(color[1]!.trim()).toMatch(/^(var\(--[\w-]+\)|none)$/);
+    }
+  });
+
+  it("conserva el pulso suave de la persona", () => {
+    const rule = /\.line-fig \.owner \{([^}]*)\}/.exec(css)![1]!;
+    expect(rule).toMatch(/animation:[^;]*\bpulse\b/);
+    expect(rule).toMatch(/transform-origin:\s*360px 46px/);
+    const pulse = /@keyframes pulse\s*\{([\s\S]*?)\n\}/.exec(css)![1]!;
+    const scales = [...pulse.matchAll(/scale\(([\d.]+)\)/g)].map((m) => Number(m[1]));
+    expect(scales.length).toBeGreaterThan(0);
+    for (const n of scales) expect(n).toBeLessThanOrEqual(1.35);
+  });
+
+  it("muestra el rótulo de la persona más grande y con más peso, también en celular", () => {
+    const outside = css.replace(/@media[^{]*\{[\s\S]*?\n\}/g, "");
+    const rule = /\.line-fig \.owner-label \{([^}]*)\}/.exec(outside)![1]!;
+    expect(Number(/font-size:\s*(\d+)px/.exec(rule)![1])).toBeGreaterThanOrEqual(15);
+    expect(Number(/font-weight:\s*(\d+)/.exec(rule)![1])).toBeGreaterThanOrEqual(600);
+    expect(rule).toMatch(/fill:\s*var\(--accent\)/);
+    const mobile = /@media \(max-width: 40rem\)\s*\{([\s\S]*?)\n\}/.exec(css)![1]!;
+    const small = /\.line-fig \.owner-label \{([^}]*)\}/.exec(mobile)![1]!;
+    expect(Number(/font-size:\s*(\d+)px/.exec(small)![1])).toBeGreaterThanOrEqual(20);
+    expect(svg).toMatch(/<text class="owner-label"[^>]*data-i18n="fig\.owner">vos<\/text>/);
+    expect(loadSite().EN["fig.owner"]).toBe("you");
+    const label = Number(/<text class="owner-label"[^>]*\by="([\d.]+)"/.exec(svg)![1]);
+    const head = /<g class="owner">[\s\S]*?<circle\b[^>]*\bcy="([\d.]+)"[^>]*\br="([\d.]+)"/.exec(svg)!;
+    expect(label).toBeLessThan(Number(head[1]) - Number(head[2]));
   });
 
   it("detiene las animaciones con prefers-reduced-motion", () => {
@@ -826,7 +887,7 @@ describe("sitio del proyecto: compatibilidad, encabezado y pie", () => {
   it("lista los motores y clientes de hoy, y nada más", () => {
     const compat = section("compatibility");
     const items = [...compat.matchAll(/data-item="([^"]+)"/g)].map((m) => m[1]);
-    expect(items).toEqual(["claude", "codex", "antigravity", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
+    expect(items).toEqual(["claude", "codex", "antigravity", "opencode", "acp", "custom-cli", "claude-code", "codex", "opencode", "terminal"]);
     for (const name of ["Claude", "Codex", "Antigravity", "CLI propio", "Claude Code", "OpenCode", "Terminal"]) expect(compat).toContain(name);
     for (const other of ["Gemini", "Cursor", "Copilot", "Windsurf", "Aider", "ChatGPT"]) expect(compat).not.toContain(other);
   });
@@ -1049,7 +1110,7 @@ describe("sitio del proyecto: idiomas", () => {
     rest = rest
       .replace(/<([a-z][a-z0-9]*)\b[^>]*\bdata-i18n="[^"]+"[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<code>[\s\S]*?<\/code>/g, "").replace(/<text x="\d+" y="186">\w+<\/text>/g, "");
     const words = squash(rest.replace(/<[^>]+>/g, " ")).split(" ").filter(Boolean);
-    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
+    const names = ["zero", "Docs", "GitHub", "ES", "EN", "zero in the loop", "SH", "Claude", "Agent SDK", "Codex", "CLI", "Antigravity", "ACP", "Claude Code", "OpenCode", "Terminal", "v", "0.1.0", "Apache-2.0", "WhatsApp", "Instagram", "macOS · Linux", "Windows · PowerShell"];
     const allowed = new Set(names.flatMap((n) => n.split(" ")));
     expect(words.filter((w) => !allowed.has(w) && !/^\d\d$/.test(w))).toEqual([]);
   });

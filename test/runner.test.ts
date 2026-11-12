@@ -844,3 +844,109 @@ describe("the dependency check", () => {
     expect(ctx.store.spansForJob(job.id).find((s) => s.name === "zero.dependencies")!.attrs).toMatchObject({ "zero.dependencies.unverified": "manifest package-lock.json" });
   });
 });
+
+describe("a request split into stages", () => {
+  const titles = ["Base", "Vista", "Docs"];
+  const staged = (n: number) => validSpec({ stages: titles.slice(0, n).map((title, i) => ({ title, tasks: [`task ${i + 1}`] })) });
+  const failsOnBad = `node -e "process.exit(require('fs').existsSync('src/bad.ts') ? 1 : 0)"`;
+  const stagedFactory = (maxAttempts = 3) => {
+    const repo = gitRepo();
+    const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, verify: [failsOnBad], maxAttempts }] });
+    return { repo, ctx };
+  };
+  const builds = (agents: ReturnType<typeof fakeAgents>) => agents.calls.filter((c) => c.station === "build").map((c) => /## Stage (\d+ of \d+: \w+)/.exec(c.prompt)?.[1]);
+  const writeFile = (path: string) => (req: { cwd: string }) => writeTree(req.cwd, { [path]: `export const v = ${JSON.stringify(path)};\n` });
+
+  it("builds and verifies each stage in order, then reviews once", async () => {
+    const { repo, ctx } = stagedFactory();
+    let seenAtStage2: unknown;
+    const agents = fakeAgents({
+      spec: () => ({ output: staged(3) }),
+      build: (req, n) => {
+        if (n === 2) seenAtStage2 = ctx.store.getJob(job.id);
+        writeFile(`src/stage${n}.ts`)(req);
+      },
+    });
+    const { job } = requestWork(ctx, { text: "pedido grande" });
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+
+    expect(done.status).toBe("delivered");
+    expect(builds(agents)).toEqual(["1 of 3: Base", "2 of 3: Vista", "3 of 3: Docs"]);
+    expect(agents.calls.map((c) => c.station)).toEqual(["spec", "build", "build", "build", "review", "security"]);
+    expect(agents.calls[2]!.prompt).toContain("- task 2");
+    expect(ctx.store.spansForJob(job.id).filter((s) => s.name === "zero.station.verify")).toHaveLength(3);
+    expect(seenAtStage2).toMatchObject({ stagesDone: 1, attempt: 1 });
+    expect(done.stagesDone).toBe(2);
+    for (const n of [1, 2, 3]) expect(existsSync(join(repo, `src/stage${n}.ts`))).toBe(true);
+  });
+
+  it("retries only the stage a timed-out build was on, keeping the stages before it", async () => {
+    const { repo, ctx } = stagedFactory();
+    const agents = fakeAgents({
+      spec: () => ({ output: staged(2) }),
+      build: (req, n) => {
+        if (n === 2) return { ok: false, text: "timed out after 45 minutes" };
+        writeFile(`src/stage${n}.ts`)(req);
+      },
+    });
+    const { job } = requestWork(ctx, { text: "pedido grande" });
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+
+    expect(done).toMatchObject({ status: "delivered", stagesDone: 1, attempt: 2 });
+    expect(builds(agents)).toEqual(["1 of 2: Base", "2 of 2: Vista", "2 of 2: Vista"]);
+    expect(agents.calls.filter((c) => c.station === "build")[2]!.prompt).toContain("terminó de forma anormal");
+    expect(gitIn(repo, "log", "--format=%s", `zero/${job.id}`)).toMatch(/etapa 2 de 2, intento 2\n.*etapa 1 de 2, intento 1\n/);
+    expect(existsSync(join(repo, "src/stage1.ts"))).toBe(true);
+    expect(existsSync(join(repo, "src/stage3.ts"))).toBe(true);
+  });
+
+  it("counts attempts per stage and names the stage that used them all", async () => {
+    const { ctx } = stagedFactory(2);
+    const agents = fakeAgents({ spec: () => ({ output: staged(2) }), build: (req, n) => writeFile(n === 1 ? "src/stage1.ts" : "src/bad.ts")(req) });
+    const { job } = requestWork(ctx, { text: "pedido grande" });
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+
+    expect(done.status).toBe("failed");
+    expect(done.reason).toMatch(/Se agotaron los 2 intentos de la etapa 2 de 2 \(Vista\)\. Último problema:/);
+    expect(builds(agents)).toEqual(["1 of 2: Base", "2 of 2: Vista", "2 of 2: Vista"]);
+    expect(agents.count.review).toBeUndefined();
+  });
+
+  it("resumes an interrupted job at the first stage not yet verified", async () => {
+    const { ctx } = stagedFactory();
+    const controller = new AbortController();
+    const first = fakeAgents({
+      spec: () => ({ output: staged(3) }),
+      build: (req, n) => {
+        writeFile(`src/stage${n}.ts`)(req);
+        if (n === 3) controller.abort("shutdown");
+      },
+    });
+    const { job } = requestWork(ctx, { text: "pedido grande" });
+
+    const requeued = await runJob(job.id, deps(ctx, first.runner), controller.signal);
+    expect(requeued).toMatchObject({ status: "queued", stagesDone: 2 });
+
+    const second = fakeAgents({ build: writeFile("src/stage3.ts") });
+    const done = await runJob(job.id, deps(ctx, second.runner));
+    expect(done.status).toBe("delivered");
+    expect(builds(second)).toEqual(["3 of 3: Docs"]);
+    expect(second.count.spec).toBeUndefined();
+  });
+
+  it("builds a spec without stages as before, with no stage text", async () => {
+    const { ctx } = stagedFactory();
+    const agents = fakeAgents({ build: writeFile("src/health.ts") });
+    const { job } = requestWork(ctx, { text: "pedido chico" });
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+
+    expect(done.status).toBe("delivered");
+    expect(done.stagesDone).toBeUndefined();
+    expect(agents.calls.map((c) => c.station)).toEqual(["spec", "build", "review", "security"]);
+    expect(agents.calls[1]!.prompt).not.toMatch(/Stage/);
+  });
+});

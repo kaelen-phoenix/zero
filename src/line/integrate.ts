@@ -23,6 +23,12 @@ export interface IntegrateOptions {
   author?: CommitAuthor;
   /** GitHub's pull requests; defaults to the real adapter. */
   pullRequests?: PullRequestsFactory;
+  /** The job already has this pull request, whose branch was at `head`: update it instead of delivering anew. */
+  existing?: { delivery: Delivery; head: string };
+  /** Removes the temporary merge copy; defaults to the real one. */
+  removeCopy?: (repo: string, path: string) => void;
+  /** A temporary merge copy could not be removed: it is left for a later cleanup. */
+  onLeftover?: (path: string, error: string) => void;
 }
 
 function mergeIn(dir: string, branch: string, message: string, env: NodeJS.ProcessEnv | undefined): boolean {
@@ -49,15 +55,26 @@ export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateO
       return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos (o pisaría archivos sin seguimiento en ${owner}). La rama ${copy.branch} queda lista para resolverlo.` };
     }
   } else {
-    const temp = join(opts.scratchDir, `merge-${opts.jobId}`);
-    removeWorkCopy(line.repo, temp);
+    const remove = opts.removeCopy ?? removeWorkCopy;
+    let temp = join(opts.scratchDir, `merge-${opts.jobId}`);
+    try {
+      remove(line.repo, temp);
+    } catch {
+      // A copy an earlier run left locked: this merge goes in a fresh folder.
+      temp = join(opts.scratchDir, `merge-${opts.jobId}-${Date.now()}`);
+    }
     git(["worktree", "add", "-q", temp, line.baseBranch], line.repo);
     try {
       if (!mergeIn(temp, copy.branch, message, env)) {
         return { ok: false, reason: `Integrar ${copy.branch} en ${line.baseBranch} produce conflictos. La rama ${copy.branch} queda lista para resolverlo.` };
       }
     } finally {
-      removeWorkCopy(line.repo, temp);
+      try {
+        remove(line.repo, temp);
+      } catch (err) {
+        // The merge is done or refused already; a folder that cannot go yet never changes that.
+        opts.onLeftover?.(temp, err instanceof Error ? err.message : String(err));
+      }
     }
   }
   return { ok: true, delivery: { mode: "merge", branch: copy.branch, commit: git(["rev-parse", line.baseBranch], line.repo) } };
@@ -117,7 +134,18 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   return { ok: true, delivery: { mode: "pull-request", branch: copy.branch, url: pr, ...(line.autoMerge && { autoMerge: true }) } };
 }
 
+/** Pushes the branch to the pull request it already has, without forcing and only if the remote branch is still where it was left. */
+function updatePullRequest(line: LineConfig, copy: WorkCopy, existing: NonNullable<IntegrateOptions["existing"]>): IntegrateResult {
+  const seen = spawnGit(["ls-remote", line.remote, `refs/heads/${copy.branch}`], line.repo, { timeout: 120_000 });
+  if (seen.status !== 0) return { ok: false, reason: `No se pudo mirar la rama remota: ${(seen.stderr || String(seen.error ?? "")).trim()}` };
+  if (seen.stdout.split(/\s/)[0] !== existing.head) return { ok: false, reason: `La rama remota ${copy.branch} ya no está en ${existing.head.slice(0, 8)}, así que no se subió nada.` };
+  const push = spawnGit(["push", "-q", line.remote, `refs/heads/${copy.branch}:refs/heads/${copy.branch}`], line.repo);
+  if (push.status !== 0) return { ok: false, reason: `No se pudo subir la rama: ${(push.stderr || push.stdout).trim()}` };
+  return { ok: true, delivery: existing.delivery };
+}
+
 export async function integrate(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): Promise<IntegrateResult> {
+  if (opts.existing) return updatePullRequest(line, copy, opts.existing);
   switch (line.integrate) {
     case "merge":
       return mergeIntoBase(line, copy, opts);

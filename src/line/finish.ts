@@ -1,9 +1,12 @@
 import { AGENT_STATIONS, type FactoryConfig } from "../config.js";
+import { log } from "../log.js";
+import { tryGit } from "../shell.js";
+import { recordCleanup } from "./cleanup.js";
 import type { Delivery, Job, Question, Store } from "../state/store.js";
 import { APPROVAL_SPAN } from "../telemetry/metrics.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import type { NewPost, Townhall } from "../townhall/index.js";
-import { removeWorkCopy } from "../workspace.js";
+import { checkedOutAt, removeWorkCopy } from "../workspace.js";
 
 export interface LedgerDeps {
   config: FactoryConfig;
@@ -11,6 +14,35 @@ export interface LedgerDeps {
   tracer: Tracer;
   townhall: Townhall;
   now?: () => Date;
+  /** Removes a finished job's work copy; tests inject a failing one. */
+  removeCopy?: (repo: string, path: string) => void;
+}
+
+/**
+ * A delivered job taken back to update its pull request with the base: the tip
+ * the pull request had, and how far the merge went. While this exists, the job
+ * can only end delivered, with its pull request as it found it or updated.
+ */
+export interface PrRefresh {
+  head: string;
+  /** The owner had approved integrating the code before this update. */
+  approved?: boolean;
+  started?: boolean;
+  /** The commit of the base being merged: a remote-tracking ref is shared and moves during the job, and this merge must not move with it. */
+  baseCommit?: string;
+  /** The files that were in conflict; absent when the merge was clean. */
+  paths?: string[];
+  /** The merge is committed on the branch. */
+  resolved?: boolean;
+  /** Taken back to fix its failed checks, not to merge the base: what the checks said. Nothing of the base is merged. */
+  checks?: string;
+}
+
+export const prRefreshKey = (jobId: string) => `pr-refresh:${jobId}`;
+
+export function prRefresh(store: Pick<Store, "getKv">, jobId: string): PrRefresh | undefined {
+  const raw = store.getKv(prRefreshKey(jobId));
+  return raw ? (JSON.parse(raw) as PrRefresh) : undefined;
 }
 
 export function engineSummary(config: FactoryConfig): string {
@@ -65,7 +97,9 @@ export function closeQuestion(deps: LedgerDeps, job: Job, answer: string) {
 
 /**
  * Every way a job ends goes through here: final status, the job span, the
- * townhall report and removal of the work copy (the branch is kept).
+ * townhall report and removal of the work copy (the branch is kept). An update
+ * of a pull request that did not get pushed leaves the job delivered as it was,
+ * with its branch back at the tip on record, so the pull request stays watched.
  */
 export async function finalizeJob(
   deps: LedgerDeps,
@@ -74,19 +108,38 @@ export async function finalizeJob(
   opts: { reason?: string; delivery?: Delivery } = {},
 ): Promise<Job> {
   if (job.question) closeQuestion(deps, job, "closed");
-  const done = deps.store.finishJob(job.id, status, {
-    reason: opts.reason,
-    delivery: opts.delivery,
-    ...(status === "delivered" && { checkpoint: "delivered" as const }),
+  const refresh = prRefresh(deps.store, job.id);
+  const gaveUp = refresh && status !== "delivered" ? refresh : undefined;
+  const outcome = gaveUp ? "delivered" : status;
+  const delivery = gaveUp ? job.delivery : opts.delivery;
+  const done = deps.store.finishJob(job.id, outcome, {
+    reason: gaveUp ? undefined : opts.reason,
+    delivery,
+    ...(outcome === "delivered" && { checkpoint: "delivered" as const }),
   });
-  deps.store.endSpan(deps.tracer.jobSpanId(job.id), done.finishedAt!, status === "failed" ? "error" : "ok", {
-    "zero.outcome": status,
+  deps.store.endSpan(deps.tracer.jobSpanId(job.id), done.finishedAt!, outcome === "failed" ? "error" : "ok", {
+    "zero.outcome": outcome,
     "zero.attempts": done.attempt,
     "zero.cost.usd": done.costUsd,
   });
 
+  // A copy that cannot be removed now (EBUSY on Windows) never changes how the job ended: the daemon retries it.
   const line = deps.config.lines.find((l) => l.name === job.line);
-  if (line && done.worktree) removeWorkCopy(line.repo, done.worktree);
+  if (line && done.worktree) {
+    try {
+      (deps.removeCopy ?? removeWorkCopy)(line.repo, done.worktree);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log.warn("work copy cleanup failed; retrying in the background", { job: job.id, path: done.worktree, error });
+      recordCleanup(deps.store, job.id, { repo: line.repo, path: done.worktree, error, since: (deps.now ?? (() => new Date()))().toISOString() });
+    }
+  }
+  if (gaveUp) {
+    log.warn("pull request not updated", { job: job.id, status, reason: opts.reason });
+    const branch = delivery?.branch;
+    if (line && branch && !checkedOutAt(line.repo, branch)) tryGit(["update-ref", `refs/heads/${branch}`, gaveUp.head], line.repo);
+  }
+  if (refresh) deps.store.deleteKv(prRefreshKey(job.id));
 
   const topic = done.title ?? done.request.slice(0, 80);
   const posts: NewPost[] = [
@@ -96,18 +149,19 @@ export async function finalizeJob(
       job: done.id,
       source: "zero",
       topic,
-      body: status === "delivered" && opts.delivery ? describeDelivery(opts.delivery) : reasonForOthers(opts.reason ?? status).slice(0, 500),
+      body: outcome === "delivered" && delivery ? describeDelivery(delivery) : reasonForOthers(opts.reason ?? status).slice(0, 500),
       data: {
-        status,
+        status: outcome,
         attempts: done.attempt,
         costUsd: done.costUsd,
         durationMs: Date.parse(done.finishedAt!) - Date.parse(done.createdAt),
         engines: engineSummary(deps.config),
-        delivery: opts.delivery && describeDelivery(opts.delivery),
+        delivery: delivery && describeDelivery(delivery),
       },
     },
   ];
-  if (status === "failed") posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: (opts.reason ?? "").slice(0, 1000) });
+  if (outcome === "failed") posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: (opts.reason ?? "").slice(0, 1000) });
+  if (gaveUp) posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: `${gaveUp.checks ? "No se arreglaron los checks del pull request" : "No se actualizó el pull request con la rama base"}: ${reasonForOthers(opts.reason ?? status)}`.slice(0, 1000) });
   await deps.townhall.publish(posts);
   return done;
 }

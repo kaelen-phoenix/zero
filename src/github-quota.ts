@@ -22,7 +22,7 @@ export const QUOTA_KEY = "github:quota";
 export const HALT_KEY = "github:halt";
 export const USAGE_KEY = "github:usage";
 
-export type GithubPass = "merges" | "reverts" | "issues" | "proposals" | "research" | "scout";
+export type GithubPass = "merges" | "reverts" | "issues" | "proposals" | "research" | "scout" | "alerts" | "unjam";
 
 export interface GithubQuota {
   limit: number;

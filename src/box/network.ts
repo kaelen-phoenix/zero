@@ -15,6 +15,30 @@ const EVENTS_FILE = /^events-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 const KEEP_DAYS = 90;
 const READY_TIMEOUT_MS = 30_000;
 
+/**
+ * How the internal network is made. Podman gives its networks a name server of their own, and on an internal
+ * network it answers nothing from outside (Podman 5): the gate, started on that network, would take it for its
+ * resolver and resolve no site. Without it the gate gets the host's resolvers through the default network. The
+ * boxes reach the gate by address and have no DNS at all, so nothing needs that server.
+ */
+export const networkCreateArgs = (runtime: Runtime): string[] => ["network", "create", "--internal", ...(runtime === "podman" ? ["--disable-dns"] : []), NETWORK];
+
+interface NetworkInfo {
+  /** Podman only: the network has the name server that leaves the gate without names. */
+  dns: boolean;
+  /** Names of the containers on it, when the runtime lists them. */
+  containers: string[];
+}
+
+function networkInfo(stdout: string): NetworkInfo {
+  try {
+    const [n] = JSON.parse(stdout) as { dns_enabled?: boolean; containers?: Record<string, { name?: string }> }[];
+    return { dns: Boolean(n?.dns_enabled), containers: Object.values(n?.containers ?? {}).map((c) => c.name ?? "") };
+  } catch {
+    return { dns: false, containers: [] };
+  }
+}
+
 /** One factory, one gate: the name is tied to the factory's gate directory. */
 export const gateName = (dir: string) => `zero-gate-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`;
 
@@ -113,8 +137,18 @@ export function createGateHost(opts: GateHostOptions): GateHost {
 
   /** The gate's address on the internal network, starting it (or restarting it for a new image) when needed. */
   async function ensure(): Promise<string> {
-    if (run(opts.runtime, ["network", "inspect", NETWORK], { timeoutMs: 30_000 }).status !== 0) {
-      must(["network", "create", "--internal", NETWORK], "no se pudo crear la red interna de la caja");
+    const network = run(opts.runtime, ["network", "inspect", NETWORK], { timeoutMs: 30_000 });
+    if (network.status !== 0) {
+      must(networkCreateArgs(opts.runtime), "no se pudo crear la red interna de la caja");
+    } else if (opts.runtime === "podman" && networkInfo(network.stdout).dns) {
+      // A network an earlier zero made with Podman's name server: made again without it, once nothing but this gate is on it.
+      if (networkInfo(network.stdout).containers.every((c) => c === name)) {
+        run(opts.runtime, ["rm", "-f", name], { timeoutMs: 60_000 });
+        if (run(opts.runtime, ["network", "rm", NETWORK], { timeoutMs: 60_000 }).status === 0) must(networkCreateArgs(opts.runtime), "no se pudo crear la red interna de la caja");
+        else log.warn("the box network keeps podman's name server; the gate may not resolve names", { network: NETWORK });
+      } else {
+        log.warn("the box network keeps podman's name server while other containers use it; the gate may not resolve names", { network: NETWORK });
+      }
     }
     const info = inspectGate(opts.runtime, name, run);
     if (info?.running && info.image === opts.image && info.address) return info.address;

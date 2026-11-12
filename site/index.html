@@ -69,8 +69,8 @@
           <rect class="work" x="104" y="134" width="12" height="12" rx="2"/>
           <rect class="work" x="344" y="134" width="12" height="12" rx="2"/>
           <rect class="work" x="584" y="134" width="12" height="12" rx="2"/>
-          <circle class="owner" cx="360" cy="46" r="7"/>
-          <text class="owner-label" x="360" y="24" data-i18n="fig.owner">vos</text>
+          <g class="owner"><circle cx="360" cy="39" r="5"/><path d="M349 55 Q349 46 360 46 Q371 46 371 55 Z"/></g>
+          <text class="owner-label" x="360" y="26" data-i18n="fig.owner">vos</text>
         </svg>
         <figcaption class="caption" data-i18n="fig.caption">FIG. 1 / LÍNEA</figcaption>
       </figure>
@@ -221,7 +221,7 @@ node dist/cli.js box setup</code></pre>
       <p class="label"><span class="marker" data-marker>08</span> <span data-i18n="workflow.label">Flujo de trabajo</span></p>
       <h2 id="workflow-h" data-i18n="workflow.title">Desde la terminal o desde el chat.</h2>
       <ol class="flow">
-        <li><code>zero request "…"</code><p data-i18n="workflow.request">Pide un trabajo; la fábrica se enciende sola si estaba apagada.</p></li>
+        <li><code>zero request "…"</code><p data-i18n="workflow.request">Pide un trabajo; la fábrica se enciende sola si estaba apagada. Los pedidos también llegan desde issues de GitHub, de Linear y de Jira.</p></li>
         <li><code data-i18n="cmd.status">zero status [trabajo]</code><p data-i18n="workflow.status">Cómo va todo, o el detalle de un trabajo y la pregunta si te está esperando.</p></li>
         <li><code data-i18n="cmd.approve">zero approve &lt;trabajo&gt;</code><p data-i18n="workflow.approve">Aprueba lo que te espera, o lo rechaza con <code>--reject --note</code>.</p></li>
         <li><code>zero proposals</code><p data-i18n="workflow.proposals">Las propuestas del turno nocturno, que se aprueban o rechazan con <code>approve</code> y <code>reject</code>.</p></li>
@@ -242,6 +242,8 @@ node dist/cli.js box setup</code></pre>
             <li data-item="claude"><strong>Claude</strong><span>Agent SDK</span></li>
             <li data-item="codex"><strong>Codex</strong><span>CLI</span></li>
             <li data-item="antigravity"><strong>Antigravity</strong><span>CLI</span></li>
+            <li data-item="opencode"><strong>OpenCode</strong><span>CLI</span></li>
+            <li data-item="acp"><strong>ACP</strong><span data-i18n="compat.acp.note">agentes que hablan ACP</span></li>
             <li data-item="custom-cli"><strong data-i18n="compat.custom">CLI propio</strong><span data-i18n="compat.custom.note">declarado en la configuración</span></li>
           </ul>
         </div>
@@ -356,9 +358,9 @@ node dist/cli.js box setup</code></pre>
       </ul>
       <h3 data-i18n="links.next">Próximas etapas</h3>
       <ul class="points">
-        <li><span data-i18n="next.engines">Motores ACP/OpenCode</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.engines">Motores ACP/OpenCode</span> <span class="ready" data-i18n="ready">disponible</span></li>
         <li><span data-i18n="next.linear">Pedidos desde Linear</span> <span class="ready" data-i18n="ready">disponible</span></li>
-        <li><span data-i18n="next.intake">Pedidos desde Jira</span> <span class="soon" data-i18n="soon">en camino</span></li>
+        <li><span data-i18n="next.intake">Pedidos desde Jira</span> <span class="ready" data-i18n="ready">disponible</span></li>
         <li><span data-i18n="next.regen">Simulacro de regeneración desde las especificaciones</span> <span class="ready" data-i18n="ready">disponible</span></li>
       </ul>
     </section>

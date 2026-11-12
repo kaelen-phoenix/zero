@@ -1,40 +1,53 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
+import { uptime } from "node:os";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
+import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
-import { budgetState, type BudgetState } from "./budget.js";
+import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
-import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
+import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
-import { intakeProblemKey, linearProblemKey } from "./intake/keys.js";
-import { mergeKey, watchedJobs, type MergeState } from "./line/automerge.js";
-import { cleanStationText, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationOnDemandRunKey, type OnDemandRun } from "./line/packages.js";
+import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
+import type { AlertEntry } from "./intake/security-alerts.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { githubToken } from "./line/integrate.js";
+import { signedMerges } from "./signature.js";
+import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
+import { jobStage } from "./line/spec.js";
+import { readDiagnosis, type Cause } from "./line/unjam.js";
+import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { formatEgressSites, jobName, jobOrigin } from "./format.js";
+import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { tryGit } from "./shell.js";
-import { computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
+import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
+import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -75,12 +88,35 @@ export function openTownhall(home: FactoryHome, now?: () => Date): Townhall {
   return resilient(createTownhall(createLocalStore(home.townhall), now));
 }
 
+/** Where the last daemon ended: kv `{at, reason}`, written only when it stopped because it was asked to (or a `once` run ended). */
+export const STOPPED_KEY = "daemon-stopped";
+/** When a process last launched a daemon: kv, an ISO date. */
+export const LAUNCH_KEY = "daemon-launch";
+/** How long a launched daemon has to take the lock before another launch is tried. */
+const LAUNCH_WAIT_MS = 30_000;
+
+export type DaemonStopReason = "shutdown" | "signal" | "once";
+export interface StopRecord {
+  at: string;
+  reason: DaemonStopReason;
+}
+
+/**
+ * `running`; `unresponsive`: the lock is held (or the heartbeat's process lives) with no fresh beat;
+ * `stopped`: nothing left behind, or the last daemon was asked to stop; `crashed`: a heartbeat is left, its process is gone and the lock is free.
+ */
+export type DaemonState = "running" | "unresponsive" | "stopped" | "crashed";
+
 export interface DaemonInfo {
   alive: boolean;
   pid?: number;
   beatAt?: string;
   /** Some process holds the daemon lock, even if its heartbeat is stale. Only `factoryStatus` fills it in. */
   lockHeld?: boolean;
+  /** Only `daemonStatus` (and so `factoryStatus`) fills it in. */
+  state?: DaemonState;
+  /** `stopped`: when the stop was recorded; `crashed`: the last heartbeat. */
+  since?: string;
 }
 
 function pidAlive(pid: number): boolean {
@@ -99,9 +135,46 @@ export function daemonInfo(store: Store, now = new Date()): DaemonInfo {
   return { alive: now.getTime() - Date.parse(beatAt) < BEAT_FRESH_MS && pidAlive(pid), pid, beatAt };
 }
 
+export function readStopRecord(store: Store): StopRecord | undefined {
+  try {
+    const raw = store.getKv(STOPPED_KEY);
+    return raw ? (JSON.parse(raw) as StopRecord) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The daemon's state for `zero status`: running, not responding, stopped on purpose or crashed. */
+export function daemonStatus(ctx: Pick<FactoryContext, "store" | "home">, now = new Date(), bootedAt = Date.now() - uptime() * 1000): DaemonInfo & { state: DaemonState } {
+  const info = { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) };
+  if (info.alive) return { ...info, state: "running" };
+  if (info.lockHeld) return { ...info, state: "unresponsive" };
+  if (info.pid !== undefined && info.beatAt) {
+    // A beat from before the machine started cannot belong to a live process, whatever now has its pid.
+    const gone = Date.parse(info.beatAt) < bootedAt || !pidAlive(info.pid);
+    return gone ? { ...info, state: "crashed", since: info.beatAt } : { ...info, state: "unresponsive" };
+  }
+  return { ...info, state: "stopped", since: readStopRecord(ctx.store)?.at };
+}
+
+/**
+ * Starts the daemon again when it crashed with work left: a job running or queued. Never after a stop on purpose.
+ * Returns true when it called the starter.
+ */
+export async function reviveDaemon(ctx: FactoryContext, start: (ctx: FactoryContext) => Promise<boolean> = ensureDaemon): Promise<boolean> {
+  if (daemonStatus(ctx, (ctx.now ?? (() => new Date()))()).state !== "crashed") return false;
+  if (!ctx.store.listJobs({ status: ["running", "queued"] }).length) return false;
+  await start(ctx);
+  return true;
+}
+
 /** Starts the daemon in the background when it is not running. Returns true if it had to start it. */
 export async function ensureDaemon(ctx: FactoryContext): Promise<boolean> {
   if (daemonInfo(ctx.store).alive || daemonLockHeld(ctx.home)) return false;
+  // Another call (this process or another) launched one a moment ago: it is still on its way to the lock.
+  const launched = Date.parse(ctx.store.getKv(LAUNCH_KEY) ?? "");
+  if (Date.now() - launched < LAUNCH_WAIT_MS) return false;
+  ctx.store.setKv(LAUNCH_KEY, new Date().toISOString());
   const entry = process.argv[1];
   if (!entry) throw new Error("cannot locate the zero CLI to start the daemon");
   const log = openSync(ctx.home.daemonLog, "a");
@@ -195,12 +268,50 @@ export interface RequestResult {
   next: string;
 }
 
-export function requestWork(ctx: FactoryContext, input: { text: string; line?: string; kind?: Job["kind"]; source?: JobSource }): RequestResult {
-  const text = input.text.trim();
+/** The kinds of request the panel's "Pedidos" form offers, with the label the factory reads in the request. */
+export const REQUEST_TYPES = {
+  feature: "función nueva",
+  fix: "arreglo",
+  security: "seguridad",
+  design: "diseño",
+  docs: "documentación",
+  other: "otro",
+} as const;
+export type RequestType = keyof typeof REQUEST_TYPES;
+
+/** A typed request's text: title, its type, then the description when there is one. */
+function typedRequest(type: string, title = "", description = ""): string {
+  if (!Object.hasOwn(REQUEST_TYPES, type)) throw new Error(`Tipo de pedido desconocido: ${type}. Usá ${Object.keys(REQUEST_TYPES).join(", ")}.`);
+  const head = title.trim();
+  if (!head) throw new Error("El pedido necesita un título.");
+  const body = description.trim();
+  return `${head}\n\nTipo de pedido: ${REQUEST_TYPES[type as RequestType]}${body ? `\n\n${body}` : ""}`;
+}
+
+const PRIORITY_NAMES = PRIORITIES.join(", ");
+
+function checkPriority(name: string): JobPriority {
+  if (!isPriority(name)) throw new Error(`No conozco la prioridad "${name}". Las prioridades son: ${PRIORITY_NAMES}.`);
+  return name;
+}
+
+export function requestWork(
+  ctx: FactoryContext,
+  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string; budgetUsd?: number },
+): RequestResult {
+  const text = input.type !== undefined ? typedRequest(input.type, input.title, input.description) : (input.text ?? "").trim();
   if (!text) throw new Error("El pedido está vacío.");
+  const cap = ctx.config.limits.usdPerJob;
+  const budgetUsd = input.budgetUsd ?? cap;
+  if (typeof budgetUsd !== "number" || !Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > cap) {
+    throw new Error(`El tope de costo tiene que ser un número mayor que 0 y no mayor que limits.usdPerJob (${cap}).`);
+  }
+  const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
+  // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
+  if (priority === "urgente" && input.source) throw new Error("Solo vos podés marcar un trabajo como urgente.");
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
-  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd: ctx.config.limits.usdPerJob, source: input.source });
+  const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd, source: input.source, priority });
   ctx.tracer.start("zero.job", {
     id: ctx.tracer.jobSpanId(job.id),
     jobId: job.id,
@@ -208,10 +319,12 @@ export function requestWork(ctx: FactoryContext, input: { text: string; line?: s
       "zero.line": line.name,
       "zero.kind": job.kind,
       "zero.level": level.level,
-      ...((input.source?.kind === "github-issue" || input.source?.kind === "linear-issue") && { "zero.source": input.source.url }),
+      "zero.priority": storedPriority(job),
+      ...((input.source?.kind === "github-issue" || input.source?.kind === "linear-issue" || input.source?.kind === "jira-issue") && { "zero.source": input.source.url }),
       ...(input.source?.kind === "night-shift" && { "zero.night_shift": true, "zero.proposal": input.source.proposal }),
       ...(input.source?.kind === "research" && { "zero.research_note": input.source.note }),
       ...(input.source?.kind === "package" && { "zero.package": `${input.source.package}/${input.source.station}` }),
+      ...(input.source?.kind === "security-alert" && { "zero.security_alert": input.source.package, "zero.severity": input.source.severity }),
     },
   });
   const integration = { merge: "lo integra en la rama base", branch: "deja una rama lista", "pull-request": "abre una solicitud de cambio" }[line.integrate];
@@ -226,6 +339,44 @@ export function getJob(ctx: FactoryContext, id: string): Job {
   const job = ctx.store.getJob(id);
   if (!job) throw new Error(`No existe el trabajo ${id}.`);
   return job;
+}
+
+/** Changes the priority of a job that has not finished; the daemon orders by it on its next pass. */
+export function setPriority(ctx: FactoryContext, id: string, level: string): Job {
+  const priority = checkPriority(level);
+  const job = getJob(ctx, id);
+  if (FINAL_STATUSES.includes(job.status)) throw new Error(`El trabajo ${id} ya terminó: no se le puede cambiar la prioridad.`);
+  return ctx.store.updateJob(id, { priority });
+}
+
+/** What `retryJob` did: a failed job back in the queue, or a pull request in conflict or with failed checks left for the merges pass to take back. */
+export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
+
+/**
+ * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
+ * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict or after its checks fixes gets
+ * its attempts reset and its MergeState's `resolving`, `resolutions`, `conflict`, `fixing`, `fixes` and `backoff` dropped, so
+ * the merges pass takes it back. Anything else is refused.
+ */
+export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
+  const job = getJob(ctx, id);
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line) throw new Error(`La línea ${job.line} del trabajo ${id} ya no está configurada.`);
+  if (ctx.store.getKv(cleanupKey(job.id))) throw new Error(`La copia de trabajo de ${id} todavía no se pudo borrar: reintentalo cuando se limpie.`);
+  if (job.status === "failed") {
+    if (!job.spec) throw new Error(`El trabajo ${id} falló sin especificación: pedilo de nuevo en lugar de reintentarlo.`);
+    return { kind: "queued", job: ctx.store.updateJob(id, { status: "queued", attempt: 0, feedback: null, finishedAt: null, stopRequested: false }) };
+  }
+  if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
+    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving || state.conflict || state.fixing || state.fixes)) {
+      const { resolving: _resolving, backoff: _backoff, resolutions: _resolutions, conflict: _conflict, fixing: _fixing, fixes: _fixes, ...rest } = state;
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
+      return { kind: "pull-request", job: ctx.store.updateJob(id, { attempt: 0 }) };
+    }
+  }
+  throw new Error(`El trabajo ${id} está ${job.status}: solo se reintenta un trabajo fallido o un pull request en conflicto o con checks fallidos.`);
 }
 
 export async function answer(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<Job> {
@@ -258,8 +409,20 @@ export interface FactoryStatus {
   intake: { line: string; label: string; problem?: string }[];
   /** Lines taking Linear issues, and the last problem reaching Linear. */
   linear: { line: string; team: string; label: string; problem?: string }[];
+  /** Lines taking Jira issues, and the last problem reaching Jira. */
+  jira: { line: string; site: string; project: string; label: string; problem?: string }[];
+  /** Open Dependabot alerts per line (only lines with alerts or a read problem), each with the job that handles it. */
+  securityAlerts: LineAlerts[];
   /** Pull requests the factory will merge once GitHub says they are ready. */
   merges: { job: string; url: string; status: "waiting" | "blocked"; why?: string }[];
+  /** Environment outages under way, one per repository; the pull requests they hold are left out of `merges`. */
+  outages: Outage[];
+  /** Repositories whose checks GitHub does not start over the account's billing; the pull requests they hold are left out of `merges`. */
+  billing: BillingHold[];
+  /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
+  jams: JamView[];
+  /** The installed copy of zero, only while it misses merged commits or a rebuild (see `checkInstall`). */
+  install?: InstallFreshness;
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -269,10 +432,14 @@ export interface FactoryStatus {
   skills: SkillProblem[];
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
-  /** On-demand station runs asked for and not run yet, as `<package>/<station>`; `request` when one carries a text. */
-  onDemand: { station: string; since: string; request?: true }[];
-  /** On-demand runs going on, or ended in the last 24 hours. */
-  onDemandRuns: OnDemandRunView[];
+  /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
+  onDemand: { station: string; since: string; request?: string }[];
+  /** The last on-demand run of each station, when it started or ended in the last 24 hours or is still running. */
+  onDemandRuns: OnDemandRun[];
+  /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
+  stationRuns: ({ station: string } & StationRunRecord)[];
+  /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
+  cleanups: { job: string; path: string; since: string }[];
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -285,23 +452,148 @@ export interface FactoryStatus {
   recent: Job[];
 }
 
-export type OnDemandRunView = { station: string } & Pick<OnDemandRun, "outcome" | "startedAt" | "finishedAt" | "error">;
+/** A station's last on-demand run, as `<package>/<station>`; `stale` when it never ended and is past the station's time limit. */
+export interface OnDemandRun extends OnDemandRecord {
+  station: string;
+  stale?: boolean;
+}
 
-/** A station's last on-demand turn, if one was recorded and still reads. */
-function readOnDemandRun(ctx: FactoryContext, pkg: string, name: string): OnDemandRun | undefined {
-  const raw = ctx.store.getKv(stationOnDemandRunKey(pkg, name));
-  if (raw === undefined) return undefined;
-  try {
-    return JSON.parse(raw) as OnDemandRun;
-  } catch {
-    return undefined;
-  }
+/** The recorded last on-demand run of each loaded `onDemand` station that started or ended at or after `since`, or still runs. */
+export function onDemandRuns(ctx: FactoryContext, since: Date, now: Date): OnDemandRun[] {
+  return (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+    if (!s.onDemand) return [];
+    const record = onDemandRecord(ctx, s.package, s.name);
+    if (!record) return [];
+    const stale = Boolean(record.startedAt && !record.endedAt && now.getTime() - Date.parse(record.startedAt) > s.timeoutMinutes * 60_000);
+    const recent = [record.startedAt, record.endedAt].some((t) => t !== undefined && Date.parse(t) >= since.getTime() && Date.parse(t) <= now.getTime());
+    const running = Boolean(record.startedAt && !record.endedAt && !stale);
+    if (!recent && !running) return [];
+    return [{ station: `${s.package}/${s.name}`, ...record, ...(stale && { stale }) }];
+  });
+}
+
+/** On-demand station runs asked for and not run yet. */
+function pendingOnDemand(ctx: FactoryContext): FactoryStatus["onDemand"] {
+  return (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+    const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
+    if (since === undefined) return [];
+    const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
+    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
+  });
+}
+
+export interface LineAlerts {
+  line: string;
+  alerts: (AlertEntry & { jobStatus?: Job["status"] })[];
+  problem?: string;
+}
+
+/** What the security-alerts pass last saw on each line that reads alerts, with the status of each handling job now. */
+export function securityAlerts(ctx: FactoryContext): LineAlerts[] {
+  return ctx.config.lines.flatMap((l) => {
+    if (l.securityAlerts.mode === "off") return [];
+    const problem = ctx.store.getKv(securityAlertsProblemKey(l.name));
+    let alerts: AlertEntry[] = [];
+    try {
+      alerts = JSON.parse(ctx.store.getKv(securityAlertsKey(l.name)) ?? "[]") as AlertEntry[];
+    } catch {
+      // A broken snapshot is replaced on the next read.
+    }
+    if (!alerts.length && !problem) return [];
+    return [{ line: l.name, alerts: alerts.map((a) => ({ ...a, ...(a.job && { jobStatus: ctx.store.getJob(a.job)?.status }) })), ...(problem && { problem }) }];
+  });
+}
+
+export interface Outage {
+  repository: string;
+  since: string;
+  checks: string[];
+  /** The pull requests it holds. */
+  pulls: string[];
+}
+
+export interface BillingHold {
+  repository: string;
+  since: string;
+  /** The pull requests it holds. */
+  pulls: string[];
+}
+
+/** A cause of a line's last unjam diagnosis, as the person in charge sees it. */
+export interface JamView {
+  line: string;
+  title: string;
+  kind: Cause["kind"];
+  action: Cause["action"];
+  /** How many jams it groups. */
+  jams: number;
+  /** The job working on it, while it is not finished. */
+  job?: string;
+  /** Its unjam proposal while it waits for the person in charge. */
+  proposal?: string;
+  todo?: string;
+  /** When the line was diagnosed. */
+  at: string;
+}
+
+/** The causes stored by the unjam station for every configured line, with the job or proposal still open. */
+export function jamViews(ctx: FactoryContext): JamView[] {
+  return ctx.config.lines.flatMap((l) => {
+    const diagnosis = readDiagnosis(ctx.store, l.name);
+    if (!diagnosis) return [];
+    return diagnosis.causes.map((c): JamView => {
+      const job = c.job ? ctx.store.getJob(c.job) : undefined;
+      const proposal = c.proposal ? ctx.store.getProposal(c.proposal) : undefined;
+      return {
+        line: l.name,
+        title: c.title,
+        kind: c.kind,
+        action: c.action,
+        jams: c.jams.length,
+        ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
+        ...(proposal?.status === "pending" && { proposal: proposal.id }),
+        ...(c.todo && { todo: c.todo }),
+        at: diagnosis.at,
+      };
+    });
+  });
+}
+
+/** The watched pull requests, each with the outage that holds it, and the outages under way (see `ChecksOutage`). */
+function mergeViews(ctx: FactoryContext) {
+  const known = new Map(ctx.store.kvWithPrefix("checks-outage:").map(([key, raw]) => [key.slice("checks-outage:".length), JSON.parse(raw) as ChecksOutage]));
+  const refused = new Map(ctx.store.kvWithPrefix("checks-billing:").map(([key, raw]) => [key.slice("checks-billing:".length), JSON.parse(raw) as ChecksBilling]));
+  const outages = new Map<string, Outage>();
+  const billing = new Map([...refused].map(([repository, b]) => [repository, { repository, since: b.since, pulls: [] as string[] } satisfies BillingHold]));
+  const merges = watchedJobs(ctx).map((job) => {
+    const raw = ctx.store.getKv(mergeKey(job.id));
+    const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
+    const url = job.delivery!.url!;
+    const repository = pullRequestOf(url)?.repository;
+    const outage = repository ? known.get(repository) : undefined;
+    if (repository && state.billing && refused.get(repository)?.jobs.includes(job.id)) {
+      billing.get(repository)!.pulls.push(url);
+      return { job: job.id, url, status: "blocked" as const, why: state.why, heldBy: repository };
+    }
+    const heldBy = outage && state.status === "blocked" && state.outage === outage.since ? repository : undefined;
+    if (heldBy) {
+      const o = outages.get(heldBy) ?? { repository: heldBy, since: outage!.since, checks: outage!.checks, pulls: [] };
+      o.pulls.push(url);
+      outages.set(heldBy, o);
+    }
+    return { job: job.id, url, status: state.status === "blocked" ? ("blocked" as const) : ("waiting" as const), why: state.why, heldBy };
+  });
+  // An outage whose pull requests are not marked yet still says so; it is forgotten once none is left.
+  for (const [repository, o] of known) if (!outages.has(repository)) outages.set(repository, { repository, since: o.since, checks: o.checks, pulls: [] });
+  return { merges, outages: [...outages.values()], billing: [...billing.values()] };
 }
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
   const box = currentBox(ctx);
+  const { merges, outages, billing } = mergeViews(ctx);
+  const installFreshness = readInstallFreshness(ctx.store);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -309,30 +601,26 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     ...(ctx.config.codex.sandbox === "off" && !ctx.config.engines.codex && { codexUnsandboxed: ctx.config.isolation === "container" && box.availability.ready ? ("box" as const) : ("machine" as const) }),
     intake: ctx.config.lines.flatMap((l) => (l.issues ? [{ line: l.name, label: l.issues.label, problem: ctx.store.getKv(intakeProblemKey(l.name)) }] : [])),
     linear: ctx.config.lines.flatMap((l) => (l.linear ? [{ line: l.name, team: l.linear.team, label: l.linear.label, problem: ctx.store.getKv(linearProblemKey(l.name)) }] : [])),
-    merges: watchedJobs(ctx).map((job) => {
-      const raw = ctx.store.getKv(mergeKey(job.id));
-      const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting", why: "esperando la próxima revisión" };
-      return { job: job.id, url: job.delivery!.url!, status: state.status === "blocked" ? "blocked" : "waiting", why: state.why };
-    }),
+    jira: ctx.config.lines.flatMap((l) => (l.jira ? [{ line: l.name, site: l.jira.site, project: l.jira.project, label: l.jira.label, problem: ctx.store.getKv(jiraProblemKey(l.name)) }] : [])),
+    securityAlerts: securityAlerts(ctx),
+    merges: merges.flatMap((m) => (m.heldBy ? [] : [{ job: m.job, url: m.url, status: m.status, why: m.why }])),
+    outages,
+    billing,
+    jams: jamViews(ctx),
+    ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
     packages: ctx.config.loadedPackages?.problems ?? [],
-    onDemand: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
-      const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
-      if (since === undefined) return [];
-      const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name)) !== undefined;
-      return [{ station: `${s.package}/${s.name}`, since, ...(request && { request: true as const }) }];
+    onDemand: pendingOnDemand(ctx),
+    onDemandRuns: onDemandRuns(ctx, new Date(now.getTime() - 86_400_000), now),
+    stationRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
+      const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
+      return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
-    onDemandRuns: (ctx.config.loadedPackages?.stations ?? []).flatMap((s) => {
-      const run = s.onDemand ? readOnDemandRun(ctx, s.package, s.name) : undefined;
-      if (!run) return [];
-      if (run.outcome !== "running" && !(run.finishedAt && now.getTime() - Date.parse(run.finishedAt) <= 86_400_000)) return [];
-      const { outcome, startedAt, finishedAt, error } = run;
-      return [{ station: `${s.package}/${s.name}`, outcome, ...(startedAt && { startedAt }), ...(finishedAt && { finishedAt }), ...(error !== undefined && { error }) }];
-    }),
-    daemon: { ...daemonInfo(ctx.store, now), lockHeld: daemonLockHeld(ctx.home) },
+    cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
+    daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
     today: computeMetrics(ctx.store, startOfDay(now), now),
@@ -414,7 +702,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const to = (ctx.now ?? (() => new Date()))();
   const from = new Date(to.getTime() - days * 86_400_000);
   const posts = await ctx.townhall.recall({ since: from, limit: Number.MAX_SAFE_INTEGER });
-  const unmerged = factoryStatus(ctx).merges.filter((m) => m.status === "blocked");
+  const status = factoryStatus(ctx);
+  const unmerged = status.merges.filter((m) => m.status === "blocked");
   const autonomous = (j: Job) => j.source?.kind === "night-shift" && Boolean(j.source.autonomy);
   const finished = ctx.store
     .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
@@ -431,7 +720,9 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .listJobs({ limit: 10_000 })
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages);
+  const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
+  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -481,7 +772,8 @@ export function monthlyReport(ctx: FactoryContext, input: { line?: string; month
       const config = ctx.config.lines.find((l) => l.name === name);
       const jobs = finished.filter((j) => j.line === name);
       const repository = config && jobs.some((j) => j.delivery?.commit) ? lineRepository(config) : undefined;
-      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository });
+      const services = lineServices(config).map((service) => ({ service, record: parseBillingRecord(ctx.store.getKv(billingKey(name, service, month)), service, month) }));
+      return buildLineReport({ line: name, month, jobs, spansOf: (id) => ctx.store.spansForJob(id), repo: config?.repo, allRepos, repository, services, jams: config ? readDiagnosis(ctx.store, name)?.causes : undefined });
     }),
   };
 }
@@ -527,6 +819,8 @@ export interface DrillRequest {
   patterns: string[];
   /** Spend cap of the agent call; `limits.usdPerJob` when absent. */
   usd?: number;
+  /** Keep the working copy (`--conservar`); it is deleted at the end otherwise. */
+  keep?: boolean;
 }
 
 /**
@@ -534,7 +828,7 @@ export interface DrillRequest {
  * specification in a copy under `<ZERO_HOME>/drills` and runs the line's tests
  * against it. Every refusal comes before anything is created or spent.
  */
-export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; cwd?: string } = {}): Promise<DrillResult> {
+export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest, deps: { runAgent?: AgentRunner; sh?: DrillDeps["sh"]; removeCopy?: DrillDeps["removeCopy"]; cwd?: string } = {}): Promise<DrillResult> {
   const line = ctx.config.lines.find((l) => l.name === input.line);
   if (!line) throw new Error(`No hay una línea llamada "${input.line}". Líneas: ${ctx.config.lines.map((l) => l.name).join(", ") || "(ninguna)"}.`);
   if (ctx.config.isolation === "container") {
@@ -556,7 +850,39 @@ export async function regenerationDrill(ctx: FactoryContext, input: DrillRequest
   const files = drillFiles(line, input.patterns);
   if (!files.length) throw new Error(`Ningún archivo de código de la rama ${line.baseBranch} coincide con ${input.patterns.join(", ") || "(sin patrones)"}: los tests y lo que está bajo openspec/ nunca se quitan. Indicá qué quitar con --archivos.`);
   const runAgent = deps.runAgent ?? createAgentRunner(ctx.config, { secrets: ctx.secrets });
-  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now }, { line, capability: input.capability, files, usd });
+  return runDrill({ home: ctx.home, config: ctx.config, store: ctx.store, tracer: ctx.tracer, runAgent, sh: deps.sh, now: ctx.now, removeCopy: deps.removeCopy }, { line, capability: input.capability, files, usd, keep: input.keep });
+}
+
+/** Status groups of the "Pedidos" list's filter. */
+export const REQUEST_FILTERS: Record<"todos" | "activos" | "esperando" | "terminados", JobStatus[] | undefined> = {
+  todos: undefined,
+  activos: ["queued", "running"],
+  esperando: ["waiting"],
+  terminados: ["delivered", "failed", "stopped"],
+};
+export type RequestFilter = keyof typeof REQUEST_FILTERS;
+/** Most rows the "Pedidos" list shows. */
+export const REQUESTS_VIEW_MAX = 200;
+
+export interface RequestsView {
+  lines: string[];
+  /** The filter as applied: an unknown line or estado is dropped. */
+  line?: string;
+  estado: RequestFilter;
+  rows: { job: Job; age: string }[];
+}
+
+/** The panel's "Pedidos" list: every job (not only the store's first 1000), filtered, newest first, at most 200. */
+export function requestsView(ctx: FactoryContext, filter: { line?: string; estado?: string } = {}, now = new Date()): RequestsView {
+  const lines = ctx.config.lines.map((l) => l.name);
+  const line = filter.line && lines.includes(filter.line) ? filter.line : undefined;
+  const estado: RequestFilter = filter.estado && Object.hasOwn(REQUEST_FILTERS, filter.estado) ? (filter.estado as RequestFilter) : "todos";
+  const rows = ctx.store
+    .listJobs({ line, status: REQUEST_FILTERS[estado], limit: -1 })
+    .reverse()
+    .slice(0, REQUESTS_VIEW_MAX)
+    .map((job) => ({ job, age: ageText(job.createdAt, now) }));
+  return { lines, line, estado, rows };
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */
@@ -578,6 +904,187 @@ export function researchView(ctx: FactoryContext, now = new Date()): ResearchLin
     const own = notes.filter((n) => n.line === line);
     return { line, notes: own, business: own.filter((n) => n.business), technical: own.filter((n) => !n.business) };
   });
+}
+
+/** The monitor's time filter: since local midnight, or the last 7 or 30 days. */
+export type MonitorPeriod = "hoy" | "7" | "30";
+
+/** The period a `periodo` parameter asks for; anything else is 7 days. */
+export const parsePeriod = (value: string | null | undefined): MonitorPeriod => (value === "hoy" || value === "30" ? value : "7");
+
+export interface MonitorAgent {
+  name: string;
+  /** Input plus output tokens; absent when no call of the period reported them. */
+  tokens?: number;
+  costUsd: number;
+  workedMs: number;
+  calls: number;
+  /** Calls ended `ok` over those that ended; absent when none ended. */
+  successRate?: number;
+  /** Distinct delivered jobs it worked on. */
+  deliveries: number;
+  engines: string[];
+  models: string[];
+  lines: string[];
+}
+
+export interface MonitorLine {
+  line: string;
+  jobs: number;
+  deliveries: number;
+  last?: { id: string; name: string; status: JobStatus };
+  openPullRequests: number;
+}
+
+export interface MonitorView {
+  period: MonitorPeriod;
+  since: string;
+  /** Jobs created per local day of the period, oldest first. */
+  days: { day: string; jobs: number }[];
+  /** Jobs created per week, only for the 30-day period. */
+  weeks?: { week: string; jobs: number }[];
+  created: number;
+  delivered: number;
+  failed: number;
+  stopped: number;
+  queued: number;
+  /** `running` and `waiting` jobs now. */
+  running: number;
+  successRate?: number;
+  avgJobMs?: number;
+  stations: { station: string; avgMs: number; count: number }[];
+  avgAttempts?: number;
+  plans: PlanWindow[];
+  /** Really billed this calendar month, per engine. */
+  monthUsd: { engine: string; usd: number }[];
+  tokens?: number;
+  agents: MonitorAgent[];
+  lines: MonitorLine[];
+}
+
+/** The fixed agents the monitor always shows, even without activity. */
+const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam"];
+const OPEN_PR_GONE = new Set<MergeState["status"]>(["merged", "closed", "expired"]);
+
+const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const spanMs = (s: SpanRow) => (s.end ? Math.max(0, Date.parse(s.end) - Date.parse(s.start)) : 0);
+const average = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : undefined);
+const spanTokens = (s: SpanRow) => {
+  const input = s.attrs["gen_ai.usage.input_tokens"];
+  const output = s.attrs["gen_ai.usage.output_tokens"];
+  if (typeof input !== "number" && typeof output !== "number") return undefined;
+  return (Number(input) || 0) + (Number(output) || 0);
+};
+const sumTokens = (spans: SpanRow[]) => {
+  const counted = spans.map(spanTokens).filter((n): n is number => n !== undefined);
+  return counted.length ? counted.reduce((a, b) => a + b, 0) : undefined;
+};
+
+/**
+ * The panel's "Monitor" tab: factory totals, plan use, month spend, one card
+ * per agent and per line, for a period. Read-only: built from jobs, spans and
+ * kv as they are, without asking GitHub or writing anything.
+ */
+export function monitorView(ctx: FactoryContext, period: MonitorPeriod, now = new Date()): MonitorView {
+  const since = period === "hoy" ? startOfDay(now) : new Date(now.getTime() - Number(period) * 86_400_000);
+  const after = (iso: string | undefined) => iso !== undefined && Date.parse(iso) >= since.getTime() && Date.parse(iso) <= now.getTime();
+  // LIMIT -1 is no limit in SQLite: the monitor counts every job.
+  const jobs = ctx.store.listJobs({ limit: -1 });
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  const created = jobs.filter((j) => after(j.createdAt));
+  const finished = jobs.filter((j) => FINAL_STATUSES.includes(j.status) && after(j.finishedAt));
+  const count = (status: JobStatus) => finished.filter((j) => j.status === status).length;
+  const delivered = count("delivered");
+  const failed = count("failed");
+
+  const days: MonitorView["days"] = [];
+  for (let d = startOfDay(since); d <= now; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) days.push({ day: dayKey(d), jobs: 0 });
+  for (const j of created) {
+    const day = days.find((d) => d.day === dayKey(new Date(j.createdAt)));
+    if (day) day.jobs++;
+  }
+  const weeks = period === "30" ? Array.from({ length: Math.ceil(days.length / 7) }, (_, i) => {
+    const chunk = days.slice(i * 7, i * 7 + 7);
+    return { week: chunk[0]!.day, jobs: chunk.reduce((n, d) => n + d.jobs, 0) };
+  }) : undefined;
+
+  const spans = ctx.store.spansSinceAny(since).filter((s) => Date.parse(s.start) <= now.getTime());
+  const agentSpans = spans.filter((s) => s.name === AGENT_SPAN);
+  const stationSpans = spans.filter((s) => s.name.startsWith("zero.station.") && s.end && !s.attrs["zero.skipped"]);
+  const stationNames = [...new Set(stationSpans.map((s) => s.name.slice("zero.station.".length)))];
+
+  const month = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthSpans = ctx.store.spansSince(AGENT_SPAN, month);
+  const engines = [...new Set([ctx.config.engine, ...monthSpans.map((s) => String(s.attrs["zero.engine"] ?? "")).filter(Boolean)])];
+
+  const card = (name: string, own: SpanRow[]): MonitorAgent => {
+    const ended = own.filter((s) => s.status);
+    const jobsOf = [...new Set(own.map((s) => s.jobId).filter((id): id is string => !!id))].map((id) => byId.get(id)).filter((j): j is Job => !!j);
+    const tokens = sumTokens(own);
+    return {
+      name,
+      ...(tokens !== undefined && { tokens }),
+      costUsd: own.reduce((sum, s) => sum + (Number(s.attrs["zero.cost.usd"]) || 0), 0),
+      workedMs: own.reduce((sum, s) => sum + spanMs(s), 0),
+      calls: own.length,
+      ...(ended.length > 0 && { successRate: ended.filter((s) => s.status === "ok").length / ended.length }),
+      deliveries: jobsOf.filter((j) => j.status === "delivered").length,
+      engines: [...new Set(own.map((s) => String(s.attrs["zero.engine"] ?? "")).filter(Boolean))],
+      models: [...new Set(own.map((s) => String(s.attrs["gen_ai.response.model"] ?? s.attrs["gen_ai.request.model"] ?? "")).filter(Boolean))],
+      lines: [...new Set(jobsOf.map((j) => j.line))],
+    };
+  };
+  const agentNames = [
+    ...new Set([
+      ...MONITOR_AGENTS,
+      ...ctx.config.lines.flatMap((l) => lineAgents(ctx.config, l).map((a) => a.name)),
+      ...agentSpans.map((s) => String(s.attrs["gen_ai.agent.name"] ?? "")).filter(Boolean),
+    ]),
+  ];
+  const avgJobMs = average(finished.filter((j) => j.status !== "stopped").map((j) => Date.parse(j.finishedAt!) - Date.parse(j.createdAt)));
+  const tokens = sumTokens(agentSpans);
+
+  return {
+    period,
+    since: since.toISOString(),
+    days,
+    ...(weeks && { weeks }),
+    created: created.length,
+    delivered,
+    failed,
+    stopped: count("stopped"),
+    queued: jobs.filter((j) => j.status === "queued").length,
+    running: jobs.filter((j) => j.status === "running" || j.status === "waiting").length,
+    ...(delivered + failed > 0 && { successRate: delivered / (delivered + failed) }),
+    ...(avgJobMs !== undefined && { avgJobMs }),
+    stations: stationNames.map((station) => {
+      const own = stationSpans.filter((s) => s.name === `zero.station.${station}`);
+      return { station, avgMs: average(own.map(spanMs))!, count: own.length };
+    }),
+    ...(finished.length > 0 && { avgAttempts: average(finished.map((j) => j.attempt))! }),
+    plans: budgetState(ctx.store, ctx.config, now).windows,
+    monthUsd: engines.map((engine) => ({ engine, usd: billedUsd(ctx.store, monthSpans.filter((s) => s.attrs["zero.engine"] === engine), now) })),
+    ...(tokens !== undefined && { tokens }),
+    agents: agentNames.map((name) =>
+      // verify is no agent: its card comes from the station's own spans.
+      card(name, name === "verify" ? spans.filter((s) => s.name === "zero.station.verify" && !s.attrs["zero.skipped"]) : agentSpans.filter((s) => s.attrs["gen_ai.agent.name"] === name)),
+    ),
+    lines: ctx.config.lines.map((l) => {
+      const own = jobs.filter((j) => j.line === l.name);
+      const last = own.at(-1);
+      return {
+        line: l.name,
+        jobs: created.filter((j) => j.line === l.name).length,
+        deliveries: finished.filter((j) => j.line === l.name && j.status === "delivered").length,
+        ...(last && { last: { id: last.id, name: jobName(last), status: last.status } }),
+        openPullRequests: own.filter((j) => {
+          if (j.status !== "delivered" || j.delivery?.mode !== "pull-request") return false;
+          const state = JSON.parse(ctx.store.getKv(mergeKey(j.id)) ?? "null") as MergeState | null;
+          return !state || !OPEN_PR_GONE.has(state.status);
+        }).length,
+      };
+    }),
+  };
 }
 
 /** The request text of the job a proposal becomes. */
@@ -667,7 +1174,7 @@ export function approveProposal(ctx: FactoryContext, id: string): RequestResult 
       return { job, level: currentLevel(ctx), next: "Vuelve a la cola y se integra según la configuración de la línea." };
     }
     pendingProposal(ctx, id);
-    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id } });
+    const result = requestWork(ctx, { text: proposalRequest(proposal!), line: proposal!.line, source: { kind: "night-shift", proposal: id, ...(proposal!.origin && { origin: proposal!.origin }) } });
     ctx.store.updateProposal(id, { status: "approved", jobId: result.job.id, decidedBy: "owner" });
     return result;
   });
@@ -700,6 +1207,46 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
     log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
   }
   return proposal;
+}
+
+/** Builds the GitHub adapter of a repository for a line, or nothing without access. */
+export type MergeApiFactory = (repository: string, line?: LineConfig) => MergeApi | undefined;
+
+/** The real signed adapter, outside the daemon's meter, like the CLI's own calls to GitHub. */
+const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
+  const token = githubToken(process.env, ctx.secrets);
+  return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
+};
+
+/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+  const wanted = pullRequestOf(target.trim());
+  if (!wanted) {
+    const job = getJob(ctx, target.trim());
+    if (job.status !== "delivered") throw new Error(`El trabajo ${job.id} no está entregado: no hay nada que fundir.`);
+    if (!job.delivery?.url || !pullRequestOf(job.delivery.url)) throw new Error(`El trabajo ${job.id} no se entregó como pull request de GitHub: no hay nada que fundir.`);
+    return job;
+  }
+  const same = (url: string | undefined) => {
+    const pr = url ? pullRequestOf(url) : undefined;
+    return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
+  };
+  const job = ctx.store.listJobs({ status: ["delivered"], limit: 1000 }).find((j) => same(j.delivery?.url));
+  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
+  return job;
+}
+
+/**
+ * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
+ * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ */
+export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
+  const job = deliveredPullRequest(ctx, target);
+  const url = job.delivery!.url!;
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
+  if (!gh) return { job: job.id, url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+  return mergeRequested(ctx, job, gh, opts.via);
 }
 
 export function trace(ctx: FactoryContext, id: string): string {
@@ -739,6 +1286,8 @@ export interface LineRow {
   maxAttempts: number;
   /** What made the factory build again, when this is not the first attempt. */
   retryError?: string;
+  /** The stage being built, for an unfinished job whose spec has stages. */
+  stage?: { n: number; total: number; title: string };
   delivery?: { text: string; url?: string; merge?: string };
   reason?: string;
   stations: StationView[];
@@ -828,6 +1377,7 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
     attempt: job.attempt,
     maxAttempts,
     retryError: job.attempt > 1 ? brief(previous?.attrs["error.message"] || job.feedback) || undefined : undefined,
+    stage: final ? undefined : jobStage(job),
     delivery: job.delivery && {
       text: describeDelivery(job.delivery),
       url: job.delivery.url,
@@ -906,6 +1456,12 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
   return mode === "allowlist"
     ? `Modo allowlist: la caja solo sale a tus sitios permitidos (${ctx.config.egress.allow.join(", ") || "ninguno todavía"}) y a los de tus motores.`
     : "Modo blocklist: la caja sale a todo salvo lo sospechoso y lo que bloquees.";
+}
+
+/** Writes `autostart` to the factory file and makes the login entry match it. Terminal only: no chat tool calls it. */
+export async function setAutostart(ctx: FactoryContext, enabled: boolean, deps?: AutostartDeps): Promise<AutostartResult> {
+  ctx.config = await editConfig(ctx, (doc) => doc.set("autostart", enabled));
+  return syncAutostart(ctx.home, enabled, deps);
 }
 
 export function lines(config: FactoryConfig) {
@@ -1048,6 +1604,32 @@ async function editConfig(ctx: FactoryContext, edit: Parameters<typeof editFacto
   return withPackages(await editFactory(ctx.home.config, edit), ctx.home);
 }
 
+/** A line a package creates on a local repository of its own: merge delivery, no remote work. */
+export interface PackageLineInput {
+  name: string;
+  repo: string;
+  package: string;
+  setup: string[];
+  verify: string[];
+}
+
+/** Adds a package's line to the factory file; throws when the name is taken or the file refuses it. */
+export async function addPackageLine(ctx: FactoryContext, input: PackageLineInput): Promise<void> {
+  if (ctx.config.lines.some((l) => l.name === input.name)) throw new Error(`ya existe la línea "${input.name}"`);
+  const entry = { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify };
+  ctx.config = await editConfig(ctx, (doc) => {
+    if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
+    else doc.setIn(["lines"], doc.createNode([entry]));
+  });
+}
+
+/** Takes a package's line out of the factory file; only one that package owns. */
+export async function removePackageLine(ctx: FactoryContext, input: { name: string; package: string }): Promise<void> {
+  const index = ctx.config.lines.findIndex((l) => l.name === input.name);
+  if (index < 0 || ctx.config.lines[index]!.package !== input.package) throw new Error(`la línea "${input.name}" no es del paquete ${input.package}`);
+  ctx.config = await editConfig(ctx, (doc) => doc.deleteIn(["lines", index]));
+}
+
 export interface AgentListEntry {
   name: string;
   /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
@@ -1175,8 +1757,66 @@ export interface PackageStationView {
   lastRun?: string;
   /** When the pending on-demand run was asked for (ISO); only on `onDemand` stations. */
   onDemandPendingSince?: string;
-  /** The last on-demand turn, if any; only on `onDemand` stations. */
-  onDemandLastRun?: OnDemandRun;
+  /** The text sent with the pending on-demand run, when there is one. */
+  onDemandRequest?: string;
+  /** The station's last on-demand run: running, or how it ended. */
+  lastOnDemand?: StationRunRecord;
+}
+
+/** A package's tab as the panel's menu links it. */
+export interface PackageTabLink {
+  package: string;
+  name: string;
+  title: string;
+  href: string;
+}
+
+/** The tabs of the loaded packages, in the file's order. */
+export function packageTabs(ctx: FactoryContext): PackageTabLink[] {
+  return (ctx.config.loadedPackages?.packages ?? []).flatMap((p) =>
+    p.tabs.map((t) => ({ package: p.name, name: t.name, title: t.title, href: `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}` })),
+  );
+}
+
+export interface PackageTabView extends PackageTabLink {
+  /** `missing`: the package wrote nothing yet; `invalid`: what it wrote does not pass the schema or the folder's limits. */
+  state: TabData["state"];
+  /** The manifest's categories, or else those of the items. */
+  categories: string[];
+  /** The chosen category; absent: all of them. */
+  category?: string;
+  /** `download`: the panel's address for the item's file, only when that file is there to hand out. */
+  items: (TabItem & { download?: string })[];
+}
+
+/** A package tab's data, read only through its schema; undefined when the package did not load or does not declare it. */
+export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, category?: string): PackageTabView | undefined {
+  const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
+  const t = p?.tabs.find((x) => x.name === tab);
+  if (!p || !t) return undefined;
+  const dir = packageDataDir(ctx.home, p.name);
+  const data = readTabData(dir, t);
+  const href = `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}`;
+  const download = (file: string) => `${href}/files/${file.split("/").map(encodeURIComponent).join("/")}`;
+  const items = (category ? data.items.filter((i) => i.category === category) : data.items).map((i) => (i.file && dataFile(dir, i.file) ? { ...i, download: download(i.file) } : i));
+  const categories = t.categories ?? [...new Set(data.items.flatMap((i) => (i.category ? [i.category] : [])))];
+  return {
+    package: p.name,
+    name: t.name,
+    title: t.title,
+    href,
+    state: data.state,
+    categories,
+    ...(category && { category }),
+    items,
+  };
+}
+
+/** The real path of a file a package tab offers, only when the tab's current data lists exactly that `file` and it stays a regular file inside the package's data folder. */
+export function packageTabFile(ctx: FactoryContext, pkg: string, tab: string, file: string): string | undefined {
+  const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
+  const t = p?.tabs.find((x) => x.name === tab);
+  return p && t ? tabFile(packageDataDir(ctx.home, p.name), t, file) : undefined;
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
@@ -1221,14 +1861,16 @@ export function packageList(ctx: FactoryContext): PackageList {
         stations: p.stations.map((name) => {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
-          const lastRun = station?.onDemand ? readOnDemandRun(ctx, p.name, name) : undefined;
+          const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
+          const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
           return {
             name,
             allowed: Boolean(station),
             missingSecrets: (station?.secrets ?? []).filter((s) => !ctx.secrets.has(s)),
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
-            ...(lastRun && { onDemandLastRun: lastRun }),
+            ...(pendingRequest && { onDemandRequest: pendingRequest }),
+            ...(lastOnDemand && { lastOnDemand }),
           };
         }),
       };
@@ -1236,23 +1878,23 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-/** `at`: when it was asked for, ISO 8601, as the pending key and the run record keep it. */
-export type StationRunResult = { ok: true; text: string; at: string } | { ok: false; reason: string };
-
-const stationRef = (ref: string) => /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim()) as [string, string, string] | null;
+/** `requestedAt` is the pending request's time, the one its run record will carry. */
+export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string };
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
- * station; the daemon still waits for an idle factory and keeps every gate. Only the
- * person in charge's interfaces (CLI and chat) call it: `request` is their text, which
- * the station gets cleaned as `request`.
+ * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, opts: { request?: string; now?: Date } | Date = {}): StationRunResult {
-  const { request, now = new Date() } = opts instanceof Date ? { now: opts } : opts;
-  const match = stationRef(ref);
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
+  return askStationRun(ctx, ref, now, request);
+}
+
+/** The station a run may be asked of right now, or why not; nothing is written. */
+function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: PackageStation } | { ok: false; reason: string } {
+  const match = /^([^/\s]+)\/([^/\s]+)$/.exec(ref.trim());
   if (!match) return { ok: false, reason: `"${ref}" no es <paquete>/<estación>` };
-  const [, pkg, name] = match;
+  const [, pkg, name] = match as unknown as [string, string, string];
   const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
   const known = loaded.packages.find((p) => p.name === pkg);
   if (!known) return { ok: false, reason: `no hay un paquete instalado que se llame "${pkg}"` };
@@ -1260,42 +1902,142 @@ export function requestStationRun(ctx: FactoryContext, ref: string, opts: { requ
   const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
-  const key = stationOnDemandKey(pkg, name);
-  const pending = ctx.store.getKv(key);
+  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
-  const clean = request === undefined ? undefined : cleanStationText(ctx, station, request);
-  if (clean === "") return { ok: false, reason: "el pedido está vacío: escribí qué querés que haga la estación" };
-  const at = now.toISOString();
-  if (clean !== undefined) ctx.store.setKv(stationOnDemandRequestKey(pkg, name), clean);
-  ctx.store.setKv(key, at);
-  return { ok: true, at, text: `Corrida a demanda de ${pkg}/${name} pedida${clean !== undefined ? " con tu pedido" : ""}: corre una vez apenas la fábrica esté libre.` };
+  return { station };
 }
 
-/** Whether the requested on-demand run started (or could not run), or is still waiting. */
-export type StationRunStart = { state: "started" | "ended"; run: OnDemandRun } | { state: "pending" };
+/** `requestStationRun`, plus the upload the run answers when it comes from `uploadToStation`. */
+function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: string, upload?: StationUpload): StationRunResult {
+  const found = stationForRun(ctx, ref, now);
+  if (!("station" in found)) return found;
+  const { station } = found;
+  const pkg = station.package;
+  const name = station.name;
+  const key = stationOnDemandKey(pkg, name);
+  // Cleaned like a station's own request: it reaches third-party code.
+  const text = request === undefined ? "" : stationText(request, ctx, station);
+  const requestKey = stationOnDemandRequestKey(pkg, name);
+  // The text goes first: the daemon reads it only once the request itself is there.
+  if (text) ctx.store.setKv(requestKey, text);
+  else ctx.store.deleteKv(requestKey);
+  const uploadKey = stationUploadKey(pkg, name);
+  if (upload) ctx.store.setKv(uploadKey, JSON.stringify(upload));
+  else ctx.store.deleteKv(uploadKey);
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(key, requestedAt);
+  return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** What can be uploaded: a buffer, or the bytes as they arrive (a request body). */
+export type UploadContent = Uint8Array | AsyncIterable<Uint8Array>;
+
+const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+
+/** A file name as it may be kept: its base name only, in safe characters, never hidden or empty. */
+export function uploadName(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? "";
+  const clean = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").replace(/-{2,}/g, "-");
+  const ext = extname(clean);
+  const stem = clean.slice(0, clean.length - ext.length).slice(0, 80) || "archivo";
+  return `${stem}${ext.slice(0, 16)}`;
+}
 
 /**
- * Waits for the run asked for at `at` to start, reading its record: `started` once it
- * has a start, `ended` when it ended without one (it could not run), `pending` when the
- * wait is over first. It never throws for a run that does not come.
+ * Stores a file the person in charge uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
+ * for an on-demand run of that station that receives it as `ctx.upload`. Everything that can refuse is checked before
+ * writing; past the station's `maxMb` or on any refusal after it, nothing is left behind. Third-party content: it is
+ * never opened here beyond its first bytes.
  */
-export async function waitStationRunStart(ctx: FactoryContext, ref: string, at: string, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<StationRunStart> {
-  const match = stationRef(ref);
-  if (!match) return { state: "pending" };
-  const [, pkg, name] = match;
-  const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
-  for (;;) {
-    const run = readOnDemandRun(ctx, pkg, name);
-    if (run?.requestedAt === at) {
-      if (run.startedAt) return { state: "started", run };
-      if (run.outcome !== "running") return { state: "ended", run };
+export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string }, now = new Date()): Promise<StationRunResult> {
+  const found = stationForRun(ctx, ref, now);
+  if (!("station" in found)) return found;
+  const { station } = found;
+  const label = `${station.package}/${station.name}`;
+  if (!station.uploads) return { ok: false, reason: `la estación ${label} no acepta archivos: su manifiesto no declara uploads` };
+  const name = uploadName(file.name);
+  const ext = extname(name).toLowerCase();
+  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}` };
+  const maxBytes = Math.floor(station.uploads.maxMb * 1024 * 1024);
+  const dataDir = packageDataDir(ctx.home, station.package);
+  const dir = join(dataDir, "uploads", station.name);
+  await mkdir(dir, { recursive: true });
+  if (!isInside(realpathSync(dir), realpathSync(dataDir))) return { ok: false, reason: `la carpeta de archivos de ${label} sale de la carpeta de datos del paquete` };
+  const temp = join(dir, `.subiendo-${randomUUID()}`);
+  const final = join(dir, `${now.toISOString().replace(/[:.]/g, "-")}-${name}`);
+  let size = 0;
+  let head = Buffer.alloc(0);
+  let refused: string | undefined;
+  try {
+    const out = await open(temp, "wx");
+    try {
+      const chunks: AsyncIterable<Uint8Array> | Uint8Array[] = file.content instanceof Uint8Array ? [file.content] : file.content;
+      for await (const chunk of chunks) {
+        size += chunk.length;
+        if (size > maxBytes) {
+          refused = `el archivo pasa de ${station.uploads.maxMb} MB, el máximo de ${label}`;
+          break;
+        }
+        if (head.length < ZIP_SIGNATURE.length) head = Buffer.concat([head, Buffer.from(chunk.subarray(0, ZIP_SIGNATURE.length - head.length))]);
+        await out.write(chunk);
+      }
+    } finally {
+      await out.close();
     }
-    const left = deadline - Date.now();
-    if (left <= 0) return { state: "pending" };
-    await new Promise((done) => setTimeout(done, Math.min(opts.pollMs ?? 1000, left)));
+    if (!refused && size === 0) refused = "el archivo está vacío";
+    if (!refused && ext === ".zip" && !head.equals(ZIP_SIGNATURE)) refused = "el archivo no es un zip";
+    if (refused) {
+      await rm(temp, { force: true });
+      return { ok: false, reason: refused };
+    }
+    await rename(temp, final);
+  } catch (err) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    return { ok: false, reason: `no se pudo guardar el archivo: ${err instanceof Error ? err.message : String(err)}` };
   }
+  const r = askStationRun(ctx, ref, now, file.request, { name, path: final, sizeBytes: size, at: now.toISOString() });
+  if (!r.ok) {
+    await rm(final, { force: true }).catch(() => undefined);
+    return r;
+  }
+  return { ...r, text: `Archivo ${name} (${size} bytes) guardado para ${label}. ${r.text}` };
+}
+
+export interface StationWait {
+  timeoutMs: number;
+  pollMs?: number;
+  /** Tests inject it; by default a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Waits until the daemon starts the on-demand run asked for at `requestedAt`
+ * (its run record carries that time and a `startedAt`), or the limit passes.
+ * Shared by the CLI and the chat, so both answer the same way.
+ */
+export async function waitStationStart(ctx: FactoryContext, ref: string, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const [pkg = "", name = ""] = ref.trim().split("/");
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readStationRun(ctx, pkg, name);
+    if (run?.requestedAt === requestedAt && run.startedAt) {
+      return { started: true, text: `La corrida a demanda de ${pkg}/${name} empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero status.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre en la próxima pasada del daemon.` };
+}
+
+function hourMinute(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** Installs a package from npm into `dir`; tests inject a fake. */

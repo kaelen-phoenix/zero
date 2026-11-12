@@ -9,7 +9,8 @@ import { blockingFindings, checkCitations, citationValid, findingsFeedback, lowC
 import { changeName, existingRequirementNames, foldRequirementName, plainSpec, renderOpenSpecChange, specProblems, uniqueRequirementNames, writeFiles } from "../src/line/spec.js";
 import { filterProposals, type ScoutOutput } from "../src/line/scout.js";
 import { ALWAYS_PROTECTED, operationArtifacts, protectedTouched, testTampering, verifyChange } from "../src/line/verify.js";
-import { Store } from "../src/state/store.js";
+import { describeJobStatus } from "../src/format.js";
+import { Store, type Job } from "../src/state/store.js";
 import { Tracer } from "../src/telemetry/tracer.js";
 import { checkedOutAt, openWorkCopy } from "../src/workspace.js";
 import { cleanup, gitIn, gitRepo, tempDir, validSpec, writeTree } from "./helpers.js";
@@ -74,6 +75,46 @@ describe("spec station output", () => {
 
   it("explains the spec in plain words for the owner", () => {
     expect(plainSpec(validSpec())).toContain("Qué va a funcionar:\n- Health check");
+  });
+
+  it("accepts two or more stages with titles and tasks, and no stages at all", () => {
+    expect(specProblems(validSpec({ stages: [{ title: "Base", tasks: ["a"] }, { title: "Vista", tasks: ["b"] }] }))).toEqual([]);
+    expect(validSpec().stages).toBeUndefined();
+    expect(specProblems(validSpec()).filter((p) => /stage/.test(p))).toEqual([]);
+  });
+
+  it("rejects a single stage, an empty title and a stage without tasks", () => {
+    expect(specProblems(validSpec({ stages: [{ title: "Base", tasks: ["a"] }] }))).toEqual([expect.stringMatching(/stages/)]);
+    expect(specProblems(validSpec({ stages: [{ title: "Base", tasks: ["a"] }, { title: "Vista", tasks: [] }] }))).toEqual([expect.stringMatching(/stage 2 "Vista" has no tasks/)]);
+    expect(specProblems(validSpec({ stages: [{ title: " ", tasks: ["a"] }, { title: "Vista", tasks: ["b"] }] }))).toEqual([expect.stringMatching(/stage 1 has an empty title/)]);
+  });
+
+  it("rejects more stages than one job may have", () => {
+    const stages = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `Etapa ${i + 1}`, tasks: ["a"] }));
+    expect(specProblems(validSpec({ stages: stages(8) }))).toEqual([]);
+    expect(specProblems(validSpec({ stages: stages(9) }))).toEqual([expect.stringMatching(/at most 8/)]);
+  });
+
+  it("writes one tasks section per stage, in order", () => {
+    const spec = validSpec({ stages: [{ title: "Base", tasks: ["a", "b"] }, { title: "Vista", tasks: ["c"] }] });
+    const tasks = renderOpenSpecChange(spec, { jobId: "abc123", newCapability: true })["tasks.md"]!;
+    expect(tasks).toBe("# Tasks\n\n## 1. Etapa 1: Base\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n\n## 2. Etapa 2: Vista\n\n- [ ] 2.1 c\n");
+    expect(renderOpenSpecChange(validSpec(), { jobId: "abc123", newCapability: true })["tasks.md"]).toBe("# Tasks\n\n## 1. Implementación\n\n- [ ] 1.1 Add the route\n- [ ] 1.2 Add a test\n");
+  });
+
+  it("tells the spec station when to split a request into stages", () => {
+    const instructions = readFileSync(join(process.cwd(), "agents", "spec.md"), "utf8");
+    expect(instructions).toContain("`stages`");
+    expect(instructions).toMatch(/many tasks or touches many areas of the code/);
+    expect(instructions).toMatch(/Leave `stages` out for small requests/);
+  });
+
+  it("shows the stage of a running staged job in its status, and nothing for others", () => {
+    const stages = ["A", "B", "C", "D"].map((title) => ({ title, tasks: ["t"] }));
+    const base = { status: "running", station: "build", attempt: 1 } as const;
+    expect(describeJobStatus({ ...base, spec: validSpec({ stages }), stagesDone: 1 } as Job)).toBe("trabajando (estación build, intento 1, etapa 2 de 4)");
+    expect(describeJobStatus({ ...base, spec: validSpec({ stages }), stagesDone: 9 } as Job)).toContain("etapa 4 de 4");
+    expect(describeJobStatus({ ...base, spec: validSpec() } as Job)).not.toContain("etapa");
   });
 });
 

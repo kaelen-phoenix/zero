@@ -1,7 +1,10 @@
-import { bytes, describeJobStatus, jobOrigin } from "../format.js";
-import { FINAL_STATUSES, type Job, type Proposal, type ResearchNote } from "../state/store.js";
+import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage } from "../app.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime } from "../format.js";
+import { billingText, outageText } from "../line/automerge.js";
+import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
+import { installBehind, type InstallFreshness } from "../install-freshness.js";
 
 /**
  * What the night shift did in the period: new proposals left for the owner,
@@ -13,6 +16,24 @@ export interface NightShiftReport {
   built?: Job[];
   integrated?: Job[];
   jobs: Job[];
+}
+
+/** An open Dependabot alert of a line and the job that handles it, if any. */
+export interface BriefingAlert {
+  line: string;
+  number: number;
+  package: string;
+  ecosystem: string;
+  severity: AlertSeverity;
+  fixed?: string;
+  job?: string;
+  jobStatus?: Job["status"];
+}
+
+/** On-demand station runs: the ones still pending and the ones that started or ended in the period. */
+export interface BriefingOnDemand {
+  pending: FactoryStatus["onDemand"];
+  runs: OnDemandRun[];
 }
 
 export interface Briefing {
@@ -35,7 +56,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -78,6 +99,25 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   if (packages.length) {
     sections.push(["## Pedidos de paquetes", ...packages.map((j) => `- ${jobLabel(j)} · ${jobOrigin(j)}: ${FINAL_STATUSES.includes(j.status) ? outcome(j) : describeJobStatus(j)}`)].join("\n"));
   }
+  if (alerts.length) {
+    sections.push(["## Alertas de seguridad", ...alerts.map((a) => `- (${a.line}) ${describeAlert(a)}`)].join("\n"));
+  }
+  if (installBehind(install)) {
+    sections.push(["## Instalación", `- ${installLine(install, new Date(metrics.to))}`, "Actualizar: `git pull` y `npm run build` en la carpeta de zero, y apagá la fábrica (`zero shutdown`) para que arranque con la versión nueva."].join("\n"));
+  }
+  if (jams.length) {
+    sections.push(["## Trabas", ...jams.map((j) => `- ${jamLine(j)}`)].join("\n"));
+  }
+  if (onDemand.pending.length || onDemand.runs.length) {
+    const now = new Date(metrics.to);
+    sections.push(
+      [
+        "## Corridas a demanda",
+        ...onDemand.pending.map((d) => `- ${d.station}: pendiente desde ${resetTime(d.since, now)}`),
+        ...onDemand.runs.map((r) => `- ${describeOnDemandRun(r, now)}`),
+      ].join("\n"),
+    );
+  }
   sections.push(
     `Período: ${metrics.from} → ${metrics.to}`,
     [
@@ -99,6 +139,8 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     ...(metrics.pendingQuestions ? [`- **${metrics.pendingQuestions} consulta(s) esperando tu respuesta.**`] : []),
     ...ofKind("blocker").map((p) => `- **Bloqueado**${ref(p)}: ${p.topic}. ${p.body}`),
     ...ofKind("proposal").map((p) => `- **Propuesta**${ref(p)}: ${p.body}`),
+    ...outages.map((o) => `- **E${outageText(o.repository, o.since, o.checks).slice(1)}**: no se gasta nada en sus pull requests hasta que vuelva.`),
+    ...billing.map((b) => `- **${billingText(b.repository, b.since)}**.`),
     ...unmerged.map((m) => `- **Sin fundir**: ${m.url}: ${m.why ?? "no se puede fundir"}.`),
     ...(egress?.sites ?? [])
       .filter((s) => s.suspicious)

@@ -31,14 +31,17 @@ const researchedKey = (line: string, skill: string) => `research:${line}:${skill
 
 /** The lines that research: those with a research skill of their own. */
 export function researchLines(lines: LineConfig[]): LineConfig[] {
-  return lines.filter((l) => (l.stations?.research?.skills.length ?? 0) > 0);
+  return lines.filter((l) => !l.package && (l.stations?.research?.skills.length ?? 0) > 0);
 }
 
-/** Only absolute http(s) URLs; anything else (file:, javascript:, plain text) is dropped. */
+/** Only absolute http(s) URLs, without query string or fragment, which could carry data out; anything else (file:, javascript:, plain text) is dropped. */
 function webUrl(source: string): string | undefined {
   try {
     const url = new URL(source.trim());
-    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    url.search = "";
+    url.hash = "";
+    return url.href;
   } catch {
     return undefined;
   }
@@ -63,7 +66,7 @@ export function scrubLocal(text: string, line: Pick<LineConfig, "repo">): string
 export function sanitizeNotes(drafts: Draft[], line: Pick<LineConfig, "repo">): Draft[] {
   const out: Draft[] = [];
   for (const d of drafts) {
-    const sources = [...new Set(d.sources.map(webUrl).filter((u): u is string => !!u))].map((u) => scrubLocal(u, line));
+    const sources = [...new Set(d.sources.map(webUrl).filter((u): u is string => !!u).map((u) => scrubLocal(u, line)))];
     const topic = scrubLocal(d.topic, line).trim();
     const findings = scrubLocal(d.findings, line).trim();
     if (!topic || !findings || !sources.length) continue;

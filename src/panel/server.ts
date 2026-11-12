@@ -1,10 +1,14 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monthlyReport, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
+import { formatMerge } from "../format.js";
+import { mergeKey, type MergeState } from "../line/automerge.js";
 import { log } from "../log.js";
+import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmProposalPage, confirmResearchPage, egressPage, esc, jobPage, linePage, lineView, loginPage, overviewPage, page, proposalsPage, reportPage, researchPage } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -37,6 +41,56 @@ async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
   return new URLSearchParams(body);
 }
 
+/** Room for the multipart boundaries, headers and the other fields around an uploaded file. */
+const UPLOAD_OVERHEAD = 1024 * 1024;
+
+/** What each loaded station takes as uploads, by `<package>/<station>`. */
+function stationUploads(ctx: FactoryContext): StationUploads {
+  const out: StationUploads = {};
+  for (const s of ctx.config.loadedPackages?.stations ?? []) if (s.uploads) out[`${s.package}/${s.name}`] = s.uploads;
+  return out;
+}
+
+/** How much of a refused upload is read and dropped, so the browser gets the answer, before the connection is cut. */
+const DRAIN_BYTES = 256 * 1024 * 1024;
+
+/**
+ * A request body that fails as soon as it goes over `max` bytes, so nothing larger is ever held. Past it the rest is
+ * read and dropped (up to `DRAIN_BYTES`), and `drained` resolves once the request ended or was cut.
+ */
+function limitedBody(req: IncomingMessage, max: number): { body: ReadableStream<Uint8Array>; over: () => boolean; drained: Promise<void> } {
+  let size = 0;
+  let over = false;
+  const drained = new Promise<void>((done) => {
+    req.once("end", done);
+    req.once("close", done);
+  });
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (over) {
+          if (size > max + DRAIN_BYTES) req.destroy();
+          return;
+        }
+        if (size > max) {
+          over = true;
+          controller.error(new Error("el archivo es demasiado grande"));
+          return;
+        }
+        controller.enqueue(new Uint8Array(chunk));
+      });
+      req.once("end", () => {
+        if (!over) controller.close();
+      });
+      req.once("error", (err) => {
+        if (!over) controller.error(err);
+      });
+    },
+  });
+  return { body, over: () => over, drained };
+}
+
 /** Came through https (the tunnel), so the cookie can be marked Secure. */
 const viaHttps = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https" || String(req.headers["cf-visitor"] ?? "").includes("https");
 
@@ -62,7 +116,9 @@ function returnTo(path: string): string {
   const job = /^\/job\/([0-9a-f]{8})\//.exec(path)?.[1];
   if (job) return `/job/${job}`;
   if (path.startsWith("/proposals")) return "/proposals";
+  if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
+  if (path.startsWith("/packages")) return "/packages";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -74,6 +130,8 @@ export interface PanelOptions {
   watchMs?: number;
   /** Longest silence on a line stream before a comment keeps proxies and tunnels from cutting it. */
   heartbeatMs?: number;
+  /** GitHub adapters for merging on request; the daemon passes its metered real ones. */
+  merges?: MergeApiFactory;
 }
 
 /** One open `/line/events` stream: the session it was opened with and the last fragment it got. */
@@ -108,7 +166,47 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
   });
   const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}) => {
     res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers(nonce), ...extra });
-    res.end(html);
+    // The tab being shown is marked in the menu by its address, which only the request knows.
+    const shown = (res.req.url ?? "").split(/[?#]/)[0];
+    res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx), shown)) : html);
+  };
+
+  /** Hands out a file a package tab lists, as an attachment; false (nothing sent) for anything else. */
+  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string): boolean => {
+    let file: string;
+    try {
+      file = encoded.split("/").map(decodeURIComponent).join("/");
+    } catch {
+      return false;
+    }
+    const real = packageTabFile(ctx, pkg, tab, file);
+    if (!real) return false;
+    let fd: number;
+    try {
+      fd = openSync(real, "r");
+    } catch {
+      return false;
+    }
+    let size: number;
+    try {
+      // Judged again on what was opened, in case the file changed after the check.
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_DOWNLOAD_BYTES) throw new Error("not a file to hand out");
+      size = stat.size;
+    } catch {
+      closeSync(fd);
+      return false;
+    }
+    res.writeHead(200, {
+      ...headers(nonce),
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${downloadName(file)}"`,
+      "Content-Length": String(size),
+    });
+    createReadStream("", { fd, start: 0, end: Math.max(size - 1, 0) })
+      .on("error", () => res.destroy())
+      .pipe(res);
+    return true;
   };
 
   // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
@@ -164,6 +262,41 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     res.end();
   };
 
+  /** A file for a package station, read only up to that station's limit and stored through `uploadToStation`. */
+  async function upload(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string) {
+    const uploads = stationUploads(ctx);
+    const asked = url.searchParams.get("station") ?? "";
+    const limits = Object.hasOwn(uploads, asked) ? [uploads[asked]!] : Object.values(uploads);
+    const max = limits.length ? Math.max(...limits.map((u) => u.maxMb)) * 1024 * 1024 + UPLOAD_OVERHEAD : 0;
+    // Too large by its own word: nothing of it is kept, only read and dropped so the browser gets the answer.
+    const declared = Number(req.headers["content-length"] ?? 0);
+    const reading = limitedBody(req, declared > max ? 0 : max);
+    if (!limits.length || declared > max) {
+      await reading.drained;
+      if (!limits.length) return back(res, "/packages", "Ninguna estación acepta archivos.");
+    }
+    const tooLarge = async () => {
+      await reading.drained;
+      res.writeHead(413, { ...headers(nonce), "Content-Type": "text/html; charset=utf-8" });
+      res.end(page("Archivo demasiado grande", `<div class="card bad">El archivo pasa del máximo de la estación. <a href="/packages">Volver</a></div>`, { nonce }));
+    };
+    if (declared > max) return tooLarge();
+    let form: FormData;
+    try {
+      form = await new Request("http://panel/packages/upload", { method: "POST", headers: { "content-type": String(req.headers["content-type"] ?? "") }, body: reading.body, duplex: "half" } as RequestInit).formData();
+    } catch {
+      if (reading.over()) return tooLarge();
+      await reading.drained;
+      return back(res, "/packages", "No se pudo leer el archivo subido.");
+    }
+    const file = form.get("file");
+    const station = asked || String(form.get("station") ?? "");
+    if (typeof file === "string" || !file?.name) return back(res, "/packages", "Elegí un archivo para subir.");
+    const pedido = form.get("pedido");
+    const r = await uploadToStation(ctx, station, { name: file.name, content: new Uint8Array(await file.arrayBuffer()), ...(typeof pedido === "string" && pedido && { request: pedido }) });
+    return back(res, "/packages", r.ok ? r.text : r.reason);
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const nonce = randomBytes(16).toString("base64");
     const url = new URL(req.url ?? "/", "http://panel");
@@ -192,14 +325,22 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         if (url.searchParams.get("fragment") === "1") return send(res, 200, lineView(productionLine(ctx)), nonce);
         return send(res, 200, linePage(productionLine(ctx), nonce), nonce);
       }
+      if (path === "/requests") {
+        const view = requestsView(ctx, { line: url.searchParams.get("line") || undefined, estado: url.searchParams.get("estado") || undefined }, ctx.now?.());
+        return send(res, 200, requestsPage(view, nonce, flash), nonce);
+      }
       const job = /^\/job\/([0-9a-f]{8})$/.exec(path)?.[1];
-      if (job) return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine)), nonce);
+      if (job) {
+        const merge = JSON.parse(ctx.store.getKv(mergeKey(job)) ?? "{}") as Partial<MergeState>;
+        return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine), merge.status), nonce);
+      }
       if (path === "/egress") {
         const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90);
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/monitor") return send(res, 200, monitorPage(monitorView(ctx, parsePeriod(url.searchParams.get("periodo")), ctx.now?.()), nonce), nonce);
       if (path === "/report") {
         const line = url.searchParams.get("line") || undefined;
         const month = url.searchParams.get("mes") || undefined;
@@ -231,11 +372,24 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       // Read-only pages: they have no POST route, so a POST to them falls through to the 404 below.
       if (path === "/about") return send(res, 200, aboutPage(await factoryGuide(ctx), nonce), nonce);
       if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce), nonce);
+      if (path === "/packages") {
+        const onDemand = (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.onDemand).map((s) => `${s.package}/${s.name}`);
+        return send(res, 200, packagesPage(packageList(ctx), onDemand, nonce, flash, stationUploads(ctx)), nonce);
+      }
+      const tab = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)$/.exec(path);
+      if (tab) {
+        const view = packageTabView(ctx, tab[1]!, tab[2]!, url.searchParams.get("categoria") || undefined);
+        if (view) return send(res, 200, packageTabPage(view, nonce), nonce);
+      }
+      const tabDownload = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)\/files\/(.+)$/.exec(path);
+      if (tabDownload && sendTabFile(res, tabDownload[1]!, tabDownload[2]!, tabDownload[3]!, nonce)) return;
       return send(res, 404, page("No existe", `<div class="card">Esa página no existe. <a href="/">Volver</a></div>`, { nonce }), nonce);
     }
 
     if (req.method !== "POST") return send(res, 405, page("No permitido", "", { nonce }), nonce);
     if (!sameOrigin(req)) return send(res, 403, page("No permitido", `<div class="card">Pedido de otro sitio rechazado.</div>`, { nonce }), nonce);
+    // Before readForm: a file is far larger than a form, so this route has its own limit, the station's.
+    if (path === "/packages/upload") return upload(req, res, url, nonce);
     const form = await readForm(req);
 
     if (path === "/logout") {
@@ -246,14 +400,37 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const r = requestWork(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined });
       return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
     }
+    if (path === "/requests") {
+      const r = requestWork(ctx, { type: form.get("type") ?? "", title: form.get("title") ?? "", description: form.get("description") ?? "", line: form.get("line") || undefined });
+      return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+    }
+    const requestAction = /^\/requests\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
+    if (requestAction) {
+      const [, id, action] = requestAction as unknown as [string, string, string];
+      if (action === "stop") {
+        // Stopping cannot be undone, so the first press only asks for confirmation.
+        if (form.get("confirm") !== "1") return send(res, 200, confirmStopPage(getJob(ctx, id), nonce), nonce);
+        await stop(ctx, id);
+        return back(res, "/requests", `Frenando el trabajo ${id}.`);
+      }
+      const decision = form.get("decision") === "approve" ? "approve" : "reject";
+      await answer(ctx, id, decision, form.get("note") || undefined);
+      return back(res, "/requests", decision === "approve" ? `Aprobado: el trabajo ${id} sigue.` : `Rechazado: el trabajo ${id} se detuvo.`);
+    }
     if (path === "/andon") {
       if (form.get("state") === "off") resume(ctx);
       else await stop(ctx);
       return back(res, "/", form.get("state") === "off" ? "Fábrica reanudada." : "Fábrica detenida: nada nuevo empieza hasta que la reanudes.");
     }
-    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
+    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop|merge)$/.exec(path);
     if (jobAction) {
       const [, id, action] = jobAction as unknown as [string, string, string];
+      if (action === "merge") {
+        // Merging cannot be undone, so the first press only asks for confirmation.
+        if (form.get("confirm") !== "1") return send(res, 200, confirmMergePage(getJob(ctx, id), nonce), nonce);
+        const r = await mergePullRequest(ctx, id, { via: "panel", ...(opts.merges && { api: opts.merges }) });
+        return back(res, `/job/${id}`, formatMerge(r));
+      }
       if (action === "stop") {
         await stop(ctx, id);
         return back(res, `/job/${id}`, "Deteniendo el trabajo.");
@@ -289,6 +466,11 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       const r = requestFromResearchNote(ctx, id);
       return back(res, "/research", `Trabajo pedido: ${r.job.id}. ${r.next}`);
+    }
+    if (path === "/packages/run") {
+      // Only the person in charge gets here: the session was checked above.
+      const r = requestStationRun(ctx, form.get("station") ?? "", new Date(), form.get("pedido") ?? undefined);
+      return back(res, "/packages", r.ok ? r.text : r.reason);
     }
     if (path === "/egress/rule") {
       const action = form.get("action");

@@ -1,16 +1,20 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
+import { installBehind, type InstallFreshness } from "./install-freshness.js";
+import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
-import type { OnDemandRun } from "./line/packages.js";
-import type { Job, Proposal, ResearchNote } from "./state/store.js";
+import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
+import { jobStage } from "./line/spec.js";
+import { effectivePriority, storedPriority } from "./priority.js";
+import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
 
-const STATUS_TEXT: Record<Job["status"], string> = {
+export const STATUS_TEXT: Record<Job["status"], string> = {
   queued: "en cola",
   running: "trabajando",
   waiting: "esperando tu respuesta",
@@ -47,16 +51,43 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
-/** Who asked for a job, only when a package's station did. */
-export const jobOrigin = (j: Job) => (j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : undefined);
+/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it. */
+export const jobOrigin = (j: Job) =>
+  j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : j.source?.kind === "security-alert" ? `seguridad: alerta de Dependabot ${j.source.package}` : undefined;
+
+/** Spanish severity names, for what the owner reads. */
+export const SEVERITY_TEXT: Record<AlertSeverity, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
+
+/** One open Dependabot alert and who handles it: "lodash (npm) · crítica · alerta #3 · trabajo j1 (en cola)". */
+export function describeAlert(a: { package: string; ecosystem: string; severity: AlertSeverity; number: number; fixed?: string; job?: string; jobStatus?: Job["status"] }): string {
+  const handled = a.job ? `trabajo ${a.job}${a.jobStatus ? ` (${STATUS_TEXT[a.jobStatus]})` : ""}` : `solo aviso${a.fixed ? "" : " (sin versión corregida)"}`;
+  return `${a.package} (${a.ecosystem}) · ${SEVERITY_TEXT[a.severity]} · alerta #${a.number} · ${handled}`;
+}
+
+/** How long ago something happened: "hace 5 min", "hace 3 h", "hace 2 días". */
+export function ageText(at: string, now = new Date()): string {
+  const min = Math.max(0, Math.floor((now.getTime() - new Date(at).getTime()) / 60_000));
+  if (min < 60) return `hace ${min} min`;
+  if (min < 24 * 60) return `hace ${Math.floor(min / 60)} h`;
+  const days = Math.floor(min / (24 * 60));
+  return `hace ${days} ${days === 1 ? "día" : "días"}`;
+}
 
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
-  return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""})` : ""}`;
+  const stage = job.status === "running" ? jobStage(job) : undefined;
+  const stageText = stage ? `, etapa ${stage.n} de ${stage.total}` : "";
+  return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""}${stageText})` : stageText}`;
 }
 
 export function formatRequest(r: RequestResult): string {
-  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}".`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+  const priority = storedPriority(r.job);
+  return [`Pedido anotado: trabajo ${r.job.id} en la línea "${r.job.line}"${priority === "media" ? "" : `, con prioridad ${priority}`}.`, r.next, r.level.reason ? `Nota: ${r.level.reason}` : ""].filter(Boolean).join("\n");
+}
+
+/** What a merge on request did, for the CLI, the chat and the panel. */
+export function formatMerge(r: MergeOutcome): string {
+  return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
@@ -93,6 +124,7 @@ export function formatJob(job: Job, opts: { subscription?: boolean } = {}): stri
     `Trabajo ${job.id} · ${jobName(job)}`,
     `Estado: ${describeJobStatus(job)}`,
     `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
+    `Prioridad: ${storedPriority(job)}`,
   ];
   const origin = jobOrigin(job);
   if (origin) lines.push(`Origen: ${origin}`);
@@ -126,15 +158,15 @@ export function formatAgents(lists: LineAgentList[]): string {
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
 
-/** How an on-demand turn went, with its time. */
-function onDemandRunText(r: Pick<OnDemandRun, "outcome" | "startedAt" | "finishedAt" | "error">, now: Date): string {
-  const at = r.finishedAt ?? r.startedAt;
-  const when = at ? ` (${resetTime(at, now)})` : "";
-  if (r.outcome === "running") return `en curso${r.startedAt ? ` desde ${resetTime(r.startedAt, now)}` : ""}`;
-  if (r.outcome === "done") return `terminó bien${when}`;
-  if (r.outcome === "timeout") return `superó su tiempo${when}`;
-  if (r.outcome === "interrupted") return `se interrumpió${when}`;
-  return `falló: ${r.error ?? "sin detalle"}${when}`;
+const RUN_OUTCOME: Record<StationRunOutcome, string> = { done: "terminó bien", failed: "falló", timeout: "superó su tiempo", stopped: "se cortó porque la fábrica se apagó" };
+
+/** An on-demand run as a person reads it: en curso, or how and when it ended, with its request and error. */
+export function describeStationRun(r: StationRunRecord, now = new Date()): string {
+  const state =
+    r.state === "running"
+      ? `en curso desde ${resetTime(r.startedAt ?? r.requestedAt, now)}`
+      : `${RUN_OUTCOME[r.outcome ?? "failed"]}${r.finishedAt ? ` (${resetTime(r.finishedAt, now)})` : ""}${r.error ? `: ${r.error}` : ""}`;
+  return `${state}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
 }
 
 export function formatPackages(l: PackageList, now = new Date()): string {
@@ -150,7 +182,7 @@ export function formatPackages(l: PackageList, now = new Date()): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.onDemandLastRun ? ` · última corrida a demanda: ${onDemandRunText(s.onDemandLastRun, now)}` : ""}`);
+      out.push(`- estación ${s.name}: ${state}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -175,7 +207,25 @@ export function shutdownOutcome(r: ShutdownResult): { text: string; code: number
   return { text: `La fábrica no se apagó: ${who} sigue encendido. Se va a apagar cuando termine lo que está haciendo; si no lo hace, vas a tener que terminar ese proceso a mano.`, code: 1 };
 }
 
-const daemonState = (d: DaemonInfo) => (d.alive ? "en marcha" : d.lockHeld ? `no responde${d.pid ? ` (proceso ${d.pid})` : ""}` : "apagada (arranca sola con el próximo pedido)");
+/** "14:37", or "10/11 14:37" when it was not today. */
+function clock(iso: string, now: Date): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const two = (n: number) => String(n).padStart(2, "0");
+  const time = `${two(d.getHours())}:${two(d.getMinutes())}`;
+  return d.toDateString() === now.toDateString() ? time : `${two(d.getDate())}/${two(d.getMonth() + 1)} ${time}`;
+}
+
+function daemonState(d: DaemonInfo, running: number, now: Date): string {
+  const state = d.state ?? (d.alive ? "running" : d.lockHeld ? "unresponsive" : "stopped");
+  if (state === "running") return "en marcha";
+  if (state === "unresponsive") return `no responde${d.pid ? ` (proceso ${d.pid})` : ""}`;
+  if (state === "crashed") {
+    const jobs = running ? ` con ${running} ${running === 1 ? "trabajo" : "trabajos"} en curso que nadie hace` : "";
+    return `se cayó (último latido ${d.since ? clock(d.since, now) : "desconocido"})${jobs}; se vuelve a encender con el próximo comando de zero si hay trabajo pendiente`;
+  }
+  return `apagada${d.since ? ` a propósito desde ${clock(d.since, now)}` : ""} (arranca sola con el próximo pedido)`;
+}
 
 /** Starts with `GitHub:`, so `zero box status`, which filters by prefix, leaves it out. */
 function githubLine(g: GithubStatus, now: Date): string {
@@ -189,10 +239,45 @@ function githubLine(g: GithubStatus, now: Date): string {
   return `GitHub: ${parts.join(" · ")}`;
 }
 
+/** "Instalación atrasada: le faltan 2 commits fundidos de origin/main …", or an empty string while the installed copy is up to date. */
+export function installLine(r: InstallFreshness, now = new Date()): string {
+  if (!installBehind(r)) return "";
+  const parts: string[] = [];
+  const behind = r.behind ?? 0;
+  if (behind > 0) parts.push(`le ${behind === 1 ? "falta 1 commit fundido" : `faltan ${behind} commits fundidos`}${r.upstream ? ` de ${r.upstream}` : ""}`);
+  if (r.staleBuild) parts.push("la compilación (dist) es más vieja que el código (src); falta `npm run build`");
+  return `Instalación atrasada: ${parts.join(" y ")} (revisado ${resetTime(r.checkedAt, now)}).`;
+}
+
+/** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
+export function priorityNote(job: Job, now = new Date()): string {
+  const level = effectivePriority(job, now);
+  if (level === "media" && storedPriority(job) === "media") return "";
+  return ` · prioridad ${level}${level !== storedPriority(job) ? " (subió por la espera)" : ""}`;
+}
+
+const ON_DEMAND_END: Record<NonNullable<OnDemandRun["outcome"]>, string> = {
+  ok: "terminó bien",
+  failed: "falló",
+  timeout: "superó su tiempo",
+  stopped: "se cortó al apagar la fábrica",
+  "not-run": "no pudo correr",
+};
+
+/** How a station's last on-demand run went: "corriendo desde 10:05", "terminó bien a las 10:07" or "sin resultado". */
+export function onDemandState(r: OnDemandRun, now = new Date()): string {
+  if (r.endedAt && r.outcome) return `${ON_DEMAND_END[r.outcome]} (${resetTime(r.endedAt, now)})`;
+  if (r.stale || !r.startedAt) return "sin resultado";
+  return `corriendo desde ${resetTime(r.startedAt, now)}`;
+}
+
+/** "hello/nota (pedida 10:00): terminó bien (10:07)". */
+export const describeOnDemandRun = (r: OnDemandRun, now = new Date()) => `${r.station} (pedida ${resetTime(r.asked, now)}): ${onDemandState(r, now)}`;
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
-    `Fábrica: ${s.andon ? "DETENIDA (andon)" : daemonState(s.daemon)} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
+    `Fábrica: ${s.andon ? "DETENIDA (andon)" : daemonState(s.daemon, s.running.length, now)} · nivel ${s.level.level}${s.level.configured !== s.level.level ? ` (configurado ${s.level.configured})` : ""}`,
   ];
   if (s.level.reason) out.push(`  ${s.level.reason}`);
   if ((s.daemonProcesses?.length ?? 0) > 1) out.push(`AVISO: hay ${s.daemonProcesses!.length} procesos daemon de zero en esta máquina (${s.daemonProcesses!.join(", ")}). Pueden tomar el mismo trabajo, salvo que uno sea de otra fábrica porque usás otro ZERO_HOME; si no, terminá a mano el que sobra.`);
@@ -216,12 +301,20 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.codexUnsandboxed === "box") out.push("Codex corre dentro de la caja de aislamiento (codex.sandbox: off), con los límites de la caja.");
   for (const i of s.intake) out.push(`Issues de GitHub: la línea ${i.line} toma los issues con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
   for (const i of s.linear) out.push(`Issues de Linear: la línea ${i.line} toma los issues del equipo ${i.team} con la etiqueta "${i.label}"${i.problem ? ` · PROBLEMA: ${i.problem}` : ""}`);
+  for (const j of s.jira) out.push(`Issues de Jira: la línea ${j.line} toma los issues de ${j.project} (${j.site}) con la etiqueta "${j.label}"${j.problem ? ` · PROBLEMA: ${j.problem}` : ""}`);
+  for (const l of s.securityAlerts) {
+    if (l.problem) out.push(`Alertas de seguridad: la línea ${l.line} · PROBLEMA: ${l.problem}`);
+    for (const a of l.alerts) out.push(`Alertas de seguridad: la línea ${l.line} · ${describeAlert(a)}`);
+  }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
-  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? ", con pedido" : ""})`).join(", ")}`);
-  for (const r of s.onDemandRuns) if (r.outcome === "running") out.push(`Corrida a demanda en curso: ${r.station} (desde ${resetTime(r.startedAt ?? r.finishedAt ?? now.toISOString(), now)})`);
-  const ended = s.onDemandRuns.filter((r) => r.outcome !== "running");
-  if (ended.length) out.push(`Últimas corridas a demanda: ${ended.map((r) => `${r.station} ${onDemandRunText(r, now)}`).join(", ")}`);
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
+  if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
+  for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
+  if (s.install) out.push(installLine(s.install, now));
+  if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
+  for (const o of s.outages) out.push(outageLine(o));
+  for (const b of s.billing) out.push(billingLine(b));
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
   out.push(budgetLine(s.budget, now));
@@ -230,8 +323,9 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const list = (title: string, jobs: Job[]) => {
     if (!jobs.length) return;
     out.push("", `${title}:`);
-    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}`);
+    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`);
   };
+  if (s.jams.length) out.push("", "Trabas:", ...s.jams.map((j) => `- ${jamLine(j)}`));
   list("Esperando tu respuesta", s.waiting);
   list("Trabajando", s.running);
   list("En cola", s.queued);
@@ -284,4 +378,31 @@ export function formatEgress(r: EgressReport): string {
   out.push("", r.summary.connections ? formatEgressSites(r.summary) : "Ninguna conexión en el período.");
   out.push("", "Para cambiar las reglas: `zero egress allow <sitio>`, `zero egress block <sitio>`, `zero egress remove <sitio>` o `zero egress mode allowlist|blocklist`.");
   return out.join("\n");
+}
+
+/** The kinds of cause the unjam station tells apart, as the person in charge reads them. */
+export const JAM_KIND_TEXT: Record<FactoryStatus["jams"][number]["kind"], string> = {
+  code: "código",
+  "flaky-test": "test intermitente",
+  ci: "CI",
+  "github-account": "cuenta de GitHub",
+  machine: "máquina",
+};
+
+/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué hacer». */
+export function jamLine(j: FactoryStatus["jams"][number]): string {
+  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? `qué hacer: ${j.todo}` : undefined;
+  return [j.line, j.title, `${j.jams} ${j.jams === 1 ? "traba" : "trabas"}`, JAM_KIND_TEXT[j.kind], next].filter(Boolean).join(" · ");
+}
+
+/** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */
+export function billingLine(b: FactoryStatus["billing"][number]): string {
+  return `${billingText(b.repository, b.since)}${b.pulls.length ? ` · ${b.pulls.length} ${b.pulls.length === 1 ? "pull request espera" : "pull requests esperan"}` : ""}`;
+}
+
+/** One line per environment outage: «Entorno caído en <repo> desde HH:MM (checks: a, b) · N pull requests esperan». */
+export function outageLine(o: FactoryStatus["outages"][number]): string {
+  const text = outageText(o.repository, o.since, o.checks);
+  const waiting = o.pulls.length ? ` · ${o.pulls.length} ${o.pulls.length === 1 ? "pull request espera" : "pull requests esperan"}` : "";
+  return `${text[0]!.toUpperCase()}${text.slice(1)}${waiting}`;
 }

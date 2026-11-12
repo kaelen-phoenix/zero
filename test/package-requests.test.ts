@@ -222,6 +222,102 @@ results.push(ctx.requestJob({ get line() { throw { toString() { throw new Error(
   });
 });
 
+describe("a package's cost cap", () => {
+  const capped = (maxUsd: unknown) => `results.push(ctx.requestJob({ line: "web", text: "arreglar algo", maxUsd: ${maxUsd} }));`;
+
+  it("stores a cap below limits.usdPerJob as the job's budget", async () => {
+    const { dir, results } = stationPackage(capped(1.5), { perLinePerDay: 1 });
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    await pass(ctx);
+    const { id } = results()[0] as { id: string };
+    expect(ctx.store.getJob(id)!.budgetUsd).toBe(1.5);
+  });
+
+  it("keeps limits.usdPerJob without a cap", async () => {
+    const { dir, results } = stationPackage(ask(), { perLinePerDay: 1 });
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    await pass(ctx);
+    expect(ctx.store.getJob((results()[0] as { id: string }).id)!.budgetUsd).toBe(3);
+  });
+
+  it.each(["5", "0", "-1", "NaN", "Infinity", JSON.stringify("1"), "null"])("refuses maxUsd %s naming limits.usdPerJob, spending no quota", async (maxUsd) => {
+    const { dir, results } = stationPackage(`${capped(maxUsd)}${ask()}`, { perLinePerDay: 1 });
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    await pass(ctx);
+    const [refused, valid] = results();
+    expect((refused as { reason: string }).reason).toContain("limits.usdPerJob");
+    expect(valid).toHaveProperty("id");
+    expect(jobs(ctx)).toHaveLength(1);
+  });
+
+  it("is refused by requestWork above the limit", async () => {
+    const ctx = await factory(stationPackage("").dir, { limits: { usdPerJob: 3 } });
+    expect(() => requestWork(ctx, { text: "algo", line: "web", budgetUsd: 4 })).toThrow("limits.usdPerJob");
+    expect(jobs(ctx)).toEqual([]);
+  });
+});
+
+describe("ctx.job", () => {
+  const look = `for (const id of globalThis.zeroTestIds) results.push(ctx.job(id) ?? null);`;
+
+  it("shows the package's own delivered job, with its cost and commit", async () => {
+    const { dir, results } = stationPackage(look);
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    const { job } = requestWork(ctx, { text: "arreglar algo", line: "web", source: SOURCE, budgetUsd: 2 });
+    const agents = fakeAgents({ build: (req) => void writeTree(req.cwd, { "src/a.ts": "ok\n" }) });
+    const done = await runJob(job.id, { ...ctx, runAgent: agents.runner });
+    expect(done.status).toBe("delivered");
+    vi.stubGlobal("zeroTestIds", [job.id]);
+    await pass(ctx);
+    expect(results()[0]).toEqual({
+      id: job.id,
+      line: "web",
+      status: "delivered",
+      costUsd: done.costUsd,
+      budgetUsd: 2,
+      waiting: false,
+      finishedAt: done.finishedAt,
+      delivery: { mode: "merge", commit: done.delivery!.commit },
+    });
+    expect(done.delivery!.commit).toEqual(expect.any(String));
+  });
+
+  it("says when the job waits for an answer", async () => {
+    const { dir, results } = stationPackage(look);
+    const ctx = await factory(dir, { level: "L1" });
+    const { job } = requestWork(ctx, { text: "arreglar algo", line: "web", source: SOURCE });
+    await runJob(job.id, { ...ctx, runAgent: fakeAgents({}).runner });
+    vi.stubGlobal("zeroTestIds", [job.id]);
+    await pass(ctx);
+    expect(results()[0]).toMatchObject({ status: "waiting", waiting: true });
+  });
+
+  it("gives nothing for the owner's jobs, another package's jobs or unknown ids", async () => {
+    const { dir, results } = stationPackage(look);
+    const ctx = await factory(dir);
+    const owner = requestWork(ctx, { text: "del dueño", line: "web" }).job;
+    const other = requestWork(ctx, { text: "de otro", line: "web", source: { kind: "package", package: "otro", station: "nota" } }).job;
+    // A regular pass runs only while nothing is queued.
+    for (const j of [owner, other]) ctx.store.finishJob(j.id, "stopped");
+    vi.stubGlobal("zeroTestIds", [owner.id, other.id, "no-existe", 7]);
+    await pass(ctx);
+    expect(results()).toEqual([null, null, null, null]);
+  });
+
+  it("cleans the reason of local paths", async () => {
+    const { dir, results } = stationPackage(look);
+    const ctx = await factory(dir);
+    const { job } = requestWork(ctx, { text: "arreglar algo", line: "web", source: SOURCE });
+    ctx.store.finishJob(job.id, "failed", { reason: "falló en /home/ana/proyecto/app.ts" });
+    vi.stubGlobal("zeroTestIds", [job.id]);
+    await pass(ctx);
+    const view = results()[0] as unknown as { status: string; reason: string };
+    expect(view.status).toBe("failed");
+    expect(view.reason).toContain("falló en");
+    expect(view.reason).not.toContain("/home/ana");
+  });
+});
+
 describe("a package's job on the line", () => {
   const building = () => fakeAgents({ build: (req) => void writeTree(req.cwd, { [`src/${req.prompt.match(/# Job (\w+)/)![1]}.ts`]: "ok\n" }) });
 

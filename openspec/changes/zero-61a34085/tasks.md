@@ -13,3 +13,4 @@
 - [x] 1.9 Tests in test/package-on-demand.test.ts, in-process and without new CLI spawns except at most one: cleaning and cut, blank refusal, request reaching pass, keys cleared, ctx.state cannot forge a request, run records (done/failed/cannot run), waitStationRunStart start and timeout, status and formatPackages lines, MCP request param. Keep the existing tests green.
 - [x] 1.10 Docs: README.md and README.es.md (On-demand runs paragraph and the `zero package` code block) and the AGENTS.md packages bullet.
 - [x] 1.11 Run `npm run typecheck`, `npx vitest run test/package-on-demand.test.ts test/interface.test.ts test/docs.test.ts test/wording.test.ts`, and `npx openspec validate --all`.
+- [x] 1.12 Merge origin/main: the feature had already landed through zero-c119e137; keep its implementation in the conflicted files and rewrite this change to its names.

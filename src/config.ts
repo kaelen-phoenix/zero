@@ -77,6 +77,17 @@ const ResearchSchema = z.union([
     .strict(),
 ]);
 
+/** The unjam station's diagnosis of what holds the lines up while the factory is idle, or `off`. */
+const UnjamSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Fix jobs and retries the unjam station opens on its own per local day, across every line. */
+      maxJobsPerDay: z.number().int().min(0).default(2),
+    })
+    .strict(),
+]);
+
 export const DEFAULT_SIGNATURE_TEXT = "— Hecho con [zero in the loop](https://zerointheloop.com)";
 export const DEFAULT_SIGNATURE_TRAILER = "Built-by: zero in the loop <https://zerointheloop.com>";
 
@@ -131,20 +142,34 @@ export const SiteSchema = z
   .toLowerCase()
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?::\d{1,5})?$/, "use a site name like example.com or example.com:8443");
 
-/** Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin. */
-export const CustomEngineSchema = z.object({
-  command: z.array(z.string()).min(1),
-  readArgs: z.array(z.string()).default([]),
-  writeArgs: z.array(z.string()).default([]),
-  modelArgs: z.array(z.string()).default([]),
-  /** Environment variables (credentials) this engine needs inside the isolation box. */
-  secrets: z.array(z.string()).default([]),
-  /** Sites this engine must reach (its model's API); allowed by the egress gate in every mode. */
-  hosts: z.array(SiteSchema).default([]),
-});
+/**
+ * Any headless agent CLI. `{prompt}` and `{model}` are substituted; without `{prompt}` the prompt goes to stdin.
+ * With `protocol: acp` the command is an Agent Client Protocol agent: the prompt goes over JSON-RPC, never on argv.
+ */
+export const CustomEngineSchema = z
+  .object({
+    command: z.array(z.string()).min(1),
+    readArgs: z.array(z.string()).default([]),
+    writeArgs: z.array(z.string()).default([]),
+    modelArgs: z.array(z.string()).default([]),
+    /** Environment variables (credentials) this engine needs inside the isolation box. */
+    secrets: z.array(z.string()).default([]),
+    /** Sites this engine must reach (its model's API); allowed by the egress gate in every mode. */
+    hosts: z.array(SiteSchema).default([]),
+    /** `cli` (the default): the prompt goes in `{prompt}` or on stdin. `acp`: the agent speaks ACP on stdio. */
+    protocol: z.enum(["cli", "acp"]).optional(),
+  })
+  .superRefine((def, ctx) => {
+    if (def.protocol !== "acp") return;
+    for (const key of ["command", "readArgs", "writeArgs", "modelArgs"] as const) {
+      if (def[key].some((a) => a.includes("{prompt}"))) {
+        ctx.addIssue({ code: "custom", path: [key], message: "un motor ACP recibe el pedido por el protocolo: sacá {prompt}" });
+      }
+    }
+  });
 
 /** The stations zero itself defines; a custom agent never takes one of their names. */
-export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research"] as const;
+export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research", "unjam"] as const;
 
 /**
  * A project's own agent. `review`: a read-only reviewer that runs after review
@@ -233,6 +258,19 @@ export type PackageEntry = z.output<typeof PackageEntrySchema>;
 export const COMMIT_AUTHORS = ["zero", "owner"] as const;
 export type CommitAuthor = (typeof COMMIT_AUTHORS)[number];
 
+/** A Jira Cloud site: an https origin with no credentials or path, kept without its trailing slash. */
+const JiraSiteSchema = z
+  .string()
+  .refine((raw) => {
+    try {
+      const u = new URL(raw);
+      return u.protocol === "https:" && !u.username && !u.password && (u.pathname === "/" || u.pathname === "") && !u.search && !u.hash && !raw.includes("@");
+    } catch {
+      return false;
+    }
+  }, "an https address with no credentials or path, such as https://acme.atlassian.net")
+  .transform((raw) => new URL(raw).origin);
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -242,6 +280,8 @@ export const LineSchema = z.object({
   setup: z.array(z.string()).default([]),
   /** Must all pass before a change goes to review. */
   verify: z.array(z.string()).default([]),
+  /** Minutes each verify command may take (20 when absent). Zero raises it on its own to twice what the slowest recent passing run took. */
+  verifyTimeoutMinutes: z.number().positive().optional(),
   integrate: z.enum(["merge", "branch", "pull-request"]).default("merge"),
   remote: z.string().default("origin"),
   maxAttempts: z.number().int().min(1).default(3),
@@ -252,11 +292,44 @@ export const LineSchema = z.object({
    * Strict: the key never goes here, only in the secret LINEAR_API_KEY.
    */
   linear: z.object({ team: z.string().min(1), label: z.string().min(1).default("zero") }).strict().optional(),
+  /** Take the issues of a Jira Cloud project carrying this label as requests. Strict: its credentials live in the secret store, never here. */
+  jira: z
+    .object({ site: JiraSiteSchema, project: z.string().regex(/^[A-Z][A-Z0-9_]+$/, "a Jira project key, such as ABC"), label: z.string().min(1).default("zero") })
+    .strict()
+    .optional(),
   /** With `pull-request`: merge it once every GitHub check passed and it has no conflicts. */
   autoMerge: z.boolean().default(false),
+  /**
+   * Dependabot alerts of the line's GitHub repository: `off`, `notify` (only shown) or `jobs` (one job per package
+   * for open alerts at or above `minSeverity`; the rest are only shown).
+   */
+  securityAlerts: z
+    .object({ mode: z.enum(["off", "notify", "jobs"]).default("jobs"), minSeverity: z.enum(["low", "medium", "high", "critical"]).default("high") })
+    .strict()
+    .prefault({}),
+  /**
+   * The external services the line's app uses, for the monthly report's costs. Strict: only identifiers go here,
+   * their tokens live in the secret store (GITHUB_BILLING_TOKEN, VERCEL_TOKEN, SUPABASE_ACCESS_TOKEN).
+   */
+  services: z
+    .object({
+      /** GitHub Actions of the line's repository; account and repository come from the line's remote when absent. */
+      github: z
+        .object({
+          account: z.string().min(1).optional(),
+          type: z.enum(["user", "organization"]).default("user"),
+          repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "owner/repo").optional(),
+        })
+        .strict(),
+      vercel: z.object({ project: z.string().min(1), team: z.string().min(1).optional() }).strict(),
+      supabase: z.object({ project: z.string().min(1), organization: z.string().min(1).optional() }).strict(),
+    })
+    .partial()
+    .strict()
+    .optional(),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema, unjam: LineSkillsSchema })
     .partial()
     .strict()
     .optional(),
@@ -272,7 +345,12 @@ export const LineSchema = z.object({
   allowedArtifacts: z.array(z.string()).default([]),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
+  /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
+  package: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes").optional(),
 });
+
+/** The package a line belongs to, if a package created it. */
+export const ownedBy = (line: { package?: string }): string | undefined => line.package;
 
 export const FactorySchema = z
   .object({
@@ -302,10 +380,14 @@ export const FactorySchema = z
     engines: z.record(z.string(), CustomEngineSchema).default({}),
     /** `off` starts Codex without its own sandbox, where it does not work; zero then checks read-only calls itself. Only the owner decides it: in this file, never from the chat. */
     codex: z.object({ sandbox: z.enum(["on", "off"]).default("on") }).strict().prefault({}),
+    /** Start the factory when the owner logs in (a user-level entry, see autostart.ts). Only the owner decides it: `zero autostart`, `zero setup` or this file, never the chat. */
+    autostart: z.boolean().default(false),
     /** Replacement engines, in order, for stations whose engine is paused by its plan. Only these are ever used. */
     fallback: z.array(FallbackSchema).default([]),
     /** Jobs running at once across all lines; each line runs one job at a time. */
     concurrency: z.number().int().min(1).default(2),
+    /** Setup and verify commands running on this machine at once, across jobs (the box has its own limits). The rest wait their turn. */
+    commandConcurrency: z.number().int().min(1).default(1),
     limits: z
       .object({
         /** 0 = only free engines. */
@@ -339,12 +421,16 @@ export const FactorySchema = z
         scout: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Reads the web once a day for skills, MCP servers and technologies; read-only, never installs anything. */
         research: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
+        /** Diagnoses what holds the lines up while the factory is idle; read-only, never fixes anything itself. */
+        unjam: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
       })
       .prefault({}),
     /** Absent: on, at any hour the factory is idle. */
     nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     /** Absent: on, one note per line with a research skill per day. */
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
+    /** Absent: on, with the night shift's gates, at most two jobs a day. */
+    unjam: UnjamSchema.default({ maxJobsPerDay: 2 }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
 
@@ -427,7 +513,19 @@ export interface PackageStation {
   requests?: { perLinePerDay: number };
   /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
   onDemand: boolean;
+  /** Absent: nothing can be uploaded to it. Extensions in lower case, with the dot. */
+  uploads?: { maxMb: number; extensions: string[] };
+  /** Permission to create local git repositories with lines of their own (`ctx.repos`); absent: it cannot. */
+  repositories?: { perDay: number };
   entry: PackageEntry;
+}
+
+/** A read-only panel tab a package declared; `data` is relative to the package's data folder. */
+export interface PackageTab {
+  name: string;
+  title: string;
+  data: string;
+  categories?: string[];
 }
 
 export interface LoadedPackage {
@@ -441,6 +539,8 @@ export interface LoadedPackage {
   skills: string[];
   /** Every station of its manifest, whether or not its code may run. */
   stations: string[];
+  /** Its panel tabs; they show data only, so they need no `allowCode`. */
+  tabs: PackageTab[];
 }
 
 export interface PackageProblem {
@@ -501,7 +601,7 @@ export function customAgentChain(config: Pick<FactoryConfig, "engine" | "fallbac
 }
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam"];
 
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {

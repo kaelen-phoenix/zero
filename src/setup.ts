@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { stringify } from "yaml";
+import type { AutostartResult } from "./autostart.js";
 import { editFactory, loadFactory, parseFactory, type FactoryConfig } from "./config.js";
 import { inContainer, type FactoryHome } from "./home.js";
 import { initFactory } from "./init.js";
@@ -23,6 +24,8 @@ export interface SetupDeps {
   secrets: SecretStore;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  /** Makes the login entry exist exactly when `enabled` (`syncAutostart` in `src/autostart.ts`). */
+  syncAutostart(home: FactoryHome, enabled: boolean): AutostartResult;
 }
 
 export interface SetupResult {
@@ -265,6 +268,8 @@ export async function runSetup(home: FactoryHome, deps: SetupDeps): Promise<Setu
     }
   }
   await setUpGitHub(deps);
+  // In a container compose's restart policy brings the factory back, so there is nothing to register.
+  const autostart = inContainer(env) ? undefined : await deps.confirm("¿Querés que la fábrica se encienda sola al iniciar sesión (sin permisos de administrador)?");
 
   const [first, ...rest] = engines.map((e) => e.name);
   if (!exists) await initFactory(home, deps.cwd, deps.isAvailable);
@@ -275,7 +280,15 @@ export async function runSetup(home: FactoryHome, deps: SetupDeps): Promise<Setu
     for (const [key, value] of Object.entries(limits)) doc.setIn(["limits", key], value);
     doc.setIn(["panel", "port"], panel.port);
     doc.setIn(["panel", "host"], panel.host);
+    if (autostart !== undefined) doc.set("autostart", autostart);
   });
+  if (autostart !== undefined) {
+    try {
+      deps.say(deps.syncAutostart(home, autostart).message);
+    } catch (error) {
+      deps.say(`No pude ${autostart ? "registrar" : "borrar"} el arranque al iniciar sesión (${(error as Error).message}). Probá con \`zero autostart ${autostart ? "on" : "off"}\`.`);
+    }
+  }
   deps.say(`Listo: motor ${first}${rest.length ? `, reemplazo ${rest.join(", ")}` : ""}, en ${home.config}. Podés volver a correr \`zero setup\` para cambiarlo.`);
   if (inContainer(env)) deps.say("Si la fábrica ya está en marcha, reiniciala con `docker compose restart zero` para que tome el puerto del panel. Los repositorios van en /repos; sumalos con `zero line add /repos/<nombre>`.");
   return { path: home.config, engine: first!, fallback: rest, isolation };

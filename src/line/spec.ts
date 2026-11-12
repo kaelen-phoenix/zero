@@ -17,6 +17,11 @@ const RequirementSchema = z.object({
   scenarios: z.array(ScenarioSchema).describe("At least one; each must be checkable by an automated test."),
 });
 
+const StageSchema = z.object({
+  title: z.string(),
+  tasks: z.array(z.string()).describe("This stage's tasks. Each stage builds on the previous ones and leaves the tests passing."),
+});
+
 /** What the spec station returns. Kept free of constraints some engines' structured output cannot express; checked by `specProblems`. */
 export const SpecSchema = z.object({
   feasible: z.boolean().describe("False when any implementation would be a guess, needs access the factory lacks, or is destructive."),
@@ -29,9 +34,30 @@ export const SpecSchema = z.object({
   risks: z.array(z.string()),
   learnings: z.array(LearningSchema).describe("Durable facts about this codebase for future runs. Empty if nothing new."),
   followUps: z.array(z.string()).describe("Out-of-scope work worth doing. Empty if none."),
+  stages: z
+    .array(StageSchema)
+    .optional()
+    .describe("Only for a large request (many tasks or many areas of the code): between 2 and 8 stages, in build order, each small enough for one build call. Leave it out for small requests."),
 });
 
 export type Spec = z.infer<typeof SpecSchema>;
+export type Stage = z.infer<typeof StageSchema>;
+
+/** The most stages one job may have: each one is a build and a full verify, with its own attempts, so the count bounds how long a job can run. */
+export const MAX_STAGES = 8;
+
+/** The spec's stages, in order; empty when it is built in one go. */
+export function specStages(spec: Pick<Spec, "stages">): Stage[] {
+  return spec.stages ?? [];
+}
+
+/** The stage a job is on (the first not yet verified, never past the last), or undefined for a job without stages. */
+export function jobStage(job: { spec?: unknown; stagesDone?: number }): { n: number; total: number; title: string } | undefined {
+  const stages = (job.spec as Partial<Spec> | undefined)?.stages;
+  if (!Array.isArray(stages) || !stages.length) return undefined;
+  const n = Math.min((job.stagesDone ?? 0) + 1, stages.length);
+  return { n, total: stages.length, title: String(stages[n - 1]?.title ?? "") };
+}
 
 /** Rules OpenSpec enforces that the schema alone cannot. Empty when the spec is usable. */
 export function specProblems(spec: Spec): string[] {
@@ -42,6 +68,14 @@ export function specProblems(spec: Spec): string[] {
   for (const r of spec.requirements) {
     if (!/\b(SHALL|MUST)\b/.test(r.text)) problems.push(`requirement "${r.name}" must contain the keyword SHALL or MUST`);
     if (!r.scenarios.length) problems.push(`requirement "${r.name}" needs at least one scenario`);
+  }
+  if (spec.stages) {
+    if (spec.stages.length < 2) problems.push("stages, when present, must have at least 2 stages");
+    if (spec.stages.length > MAX_STAGES) problems.push(`stages must be at most ${MAX_STAGES}; specify the first coherent part and put the rest in followUps`);
+    spec.stages.forEach((s, i) => {
+      if (!s.title.trim()) problems.push(`stage ${i + 1} has an empty title`);
+      if (!s.tasks.length) problems.push(`stage ${i + 1} "${s.title}" has no tasks`);
+    });
   }
   return problems;
 }
@@ -93,7 +127,12 @@ export function renderOpenSpecChange(spec: Spec, opts: { jobId: string; newCapab
     "",
   ].join("\n");
   const steps = spec.tasks.length ? spec.tasks : [`Implementar ${spec.title}`];
-  const tasks = ["# Tasks", "", "## 1. Implementación", "", ...steps.map((t, i) => `- [ ] 1.${i + 1} ${oneLine(t)}`), ""].join("\n");
+  const sections = specStages(spec).length ? specStages(spec).map((s, i) => ({ title: `Etapa ${i + 1}: ${oneLine(s.title)}`, steps: s.tasks })) : [{ title: "Implementación", steps }];
+  const tasks = [
+    "# Tasks",
+    "",
+    ...sections.flatMap((s, n) => [`## ${n + 1}. ${s.title}`, "", ...s.steps.map((t, i) => `- [ ] ${n + 1}.${i + 1} ${oneLine(t)}`), ""]),
+  ].join("\n");
   return {
     "proposal.md": proposal,
     [`specs/${capability}/spec.md`]: renderSpecDelta(spec, opts.newCapability),

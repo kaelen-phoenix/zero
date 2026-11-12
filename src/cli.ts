@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, removeAgent, requestStationRun, waitStationRunStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, setEgressMode, setEgressRule, setIssueIntake, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { resetTime, formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -31,18 +34,24 @@ Primeros pasos:
                                  Se puede volver a correr; con Docker: docker compose run --rm zero setup
 
 Uso diario (también desde el chat):
-  zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec]
+  zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec] [--prioridad baja|media|alta|urgente]
+  zero priority <trabajo> <nivel>    Cambia la prioridad de un trabajo que no terminó (baja, media, alta, urgente)
   zero status [trabajo]          Estado de la fábrica o de un trabajo
   zero approve <trabajo>         Aprueba una consulta   [--reject] [--note "<motivo>"]
   zero stop [trabajo]            Andon: detiene un trabajo, o toda la fábrica
   zero resume                    Reanuda la fábrica
+  zero reintentar <trabajo>      Vuelve a poner en cola desde su checkpoint un trabajo fallido, o deja que la
+                                 fábrica vuelva a actualizar un pull request en conflicto
+  zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
+                                 solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
-  zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]
+  zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N] [--conservar]
                                  Simulacro de regeneración: en una copia aparte en ZERO_HOME/drills quita esos archivos,
                                  los reconstruye solo desde openspec/specs/<capacidad>/spec.md (tope: --usd o limits.usdPerJob),
-                                 corre el verify de la línea y deja un informe con lo que faltaba en las especificaciones
+                                 corre el verify de la línea y deja un informe con lo que faltaba en las especificaciones;
+                                 al terminar borra la copia y deja solo el informe, salvo con --conservar
   zero trace <trabajo>           Traza paso a paso de un trabajo
   zero proposals                 Propuestas del turno nocturno que esperan tu decisión
   zero proposals approve|reject <id>   Aprueba (crea el trabajo, o integra el que el turno ya construyó) o rechaza una propuesta   [--note "<motivo>"]
@@ -83,18 +92,25 @@ Fábrica:
                                  Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero package run <paquete>/<estación> [--pedido "<texto>"]
-                                 Pide correr una vez la estación apenas la fábrica esté libre, sin esperar su período
-                                 (solo si su manifiesto declara onDemand: true), con tu pedido si lo escribís; espera
-                                 hasta 2 minutos a que empiece
+                                 Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
+                                 (solo si su manifiesto declara onDemand: true), con un pedido en texto si querés;
+                                 responde cuando la corrida empezó (o, pasados 2 minutos, que sigue pendiente)
+  zero package upload <paquete>/<estación> <archivo> [--pedido "<texto>"]
+                                 Le sube un archivo (un zip) a la estación y pide una corrida a demanda que lo recibe
+                                 (solo si su manifiesto declara uploads); responde como zero package run
   zero skill list                Skills asignadas a cada agente y las disponibles en tu Claude Code
   zero skill add|remove <skill> --station <agente> [--line <nombre>]
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
+  zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
+
+/** How long `zero package run` waits for the daemon to start the run before saying it is still pending. */
+const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -104,6 +120,7 @@ async function main(argv: string[]): Promise<number> {
       line: { type: "string" },
       name: { type: "string" },
       spec: { type: "boolean" },
+      prioridad: { type: "string" },
       reject: { type: "boolean" },
       informativo: { type: "boolean" },
       tipo: { type: "string" },
@@ -114,6 +131,7 @@ async function main(argv: string[]): Promise<number> {
       mes: { type: "string" },
       html: { type: "boolean" },
       usd: { type: "string" },
+      conservar: { type: "boolean" },
       label: { type: "string" },
       station: { type: "string" },
       pedido: { type: "string" },
@@ -183,6 +201,7 @@ async function main(argv: string[]): Promise<number> {
         boxResponds: () => installedRuntimes("auto").some((rt) => responds(rt)),
         secrets: new SecretStore(home),
         cwd: process.cwd(),
+        syncAutostart: (h, enabled) => syncAutostart(h, enabled),
       });
       return 0;
     }
@@ -244,9 +263,22 @@ async function main(argv: string[]): Promise<number> {
       }
       case "request": {
         const text = rest.join(" ");
-        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request" });
+        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
         const started = await ensureDaemon(ctx);
         console.log(formatRequest(r) + (started ? "\nLa fábrica estaba apagada: la encendí." : ""));
+        return 0;
+      }
+      case "priority": {
+        if (!rest[0] || !rest[1]) throw new Error("Indicá el trabajo y la prioridad: zero priority <trabajo> <baja|media|alta|urgente>");
+        console.log(formatJob(setPriority(ctx, rest[0], rest[1]), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        return 0;
+      }
+      case "reintentar": {
+        if (!rest[0]) throw new Error("Indicá el trabajo: zero reintentar <trabajo>");
+        const r = retryJob(ctx, rest[0]);
+        console.log(r.kind === "queued" ? `El trabajo ${r.job.id} volvió a la cola desde su checkpoint (${r.job.checkpoint}).` : `El trabajo ${r.job.id} tiene sus intentos de nuevo: la fábrica volverá a actualizar su pull request con la rama base.`);
+        const started = await ensureDaemon(ctx);
+        if (started) console.log("La fábrica estaba apagada: la encendí.");
         return 0;
       }
       case "status":
@@ -261,6 +293,12 @@ async function main(argv: string[]): Promise<number> {
         const r = await stop(ctx, rest[0]);
         console.log(r.factory ? "Fábrica detenida (andon). `zero resume` para continuar." : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) }));
         return 0;
+      }
+      case "fusionar": {
+        if (!rest[0]) throw new Error("Indicá el trabajo o el pull request: zero fusionar <trabajo | url>");
+        const r = await mergePullRequest(ctx, rest[0], { via: "cli" });
+        console.log(formatMerge(r));
+        return r.merged ? 0 : 1;
       }
       case "resume":
         resume(ctx);
@@ -281,8 +319,8 @@ async function main(argv: string[]): Promise<number> {
       }
       case "simulacro": {
         const [line, capability] = rest;
-        if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N]");
-        const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd) });
+        if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N] [--conservar]");
+        const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd), keep: Boolean(values.conservar) });
         console.log(`Resultado: ${r.outcome}
 Informe: ${r.report}`);
         return 0;
@@ -375,17 +413,27 @@ Informe: ${r.report}`);
         }
         if (action === "run") {
           if (!name) throw new Error("Indicá la estación: zero package run <paquete>/<estación>");
-          const r = requestStationRun(ctx, name, { request: values.pedido });
+          const r = requestStationRun(ctx, name, new Date(), values.pedido);
           if (!r.ok) {
             console.log(r.reason);
             return 1;
           }
           console.log(r.text);
           if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
-          const start = await waitStationRunStart(ctx, name, r.at, { timeoutMs: 120_000, pollMs: 1000 });
-          if (start.state === "started") console.log(`La corrida empezó a las ${resetTime(start.run.startedAt!)}.`);
-          else if (start.state === "ended") console.log(`La corrida no pudo correr: ${start.run.error ?? "sin detalle"}`);
-          else console.log("La corrida sigue pendiente: la fábrica todavía no está libre. Seguila en `zero status`.");
+          console.log((await waitStationStart(ctx, name, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
+          return 0;
+        }
+        if (action === "upload") {
+          const file = rest[2];
+          if (!name || !file) throw new Error("Indicá la estación y el archivo: zero package upload <paquete>/<estación> <archivo>");
+          const r = await uploadToStation(ctx, name, { name: basename(file), content: createReadStream(file), ...(values.pedido !== undefined && { request: values.pedido }) });
+          if (!r.ok) {
+            console.log(r.reason);
+            return 1;
+          }
+          console.log(r.text);
+          if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+          console.log((await waitStationStart(ctx, name, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
           return 0;
         }
         if (action !== "remove") break;
@@ -431,12 +479,25 @@ Informe: ${r.report}`);
         console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
         return 0;
       }
+      case "autostart": {
+        if (rest[0] !== "on" && rest[0] !== "off") throw new Error("Indicá on u off: zero autostart on|off");
+        console.log((await setAutostart(ctx, rest[0] === "on")).message);
+        return 0;
+      }
       case "trace":
         if (!rest[0]) throw new Error("Indicá el trabajo: zero trace <trabajo>");
         console.log(trace(ctx, rest[0]));
         return 0;
     }
   } finally {
+    // A daemon that died without being asked to leaves its jobs behind: whatever command finds it so starts it again.
+    if (command !== "start" && command !== "shutdown") {
+      try {
+        if (await reviveDaemon(ctx)) console.error("La fábrica se había caído con trabajo pendiente: la volví a encender.");
+      } catch (err) {
+        log.warn("cannot start the factory again", { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     ctx.store.close();
   }
   console.log(USAGE);

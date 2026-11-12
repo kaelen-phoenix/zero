@@ -36,9 +36,13 @@ The project site is [zerointheloop.com](https://zerointheloop.com): it lives in 
   - protected paths are not touched;
   - review findings that cite files or lines that do not exist are discarded;
   - what the factory produces while working does not enter a repository (see [What stays on your machine](#what-stays-on-your-machine)).
-- **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you.
+- **It never overwrites your work.** Each request works in its own copy (`git worktree`) and its own branch. It only integrates into your branch if your copy is clean; otherwise it asks you. If a work copy cannot be removed when a job ends (a locked folder on Windows), the job keeps its result: the cleanup is retried in the background and shows in `zero status` until the copy is gone. A job that hits a locked folder while resuming or integrating goes back to the queue (or stays delivered) instead of failing, and the processes an interrupted job left in its copy are closed when the factory starts again.
 - **Time for people.** zero automates software development with AI, freeing people's time to focus on strategy, creativity, oversight and professional collaboration.
-- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity or any CLI declared in the configuration, and a different one per station if you want.
+- **Engine-agnostic.** Claude (Agent SDK), Codex, Antigravity, OpenCode, any agent that speaks ACP (Agent Client Protocol) or any CLI declared in the configuration, and a different one per station if you want.
+
+### Large requests in stages
+
+A build call has a time limit (`stations.build.timeoutMinutes`, 45 minutes by default). When a request has many tasks or touches many areas of the code, the spec station splits it into stages, each small enough for one build call; `tasks.md` lists them as numbered sections. zero builds and verifies each stage in the same branch, one after the other, and runs the reviews once, after the last one. A stage that passes verify is kept: its commits stay, and if the next stage fails or its build is cut by the time limit, only that stage is built again on top of them, also when the job resumes after a restart. Attempts (`maxAttempts`) count per stage, and a stage that uses them all fails the job, naming the stage. `zero status` shows `etapa 2 de 4` next to the station, and the panel's production line shows the stage and its title.
 
 ## Autonomy levels
 
@@ -80,12 +84,24 @@ zero approve <id>              # approve (or --reject --note "why")
 zero trace <id>                # step by step: stations, attempts, agents, commands, cost
 zero briefing                  # report: production, cost, lessons, what needs you
 zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to share with its client
+zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
 ```
 
-The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), `zero_package_run` (a package station on demand), and `zero_egress` and `zero_egress_block` (internet egress).
+The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), `zero_package_run` (a package station on demand, with an optional `request`), `zero_merge` (merges a pull request the factory delivered, once GitHub says it is ready), and `zero_egress` and `zero_egress_block` (internet egress).
+
+### Start at login (`autostart`)
+
+```sh
+zero autostart on    # registers the start at login, without administrator rights
+zero autostart off   # removes it
+```
+
+With `autostart: true` in the factory file, zero registers its own start when you log in, only for your user: a file in your Startup folder on Windows, a LaunchAgent on macOS, a systemd user service on Linux. Each one runs `zero start --detach` for this factory's folder. `zero autostart off` (or `autostart: false`) removes it. `zero setup` asks whether you want it (the default answer is no), and the chat cannot change it. Inside the Docker container there is nothing to register: compose's restart policy brings the factory back.
+
+If the factory goes down without a `zero shutdown` (the machine restarted, the process died) while jobs were in progress or queued, whatever runs next brings it back: the start at login, the MCP server when your chat opens it, or any `zero` command, which says `La fábrica se había caído con trabajo pendiente: la volví a encender.` The jobs resume from their checkpoint. A factory you turned off on purpose stays off. `zero status` tells both cases apart: `apagada a propósito desde HH:MM`, or `se cayó` with its last heartbeat and how many jobs were left in progress.
 
 ## Install with Docker
 
@@ -154,6 +170,24 @@ docker compose -f compose.yaml -f docker/compose.box.yaml up -d
 
 This installation is not exercised end to end by zero's tests, which only check these files: the image, the CLI logins and the box through the socket have not been run by them. See [ADR 0003](docs/adr/0003-fabrica-en-docker.md).
 
+## Job priorities
+
+Every job has a priority: `baja` (low), `media` (medium, the default), `alta` (high) or `urgente` (urgent). The factory always takes the highest priority first and, within the same one, the oldest job.
+
+- **baja**: only when nothing else is queued or running. The night shift's own jobs and the ones a package asks for start here.
+- **media**: in order of arrival.
+- **alta**: goes ahead of everything queued, without stopping what is already running.
+- **urgente**: for cases like a security patch. Only you can choose it (a GitHub issue, the night shift or a package cannot); the one exception is the security jobs the factory opens for high or critical Dependabot alerts, which are urgent on their own. At most one urgent job runs at a time. Pausing running jobs to make room for an urgent one is not there yet: it takes the next free slot.
+
+So that low work is not forgotten, a queued job goes up one level for each full day it waits, never past `alta`; `zero status` says so with `(subió por la espera)`.
+
+```sh
+zero request "patch the login vulnerability" --prioridad urgente
+zero priority <id> alta        # change it while the job has not finished
+```
+
+`zero status`, `zero status <id>` and the chat show the priority; `zero_request` takes it as `priority`.
+
 ## GitHub issues
 
 A line can take as requests the issues of its GitHub repository that carry a label:
@@ -173,9 +207,29 @@ On lines that deliver through `pull-request`, each job starts from GitHub's base
 
 ### Auto-merge
 
-With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails or there are conflicts, it leaves it open and says so once on the pull request; if a push fixes it, it merges it on the next check. When nothing changed, it looks at the checks again with growing waits, from 5 minutes up to 1 hour, so a check rerun on the same commit can take up to that hour to be noticed. `zero status` and the panel show the ones waiting.
+With `autoMerge: true` on a `pull-request` line, the factory also merges its pull requests. It checks them every minute and merges each one when all its GitHub checks finished successfully and it has no conflicts; then it deletes the branch and tells the issue. If a check fails, it leaves it open and says so once on the pull request; if a push fixes it, it merges it on the next check. If the pull request has conflicts with the base branch, the factory first tries to update it: it merges the base into the job's branch, never with a rebase or a force-push, resolves any conflicts as one more attempt within `maxAttempts`, verifies and reviews again, and pushes to the same pull request, never committing conflict markers. It only does this once per tip, and it never touches a pull request with commits that are not its own: when the tip differs from its local branch or the remote branch moved, nothing is pushed. If it cannot update it, the pull request stays as it was and gets the usual notice once. When nothing changed, it looks at the checks again with growing waits, from 5 minutes up to 1 hour, so a check rerun on the same commit can take up to that hour to be noticed. `zero status` and the panel show the ones waiting.
+
+Before leaving a pull request blocked by failed checks, the factory tries what usually fixes it without touching the code. If the branch is behind its base (the checks ran against an older base: a fix reached the base since, or a workflow changed), it merges the base in on GitHub, never a rebase or a forced push, and waits for the new checks. It does that at most 3 times per pull request. If the branch is up to date, it runs the failed GitHub Actions runs again, once per commit: a cancelled run or a test that failed once for no reason of the code. It starts either of them for one pull request per repository at a time, since CI that shares an environment cancels the runs that pile up: never while some checks of that pull request are still running, while another one it updated or ran again has not finished its checks, or while one delivered in the last 2 hours waits for its first checks. Only when that does not help does it say so on the pull request and leave it open.
 
 The factory's passes look after your account's GitHub API quota: they repeat their queries conditionally and count each pass's requests. With 20% of the quota or less left, or when GitHub answers with a limit, they stop until the quota renews, even if you restart the factory. Opening the pull request of a finished job does not stop. At 40% or less, `zero status` shows a `GitHub:` line with what is left.
+
+### Security alerts (`securityAlerts`)
+
+On every line whose remote is on GitHub, the factory reads the open Dependabot alerts (dependencies with known vulnerabilities) every minute, with the same GitHub quota and the same pauses. Each new alert of high or critical severity becomes a security job on that line, to update the dependency to the fixed version: the highest version GitHub gives as fixed among that package's alerts. Alerts of the same package share one job, and the factory remembers which alerts it took, so it never opens a second job for them; a new alert of a package whose job is still unfinished joins that job. These jobs get the `urgente` priority on their own (see [Job priorities](#job-priorities)), so they go first in the queue, ahead of all other work and one at a time, and pass through verify, review and security like any other change; on `autoMerge` lines they merge once GitHub's checks pass. Alerts with no published fixed version open no job and are only shown. Their advisory text reaches the agents as third-party data, not as instructions.
+
+Each line chooses with `securityAlerts`:
+
+```yaml
+lines:
+  - name: tienda
+    securityAlerts: { mode: jobs, minSeverity: high }   # off · notify · jobs; minSeverity: low · medium · high · critical
+```
+
+- **`jobs`** (the default, with `minSeverity: high`): it opens jobs for alerts at or above `minSeverity` and only shows the rest. With `minSeverity: low` or `medium`, those alerts also get a job, with the `media` priority.
+- **`notify`**: it opens no job; it only shows the alerts.
+- **`off`**: it does not read them.
+
+`zero status` shows one `Alertas de seguridad:` line per open alert, with the job that handles it or `solo aviso`, and a problem when GitHub does not let the factory read them (the token needs read access to Dependabot alerts, and Dependabot must be on in the repository). The briefing lists them under `## Alertas de seguridad`, and the panel labels their jobs as security jobs.
 
 ### Commit author
 
@@ -204,6 +258,29 @@ Without the key the factory does not call Linear, and `zero status` and the pane
 - **On delivery it completes the issue:** it moves it to one of the team's completed states. On `pull-request` lines that happens when the pull request opens. If Linear fails, it tries again on the next check without repeating the comment.
 - **To request it again** after the job finished, remove the label and put it back. It does not read later comments on Linear issues.
 
+## Jira issues
+
+A line can also take as requests the issues of a Jira Cloud project that carry a label. You add the `jira` block to the line in the factory file and save the account's email and an API token in the secret store, never in the file (the factory refuses a `jira` block with any other key):
+
+```yaml
+lines:
+  - name: tienda
+    jira: { site: "https://acme.atlassian.net", project: ABC, label: zero }
+```
+
+```sh
+zero secret set JIRA_EMAIL
+zero secret set JIRA_API_TOKEN
+```
+
+You give an issue of the project the `zero` label, and the factory checks every minute and turns it into a job.
+- **It only takes issues created and labeled by people with permission to edit issues in the project**, and only if nobody without that permission changed their summary or description, because that text becomes instructions for the agents. Otherwise it says why in a comment on the issue. The account of the token needs permission to browse users to check this; if the check fails, `zero status` shows the problem and the issue waits.
+- **It comments on the issue** when it takes it, when it needs you and how it ended. It does not read the issue's comments: you answer from the panel, the chat or `zero approve`.
+- **When it delivers, it moves the issue to a done status** with one of its transitions. If the workflow has none, the issue stays as it is and `zero status` says so.
+- **To request it again** after the job finished, remove the label and put it back.
+
+`zero status` and the panel show a `Issues de Jira:` line for each line with its project, its label and any problem, such as missing credentials.
+
 ## zero, your CI and your quality tools
 
 zero does the work of the people in the loop: specify, build, test locally, review and integrate, but it does not replace GitHub Actions or any other CI/CD, nor static analysis, coverage, quality gates, or dependency and secret scanning (SonarQube, SonarCloud, CodeQL, Dependabot, Snyk). Those tools remain the authority, and zero works with them:
@@ -217,8 +294,10 @@ request
   → the platform's deploy
 ```
 
-- **Local verification first.** zero runs the line's verification locally before delivering anything.
+- **Local verification first.** zero runs the line's verification locally before delivering anything. Each command has a time limit: `verifyTimeoutMinutes` of the line (20 by default), and never less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a slow machine does not fail jobs whose tests pass. Setup and verify commands of different jobs take turns on your machine (`commandConcurrency`), a setup that fails is tried once more in a fresh copy, a verify command whose failure reads like the machine and not the change (a test over its own timeout, no memory, a locked file, a network cut) is run once more before it costs an attempt, and a command cut by its limit is killed with everything it started.
 - **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
+- **Merging on request.** On any line, with or without `autoMerge`, you can ask the factory to merge a pull request it delivered: `zero fusionar <job | url>` on the terminal, `zero_merge` in the chat, or the **Fundir** button on the job's page in the panel (which asks for confirmation first). It merges only when GitHub says the pull request is ready (every check passed, no conflicts); otherwise it tells you why and forces nothing. Each merge is recorded in the job's trace and in the line's townhall.
+- **Checks GitHub did not start because of billing.** When GitHub refuses to start a pull request's jobs because the account's payments failed or its spending limit was reached, zero does not comment, refresh or count it as a broken environment: it tells you once per repository (in `zero status`, the panel and the briefing) and, as soon as GitHub starts runs on that repository again, reruns the failed jobs of those runs on its own (`rerun --failed`), one pull request at a time and at most once per run.
 - **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
 - **A second look.** The findings of those tools are a second look, independent of the review by zero's agents.
 - **Deployments are still done by the platform** (for example Vercel or GitHub workflows), not by zero.
@@ -239,11 +318,13 @@ With `checkDependencies: true` on a line, after verify and before review zero lo
 With the factory running, the panel shows:
 - the factory's status;
 - the jobs;
+- the requests ("Pedidos" tab): a form with line, type (new feature, fix, security, design, documentation or other; the type goes to the factory inside the request), title and description, and below it every request with its status, line and age, filters by line and status, and per request a link to its detail and trace, the buttons to answer its pending question and a button to stop it (it asks for confirmation first);
 - the questions, with buttons to approve or reject;
 - each job's trace;
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
 - each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
+- the "Monitor" tab: factory totals (jobs per day, delivered, failed, queued and running, success rate, average time per job and per station, attempts per job), subscription use, the month's spend per engine and tokens, one card per agent (calls, tokens, cost, time, success rate, deliveries, engines, models and lines) and one per line (jobs, deliveries, last job, open pull requests), drawn in SVG inside the panel, filtered by today, 7 or 30 days, read-only and refreshed on its own;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
 From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
@@ -279,6 +360,33 @@ zero informe tienda --mes 2026-10 --html    # saves a standalone HTML document i
 - The panel's "Informe mensual" tab lets you choose line and month and download each line as Markdown or HTML; each download also leaves a copy in `ZERO_HOME/reports`. In the chat, `zero_monthly_report` returns the same Markdown and only reads.
 - Nothing is sent on its own: no daemon pass generates or publishes it. It only exists when you ask for it, and you decide who gets it.
 
+### External services (`services`)
+
+Besides what the factory spent on agents, the report can show what the services each line's app uses cost that month. You say which ones in the line, with their identifiers only:
+
+```yaml
+lines:
+  - name: tienda
+    services:
+      github: {}                                   # GitHub Actions of the line's repository; account and repository come from its remote
+      vercel: { project: prj_1, team: team_1 }     # the Vercel project (team optional)
+      supabase: { project: abcd }                  # the Supabase project ref (organization optional)
+```
+
+```sh
+zero secret set GITHUB_BILLING_TOKEN    # optional: without it, the factory's GitHub token
+zero secret set VERCEL_TOKEN
+zero secret set SUPABASE_ACCESS_TOKEN
+```
+
+- GitHub: `github: { account: acme, type: organization, repository: acme/tienda }` when the account or the repository is not the remote's (`type` is `user` by default). It reads GitHub's billing usage API for the account and keeps only the Actions items of the line's repository: gross minutes and dollars, what the plan's included usage covered and what was billed, which is the cost.
+- Vercel: the billed cost of the month's charges attributed to the project. Supabase: the project's organization plan and any usage the Management API gives; it gives no cost, so the cost says "sin dato".
+- Tokens are secrets in the store, never in the file (the section refuses any other key), argv or logs. Every call only reads.
+- The daemon reads each service at most once per local day, for the current month and, until it is read after the month closed, for the previous one, and keeps the answer in `state.db`. The report reads only that: it calls no API and no model.
+- A missing token, a service that does not answer in 10 seconds or answers with an error, or an answer without the cost leaves that service as "sin dato", with the reason. The report never fails because of it and never makes up a number.
+- Each service shows its figures, its source and the date it was read, and a "Total del mes (fábrica + servicios)" row adds the factory's cost and the known service costs, naming the ones that are "sin dato". Lines without `services` show the report as before.
+- New services (Expo/EAS, Google Play, Mercado Pago fees) are added in `src/billing/`: an entry in `BILLING_SERVICES`, a key in `services` and a reader.
+
 ## Regeneration drill
 
 Measures whether a line's specifications are enough to rebuild part of its code. You name the line, the capability (its spec is `openspec/specs/<capability>/spec.md` on the base branch) and the files to remove.
@@ -286,6 +394,7 @@ Measures whether a line's specifications are enough to rebuild part of its code.
 ```sh
 zero simulacro tienda pagos --archivos "src/pagos/**"              # cap: limits.usdPerJob
 zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap for this drill
+zero simulacro tienda pagos --archivos "src/pagos/**" --conservar # keeps the copy to look at it
 ```
 
 - It works in a separate copy in `ZERO_HOME/drills/<id>/copy`, cloned from the line's base branch. The line's repository is only read: same branches, worktrees, HEAD and working state. The copy gets a fresh history with a single commit, so the agent cannot find the removed files in it.
@@ -293,6 +402,7 @@ zero simulacro tienda pagos --archivos "src/pagos/**" --usd 0.5    # a lower cap
 - The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy, up to 20 minutes each.
 - The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
 - The report, in Spanish, is `ZERO_HOME/drills/<id>/informe.md`, next to `resultado.json` with the same data: line, capability, base commit, removed and rebuilt files, result, cost, each command with its exit code and the end of its output, and what the spec did not say and had to be guessed. The command prints its path. If `ZERO_HOME/drills` falls inside a line's repository or the current folder's, zero refuses, as with saved reports.
+- When the drill ends, the copy is deleted (even if the agent failed) and only `informe.md` and `resultado.json` stay; the report says so. With `--conservar` the copy stays whole in `ZERO_HOME/drills/<id>/copy` so you can look at it, and the report names its path. If the deletion fails, the result does not change: it is only logged as a warning.
 - It refuses before spending anything when the andon is on or the budget ran out, and when the line has no `verify` commands. In this version it only runs on this machine: with `isolation: container` it refuses.
 
 ## What stays on your machine
@@ -317,8 +427,9 @@ egress:                   # the box's internet egress (all of it goes through ze
   mode: blocklist         # blocklist: everything goes out except what is suspicious or blocked · allowlist: only what is allowed
   allow: []               # e.g. nas.local, registry.local:8443 (a site includes its subdomains)
   block: []
-engine: claude            # default engine: claude · codex · antigravity · or your own
+engine: claude            # default engine: claude · codex · antigravity · opencode · or your own
 concurrency: 2            # jobs at a time (each line does one at a time)
+commandConcurrency: 1     # setup and verify commands running on this machine at once, across jobs; the rest wait their turn
 commitAuthor: zero        # zero · owner (your git config identity as author; zero stays committer)
 limits:                   # with a subscription (claude.ai, ChatGPT on Codex) the limit is the plan's real quota: 5 hours and weekly
   reservePercent: 0       # share of each quota the factory leaves free for you (0 = uses the whole plan)
@@ -335,14 +446,17 @@ stations:                 # engine, model and time limit per station (optional)
   build: { skills: [pdf] }       # skills from your Claude Code (personal or from plugins; `plugin:skill` if the name repeats)
 engines:                  # any other agent CLI, no code needed; ending without printing anything counts as a failure
   gemini: { command: ["gemini", "-p", "{prompt}"], writeArgs: ["--yolo"], modelArgs: ["-m", "{model}"] }
+  gemini-acp: { command: ["gemini", "--experimental-acp"], protocol: acp }   # an agent that speaks ACP: the prompt goes over the protocol
 lines:
   - name: tienda
     repo: ~/code/tienda
     baseBranch: main
     setup: ["npm ci"]     # runs in every new copy
     verify: ["npm test"]  # everything must pass before the review
+    verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
+    # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
     commitAuthor: owner       # optional: this line's commit author, over the global one
     stations:                 # optional: skills an agent adds only on this line
@@ -381,6 +495,21 @@ codex: { sandbox: off }
 Outside the box, zero then starts Codex with `--sandbox danger-full-access` and no approval prompts, and keeps read-only stations read-only itself: around each such call it compares the working folder and its repository (tracked and untracked files, index, HEAD, branches and tags, the repository's `config` and `hooks`). If anything changed, zero puts back only what differs, without touching work you had not saved, and fails the call with a notice naming the files. It also undoes anything else that changes the folder or its checked-out branch during the call, such as your own edits or commits in that same checkout (`git reflog` still finds them); what it discarded stays in a temporary folder named in the log. The factory stays out of the way: a job does not start in a repository under such a call, and a background call waits for the job running in its repository. Other refs are not rewound when the call cannot be blamed for them: in a job's work copy everything except that copy's own branch, and everywhere the factory's `zero/*` branches, branches checked out in another worktree and new tags (any fetch brings them). Those are only logged. When the isolation box is ready (`isolation: container`), Codex runs inside it with its usual flags, background passes included, and `zero status` says so; otherwise `zero status` warns that it runs without its sandbox.
 
 What this does not cover outside the box: files ignored by git and not tracked, the refs just mentioned, the rest of the machine (Codex can read and write anywhere you can, including the factory's own folder) and access to the internet.
+
+### OpenCode and ACP engines
+
+`engine: opencode` drives the OpenCode CLI (`opencode run --format json`) with whatever provider you signed in to; `model` is OpenCode's `provider/model`. Any agent that speaks the Agent Client Protocol (ACP) over stdio, such as `gemini --experimental-acp`, `opencode acp` or an ACP adapter for Claude or Codex, is declared in `engines` with `protocol: acp`:
+
+```yaml
+engines:
+  gemini-acp:
+    command: ["gemini", "--experimental-acp"]
+    protocol: acp
+    modelArgs: ["-m", "{model}"]
+    hosts: [generativelanguage.googleapis.com]
+```
+
+zero sends the prompt over the protocol, never on the command line, so an ACP entry cannot use `{prompt}`. Read-only stations stay read-only because zero itself checks the working folder around each call and puts back anything that changed, as for Codex without its sandbox; on top of that, OpenCode gets permissions that deny editing, commands and the web, and zero refuses an ACP agent's permission requests for anything other than reading, searching or thinking. Ending without an answer counts as a failure. Both report the model that answered and the cost when the agent says so, but neither reports plan usage windows, so their spend counts against the dollar caps (`usdPerDay`, `usdPerJob`). OpenCode cannot work inside the isolation box yet; an ACP engine gets its `secrets` there like any engine of your own.
 
 ### Fallback engines (`fallback`)
 
@@ -506,6 +635,8 @@ stations:
     timeoutMinutes: 10
     requests: { perLinePerDay: 1 } # lets ctx.requestJob open jobs; without it, it cannot
     onDemand: true                 # lets you ask for a pass with zero package run; without it, you cannot
+    uploads: { maxMb: 20, extensions: [".zip"] } # lets you send it a file; needs onDemand: true
+    repositories: { perDay: 2 }    # lets ctx.repos create local git repositories; without it, it cannot
 ```
 
 - **Agents** run on every line as global custom agents, after the ones in your file and with the same guarantees (see Custom agents). They are never written to your file. Their names cannot repeat a fixed station, an agent of yours or another package's.
@@ -549,18 +680,90 @@ export async function scheduled(ctx, { at }) {
 | `ctx.runAgent({ prompt, schema })` | A read-only agent in an empty folder, with the station's instructions and skills. Returns `{ ok, text, output, costUsd }`. In `scheduled` it throws an error |
 | `ctx.z` | zero's zod, for the `schema` |
 | `ctx.log.info`, `ctx.log.warn` | To zero's log, without the values of its secrets |
-| `ctx.lines` | Line names only |
+| `ctx.lines` | Line names only: yours and those of this package's repositories, never another package's |
 | `ctx.state.get(name)`, `ctx.state.set(name, value)` | Saved between passes, separately for each station |
 | `ctx.deliveredJobs(since)` | Line, title, summary and date of delivered jobs, without job ids, branches or local paths |
-| `ctx.requestJob({ line, text })` | Asks the factory for a job. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.requestJob({ line, text, maxUsd })` | Asks the factory for a job; `{ repo, text, maxUsd }` asks for it on one of its repositories. Returns `{ id }`, or `{ reason }` when it cannot; it never throws |
+| `ctx.job(id)` | Status, cost, cap and delivery of a job this package asked for; `undefined` for any other |
+| `ctx.dataDir` | The package's data folder, `~/.zero/package-data/<package>`, already created; its panel tabs read from here |
+| `ctx.upload` | The file you sent this on-demand run: `{ name, path, sizeBytes, at }`; absent in every other turn |
+| `ctx.unzip(zip, dest)` | Unpacks a zip of `ctx.dataDir` into a folder of it or of one of its repositories. Returns `{ files }` or `{ reason }`; it never throws |
+| `ctx.repos` | `create`, `archive` and `remove` for the package's local git repositories, if it declares `repositories` |
 
 `ctx.runAgent` records each call as `package:<package>/<station>`, picks the engine from the entry's chain and shares the `limits.usdPerNight` cap on pay-per-use. With no engine or no cap left, it returns `ok: false` without calling anyone.
 
 `ctx.requestJob` lets a station detect something and send the change through the normal line (spec, build, verify, review, integration) instead of touching a repository on its own. It only works if the station's manifest declares `requests: { perLinePerDay: N }`, where N is a whole number above zero. You get `{ reason }` and no job when the station declares no `requests`, the line is not one of `ctx.lines`, the text is empty or not text, the andon is on, the budget is used up, the pass has ended, or the station already opened N jobs on that line today (each station and line counts on its own, per local day, and a refused request spends nothing). The text is cut to 4000 characters, without the station's secrets, recognizable tokens or local paths, and agents receive it as a third party's data, naming where it came from. These jobs follow their line's level and integration like any request of yours: on L2 or L3 they integrate without asking. The factory starts them after your work, one at a time, and only with nothing else queued or running. Status, panel, briefing and monthly report show them as `pedido por paquete <package>/<station>`.
 
+**Cost per job.** With `maxUsd`, the station caps what that job may spend: it becomes the job's budget instead of `limits.usdPerJob`, and the line stops the job when it reaches it, as with any job. It has to be a number above zero and no higher than `limits.usdPerJob`; anything else returns `{ reason }`, opens no job and spends none of the day's requests. Later, `ctx.job(id)` tells the station how that job is going: `status`, `costUsd` (what it really cost), `budgetUsd`, `waiting` (it waits for your answer), `finishedAt`, a `reason` without secrets or local paths, and `delivery` with its `mode` and `commit`. It only answers for jobs this same package asked for; for yours, another package's or an id that does not exist it returns `undefined`.
+
 **Scheduled passes.** With `schedule` (a list of local `HH:MM` times, no repeats), zero calls the module's `scheduled(ctx, { at })` at each of those times instead of `pass`, where `at` is the time as the manifest writes it and `ctx.now` the real time of the pass. They run even with jobs queued or running and with the budget used up, because they cannot use a model: `ctx.runAgent` throws an error and calls no engine. They do have `ctx.secrets`, `ctx.state` (the same values as `pass`), `ctx.log` and `ctx.lines`, and the rest of `ctx` works the same. Each time runs at most once per local day, and it counts as used before the call, so one that fails or goes past `timeoutMinutes` is not repeated that day. A time that could not run (the factory was off, the andon on or a declared secret missing) runs later only if no more than 2 hours have passed, oldest first, and otherwise waits for the next day; with the andon on none starts. `pass` keeps its own idle-time rhythm, so a station may export either one or both. The two can run at the same time and share `ctx.state`, so write the station with that in mind.
 
-**On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The request waits for the same gates as any idle-time pass: no jobs queued or running, the andon off, budget left and its declared secrets saved; until then it stays pending, and the daemon picks it up on its next idle turn. `ctx.runAgent` still shares the `limits.usdPerNight` cap. An on-demand run does not move the station's period, and that pass does not also run its regular turn. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log. With `--pedido "<text>"` (or `request` in `zero_package_run`) you send the station what you want from that run: it gets `pass(ctx, { onDemand: true, request })`, your text without the station's declared secrets, recognizable tokens or your local paths, and cut to 4000 characters, so the station can treat it as a request from the person in charge. Only you can write it, from the terminal or the chat: a station's `ctx.state` cannot reach it. A request that is empty once cleaned is refused. The command exits 1 when refused, and starts the factory if it was off. Then it waits up to 2 minutes for the run to start and tells you when it started, that it could not run and why, or that it is still pending (the factory is busy); in all three cases it exits 0. The chat tool returns right away. `zero status` shows the pending run (`con pedido` when it carries text), a line `Corrida a demanda en curso:` while it runs, and `Últimas corridas a demanda:` with how each ended in the last 24 hours (finished fine, failed and why, ran out of time or was interrupted); `zero package list` adds the last on-demand run to the station's line.
+**On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The daemon runs it in its own pass, every few minutes, whatever the line is doing: it does not wait for queued or running jobs, nor for scout or research, and it never starts a job or takes a job's place. It still waits for the andon off, budget left and its declared secrets saved; until then it stays pending. `ctx.runAgent` still shares the `limits.usdPerNight` cap. A station never runs two turns at once: if its regular or scheduled turn is under way, the request waits for the next pass. An on-demand run does not move the station's period, and the station does not run its regular turn while a request is pending. `zero status`, the panel's summary and the briefing show the pending runs and the last run of each station: running, ended fine, failed, over its time, cut by a shutdown, could not run, or with no result when it never ended. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log; the run shows as could not run. The command exits 1 when refused, and starts the factory if it was off.
+
+**A request for the run.** `zero package run <package>/<station> --pedido "..."` (the chat's `zero_package_run` takes the same as `request`, and the panel's "Paquetes" tab has a "Pedir ahora" button with an optional text field on every station that takes on-demand runs) sends a text with that run. The station gets it as `run.request` in `pass(ctx, run)`, that is `{ onDemand: true, request }`, as a request from the person in charge; with no text, or one that is empty once cleaned, it still gets exactly `{ onDemand: true }`. zero cleans it before keeping it: the values of the station's declared secrets and the paths of your lines' repositories are taken out, and it is cut to 4000 characters. Only you can ask for one, from the terminal, the chat or the panel with your session; a station's `ctx`, issues, comments and packages' `requestJob` have no way to. The command answers once the run started, or, after 2 minutes (30 seconds from the chat), that it is still pending and will run on the daemon's next pass. `zero status` shows the pending request with its text (`Corridas a demanda pendientes:`), the run while it is going (`Corrida a demanda de <package>/<station>: en curso`) and how the last one ended: it finished, failed (with its error, without secrets or local paths, at most 600 characters), ran past its `timeoutMinutes` or was cut by a shutdown. `zero package list` and the panel's "Paquetes" tab show the same.
+
+**Sending a file to a station.** A station with `onDemand: true` may also declare `uploads`: `maxMb` (above zero and at most 100, 20 by default) and `extensions` (`[".zip"]` by default); a manifest with `uploads` and without `onDemand: true` stays out. You send the file with `zero package upload <package>/<station> <file>` (it takes `--pedido` like `zero package run`) or from the panel's "Paquetes" tab, which shows an upload form on those stations. zero keeps it in `~/.zero/package-data/<package>/uploads/<station>/`, under the time and a cleaned base name, and asks for an on-demand run of that station, which gets it as `ctx.upload` (`{ name, path, sizeBytes, at }`, with `path` inside its data folder); no other turn has `ctx.upload`. It is a third party's content, so zero checks everything before keeping it and leaves nothing behind when it refuses: the station does not declare `uploads`, the extension is not one of its own, the file goes past `maxMb` (the panel stops reading there too), a `.zip` does not start like a zip, or the run would be refused (another one pending, the andon on, the budget used up). The panel's form asks for your session and refuses a request coming from another site.
+
+**Unpacking a zip.** `ctx.unzip(zip, dest)` unpacks a zip of the data folder into a folder of it (relative paths are taken from `ctx.dataDir`) or into one of the package's repositories, never into its `.git`. zero reads the whole archive before writing anything and refuses all of it, with `{ reason }`, when an entry is a symbolic link, has an absolute path, a drive, `..` or `:`, is encrypted or zip64, when there is a link on the way to the destination, or when it has more than 10,000 entries or unpacks past 1 GiB. It only knows stored and deflated entries.
+
+**Panel tabs.** With `tabs`, a package adds read-only tabs of its own to the browser panel. Each one shows a JSON file that the package's stations write in its data folder, `~/.zero/package-data/<package>`, which they receive already created as `ctx.dataDir`. No package code runs in the panel, and tabs need no `allowCode`: the panel only reads that file and checks it against a schema. Each tab's `name` follows the rule of the package's other names and cannot repeat, and `data` must be a relative `.json` path that stays inside the data folder; otherwise the whole package stays out.
+
+```yaml
+tabs:
+  - name: news                     # its address: /packages/hello/news
+    title: News                    # up to 60 characters, shown in the panel's menu
+    data: news.json                # relative to ~/.zero/package-data/hello
+    categories: [release, security] # optional: the filter's options
+```
+
+The file holds an object with `items`, a list of at most 500 elements. Only `title` is required (up to 300 characters); `description` takes up to 2000, and `url`, `category`, `date` and `file` are optional text:
+
+```json
+{
+  "items": [
+    { "title": "Version 2.0", "url": "https://example.com/v2", "category": "release", "description": "What changed.", "date": "2026-11-01" },
+    { "title": "Delivery d1", "file": "out/d1.zip", "date": "2026-11-02" }
+  ]
+}
+```
+
+```js
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export async function scheduled(ctx) {
+  const items = [{ title: "Version 2.0", url: "https://example.com/v2", category: "release" }];
+  writeFileSync(join(ctx.dataDir, "news.json"), JSON.stringify({ items }));
+}
+```
+
+Each tab appears in the menu of every panel page and has its own address, `/packages/<package>/<tab>`, which asks for the panel's session like the other pages. To share it, add the panel key to that address (`/packages/hello/news#k=…`): after signing in the panel stays on that tab instead of the overview. The filter uses the `categoria` parameter, with the manifest's `categories` as options or, without them, those the elements use. Since this is a third party's data, all its text is escaped, and a `url` only becomes a link when it is an absolute `http` or `https` address, opened in a new tab; any other one (`javascript:`, `data:`, relative) shows the element without a link. A missing file shows that there is no data yet; one over 1 MiB, that is not JSON, does not pass the schema or whose real path leaves the data folder (through a link, for example) shows a warning and none of its elements.
+
+**Downloads.** An element's `file` offers a file of the data folder for download: a relative path such as `out/d1.zip`, without `..` or a drive (one that has them makes the whole file invalid). The tab shows a "Descargar" link only when that file exists as a regular file whose real path stays inside the data folder; otherwise the element shows without it. The link points to `/packages/<package>/<tab>/files/<path>`, which asks for the panel's session and hands the file out as an attachment (`application/octet-stream`, never opened in the browser) only when the tab's current data lists exactly that file, it is still a regular file inside the data folder, links resolved, and it weighs at most 512 MiB. Any other request gets 404, and no package code runs to answer it.
+
+**Local repositories.** A station whose manifest declares `repositories: { perDay: N }` can build on a local git repository of its own, without GitHub and without you editing your file. `ctx.repos.create(name, { from, setup, verify })` creates `~/.zero/package-repos/<package>/<name>` with one commit on `main`, with the files of a zip of the data folder when `from` names one (unpacked the same way as `ctx.unzip`), and adds to your file the line `<package>-<name>` with `integrate: merge`, `package: <package>` and the `setup` and `verify` commands it gave. The name takes lowercase letters, digits and dashes, up to 40 characters. It refuses, changing neither the file nor any folder, when the station does not declare `repositories`, it already created N today, the name is not valid or the line name is taken. With `requests`, `ctx.requestJob({ repo: name, text, maxUsd })` opens a normal job there: spec, build, verify and review as on any line, and the delivery is the merge commit on that repository's `main`, with no remote and no pull request. `ctx.repos.archive(name, file)` writes a zip of `main` to a `.zip` path of the data folder, ready to offer as a tab's `file`, and `ctx.repos.remove(name)` takes out the line and the folder, except while the line has a job that has not ended. Every call refuses another package's repositories, a station never sees another package's lines in `ctx.lines` nor can ask for jobs on them, and scout, unjam and research leave these lines alone.
+
+```js
+export async function pass(ctx, run) {
+  const pending = ctx.state.get("pending");
+  if (pending) {
+    const job = ctx.job(pending.job);
+    if (job?.status === "delivered") {
+      await ctx.repos.archive(pending.repo, `out/${pending.repo}.zip`);
+      ctx.state.set("pending", null);
+      ctx.log.info("delivered", { costUsd: job.costUsd });
+    }
+    return;
+  }
+  if (!run?.onDemand || !ctx.upload) return;
+  const repo = `d${ctx.now.getTime()}`;
+  const made = await ctx.repos.create(repo, { from: ctx.upload.path, verify: ["npm test"] });
+  if ("reason" in made) return ctx.log.warn("no repository", { why: made.reason });
+  const job = ctx.requestJob({ repo, text: run.request ?? "Finish what the README asks for", maxUsd: 2 });
+  if ("reason" in job) return ctx.log.warn("no job", { why: job.reason });
+  ctx.state.set("pending", { repo, job: job.id });
+}
+```
 
 **How to install one:**
 
@@ -574,8 +777,9 @@ zero package add git@example.com:acme/hello-zero.git#main
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # shows the change and applies it; without a name, every package
-zero package run hello/note                  # one pass of that station as soon as the factory is free (onDemand: true)
-zero package run hello/note --pedido "summarize yesterday's deliveries"   # with your request, as run.request
+zero package run hello/note                  # one pass of that station on the next pass, without waiting for the queue (onDemand: true)
+zero package run hello/note --pedido "check this week's prices"   # the same, with a request for that run
+zero package upload hello/note ./site.zip    # sends that file to the station and asks for an on-demand run (uploads)
 zero package remove hello                    # takes it out of the file; its files stay
 ```
 
@@ -689,9 +893,30 @@ Do not research frontend frameworks other than React.
 
 Each note has a topic, what was found, the sources (http(s) links; a note without sources is discarded), which part of the line it would help and how mature and trustworthy it is. It is stored in `state.db`, without paths from your machine or secrets. To avoid repeating topics, the station receives the line's topics of the last 60 days. The note remembers which skill wrote it. You see notes with `zero research [--line <line>] [--days N]`, in the report ("Investigación de hoy", with business and technical notes apart, under "Negocio" and "Técnica") and from the chat (`zero_research`). To turn a note into a job on its line: `zero research request <id>` (or `zero_research_request` in the chat), or the "Pedir trabajo" button of the panel's "Investigación" tab, which shows each line's notes of the last 30 days, split into "Negocio" and "Técnica", each with the skill that wrote it. `scout` receives its line's notes of the last 7 days and can propose, for example, assigning a skill to a station or creating a new station; a line's notes only produce proposals on that same line.
 
-On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. If GitHub fails, it retries on the next pass.
+On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. Markdown images and tags that load resources (`img`, `picture`, `source`, `video`, `audio`, `iframe`) are published as text, in notes, proposals and proposal comments, and a note's sources are stored without query string or fragment. This reduces exposure but guarantees nothing: data can still travel in a URL's path, and normal links remain, though they take a click. If GitHub fails, it retries on the next pass.
 
 Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
+
+## Unjam
+
+The `unjam` station looks at what holds the factory up and clears it on its own. It runs with the night shift's rules (factory idle, inside `nightShift.hours`, andon off, budget left, sharing `limits.usdPerNight` with `scout` and `research`), after `scout`, at most once per line per night-shift period, and never calls a model for a line with nothing stuck.
+
+zero gathers each line's jams from its own records: jobs that failed in the last 7 days with their last problem, jobs waiting for you, pull requests of `autoMerge` lines that do not merge (with the end of the failed GitHub Actions log, read once per repository and check, and whether GitHub reports a conflict), checks environments that are down or refused over billing, intake problems (GitHub, Linear, Jira, security alerts), pending cleanups and, with `isolation: container`, a box that is not ready. The read-only station groups the jams that share a cause (the same checks failing in fifteen pull requests are one problem of the repository, not fifteen), and tells apart code, flaky tests, CI, the GitHub account and the machine.
+
+For each cause that code can fix, zero opens a single night-shift proposal on the line (origin `unjam`): update the branch and resolve conflicts, fix the CI, stabilize a flaky test. It follows the line's autonomy: at `build` or `auto` it becomes a low-priority job on its own, within `unjam.maxJobsPerDay` (and `nightShift.maxAutoJobsPerDay`); at `propose` it waits for you. A cause with an open job, or whose proposal you rejected, is not repeated, and one touching protected paths or asking for new credentials opens nothing. A cause fixed elsewhere can send a job back to the queue from its checkpoint (`retry`), once in its life. What code cannot fix (installing Podman or Docker, permissions, GitHub billing) comes with what to do.
+
+```yaml
+unjam:                    # or `unjam: off` to turn it off
+  maxJobsPerDay: 2        # fix jobs and retries the station opens per day, across lines
+stations:
+  unjam: { timeoutMinutes: 15 }
+```
+
+```sh
+zero reintentar <job>     # a failed job back to the queue from its checkpoint, or a pull request in conflict back to the line
+```
+
+You see the causes under `Trabas:` in `zero status` (and `zero_status` in the chat) and in the panel's summary, one per line with its kind, how many jams it groups and its open job or proposal or what to do; in the briefing under `## Trabas`; and the monthly report of each line has a "Trabas" section with what only you can solve.
 
 ## Isolation box
 
@@ -785,4 +1010,4 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Intake from Jira · private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ACP/OpenCode engines · ccusage · governed MCP for the station agents.
+Private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.

@@ -8,6 +8,7 @@ import { log } from "../log.js";
 import type { Job, Proposal, ResearchNote, Store } from "../state/store.js";
 import { AGENT_SPAN, startOfDay } from "../telemetry/metrics.js";
 import { researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
+import { unjamJobsLeft } from "./unjam.js";
 import { ALWAYS_PROTECTED, protectedTouched } from "./verify.js";
 
 /** Proposals stored per line per pass, whatever the agent returns. */
@@ -73,8 +74,8 @@ export function periodStart(shift: NightShift, now: Date): Date {
   return start;
 }
 
-/** Stations that work while the factory is idle; they share `limits.usdPerNight`. */
-const IDLE_STATIONS = new Set(["scout", "research"]);
+/** Stations that work while the factory is idle (scout, research and the unjam station); they share `limits.usdPerNight`. */
+const IDLE_STATIONS = new Set(["scout", "research", "unjam"]);
 
 /** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
 export const PACKAGE_AGENT_PREFIX = "package:";
@@ -115,6 +116,13 @@ const researchBlock = (n: ResearchNote) =>
   [`### ${n.topic} (note ${n.id}, ${n.createdAt.slice(0, 10)}${n.business ? ", business note" : ""})`, n.findings, `Serves: ${n.serves}`, `Maturity: ${n.maturity}`, `Sources: ${n.sources.join(" ")}`].join("\n");
 
 const issueBlock = (i: Issue) => [`### #${i.number}: ${i.title}`, `URL: ${i.url}`, i.body.slice(0, ISSUE_BODY_CHARS) || "(no body)"].join("\n");
+
+/** A change zero lets the night shift propose: no new credentials and no protected paths. */
+export function acceptableChange(idea: Pick<Idea, "paths" | "needsNewCredentials">, protectedPaths: string[]): boolean {
+  if (idea.needsNewCredentials) return false;
+  const paths = idea.paths.map((p) => ({ path: p.replace(/\\/g, "/").replace(/^\.\//, "") }));
+  return !protectedTouched(paths as Parameters<typeof protectedTouched>[0], protectedPaths).length;
+}
 
 /** The proposals zero accepts: no protected paths, no new credentials, no repeated titles, at most three. */
 export function filterProposals(ideas: Idea[], taken: string[], protectedPaths: string[]): Idea[] {
@@ -213,16 +221,23 @@ function autoJobsLeft(ctx: FactoryContext, now: Date): number {
  * Under `build` or `auto` autonomy, and below the daily cap, the night shift
  * approves the proposal itself: a normal job of the line, marked with the
  * autonomy so the runner knows how far it may go. Otherwise it stays pending.
+ * The unjam station's proposals also count against `unjam.maxJobsPerDay`.
+ * Returns the job it opened.
  */
-function takeOnItsOwn(ctx: FactoryContext, line: LineConfig, proposal: Proposal, now: Date) {
+export function takeOnItsOwn(ctx: FactoryContext, line: LineConfig, proposal: Proposal, now: Date): string | undefined {
   const autonomy = proposalAutonomy(ctx.config, line, proposal);
-  if (autonomy === "propose") return;
+  if (autonomy === "propose") return undefined;
+  let opened: string | undefined;
   ctx.store.transaction(() => {
     if (autoJobsLeft(ctx, now) <= 0) return;
-    const { job } = requestWork(ctx, { text: proposalRequest(proposal), line: line.name, source: { kind: "night-shift", proposal: proposal.id, autonomy } });
+    if (proposal.origin === "unjam" && unjamJobsLeft(ctx, now) <= 0) return;
+    const source = { kind: "night-shift" as const, proposal: proposal.id, autonomy, ...(proposal.origin && { origin: proposal.origin }) };
+    const { job } = requestWork(ctx, { text: proposalRequest(proposal), line: line.name, source });
     ctx.store.updateProposal(proposal.id, { status: "approved", jobId: job.id, decidedBy: "night-shift" });
-    log.info("night shift took a proposal on its own", { line: line.name, proposal: proposal.id, job: job.id, autonomy });
+    log.info("night shift took a proposal on its own", { line: line.name, proposal: proposal.id, job: job.id, autonomy, ...(proposal.origin && { origin: proposal.origin }) });
+    opened = job.id;
   });
+  return opened;
 }
 
 /**
@@ -290,6 +305,8 @@ export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now:
   promotePending(ctx, now);
   const period = periodStart(shift, now);
   for (const line of ctx.config.lines) {
+    // A package's own repository is its station's business, not the night shift's.
+    if (line.package) continue;
     if (ctx.store.getKv(scoutedKey(line.name)) === period.toISOString()) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
     if (ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;

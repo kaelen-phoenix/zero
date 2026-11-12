@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_ACCESS } from "../src/agent.js";
+import { lineServices } from "../src/billing/records.js";
 import { AGENT_STATIONS, ConfigError, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAutonomy, parseFactory } from "../src/config.js";
 import { factoryHome } from "../src/home.js";
 import { addLine, detectClients, detectCommands, initFactory, slug } from "../src/init.js";
@@ -24,6 +25,12 @@ describe("factory definition", () => {
     expect(cfg.limits.protectedPaths).not.toContain(".agents/**");
   });
 
+  it("leaves autostart off unless the file turns it on, and only with a boolean", () => {
+    expect(parseFactory("lines: []\n").autostart).toBe(false);
+    expect(parseFactory("autostart: true\n").autostart).toBe(true);
+    expect(() => parseFactory('autostart: "si"\n')).toThrow(/autostart/);
+  });
+
   it("rejects an unknown level naming the field", () => {
     expect(() => parseFactory("level: L9\n")).toThrow(/level/);
   });
@@ -41,6 +48,34 @@ describe("factory definition", () => {
     const cfg = parseFactory("lines:\n  - { name: api, repo: /x }\n  - { name: web, repo: /y }\n");
     expect(() => findLine(cfg)).toThrow(/api, web/);
     expect(findLine(cfg, "web").repo).toBe("/y");
+  });
+});
+
+describe("line services", () => {
+  const line = (services: string) => `lines:\n  - name: tienda\n    repo: /x\n    services: ${services}\n`;
+
+  it("loads github, vercel and supabase", () => {
+    const cfg = parseFactory(line("{ github: {}, vercel: { project: prj_1, team: team_1 }, supabase: { project: abcd } }"));
+    expect(cfg.lines[0]!.services).toEqual({ github: { type: "user" }, vercel: { project: "prj_1", team: "team_1" }, supabase: { project: "abcd" } });
+    expect(lineServices(cfg.lines[0])).toEqual(["github", "vercel", "supabase"]);
+  });
+
+  it("takes an organization's account and repository", () => {
+    const cfg = parseFactory(line("{ github: { account: acme, type: organization, repository: acme/tienda } }"));
+    expect(cfg.lines[0]!.services?.github).toEqual({ account: "acme", type: "organization", repository: "acme/tienda" });
+  });
+
+  it("refuses a token, an unknown service and a missing project", () => {
+    expect(() => parseFactory(line("{ vercel: { project: prj_1, token: x } }"))).toThrow(ConfigError);
+    expect(() => parseFactory(line("{ netlify: { site: x } }"))).toThrow(ConfigError);
+    expect(() => parseFactory(line("{ supabase: {} }"))).toThrow(ConfigError);
+    expect(() => parseFactory(line("{ github: { repository: no-slash } }"))).toThrow(ConfigError);
+  });
+
+  it("leaves a line without the section as before", () => {
+    const cfg = parseFactory("lines:\n  - name: api\n    repo: /work/api\n");
+    expect(cfg.lines[0]!.services).toBeUndefined();
+    expect(lineServices(cfg.lines[0])).toEqual([]);
   });
 });
 
@@ -241,7 +276,7 @@ describe("a file with retired keys", () => {
   });
 
   it("lists the remaining agent stations in order", () => {
-    const stations = ["spec", "build", "review", "security", "reply", "scout", "research"];
+    const stations = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam"];
     expect(AGENT_STATIONS).toEqual(stations);
     expect(SKILL_STATIONS).toEqual(stations);
     expect(Object.keys(AGENT_ACCESS)).toEqual(stations);

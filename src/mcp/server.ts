@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, egressReport, ensureDaemon, factoryStatus, getJob, linesWithSkills, monthlyReport, openFactory, requestWork, resume, setEgressRule, stop, trace, type FactoryContext } from "../app.js";
+import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatEgress, formatJob, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
+import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
+import { log } from "../log.js";
 import { monthlyMarkdown } from "../report.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
@@ -15,8 +16,22 @@ Relay results in the owner's language and in plain terms; the owner may not be a
 type Text = { content: { type: "text"; text: string }[]; isError?: boolean };
 const text = (t: string): Text => ({ content: [{ type: "text", text: t }] });
 
-/** Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client. */
-async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string): Promise<Text> {
+type Starter = (ctx: FactoryContext) => Promise<boolean>;
+
+/** Starts a crashed daemon again; never fails the call that asked. */
+async function revive(ctx: FactoryContext, start: Starter): Promise<void> {
+  try {
+    await reviveDaemon(ctx, start);
+  } catch (err) {
+    log.warn("cannot start the factory again", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client.
+ * With `start`, a daemon that crashed with work left is started again after the call.
+ */
+async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, start?: Starter): Promise<Text> {
   let ctx: FactoryContext | undefined;
   try {
     ctx = await openFactory(home);
@@ -24,17 +39,30 @@ async function withFactory(home: FactoryHome, fn: (ctx: FactoryContext) => Promi
   } catch (err) {
     return { ...text(err instanceof Error ? err.message : String(err)), isError: true };
   } finally {
+    if (ctx && start) await revive(ctx, start);
     ctx?.store.close();
   }
+}
+
+export interface ZeroMcpOptions {
+  autoStart?: boolean;
+  stationWaitMs?: number;
+  merges?: MergeApiFactory;
+  /** How the daemon is started; tests inject one. */
+  start?: Starter;
 }
 
 /**
  * The chat is the front door and the control room: every tool returns at
  * once and only reads or writes the factory's state; the daemon does the work.
  */
-export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boolean } = {}): McpServer {
+export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}): McpServer {
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
+  const ensureDaemon = opts.start ?? startDaemon;
+  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
+  // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
+  const stationWaitMs = opts.stationWaitMs ?? 30_000;
 
   server.registerTool(
     "zero_request",
@@ -45,11 +73,15 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
         text: z.string().describe("What the owner wants, in their words."),
         line: z.string().optional().describe("Project (line) name; optional when the factory has a single line."),
         kind: z.enum(["request", "spec"]).optional().describe("'spec' when the owner pasted a written specification."),
+        priority: z
+          .enum(["baja", "media", "alta", "urgente"])
+          .optional()
+          .describe("Priority; default 'media'. 'alta' goes ahead of the queue. Use 'urgente' (for example a security patch) only when the owner explicitly asks for it."),
       },
     },
-    ({ text: request, line, kind }) =>
+    ({ text: request, line, kind, priority }) =>
       withFactory(home, async (ctx) => {
-        const result = requestWork(ctx, { text: request, line, kind });
+        const result = requestWork(ctx, { text: request, line, kind, priority });
         const started = autoStart && (await ensureDaemon(ctx));
         return formatRequest(result) + (started ? "\nLa fábrica estaba apagada: la encendí." : "");
       }),
@@ -78,6 +110,16 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
       },
     },
     ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) })),
+  );
+
+  server.registerTool(
+    "zero_merge",
+    {
+      title: "Fundir un pull request entregado",
+      description: "Merge a pull request the factory delivered, even on lines without autoMerge, only if GitHub says it is ready (checks green, no conflicts); otherwise it says why and forces nothing. Only when the owner asks for it.",
+      inputSchema: { target: z.string().describe("The job id or the GitHub pull request URL.") },
+    },
+    ({ target }) => withFactory(home, async (ctx) => formatMerge(await mergePullRequest(ctx, target, { via: "chat", api: opts.merges }))),
   );
 
   server.registerTool(
@@ -144,18 +186,19 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
     "zero_package_run",
     {
       title: "Correr una estación de un paquete",
-      description: "Ask the factory to run a package station's pass once, as soon as it is idle, without waiting for its period. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it. `request` carries the owner's own text for the station (cleaned and cut to 4000 characters); it returns once the request is recorded, without waiting for the run.",
+      description: "Ask the factory to run a package station's pass once, on the daemon's next pass, without waiting for its period or for queued and running jobs. Only stations whose manifest declares onDemand: true; at most one pending run per station. Only when the owner asks for it.",
       inputSchema: {
         station: z.string().describe("The station, as <package>/<station>."),
-        request: z.string().optional().describe("What the owner asks the station to do in this run, in their own words; only text the owner wrote."),
+        request: z.string().optional().describe("Optional request text from the owner for this run; the station receives it cleaned of secrets and local paths."),
       },
     },
     ({ station, request }) =>
       withFactory(home, async (ctx) => {
-        const r = requestStationRun(ctx, station, { request });
+        const r = requestStationRun(ctx, station, new Date(), request);
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
-        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+        const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
       }),
   );
 
@@ -261,6 +304,21 @@ export function createZeroMcpServer(home: FactoryHome, opts: { autoStart?: boole
   return server;
 }
 
+/** The MCP server's start: a factory that crashed with work left is started again before the chat asks anything. */
+export async function reviveOnStart(home: FactoryHome, start: Starter = startDaemon): Promise<void> {
+  try {
+    const ctx = await openFactory(home);
+    try {
+      await revive(ctx, start);
+    } finally {
+      ctx.store.close();
+    }
+  } catch (err) {
+    log.warn("cannot read the factory to start it again", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export async function serveStdio(home: FactoryHome) {
+  await reviveOnStart(home);
   await createZeroMcpServer(home).connect(new StdioServerTransport());
 }

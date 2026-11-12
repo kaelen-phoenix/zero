@@ -1,32 +1,46 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAgentRunner, runHere, type AgentRunner, type EngineExecute } from "./agent.js";
-import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, readGate, SHUTDOWN_KEY, waitsForBox, type FactoryContext } from "./app.js";
+import { ANDON_KEY, currentBox, daemonInfo, DAEMON_KEY, LAUNCH_KEY, readGate, SHUTDOWN_KEY, STOPPED_KEY, waitsForBox, type DaemonStopReason, type FactoryContext, type StopRecord } from "./app.js";
 import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
+import { syncAutostart, type AutostartResult } from "./autostart.js";
+import { checkInstall } from "./install-freshness.js";
+import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
 import { LINEAR_SECRET, linearIssues, pollLinear, type LinearApi } from "./intake/linear.js";
+import { jiraIssues, pollJira, type JiraApi, type JiraCredentials } from "./intake/jira.js";
 import { syncProposalIssues } from "./intake/proposals.js";
 import { syncResearchIssues } from "./intake/research.js";
+import { githubAlerts, pollSecurityAlerts, type AlertApi } from "./intake/security-alerts.js";
 import { githubMerges, pollMerges, type MergeApi } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { createGateHost, type GateHost } from "./box/network.js";
 import { inspectBox, saveBoxStatus, type BoxStatus } from "./box/status.js";
+import { billingPass } from "./billing/pass.js";
+import { billingReaders } from "./billing/readers.js";
+import { lineServices, type BillingReader, type BillingService } from "./billing/records.js";
 import { lineSignature, type FactoryConfig, type LineConfig } from "./config.js";
+import type { FactoryHome } from "./home.js";
 import { factoryConfig } from "./packages.js";
+import { effectivePriority, priorityRank } from "./priority.js";
 import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
+import { cleanupPass } from "./line/cleanup.js";
+import { killLeftovers } from "./leftovers.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
-import { onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
+import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
+import { resendAfterCapability, unjamPass } from "./line/unjam.js";
 import { signedIssues, signedMerges } from "./signature.js";
-import { log } from "./log.js";
+import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
@@ -48,18 +62,32 @@ export interface DaemonOptions {
   issues?: (repository: string, line?: LineConfig) => IssueApi | undefined;
   /** Linear for the Linear intake, per line (undefined without a key); tests inject a fake. */
   linear?: (line: LineConfig) => LinearApi | undefined;
+  /** Jira for the Jira issue intake, per line with the stored credentials; tests inject a fake. */
+  jira?: (line: LineConfig, credentials: JiraCredentials) => JiraApi | undefined;
+  /** GitHub's Dependabot alerts, per line; tests inject a fake. Without it, `once` runs do not read alerts. */
+  alerts?: (repository: string, line?: LineConfig) => AlertApi | undefined;
+  /** What the lines' external services cost, one reader per service; tests inject fakes. Without it, `once` runs do not read billing. */
+  billing?: Partial<Record<BillingService, BillingReader>>;
   /** GitHub for automatic merging; tests inject a fake. */
   merges?: (repository: string, line?: LineConfig) => MergeApi | undefined;
   /** Serve the control panel (and its tunnel when the owner turned it on). Defaults to on, except in `once` runs. */
   panel?: boolean;
   /** Run the night shift (scout) while the factory is idle. Defaults to on, except in `once` runs. */
   scout?: boolean;
+  /** Run the unjam station (diagnosis of what holds the lines up) while the factory is idle. Defaults to on, except in `once` runs. */
+  unjam?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
   packageUpdates?: boolean;
+  /** Where zero's installation is and how to ask its git; tests inject both. Without it, `once` runs do not look at the installation. */
+  install?: { root?: string; git?: GitRunner };
+  /** Kills the processes an interrupted job left in its work copy; defaults to the real one. */
+  killLeftovers?: (folder: string) => number;
+  /** Makes the login entry match the file's `autostart`; tests inject a fake. Without it, `once` runs leave the entry alone. */
+  autostart?: (home: FactoryHome, enabled: boolean) => AutostartResult;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -77,11 +105,21 @@ const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
   return token ? signedMerges(githubMerges(token, repository, meter.client(token, pass)), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
+const realAlerts = (meter: GithubMeter) => (repository: string) => {
+  const token = githubToken();
+  return token ? githubAlerts(token, repository, meter.client(token, "alerts")) : undefined;
+};
+
+/** The real billing readers, straight from zero's process: read-only calls with each service's token from the secret store. */
+const realBilling = (ctx: FactoryContext) => billingReaders({ fetch: globalThis.fetch, secrets: ctx.secrets, githubToken: () => githubToken(process.env, ctx.secrets) });
+
 /** The real Linear adapter, with the key from the secret store; pollLinear signs its comments. */
 const realLinear = (ctx: FactoryContext) => () => {
   const key = ctx.secrets.get(LINEAR_SECRET);
   return key ? linearIssues(key) : undefined;
 };
+/** The real Jira adapter, straight from zero's process with the global fetch; Jira is not GitHub, so no meter. */
+const realJira = (line: LineConfig, credentials: JiraCredentials) => (line.jira ? jiraIssues({ ...credentials, project: line.jira.project, fetch: globalThis.fetch }) : undefined);
 
 interface Running {
   line: string;
@@ -96,6 +134,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * configured concurrency, resuming anything a previous run left unfinished.
  */
 export async function runDaemon(ctx: FactoryContext, opts: DaemonOptions = {}): Promise<void> {
+  // A log line that cannot be written (no memory, a full disk) must never stop the factory.
+  guardLogStreams();
   // First of all: a daemon that does not hold the lock must not change anything, not even the shutdown request meant for the one that does.
   const lock = acquireDaemonLock(ctx.home);
   if (!lock) {
@@ -121,9 +161,34 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const beat = () => store.setKv(DAEMON_KEY, JSON.stringify({ pid: process.pid, beatAt: now().toISOString() }));
   beat();
   store.deleteKv(SHUTDOWN_KEY);
+  store.deleteKv(STOPPED_KEY);
+  store.deleteKv(LAUNCH_KEY);
+
+  // The login entry follows the file: at start, and whenever a reloaded definition changes `autostart`. A failure is only logged.
+  const autostart = opts.autostart ?? (opts.once ? undefined : syncAutostart);
+  let autostartSynced: boolean | undefined;
+  const followAutostart = () => {
+    if (!autostart || autostartSynced === ctx.config.autostart) return;
+    autostartSynced = ctx.config.autostart;
+    try {
+      const result = autostart(ctx.home, ctx.config.autostart);
+      if (result.status === "created" || result.status === "removed") log.info("login autostart entry updated", { status: result.status, path: result.path });
+    } catch (err) {
+      log.warn("cannot update the login autostart entry", { error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  followAutostart();
 
   for (const job of store.listJobs({ status: ["running"] })) {
     log.info("resuming interrupted job", { job: job.id, checkpoint: job.checkpoint, station: job.station });
+    // What the dead daemon left running there would keep the folder locked (EBUSY) when the job resumes.
+    if (job.worktree && existsSync(job.worktree)) {
+      try {
+        (opts.killLeftovers ?? killLeftovers)(job.worktree);
+      } catch (err) {
+        log.warn("cannot kill the processes left in an interrupted job's work copy", { job: job.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     store.updateJob(job.id, { status: "queued" });
   }
 
@@ -167,7 +232,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   // The panel is fixed to the port the factory started with; changing it needs a restart.
   const port = (opts.panel ?? !opts.once) ? ctx.config.panel.port : 0;
-  const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets) }) : undefined;
+  const panel = port > 0 ? createPanelServer(ctx, { key: () => panelKey(ctx.secrets), merges: (repository, line) => (opts.merges ?? realMerges(ctx, meter, "merges"))(repository, line) }) : undefined;
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
   const host = ctx.config.panel.host;
   panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
@@ -204,6 +269,16 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .catch((err) => log.warn("linear intake failed", { error: String(err) }))
       .finally(() => (linearIntake = undefined));
   };
+  // Jira issues, read the same way but outside the GitHub meter and its pauses.
+  let jiraAt = 0;
+  let jiraIntake: Promise<void> | undefined;
+  const takeJira = () => {
+    if (jiraIntake || !ctx.config.lines.some((l) => l.jira) || Date.now() - jiraAt < (opts.once ? 0 : INTAKE_MS)) return;
+    jiraAt = Date.now();
+    jiraIntake = pollJira(ctx, opts.jira ?? realJira)
+      .catch((err) => log.warn("jira intake failed", { error: String(err) }))
+      .finally(() => (jiraIntake = undefined));
+  };
   // Night-shift proposals mirrored as GitHub issues, then research notes published, on every line with a GitHub remote, polled the same way.
   let proposalsAt = 0;
   let publishing: Promise<void> | undefined;
@@ -233,6 +308,19 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         merging = undefined;
       });
   };
+  // Dependabot alerts of the lines on GitHub, read the same way; they become urgent security jobs.
+  let alertsAt = 0;
+  let readingAlerts: Promise<void> | undefined;
+  const readAlerts = () => {
+    if (readingAlerts || (opts.once && !opts.alerts) || !ctx.config.lines.some((l) => l.securityAlerts.mode !== "off") || Date.now() - alertsAt < (opts.once ? 0 : INTAKE_MS)) return;
+    alertsAt = Date.now();
+    readingAlerts = pollSecurityAlerts(ctx, opts.alerts ?? realAlerts(meter))
+      .catch((err) => log.warn("security alerts failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("alerts");
+        readingAlerts = undefined;
+      });
+  };
   // Night-shift integrations the owner reverted on the base branch, read the same way.
   let revertsAt = 0;
   let checkingReverts: Promise<unknown> | undefined;
@@ -245,6 +333,50 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("reverts");
         checkingReverts = undefined;
       });
+  };
+
+  // What the lines' external services cost this month; the pass itself keeps each service to once a local day.
+  let billingAt = 0;
+  let readingBilling: Promise<void> | undefined;
+  const readBilling = () => {
+    if (readingBilling || (opts.once && !opts.billing) || !ctx.config.lines.some((l) => lineServices(l).length) || Date.now() - billingAt < (opts.once ? 0 : INTAKE_MS)) return;
+    billingAt = Date.now();
+    readingBilling = billingPass(ctx, opts.billing ?? realBilling(ctx), now())
+      .catch((err) => log.warn("billing pass failed", { error: err instanceof Error ? err.name : "error" }))
+      .finally(() => (readingBilling = undefined));
+  };
+
+  // Work copies a finished job could not remove (a locked folder on Windows), tried again in the background.
+  let cleanupsAt = 0;
+  let cleaning: Promise<void> | undefined;
+  const retryCleanups = () => {
+    if (cleaning || Date.now() - cleanupsAt < (opts.once ? 0 : INTAKE_MS)) return;
+    cleanupsAt = Date.now();
+    cleaning = cleanupPass(ctx)
+      .catch((err) => log.warn("work copy cleanup failed", { error: String(err) }))
+      .finally(() => (cleaning = undefined));
+  };
+
+  // How far the installed copy of zero is from what was merged; the pass itself keeps it to once an hour.
+  let installAt = 0;
+  let checkingInstall: Promise<unknown> | undefined;
+  const lookAtInstall = () => {
+    if (checkingInstall || (opts.once && !opts.install) || Date.now() - installAt < (opts.once ? 0 : INTAKE_MS)) return;
+    installAt = Date.now();
+    checkingInstall = checkInstall(store, now(), opts.install)
+      .catch((err) => log.warn("installation check failed", { error: String(err) }))
+      .finally(() => (checkingInstall = undefined));
+  };
+
+  // Requests refused for a missing capability, sent again once the job that adds it entered its base branch.
+  let resendAt = 0;
+  let resending: Promise<unknown> | undefined;
+  const resendRefused = () => {
+    if (resending || !ctx.config.lines.length || Date.now() - resendAt < (opts.once ? 0 : INTAKE_MS)) return;
+    resendAt = Date.now();
+    resending = resendAfterCapability(ctx, now())
+      .catch((err) => log.warn("resending refused requests failed", { error: String(err) }))
+      .finally(() => (resending = undefined));
   };
 
   // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
@@ -267,7 +399,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
-  // The night shift: while the factory is idle, scout proposes work, research reads the web (once a day per line) and the
+  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line) and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
   let idle: Promise<void> | undefined;
@@ -276,16 +408,22 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const idlePasses = () => {
     if (idle || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
+    const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
-    // A run the person in charge asked for does not wait for the throttle.
-    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && (Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS) || onDemandPending(ctx));
-    if (!scouts && !researches && !stations) return;
+    const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
+    if (!scouts && !unjams && !researches && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
       if (scouts) {
         await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
         meter.endRun("scout");
+      }
+      if (unjams && !researchStop.signal.aborted) {
+        // The failed checks' logs are read through the meter, and not at all while GitHub holds a pause.
+        const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+        await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal, merges).catch((err) => log.warn("unjam failed", { error: String(err) }));
+        meter.endRun("unjam");
       }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
@@ -305,15 +443,31 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (scheduling = undefined));
   };
 
+  // A run the person in charge asked for waits neither for the queue nor for scout or research: its own background pass,
+  // which starts no job and takes no job's place. onDemandPass itself holds requests back for the andon, the budget and missing secrets.
+  let onDemandAt = 0;
+  let demanding: Promise<void> | undefined;
+  const runOnDemand = () => {
+    if (demanding || !(opts.packages ?? !opts.once) || !onDemandPending(ctx) || Date.now() - onDemandAt < (opts.once ? 0 : INTAKE_MS)) return;
+    onDemandAt = Date.now();
+    demanding = onDemandPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal })
+      .catch((err) => log.warn("on-demand stations failed", { error: String(err) }))
+      .finally(() => (demanding = undefined));
+  };
+
+  // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
+  let stopped: DaemonStopReason | undefined;
   try {
     while (!stopping) {
       beat();
       if (store.getKv(SHUTDOWN_KEY)) {
         shutdown();
+        stopped = "shutdown";
         break;
       }
       try {
         ctx.config = await factoryConfig(ctx.home);
+        followAutostart();
       } catch (err) {
         log.error("cannot load factory definition; not starting new jobs", { error: String(err) });
         await sleep(pollMs);
@@ -328,10 +482,17 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         syncProposals();
         mergeReady();
         findReverts();
+        readAlerts();
       }
       takeLinear();
+      takeJira();
+      retryCleanups();
+      readBilling();
+      lookAtInstall();
+      resendRefused();
       exportTraces();
       runSchedules();
+      runOnDemand();
       lookForPackageUpdates();
       await expireQuestions(ctx);
 
@@ -348,13 +509,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
       let startable = false;
       if (!andon && !budgetState(store, ctx.config, now()).reached) {
-        for (const job of ownerFirst(store.listJobs({ status: ["queued"] }))) {
+        const at = now();
+        const queued = ownerFirst(store.listJobs({ status: ["queued"] }), at);
+        for (const job of queued) {
           if (job.stopRequested) {
             await finalizeJob(ctx, job, "stopped", { reason: STOPPED_BY_YOU });
             continue;
           }
-          // The night shift's own jobs and the packages' never go ahead of other work: one at a time, and only while no other job is queued or running.
-          if (lowPriority(job) && (running.size > 0 || store.listJobs({ status: ["queued", "running"] }).some((j) => j.status === "running" || !lowPriority(j)))) continue;
+          const runningJobs = [...running.keys()].map((id) => store.getJob(id)).filter((j): j is Job => j !== undefined);
+          if (waitsItsTurn(job, runningJobs, store.listJobs({ status: ["queued", "running"] }), at)) continue;
           const busy = [...running.values()].some((r) => r.line === job.line);
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
@@ -388,20 +551,31 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         idlePasses();
       }
 
-      if (opts.once && !running.size && !startable) break;
+      if (opts.once && !running.size && !startable) {
+        stopped = "once";
+        break;
+      }
       await Promise.race([sleep(pollMs), ...[...running.values()].map((r) => r.done)]);
     }
+    stopped ??= "signal";
   } finally {
-    // A shutdown cuts research and the packages' stations short, scheduled passes included; a `once` run lets them finish.
+    // A shutdown cuts research and the packages' stations short, scheduled and on-demand passes included; a `once` run lets them finish.
     if (stopping) researchStop.abort();
     await Promise.allSettled([...running.values()].map((r) => r.done));
     await intake;
     await linearIntake;
+    await jiraIntake;
     await publishing;
     await merging;
     await checkingReverts;
+    await readingAlerts;
+    await cleaning;
+    await readingBilling;
+    await checkingInstall;
+    await resending;
     await exporting;
     await scheduling;
+    await demanding;
     await looking;
     await idle;
     tunnel.stop();
@@ -410,8 +584,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     process.removeListener("SIGINT", shutdown);
     process.removeListener("SIGTERM", shutdown);
     const mine = daemonInfo(store, now());
-    if (mine.pid === process.pid) store.deleteKv(DAEMON_KEY);
-    log.info("factory stopped", { pid: process.pid });
+    if (stopped && mine.pid === process.pid) {
+      store.deleteKv(DAEMON_KEY);
+      store.setKv(STOPPED_KEY, JSON.stringify({ at: now().toISOString(), reason: stopped } satisfies StopRecord));
+    }
+    log.info(stopped ? "factory stopped" : "factory ended by an error", { pid: process.pid });
   }
 }
 
@@ -428,12 +605,23 @@ export const passExecute = (box: () => BoxExecutor | undefined, jobsIn: (folder:
   return runHere(engine, req, trace, station);
 };
 
-/** A job nobody is waiting for: the night shift opened it on its own, under the line's `build` or `auto` autonomy, or a package's station asked for it. */
-const lowPriority = (job: Job) => (job.source?.kind === "night-shift" && Boolean(job.source.autonomy)) || job.source?.kind === "package";
+/** Whether a queued job must wait although its line is free: `running` are the daemon's running jobs, `active` every queued or running job in the store. */
+export function waitsItsTurn(job: Job, running: Job[], active: Job[], now: Date = new Date()): boolean {
+  const level = effectivePriority(job, now);
+  // Low priority (by default the night shift's own jobs and the packages') never goes ahead of other work: one at a time, and only while nothing else is queued or running.
+  if (level === "baja") return running.length > 0 || active.some((j) => j.status === "running" || priorityRank(effectivePriority(j, now)) > priorityRank(level));
+  // At most one urgent job runs at a time; the next one waits without holding other lines back.
+  if (level === "urgente") return running.some((j) => effectivePriority(j, now) === "urgente");
+  return false;
+}
 
-/** Queued jobs in the order the daemon considers them: the owner's first, the night shift's own and the packages' after. */
-export function ownerFirst(jobs: Job[]): Job[] {
-  return [...jobs.filter((j) => !lowPriority(j)), ...jobs.filter(lowPriority)];
+/** Queued jobs in the order the daemon considers them: highest effective priority first, the oldest first within one (stable on ties). */
+export function ownerFirst(jobs: Job[], now: Date = new Date()): Job[] {
+  const created = (j: Job) => (j.createdAt ? Date.parse(j.createdAt) || 0 : 0);
+  return jobs
+    .map((job, i) => ({ job, i, rank: priorityRank(effectivePriority(job, now)) }))
+    .sort((a, b) => b.rank - a.rank || created(a.job) - created(b.job) || a.i - b.i)
+    .map((e) => e.job);
 }
 
 /** Questions nobody answered in time get their default answer. */

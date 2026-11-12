@@ -379,7 +379,7 @@ describe("skills per agent", () => {
 
   it("lists general and per-line skills for every agent", () => {
     const all = agentSkills(testFactory(assigned()).config);
-    expect(all.map((a) => a.station)).toEqual(["spec", "build", "review", "security", "reply", "scout", "research"]);
+    expect(all.map((a) => a.station)).toEqual(["spec", "build", "review", "security", "reply", "scout", "research", "unjam"]);
     const build = all.find((a) => a.station === "build")!;
     expect(build.general).toEqual([{ name: "pdf", fullName: "pdf", description: "Lee y genera PDF" }]);
     expect(build.lines).toEqual([{ line: "solilok", skills: [{ name: "vercel:nextjs", fullName: "vercel:nextjs", description: expect.stringContaining("Next.js") }] }]);
@@ -406,7 +406,8 @@ describe("skills per agent", () => {
       expect(card("spec")).toContain("No tiene skills asignadas.");
       expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
       expect(html).not.toContain("<script>alert(1)");
-      for (const tag of ["<form", "<button", "<input"]) expect(html).not.toContain(tag);
+      // The side menu's collapse checkbox is the only input: it changes nothing but the menu.
+      for (const tag of ["<form", "<button", "<input"]) expect(html.replace('<input type="checkbox" id="nav-toggle" class="nav-toggle">', "")).not.toContain(tag);
       const before = readFileSync(ctx.home.config, "utf8");
       const r = await fetch(base + "/agents", { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: "skill=pdf", redirect: "manual" });
       expect(r.status).toBe(404);
