@@ -8,7 +8,7 @@
 
 ## 2. Etapa 2: Take back to fix failed checks
 
-- [ ] 2.1 Add `PrRefresh.checks`, `MergeState.fixing`/`fixes` in `kept()`, `MAX_CHECK_FIXES`, `failedTests`, `checksFeedback` and `fixChecks`, and call it in `watch` after `unblock` has nothing left to try.
-- [ ] 2.2 Handle the checks mark in `runJob` and `updateProblem` in src/line/runner.ts.
-- [ ] 2.3 Extend `retryJob` in src/app.ts.
-- [ ] 2.4 Add tests for queuing, feedback and scrubbing, pushing to the same pull request, a failed fix, the limits, persistence, retry and `failedTests`; update any existing test whose expectations change; update AGENTS.md; run typecheck and tests.
+- [x] 2.1 Add `PrRefresh.checks`, `MergeState.fixing`/`fixes` in `kept()`, `MAX_CHECK_FIXES`, `failedTests`, `checksFeedback` and `fixChecks`, and call it in `watch` after `unblock` has nothing left to try.
+- [x] 2.2 Handle the checks mark in `runJob` and `updateProblem` in src/line/runner.ts.
+- [x] 2.3 Extend `retryJob` in src/app.ts.
+- [x] 2.4 Add tests for queuing, feedback and scrubbing, pushing to the same pull request, a failed fix, the limits, persistence, retry and `failedTests`; update any existing test whose expectations change; update AGENTS.md; run typecheck and tests.

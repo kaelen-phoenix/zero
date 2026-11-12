@@ -34,6 +34,8 @@ export interface PrRefresh {
   paths?: string[];
   /** The merge is committed on the branch. */
   resolved?: boolean;
+  /** Taken back to fix its failed checks, not to merge the base: what the checks said. Nothing of the base is merged. */
+  checks?: string;
 }
 
 export const prRefreshKey = (jobId: string) => `pr-refresh:${jobId}`;
@@ -159,7 +161,7 @@ export async function finalizeJob(
     },
   ];
   if (outcome === "failed") posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: (opts.reason ?? "").slice(0, 1000) });
-  if (gaveUp) posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: `No se actualizó el pull request con la rama base: ${reasonForOthers(opts.reason ?? status)}`.slice(0, 1000) });
+  if (gaveUp) posts.push({ kind: "blocker", line: done.line, job: done.id, source: "zero", topic, body: `${gaveUp.checks ? "No se arreglaron los checks del pull request" : "No se actualizó el pull request con la rama base"}: ${reasonForOthers(opts.reason ?? status)}`.slice(0, 1000) });
   await deps.townhall.publish(posts);
   return done;
 }
