@@ -89,7 +89,7 @@ async function delivered(opts: { level?: string; maxAttempts?: number; verify?: 
   const again = () => runJob(job.id, deps);
   const parents = (rev: string) => run("git", ["rev-list", "--parents", "-n", "1", rev], bare).split(" ").length - 1;
   const contained = (rev: string, tip: string) => run("git", ["merge-base", "--is-ancestor", rev, tip], bare);
-  return { ctx, repo, bare, other, job, branch, head, remoteTip, localTip, moveBase, did, state, pass, merge, again, parents, contained, agents, opened, delivery: first.delivery, setBuild: (b: Build) => void (build = b) };
+  return { ctx, repo, bare, other, job, branch, head, remoteTip, localTip, moveBase, did, state, gh, pass, merge, again, parents, contained, agents, opened, delivery: first.delivery, setBuild: (b: Build) => void (build = b) };
 }
 
 const resolves = (content = "resolved\n"): Build => (req) => void writeTree(req.cwd, { "shared.txt": content });
@@ -269,6 +269,63 @@ describe("a pull request in conflict with its base", () => {
     f.setBuild(resolves("resolved twice\n"));
     expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3 });
     f.contained(updated, f.remoteTip());
+  });
+});
+
+describe("a pull request with failed checks GitHub has not called mergeable", () => {
+  const red: Check[] = [{ name: "test", done: true, ok: false, run: 7 }];
+  /** Failed checks, `mergeable: null`, and every way to unblock it on GitHub recorded. */
+  const failing = async () => {
+    const f = await delivered();
+    f.state.pr = { ...f.state.pr, mergeable: null };
+    f.state.checks = red;
+    f.gh.behind = async () => (f.did.push("behind"), true);
+    f.gh.updateBranch = async () => void f.did.push("updateBranch");
+    f.gh.rerun = async () => void f.did.push("rerun");
+    f.gh.failedLog = async () => (f.did.push("failedLog"), "log");
+    return f;
+  };
+
+  it("is tested locally and taken back when the base conflicts with it", async () => {
+    const f = await failing();
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", delivery: f.delivery });
+    expect(JSON.parse(f.ctx.store.getKv(prRefreshKey(f.job.id))!)).toMatchObject({ head: f.head });
+    expect(f.merge()).toMatchObject({ status: "waiting", resolving: f.head, resolutions: 1, conflict: f.head });
+    expect(f.did).toEqual([]);
+  });
+
+  it("is reported as in conflict, not as failed checks, once the resolutions are used up", async () => {
+    const f = await failing();
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ status: "waiting", resolutions: 2 } satisfies MergeState));
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    const state = f.merge();
+    expect(state.status).toBe("blocked");
+    expect(state.why).toMatch(/^en conflicto con la rama base; ya se usaron las 2 resoluciones/);
+    expect(f.did).toHaveLength(1);
+    expect(f.did[0]).toMatch(/^comment: .*en conflicto con la rama base/);
+    expect(f.did[0]).not.toContain("fallaron los checks");
+
+    // Looked at again later, it stays a conflict without asking for its checks.
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ ...f.merge(), backoff: undefined } satisfies MergeState));
+    await f.pass();
+    expect(f.merge().why).toMatch(/^en conflicto con la rama base/);
+    expect(f.did).toHaveLength(1);
+  });
+
+  it("keeps the checks path when it merges cleanly with its base", async () => {
+    const f = await failing();
+    f.moveBase("other.txt", "new\n");
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    expect(f.merge().conflict).toBeUndefined();
+    expect(f.merge().resolving).toBeUndefined();
+    expect(f.did).toContain("rerun");
   });
 });
 

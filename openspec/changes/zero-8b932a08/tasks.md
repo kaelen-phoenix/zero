@@ -2,9 +2,9 @@
 
 ## 1. Etapa 1: Conflict first, tested locally
 
-- [ ] 1.1 Add the OpenSpec change for production-line with all requirements.
-- [ ] 1.2 Implement the local conflict test in src/line/automerge.ts and wire it into `watch` before the wait, billing, outage and unblock handling, through `takeBack`.
-- [ ] 1.3 Add tests with the automerge-conflicts fixture for `mergeable: null` plus failed checks (taken back; used-up resolutions reported as conflict; clean merge keeps the checks path), and keep the existing automerge tests passing.
+- [x] 1.1 Add the OpenSpec change for production-line with all requirements.
+- [x] 1.2 Implement the local conflict test in src/line/automerge.ts and wire it into `watch` before the wait, billing, outage and unblock handling, through `takeBack`.
+- [x] 1.3 Add tests with the automerge-conflicts fixture for `mergeable: null` plus failed checks (taken back; used-up resolutions reported as conflict; clean merge keeps the checks path), and keep the existing automerge tests passing.
 
 ## 2. Etapa 2: Take back to fix failed checks
 

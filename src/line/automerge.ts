@@ -541,6 +541,26 @@ function followRemoteTip(ctx: FactoryContext, job: Job) {
 }
 
 /**
+ * Whether the pull request's tip conflicts with its base, tested in the line's repository with
+ * `git merge-tree` after fetching the base, for when GitHub has not said (`mergeable` null) but its checks
+ * failed. A tip the repository does not have, a base that does not fetch or a test that cannot run says no.
+ */
+function conflictsLocally(ctx: FactoryContext, job: Job, head: string): boolean {
+  const line = ctx.config.lines.find((l) => l.name === job.line);
+  if (!line) return false;
+  if (!tryGit(["rev-parse", "--verify", "--quiet", `${head}^{commit}`], line.repo)) return false;
+  const base = `refs/remotes/${line.remote}/${line.baseBranch}`;
+  const fetched = spawnGit(["fetch", "-q", line.remote, `+refs/heads/${line.baseBranch}:${base}`], line.repo, { timeout: 120_000 });
+  if (fetched.status !== 0) {
+    log.warn("cannot fetch the base branch to test for a conflict", { job: job.id, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
+    return false;
+  }
+  // Exit 1 is a conflict; anything else (0 clean, or an error) is not taken as one.
+  const tested = spawnGit(["merge-tree", "--write-tree", "--no-messages", base, head], line.repo, { timeout: 120_000 });
+  return tested.status === 1;
+}
+
+/**
  * Puts the job of a pull request in conflict back in the queue to merge the
  * base in, or says why not (with what is missing, when the owner can act on
  * it). The conflict comes from what reached the base, not from the job, so it
@@ -619,6 +639,13 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
   if (decision.kind === "gone") return save({ status: decision.merged ? "merged" : "closed", why: decision.merged ? "fundido por otra persona" : "cerrado sin fundir" });
   if (since > WATCH_MS) return save({ status: "expired", why: EXPIRED });
+  // Failed checks on a tip GitHub has not called mergeable may hide a conflict, which comes first: no update, rerun or fix gets it merged.
+  if (decision.kind === "blocked" && decision.failed && !conflicted && pr.mergeable !== true && conflictsLocally(ctx, job, pr.headSha)) {
+    state.conflict = pr.headSha;
+    const taken = takeBack(ctx, job, pr.headSha, state, save);
+    if (taken === true) return;
+    decision = { kind: "blocked", key: `conflict:${pr.headSha}`, why: taken.why ?? CONFLICT };
+  }
   if (decision.kind === "wait") return save({ reported: state.reported, status: "waiting", why: decision.why });
   // Some checks failed and others are still running: starting anything now would cancel them, and the repository is not free yet.
   if (decision.kind === "blocked" && decision.failed && checks.some((c) => !c.done)) {
