@@ -303,13 +303,15 @@ function conflictFeedback(copy: WorkCopy, paths: string[]): string {
   return `Mezclar ${copy.base} en la rama de este trabajo dio conflictos, y la mezcla ya está en curso en la copia de trabajo. Resolvé estos archivos conservando la intención de los dos lados, sin dejar marcadores de conflicto, y sin correr \`git merge\`, abortarla ni commitear:\n${listPaths(paths)}`;
 }
 
-/** Why what is about to be pushed to a pull request cannot go: left-over markers, or a branch that lost the base commit it merged or the tip it had. */
+/** Why what is about to be pushed to a pull request cannot go: left-over markers, or a branch that lost the base commit it merged (not for a checks fix) or the tip it had. */
 function updateProblem(copy: WorkCopy, refresh: PrRefresh): string | undefined {
   // Only what is committed gets pushed, so that is what gets looked at.
   copy.discardChanges();
   const left = conflictMarkers(copy.cwd, refresh.paths ?? []);
   if (left.length) return `No se subió la actualización: quedaron marcadores de conflicto en:\n${listPaths(left)}`;
   const contains = (rev: string) => tryGit(["merge-base", "--is-ancestor", rev, "HEAD"], copy.cwd) !== undefined;
+  // A checks fix builds on the tip alone: nothing of the base was merged in.
+  if (refresh.checks !== undefined) return contains(refresh.head) ? undefined : "No se subió el arreglo: la rama ya no contiene a la punta anterior del pull request.";
   if (!contains(refresh.head) || !refresh.baseCommit || !contains(refresh.baseCommit)) return `No se subió la actualización: la rama ya no contiene a ${copy.base} y a la punta anterior del pull request.`;
   return undefined;
 }
@@ -740,6 +742,8 @@ async function buildLoop(
               `## Specification (the contract)\n${contract}`,
               memory,
               stageText,
+              // A checks fix keeps what the checks said even once an attempt's own feedback replaces it.
+              mark?.checks && mark.checks !== job.feedback && `## Failed checks of the pull request (fix them)\n${mark.checks}`,
               job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
               `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
             ]
@@ -794,6 +798,11 @@ async function buildLoop(
       }
       if (!changedCode().length) {
         failAttempt("No se hizo ningún cambio en el código. Implementá la especificación.");
+        continue;
+      }
+      // The pull request already has the whole change: a checks fix that commits nothing fixes nothing.
+      if (mark?.checks !== undefined && git(["rev-parse", "HEAD"], copy.cwd) === mark.head) {
+        failAttempt("No se hizo ningún cambio en la rama, así que los checks del pull request siguen fallando. Arreglalos.");
         continue;
       }
     }

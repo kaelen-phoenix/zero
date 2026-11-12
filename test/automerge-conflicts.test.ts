@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { answer, requestWork, retryJob, stop } from "../src/app.js";
 import type { AgentRequest, AgentRun } from "../src/agent.js";
 import type { QuotaReport } from "../src/engines/index.js";
-import { mergeKey, pollMerges, watchedJobs, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
+import { failedTests, MAX_CHECK_FIXES, MAX_FAILED_TESTS, mergeKey, pollMerges, watchedJobs, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
 import { cleanupKey } from "../src/line/cleanup.js";
 import { prRefreshKey } from "../src/line/finish.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
@@ -89,7 +89,7 @@ async function delivered(opts: { level?: string; maxAttempts?: number; verify?: 
   const again = () => runJob(job.id, deps);
   const parents = (rev: string) => run("git", ["rev-list", "--parents", "-n", "1", rev], bare).split(" ").length - 1;
   const contained = (rev: string, tip: string) => run("git", ["merge-base", "--is-ancestor", rev, tip], bare);
-  return { ctx, repo, bare, other, job, branch, head, remoteTip, localTip, moveBase, did, state, pass, merge, again, parents, contained, agents, opened, delivery: first.delivery, setBuild: (b: Build) => void (build = b) };
+  return { ctx, repo, bare, other, job, branch, head, remoteTip, localTip, moveBase, did, state, gh, pass, merge, again, parents, contained, agents, opened, delivery: first.delivery, setBuild: (b: Build) => void (build = b) };
 }
 
 const resolves = (content = "resolved\n"): Build => (req) => void writeTree(req.cwd, { "shared.txt": content });
@@ -269,6 +269,63 @@ describe("a pull request in conflict with its base", () => {
     f.setBuild(resolves("resolved twice\n"));
     expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3 });
     f.contained(updated, f.remoteTip());
+  });
+});
+
+describe("a pull request with failed checks GitHub has not called mergeable", () => {
+  const red: Check[] = [{ name: "test", done: true, ok: false, run: 7 }];
+  /** Failed checks, `mergeable: null`, and every way to unblock it on GitHub recorded. */
+  const failing = async () => {
+    const f = await delivered();
+    f.state.pr = { ...f.state.pr, mergeable: null };
+    f.state.checks = red;
+    f.gh.behind = async () => (f.did.push("behind"), true);
+    f.gh.updateBranch = async () => void f.did.push("updateBranch");
+    f.gh.rerun = async () => void f.did.push("rerun");
+    f.gh.failedLog = async () => (f.did.push("failedLog"), "log");
+    return f;
+  };
+
+  it("is tested locally and taken back when the base conflicts with it", async () => {
+    const f = await failing();
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", delivery: f.delivery });
+    expect(JSON.parse(f.ctx.store.getKv(prRefreshKey(f.job.id))!)).toMatchObject({ head: f.head });
+    expect(f.merge()).toMatchObject({ status: "waiting", resolving: f.head, resolutions: 1, conflict: f.head });
+    expect(f.did).toEqual([]);
+  });
+
+  it("is reported as in conflict, not as failed checks, once the resolutions are used up", async () => {
+    const f = await failing();
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ status: "waiting", resolutions: 2 } satisfies MergeState));
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    const state = f.merge();
+    expect(state.status).toBe("blocked");
+    expect(state.why).toMatch(/^en conflicto con la rama base; ya se usaron las 2 resoluciones/);
+    expect(f.did).toHaveLength(1);
+    expect(f.did[0]).toMatch(/^comment: .*en conflicto con la rama base/);
+    expect(f.did[0]).not.toContain("fallaron los checks");
+
+    // Looked at again later, it stays a conflict without asking for its checks.
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ ...f.merge(), backoff: undefined } satisfies MergeState));
+    await f.pass();
+    expect(f.merge().why).toMatch(/^en conflicto con la rama base/);
+    expect(f.did).toHaveLength(1);
+  });
+
+  it("keeps the checks path when it merges cleanly with its base", async () => {
+    const f = await failing();
+    f.moveBase("other.txt", "new\n");
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    expect(f.merge().conflict).toBeUndefined();
+    expect(f.merge().resolving).toBeUndefined();
+    expect(f.did).toContain("rerun");
   });
 });
 
@@ -652,5 +709,182 @@ describe("mergeBase", () => {
     expect(workCopyAt(repo, "main", "work").mergeBase("m", tip, pinned)).toEqual({ outcome: "merged" });
     expect(existsSync(join(repo, "c.txt"))).toBe(true);
     expect(existsSync(join(repo, "d.txt"))).toBe(false);
+  });
+});
+
+describe("a pull request whose checks fail for the change's own reasons", () => {
+  const red: Check[] = [{ name: "test", done: true, ok: false, run: 7 }];
+  const token = `ghp_${"a".repeat(36)}`;
+  const ciLog = [
+    "2026-11-12T10:00:00.0000000Z > vitest run",
+    "2026-11-12T10:00:01.0000000Z \x1b[31m FAIL  test/foo.test.ts > adds\x1b[39m",
+    `2026-11-12T10:00:02.0000000Z GH_TOKEN ${token}`,
+    "2026-11-12T10:00:03.0000000Z Error: Process completed with exit code 1.",
+  ].join("\n");
+  /** Up to date with its base, its failed run already run again at this tip: nothing left to try on GitHub. */
+  const failing = async (opts: Parameters<typeof delivered>[0] = {}, state: Partial<MergeState> = {}) => {
+    const f = await delivered(opts);
+    f.state.pr = { ...f.state.pr, mergeable: true };
+    f.state.checks = red;
+    f.gh.behind = async () => false;
+    f.gh.updateBranch = async () => void f.did.push("updateBranch");
+    f.gh.rerun = async () => void f.did.push("rerun");
+    f.gh.failedLog = async () => ciLog;
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ status: "blocked", rerun: f.head, ...state } satisfies MergeState));
+    return f;
+  };
+  const isAncestor = (bare: string, rev: string, tip: string) => spawnSync("git", ["merge-base", "--is-ancestor", rev, tip], { cwd: bare }).status === 0;
+
+  it("takes the job back after the rerun failed again, with what the checks said as feedback", async () => {
+    const f = await failing();
+    f.ctx.store.updateJob(f.job.id, { approvals: { ...f.ctx.store.getJob(f.job.id)!.approvals, integrate: true } });
+    await f.pass();
+    const job = f.ctx.store.getJob(f.job.id)!;
+    expect(job).toMatchObject({ status: "queued", checkpoint: "spec", station: "build", delivery: f.delivery });
+    expect(job.attempt).toBeLessThanOrEqual(2);
+    expect(job.approvals.integrate).toBeUndefined();
+    const mark = JSON.parse(f.ctx.store.getKv(prRefreshKey(f.job.id))!);
+    expect(mark).toMatchObject({ head: f.head, approved: true });
+    expect(mark.checks).toBe(job.feedback);
+    expect(f.merge()).toMatchObject({ status: "waiting", fixing: f.head, fixes: 1 });
+    expect(f.did).toEqual([]);
+
+    expect(job.feedback).toContain("`test`");
+    expect(job.feedback).toContain("test/foo.test.ts > adds");
+    expect(job.feedback).toContain("Process completed with exit code 1.");
+    expect(job.feedback).toMatch(/como datos/);
+    expect(job.feedback).not.toContain(token);
+  });
+
+  it("reruns first when the failed run was not run again at this tip", async () => {
+    const f = await failing({}, { rerun: undefined });
+    await f.pass();
+    expect(f.did).toEqual(["rerun"]);
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+  });
+
+  it("waits its turn while another pull request of the repository is under way", async () => {
+    const f = await failing();
+    const { job: o } = requestWork(f.ctx, { text: "otro" });
+    f.ctx.store.finishJob(o.id, "delivered", { delivery: { mode: "pull-request", branch: "zero/otro", url: "https://github.com/kaelen/demo/pull/11", autoMerge: true } });
+    // Delivered a moment ago and still waiting for its first checks.
+    f.ctx.store.setKv(mergeKey(o.id), JSON.stringify({ status: "waiting" } satisfies MergeState));
+    const ours = f.gh.pullRequest;
+    f.gh.pullRequest = async (n) => (n === 11 ? { open: true, merged: false, mergeable: null, headSha: "other" } : ours(n));
+    f.gh.checks = async (sha) => (sha === "other" ? [{ name: "test", done: false, ok: false }] : f.state.checks);
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.merge().status).toBe("blocked");
+    expect(f.merge().why).toMatch(/espera su turno/);
+    expect(f.did).toEqual([]);
+  });
+
+  it("still takes the job back with the check's name when its log cannot be read", async () => {
+    const f = await failing();
+    f.gh.failedLog = async () => {
+      throw new Error("404");
+    };
+    await f.pass();
+    const job = f.ctx.store.getJob(f.job.id)!;
+    expect(job.status).toBe("queued");
+    expect(job.feedback).toContain("`test`");
+  });
+
+  it("pushes the fix to the same pull request without merging the base", async () => {
+    const f = await failing();
+    const base = f.moveBase("other.txt", "new\n");
+    await f.pass();
+    const prompts: string[] = [];
+    f.setBuild((req) => {
+      prompts.push(req.prompt);
+      writeTree(req.cwd, { "fix.txt": "fixed\n" });
+    });
+    const done = await f.again();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("test/foo.test.ts > adds");
+    expect(done).toMatchObject({ status: "delivered", delivery: f.delivery });
+    expect(f.opened).toHaveLength(1);
+    const tip = f.remoteTip();
+    expect(tip).not.toBe(f.head);
+    expect(isAncestor(f.bare, f.head, tip)).toBe(true);
+    expect(isAncestor(f.bare, base, tip)).toBe(false);
+    expect(run("git", ["show", `${tip}:fix.txt`], f.bare)).toBe("fixed");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    expect(watchedJobs(f.ctx).map((j) => j.id)).toEqual([f.job.id]);
+  });
+
+  it("keeps the delivery and the tip when the fix never passes verify", async () => {
+    const f = await failing({ verify: [`node -e "process.exit(require('fs').existsSync('fix.txt') ? 1 : 0)"`] });
+    await f.pass();
+    f.setBuild((req) => void writeTree(req.cwd, { "fix.txt": "still broken\n" }));
+    const done = await f.again();
+    expect(done).toMatchObject({ status: "delivered", delivery: f.delivery });
+    expect(f.agents.count.build).toBe(4);
+    expect(f.localTip()).toBe(f.head);
+    expect(f.remoteTip()).toBe(f.head);
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    expect((await f.ctx.townhall.recall({ kinds: ["blocker"] })).map((p) => p.body).join()).toMatch(/No se arreglaron los checks/);
+
+    // The same tip is not tried again.
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ ...f.merge(), backoff: undefined } satisfies MergeState));
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.merge()).toMatchObject({ status: "blocked", fixing: f.head, fixes: 1 });
+    expect(f.merge().why).toMatch(/^fallaron los checks test; falló el arreglo automático de este head/);
+  });
+
+  it("is only told about once the fixes are used up", async () => {
+    const f = await failing({}, { fixes: MAX_CHECK_FIXES, fixing: "an-earlier-tip" });
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("delivered");
+    expect(f.ctx.store.getKv(prRefreshKey(f.job.id))).toBeUndefined();
+    const state = f.merge();
+    expect(state.status).toBe("blocked");
+    expect(state.why).toMatch(/^fallaron los checks/);
+    expect(state.why).toContain(`${MAX_CHECK_FIXES} arreglos automáticos`);
+    expect(state.why).toContain(`zero reintentar ${f.job.id}`);
+    expect(f.did).toHaveLength(1);
+    expect(f.did[0]).toMatch(/^comment: /);
+  });
+
+  it("keeps its fixes through waiting and blocked saves, and the owner's retry resets them", async () => {
+    const f = await failing();
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify({ status: "blocked", rerun: f.head, fixes: 1, fixing: f.head } satisfies MergeState));
+    f.state.checks = [{ name: "test", done: false, ok: false }];
+    await f.pass();
+    expect(f.merge()).toMatchObject({ status: "waiting", fixes: 1, fixing: f.head });
+    f.state.checks = red;
+    await f.pass();
+    expect(f.merge()).toMatchObject({ status: "blocked", fixes: 1, fixing: f.head });
+    expect(f.merge().backoff).toBeDefined();
+
+    expect(retryJob(f.ctx, f.job.id)).toMatchObject({ kind: "pull-request", job: { attempt: 0 } });
+    const reset = f.merge();
+    expect(reset.fixing).toBeUndefined();
+    expect(reset.fixes).toBeUndefined();
+    expect(reset.backoff).toBeUndefined();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)!.status).toBe("queued");
+    expect(f.merge()).toMatchObject({ fixing: f.head, fixes: 1 });
+  });
+});
+
+describe("failed tests in a CI log", () => {
+  it("finds vitest, jest, pytest and go failures without timestamps or colours", () => {
+    const text = [
+      "2026-11-12T10:00:00.1234567Z \x1b[31m FAIL \x1b[39m test/a.test.ts > sums",
+      "2026-11-12T10:00:00.1234567Z   ✕ renders the panel (12 ms)",
+      "2026-11-12T10:00:00.1234567Z FAILED tests/test_api.py::test_login - AssertionError",
+      "2026-11-12T10:00:00.1234567Z --- FAIL: TestMerge (0.01s)",
+      "2026-11-12T10:00:00.1234567Z ok  \texample.com/pkg\t0.2s",
+      "2026-11-12T10:00:00.1234567Z  FAIL  test/a.test.ts > sums",
+    ].join("\n");
+    expect(failedTests(text)).toEqual(["FAIL test/a.test.ts > sums", "✕ renders the panel (12 ms)", "FAILED tests/test_api.py::test_login - AssertionError", "--- FAIL: TestMerge (0.01s)"]);
+  });
+
+  it("keeps at most a fixed number", () => {
+    const text = Array.from({ length: MAX_FAILED_TESTS + 5 }, (_, i) => `--- FAIL: Test${i} (0.00s)`).join("\n");
+    expect(failedTests(text)).toHaveLength(MAX_FAILED_TESTS);
   });
 });

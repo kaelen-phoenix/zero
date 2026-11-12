@@ -349,13 +349,14 @@ export function setPriority(ctx: FactoryContext, id: string, level: string): Job
   return ctx.store.updateJob(id, { priority });
 }
 
-/** What `retryJob` did: a failed job back in the queue, or a pull request in conflict left for the merges pass to take back. */
+/** What `retryJob` did: a failed job back in the queue, or a pull request in conflict or with failed checks left for the merges pass to take back. */
 export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
 
 /**
  * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
- * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict gets its attempts reset
- * and its MergeState's `resolving`, `resolutions`, `conflict` and `backoff` dropped, so the merges pass takes it back. Anything else is refused.
+ * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict or after its checks fixes gets
+ * its attempts reset and its MergeState's `resolving`, `resolutions`, `conflict`, `fixing`, `fixes` and `backoff` dropped, so
+ * the merges pass takes it back. Anything else is refused.
  */
 export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
   const job = getJob(ctx, id);
@@ -369,13 +370,13 @@ export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
   if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
     const raw = ctx.store.getKv(mergeKey(job.id));
     const state: MergeState | undefined = raw ? JSON.parse(raw) : undefined;
-    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving || state.conflict)) {
-      const { resolving: _resolving, backoff: _backoff, resolutions: _resolutions, conflict: _conflict, ...rest } = state;
+    if (state?.status === "blocked" && (state.backoff?.mergeable === false || state.resolving || state.conflict || state.fixing || state.fixes)) {
+      const { resolving: _resolving, backoff: _backoff, resolutions: _resolutions, conflict: _conflict, fixing: _fixing, fixes: _fixes, ...rest } = state;
       ctx.store.setKv(mergeKey(job.id), JSON.stringify(rest satisfies MergeState));
       return { kind: "pull-request", job: ctx.store.updateJob(id, { attempt: 0 }) };
     }
   }
-  throw new Error(`El trabajo ${id} está ${job.status}: solo se reintenta un trabajo fallido o un pull request en conflicto.`);
+  throw new Error(`El trabajo ${id} está ${job.status}: solo se reintenta un trabajo fallido o un pull request en conflicto o con checks fallidos.`);
 }
 
 export async function answer(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<Job> {
