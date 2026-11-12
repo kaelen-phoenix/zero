@@ -290,6 +290,37 @@ describe("notify mode and the snapshot", () => {
     expect(ctx.store.getKv(securityAlertsProblemKey("demo"))).toMatch(/activadas/);
   });
 
+  it("says alerts are disabled in the repository, with where to turn them on", async () => {
+    const ctx = alertFactory();
+    const gh = fakeAlerts();
+    gh.state.error = Object.assign(new Error("Dependabot alerts are disabled for this repository."), { status: 403 });
+    await pollSecurityAlerts(ctx, () => gh.api);
+    const problem = ctx.store.getKv(securityAlertsProblemKey("demo"))!;
+    expect(problem).toContain("desactivadas");
+    expect(problem).toContain("https://github.com/kaelen/demo/settings/security_analysis");
+    expect(problem).not.toMatch(/permiso/);
+  });
+
+  it("reads the disabled alerts from the response body", async () => {
+    const ctx = alertFactory();
+    const gh = fakeAlerts();
+    gh.state.error = Object.assign(new Error("Forbidden"), { status: 403, response: { data: { message: "Dependabot alerts are disabled for this repository." } } });
+    await pollSecurityAlerts(ctx, () => gh.api);
+    const problem = ctx.store.getKv(securityAlertsProblemKey("demo"))!;
+    expect(problem).toContain("https://github.com/kaelen/demo/settings/security_analysis");
+    expect(problem).not.toMatch(/permiso/);
+  });
+
+  it("keeps the permission message for a real permission refusal", async () => {
+    const ctx = alertFactory();
+    const gh = fakeAlerts();
+    gh.state.error = Object.assign(new Error("Resource not accessible by integration"), { status: 403 });
+    await pollSecurityAlerts(ctx, () => gh.api);
+    const problem = ctx.store.getKv(securityAlertsProblemKey("demo"))!;
+    expect(problem).toMatch(/permiso/);
+    expect(problem).not.toContain("settings/security_analysis");
+  });
+
   it("stops at a GitHub limit with nothing recorded", async () => {
     const ctx = alertFactory([{ name: "a" }, { name: "b" }]);
     const a = fakeAlerts([alert(3)]);
@@ -376,6 +407,16 @@ describe("what the owner sees", () => {
     const ctx = alertFactory();
     ctx.store.setKv(securityAlertsProblemKey("demo"), "sin permiso");
     expect(formatStatus(factoryStatus(ctx))).toMatch(/Alertas de seguridad.*PROBLEMA: sin permiso/);
+  });
+
+  it("shows disabled alerts with the link to turn them on", async () => {
+    const ctx = alertFactory();
+    const gh = fakeAlerts();
+    gh.state.error = Object.assign(new Error("Dependabot alerts are disabled for this repository."), { status: 403 });
+    await pollSecurityAlerts(ctx, () => gh.api);
+    const row = formatStatus(factoryStatus(ctx)).split("\n").find((l) => l.includes("Alertas de seguridad"))!;
+    expect(row).toContain("PROBLEMA");
+    expect(row).toContain("settings/security_analysis");
   });
 
   it("lists the alerts in the briefing", async () => {
