@@ -2,10 +2,10 @@
 
 ## 1. Etapa 1: Installed copy freshness
 
-- [ ] 1.1 Add src/install-freshness.ts with the record, the key, checkInstall with injected git/fs/clock and readInstallFreshness.
-- [ ] 1.2 Add the daemon's hourly pass, injectable through DaemonOptions.install and off in once runs unless injected.
-- [ ] 1.3 Add FactoryStatus.install, installLine in format.ts for formatStatus and the panel summary, and the briefing's ## Instalación section.
-- [ ] 1.4 Tests for the record (behind, staleBuild, hourly guard, failed fetch, not a repository) and for the status and briefing lines.
+- [x] 1.1 Add src/install-freshness.ts with the record, the key, checkInstall with injected git/fs/clock and readInstallFreshness.
+- [x] 1.2 Add the daemon's hourly pass, injectable through DaemonOptions.install and off in once runs unless injected.
+- [x] 1.3 Add FactoryStatus.install, installLine in format.ts for formatStatus and the panel summary, and the briefing's ## Instalación section.
+- [x] 1.4 Tests for the record (behind, staleBuild, hourly guard, failed fetch, not a repository) and for the status and briefing lines.
 
 ## 2. Etapa 2: Evidence, repeated causes and the install jam
 

@@ -3,6 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
+import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
@@ -238,6 +239,16 @@ function githubLine(g: GithubStatus, now: Date): string {
   return `GitHub: ${parts.join(" · ")}`;
 }
 
+/** "Instalación atrasada: le faltan 2 commits fundidos de origin/main …", or an empty string while the installed copy is up to date. */
+export function installLine(r: InstallFreshness, now = new Date()): string {
+  if (!installBehind(r)) return "";
+  const parts: string[] = [];
+  const behind = r.behind ?? 0;
+  if (behind > 0) parts.push(`le ${behind === 1 ? "falta 1 commit fundido" : `faltan ${behind} commits fundidos`}${r.upstream ? ` de ${r.upstream}` : ""}`);
+  if (r.staleBuild) parts.push("la compilación (dist) es más vieja que el código (src); falta `npm run build`");
+  return `Instalación atrasada: ${parts.join(" y ")} (revisado ${resetTime(r.checkedAt, now)}).`;
+}
+
 /** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
 export function priorityNote(job: Job, now = new Date()): string {
   const level = effectivePriority(job, now);
@@ -300,6 +311,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
+  if (s.install) out.push(installLine(s.install, now));
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
   for (const b of s.billing) out.push(billingLine(b));

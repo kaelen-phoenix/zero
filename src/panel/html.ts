@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, jamLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
@@ -350,6 +350,7 @@ ${budgetStat(s)}
 ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><b>${t.egress.blocked}</b><span class="muted">salidas bloqueadas${t.egress.suspicious ? ` (${t.egress.suspicious} sospechosas)` : ""}</span></div>` : ""}
 </div>
 <p class="muted">${esc(budgetLine(s.budget))}</p>
+${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}</span></p>` : ""}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
