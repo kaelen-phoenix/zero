@@ -1,0 +1,13 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Run `git fetch origin` and merge `origin/zero/7dd6e0f1` (head b02d8f2) into the job branch with `git merge --no-ff`. Do not rebase it, and do not push to zero/7dd6e0f1.
+- [ ] 1.2 Resolve src/app.ts by keeping both sides. Keep the `self-update.js` import, `SelfUpdateStatus`/`selfUpdateStatus`, and `selfUpdate: selfUpdateStatus(ctx)` in factoryStatus, next to main's install, jams, onDemandRuns and every other field. In `briefing()`, pass the PR's `selfUpdates` argument in the position `renderBriefing`'s final signature expects, after any parameters main added (for example install).
+- [ ] 1.3 Resolve src/townhall/briefing.ts: add the trailing `selfUpdates: SelfUpdateEntry[] = []` parameter after main's parameters, and keep the `**Autoactualización**` decision lines and main's `## Instalación` section.
+- [ ] 1.4 Resolve src/daemon.ts. Keep main's passes (checkInstall, billing, alerts, cleanups, resendRefused and the rest) and add the PR's `selfUpdate`/`launchSwitch` DaemonOptions, `importSwitchResult` at start and in the loop, `checkSelfUpdate`, `switchVersion`, the `selfReady` gate on starting jobs and idle passes, and `await selfChecking` in the final cleanup.
+- [ ] 1.5 Resolve src/format.ts (keep both import sets, `selfUpdateLines`/`selfUpdateEntryText`, and main's `installLine`/jam lines in formatStatus), src/panel/html.ts (both summary additions), src/config.ts (the `selfUpdate` schema next to main's new keys such as `autostart`), src/cli.ts (help line, `--version`/`-v`, hidden `self-update check`, plus main's commands such as autostart and fusionar) and src/state/store.ts (`kvUpdatedAt` plus main's additions). In src/package-install.ts, export `findGit` and `runProcess` on top of main's version.
+- [ ] 1.6 Resolve AGENTS.md, README.md and README.es.md by keeping main's text and adding the PR's self-update entry and README sections. Both READMEs must keep the same structure and code blocks (test/docs.test.ts), and the wording must avoid the forbidden word (test/wording.test.ts).
+- [ ] 1.7 Rename docs/adr/0004-autoactualizacion.md to docs/adr/0005-autoactualizacion.md, change its header to `# ADR 0005 — …`, and update any reference to the old path, such as openspec/changes/zero-7dd6e0f1/tasks.md.
+- [ ] 1.8 Look for code that merged without textual conflicts but no longer compiles or no longer agrees (renamed helpers, changed signatures in app.ts/daemon.ts, FactoryStatus fixtures in tests that now need the new optional fields). Fix it with the smallest change that keeps both behaviours.
+- [ ] 1.9 Run `npm run typecheck`, `npm test`, `npm run build` and `npx openspec validate --all`. Search tracked files for conflict markers. Commit the merge (two parents) with the resolution.
