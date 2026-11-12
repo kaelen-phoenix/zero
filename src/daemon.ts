@@ -6,6 +6,8 @@ import { egressPolicy } from "./box/egress.js";
 import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { syncAutostart, type AutostartResult } from "./autostart.js";
+import { checkInstall } from "./install-freshness.js";
+import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
 import { githubIssues, pollIssues, type IssueApi } from "./intake/github.js";
@@ -36,7 +38,7 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
-import { unjamPass } from "./line/unjam.js";
+import { resendAfterCapability, unjamPass } from "./line/unjam.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -80,6 +82,8 @@ export interface DaemonOptions {
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
   packageUpdates?: boolean;
+  /** Where zero's installation is and how to ask its git; tests inject both. Without it, `once` runs do not look at the installation. */
+  install?: { root?: string; git?: GitRunner };
   /** Kills the processes an interrupted job left in its work copy; defaults to the real one. */
   killLeftovers?: (folder: string) => number;
   /** Makes the login entry match the file's `autostart`; tests inject a fake. Without it, `once` runs leave the entry alone. */
@@ -353,6 +357,28 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (cleaning = undefined));
   };
 
+  // How far the installed copy of zero is from what was merged; the pass itself keeps it to once an hour.
+  let installAt = 0;
+  let checkingInstall: Promise<unknown> | undefined;
+  const lookAtInstall = () => {
+    if (checkingInstall || (opts.once && !opts.install) || Date.now() - installAt < (opts.once ? 0 : INTAKE_MS)) return;
+    installAt = Date.now();
+    checkingInstall = checkInstall(store, now(), opts.install)
+      .catch((err) => log.warn("installation check failed", { error: String(err) }))
+      .finally(() => (checkingInstall = undefined));
+  };
+
+  // Requests refused for a missing capability, sent again once the job that adds it entered its base branch.
+  let resendAt = 0;
+  let resending: Promise<unknown> | undefined;
+  const resendRefused = () => {
+    if (resending || !ctx.config.lines.length || Date.now() - resendAt < (opts.once ? 0 : INTAKE_MS)) return;
+    resendAt = Date.now();
+    resending = resendAfterCapability(ctx, now())
+      .catch((err) => log.warn("resending refused requests failed", { error: String(err) }))
+      .finally(() => (resending = undefined));
+  };
+
   // Finished jobs' traces sent to the owner's OpenTelemetry collector, when one is configured; a down collector never holds up the loop.
   let exportAt = 0;
   let exporting: Promise<void> | undefined;
@@ -462,6 +488,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       takeJira();
       retryCleanups();
       readBilling();
+      lookAtInstall();
+      resendRefused();
       exportTraces();
       runSchedules();
       runOnDemand();
@@ -543,6 +571,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await readingAlerts;
     await cleaning;
     await readingBilling;
+    await checkingInstall;
+    await resending;
     await exporting;
     await scheduling;
     await demanding;

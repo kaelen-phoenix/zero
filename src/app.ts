@@ -47,6 +47,7 @@ import { tryGit } from "./shell.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
+import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -420,6 +421,8 @@ export interface FactoryStatus {
   billing: BillingHold[];
   /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
   jams: JamView[];
+  /** The installed copy of zero, only while it misses merged commits or a rebuild (see `checkInstall`). */
+  install?: InstallFreshness;
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -590,6 +593,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   const now = (ctx.now ?? (() => new Date()))();
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
+  const installFreshness = readInstallFreshness(ctx.store);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -603,6 +607,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     outages,
     billing,
     jams: jamViews(ctx),
+    ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
     box,
     boxWait: waitsForBox(ctx),
@@ -717,7 +722,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */

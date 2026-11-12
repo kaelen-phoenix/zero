@@ -1,9 +1,10 @@
 import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, jamLine, jobOrigin, resetTime } from "../format.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime } from "../format.js";
 import { billingText, outageText } from "../line/automerge.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
+import { installBehind, type InstallFreshness } from "../install-freshness.js";
 
 /**
  * What the night shift did in the period: new proposals left for the owner,
@@ -55,7 +56,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = []): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -100,6 +101,9 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   }
   if (alerts.length) {
     sections.push(["## Alertas de seguridad", ...alerts.map((a) => `- (${a.line}) ${describeAlert(a)}`)].join("\n"));
+  }
+  if (installBehind(install)) {
+    sections.push(["## Instalación", `- ${installLine(install, new Date(metrics.to))}`, "Actualizar: `git pull` y `npm run build` en la carpeta de zero, y apagá la fábrica (`zero shutdown`) para que arranque con la versión nueva."].join("\n"));
   }
   if (jams.length) {
     sections.push(["## Trabas", ...jams.map((j) => `- ${jamLine(j)}`)].join("\n"));

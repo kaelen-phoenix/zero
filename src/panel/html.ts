@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, jamLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, STATUS_TEXT } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
@@ -350,6 +350,7 @@ ${budgetStat(s)}
 ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><b>${t.egress.blocked}</b><span class="muted">salidas bloqueadas${t.egress.suspicious ? ` (${t.egress.suspicious} sospechosas)` : ""}</span></div>` : ""}
 </div>
 <p class="muted">${esc(budgetLine(s.budget))}</p>
+${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}</span></p>` : ""}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
@@ -504,6 +505,7 @@ function proposalCard(p: ProposalView): string {
 <p class="muted">Costo estimado ${usd(p.estimatedUsd)}${p.paths.length ? ` · ${esc(p.paths.join(", "))}` : ""}${by ? ` · aprobada por ${by}` : ""}</p>
 ${p.researchNote ? `<p class="muted">Nació de la nota de investigación ${esc(p.researchNote)}${p.thirdParty ? " · agrega algo de terceros" : ""}${p.business ? " · de negocio: espera tu decisión" : ""}</p>` : ""}
 ${p.sourceIssueUrl ? `<p class="muted">Nació del issue #${esc(String(p.sourceIssue ?? ""))}: <a href="${esc(p.sourceIssueUrl)}">${esc(p.sourceIssueUrl)}</a></p>` : ""}
+${p.forJobs?.length ? `<p class="muted">Agrega la capacidad que les faltó a ${esc(p.forJobs.join(", "))}: se reenvían cuando entre.</p>` : ""}
 ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.issueUrl)}</a></p>` : ""}
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
 }

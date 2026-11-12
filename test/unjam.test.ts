@@ -1,16 +1,19 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { AGENT_ACCESS, agentName, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, approveProposal, briefing, factoryStatus, monthlyReport, retryJob } from "../src/app.js";
+import { ANDON_KEY, approveProposal, briefing, factoryStatus, monthlyReport, proposalsView, retryJob } from "../src/app.js";
 import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
+import { INSTALL_FRESHNESS_KEY } from "../src/install-freshness.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
 import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { scoutSpent } from "../src/line/scout.js";
-import { collectJams, readDiagnosis, unjamKey, unjamLine, unjamPass, unjamRetriedKey } from "../src/line/unjam.js";
+import { SPEC_REFUSAL } from "../src/line/runner.js";
+import { collectJams, readDiagnosis, resendAfterCapability, unjamKey, unjamLine, unjamPass, unjamResentKey, unjamRetriedKey } from "../src/line/unjam.js";
 import { cleanupKey } from "../src/line/cleanup.js";
 import { formatStatus } from "../src/format.js";
-import { overviewPage } from "../src/panel/html.js";
+import { overviewPage, proposalsPage } from "../src/panel/html.js";
 import { reportHtml, reportMarkdown } from "../src/report.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory, validSpec } from "./helpers.js";
@@ -299,7 +302,8 @@ describe("fix jobs from unjam", () => {
     const pr = blockedPr(ctx, 1);
     await unjamPass(ctx, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
     const [proposal] = unjamProposals(ctx);
-    expect(proposal).toMatchObject({ status: "approved", decidedBy: "night-shift", why: "El workflow de android falla", change: "Arreglá el workflow de android", paths: ["android/app/build.gradle"] });
+    expect(proposal).toMatchObject({ status: "approved", decidedBy: "night-shift", change: "Arreglá el workflow de android", paths: ["android/app/build.gradle"] });
+    expect(proposal!.why.startsWith("El workflow de android falla\n\nEvidencia:")).toBe(true);
     const job = ctx.store.getJob(proposal!.jobId!)!;
     expect(job).toMatchObject({ status: "queued", priority: "baja", source: { kind: "night-shift", proposal: proposal!.id, autonomy: "build", origin: "unjam" } });
     expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ proposal: proposal!.id, job: job.id });
@@ -368,6 +372,97 @@ describe("fix jobs from unjam", () => {
     const proposal = ctx.store.createProposal({ line: "tienda", title: "Arreglar CI", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam" });
     const { job } = approveProposal(ctx, proposal.id);
     expect(job.source).toEqual({ kind: "night-shift", proposal: proposal.id, origin: "unjam" });
+  });
+});
+
+describe("evidence and lessons", () => {
+  const fix = (over: Record<string, unknown> = {}) => cause({ title: "Actualizar el workflow de android", action: "fix", todo: null, request: "Arreglá el workflow de android", paths: [], estimatedUsd: 0.5, ...over });
+  const lineOf = (ctx: Ctx) => ctx.config.lines[0]!;
+  const lessons = async (ctx: Ctx) => (await ctx.townhall.recall({ line: "tienda", kinds: ["lesson"] })).filter((p) => p.topic.startsWith("traba repetida"));
+
+  it("lists the jobs, the pull requests and how many jams on the proposal", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" } });
+    const job = failedJob(ctx);
+    const pr = blockedPr(ctx, 9);
+    const outage = { id: "outage:acme/tienda", line: "tienda", kind: "checks-outage" as const, text: "caído" };
+    const jams = [...collectJams(ctx, lineOf(ctx), at(3)), outage];
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`job:${job.id}`, `pr:${pr.id}`, outage.id] })]).runner, at(3));
+    const [proposal] = ctx.store.listProposals({ line: "tienda" });
+    expect(proposal!.why).toContain(job.id);
+    expect(proposal!.why).toContain(pr.id);
+    expect(proposal!.why).toContain("https://github.com/acme/tienda/pull/9");
+    expect(proposal!.why).toContain("3 trabas");
+    expect(proposal!.why).toContain("vista en 1 revisión");
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.seen).toBe(1);
+  });
+
+  it("counts a cause seen in consecutive diagnoses", async () => {
+    const { ctx } = factory({ nightShift: { autonomy: "propose" } });
+    const job = failedJob(ctx);
+    ctx.store.setKv(unjamKey("tienda"), JSON.stringify({ at: at(3, 0, 28).toISOString(), causes: [cause({ title: "actualizar el workflow de  Android", jams: [`job:${job.id}`], seen: 2 })] }));
+    await unjamLine(ctx, lineOf(ctx), collectJams(ctx, lineOf(ctx), at(3)), diagnosing([fix({ jams: [`job:${job.id}`] }), cause({ title: "Otra", jams: [`job:${job.id}`] })]).runner, at(3));
+    expect(readDiagnosis(ctx.store, "tienda")!.causes.map((c) => c.seen)).toEqual([3, 1]);
+    expect(ctx.store.listProposals({ line: "tienda" })[0]!.why).toContain("3 revisiones");
+  });
+
+  it("publishes a lesson for a cause with two jams, none for a single new jam", async () => {
+    const { ctx } = factory();
+    const a = failedJob(ctx);
+    const b = failedJob(ctx);
+    await unjamLine(ctx, lineOf(ctx), collectJams(ctx, lineOf(ctx), at(3)), diagnosing([cause({ jams: [`job:${a.id}`, `job:${b.id}`] }), cause({ title: "Sola", jams: [`job:${a.id}`] })]).runner, at(3));
+    const posts = await lessons(ctx);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.topic).toContain("Checks de android rotos");
+    expect(posts[0]!.body).toContain("El workflow de android falla");
+    expect(posts[0]!.body).toContain("2 trabas");
+  });
+
+  it("publishes a lesson for a cause seen before, even with one jam", async () => {
+    const { ctx } = factory();
+    const job = failedJob(ctx);
+    ctx.store.setKv(unjamKey("tienda"), JSON.stringify({ at: at(3, 0, 28).toISOString(), causes: [cause({ jams: [`job:${job.id}`] })] }));
+    await unjamLine(ctx, lineOf(ctx), collectJams(ctx, lineOf(ctx), at(3)), diagnosing([cause({ jams: [`job:${job.id}`] })]).runner, at(3));
+    expect((await lessons(ctx)).map((p) => p.body)).toEqual([expect.stringContaining("vista en 2 revisiones seguidas")]);
+  });
+
+  it("stores the diagnosis when the townhall is down", async () => {
+    const { ctx } = factory();
+    const a = failedJob(ctx);
+    const b = failedJob(ctx);
+    ctx.townhall = { publish: async () => Promise.reject(new Error("disco lleno")), recall: async () => [] };
+    const causes = await unjamLine(ctx, lineOf(ctx), collectJams(ctx, lineOf(ctx), at(3)), diagnosing([cause({ jams: [`job:${a.id}`, `job:${b.id}`] })]).runner, at(3));
+    expect(causes).toHaveLength(1);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes).toHaveLength(1);
+  });
+});
+
+describe("an installed copy behind", () => {
+  function withRemote(url: string) {
+    const repo = gitRepo();
+    execFileSync("git", ["remote", "add", "origin", url], { cwd: repo });
+    return repo;
+  }
+  const record = (over: Record<string, unknown> = {}) => JSON.stringify({ checkedAt: at(2).toISOString(), behind: 4, staleBuild: false, repository: "owner/zero", upstream: "origin/main", ...over });
+
+  it("is a jam of zero's own line", () => {
+    const { ctx } = factory({ lines: [{ name: "zero", repo: withRemote("https://github.com/owner/zero.git") }, { name: "tienda", repo: withRemote("https://github.com/acme/tienda.git") }] });
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, record());
+    const [zero, tienda] = ctx.config.lines;
+    const jams = collectJams(ctx, zero!, at(3));
+    expect(jams).toEqual([expect.objectContaining({ id: "install", kind: "install", line: "zero" })]);
+    expect(jams[0]!.text).toContain("4 merged commits of origin/main");
+    expect(collectJams(ctx, tienda!, at(3))).toEqual([]);
+  });
+
+  it("says a stale build, and nothing once up to date or without a repository", () => {
+    const { ctx } = factory({ lines: [{ name: "zero", repo: withRemote("git@github.com:owner/zero.git") }] });
+    const line = ctx.config.lines[0]!;
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 0, staleBuild: true }));
+    expect(collectJams(ctx, line, at(3))[0]!.text).toContain("older than its code");
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 0 }));
+    expect(collectJams(ctx, line, at(3))).toEqual([]);
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify({ checkedAt: at(2).toISOString(), problem: "no es un repositorio" }));
+    expect(collectJams(ctx, line, at(3))).toEqual([]);
   });
 });
 
@@ -515,5 +610,127 @@ describe("jams in sight", () => {
     expect(line!.jams).toBeUndefined();
     expect(reportMarkdown(line!)).not.toContain("Trabas");
     expect(reportHtml(line!)).not.toContain("Trabas");
+  });
+});
+
+describe("missing capabilities", () => {
+  function withRemote(url: string) {
+    const repo = gitRepo();
+    execFileSync("git", ["remote", "add", "origin", url], { cwd: repo });
+    return repo;
+  }
+  const lines = () => [{ name: "tienda", repo: gitRepo() }, { name: "zero", repo: withRemote("https://github.com/owner/zero.git") }];
+  const capability = (over: Record<string, unknown> = {}) =>
+    cause({ title: "Agregar exportar a PDF", kind: "code", action: "capability", line: "zero", todo: null, request: "Agregá a zero la capacidad de exportar a PDF", paths: ["src/pdf.ts"], estimatedUsd: 1, ...over });
+  const refused = (ctx: Ctx) => failedJob(ctx, `${SPEC_REFUSAL}: falta exportar a PDF`);
+  const tienda = (ctx: Ctx) => ctx.config.lines[0]!;
+  const onZero = (ctx: Ctx) => ctx.store.listProposals({ line: "zero" });
+
+  it("proposes the capability on the target line, tied to the refused job", async () => {
+    const { ctx } = factory({ lines: lines(), nightShift: { autonomy: "propose" } });
+    const f = refused(ctx);
+    const agents = diagnosing([capability({ jams: [`job:${f.id}`] })]);
+    await unjamLine(ctx, tienda(ctx), collectJams(ctx, tienda(ctx), at(3)), agents.runner, at(3));
+    expect(agents.calls[0]!.prompt).toContain("tienda, zero (owner/zero)");
+    const [proposal] = onZero(ctx);
+    expect(proposal).toMatchObject({ status: "pending", origin: "unjam", forJobs: [f.id], change: "Agregá a zero la capacidad de exportar a PDF" });
+    expect(proposal!.why).toContain(f.id);
+    expect(proposal!.why).toContain("línea tienda");
+    expect(ctx.store.listProposals({ line: "tienda" })).toHaveLength(0);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ action: "capability", line: "zero", proposal: proposal!.id });
+    expect(proposalsPage(proposalsView(ctx), "n")).toContain(`Agrega la capacidad que les faltó a ${f.id}`);
+  });
+
+  it("follows the target line's autonomy", async () => {
+    const { ctx } = factory({ lines: lines(), nightShift: { autonomy: "build" } });
+    const f = refused(ctx);
+    await unjamLine(ctx, tienda(ctx), collectJams(ctx, tienda(ctx), at(3)), diagnosing([capability({ jams: [`job:${f.id}`] })]).runner, at(3));
+    const [proposal] = onZero(ctx);
+    expect(proposal).toMatchObject({ status: "approved", decidedBy: "night-shift" });
+    expect(ctx.store.getJob(proposal!.jobId!)).toMatchObject({ line: "zero", status: "queued", source: { kind: "night-shift", origin: "unjam" } });
+  });
+
+  it("becomes none for an unknown line or a job that did not stop at spec", async () => {
+    const { ctx } = factory({ lines: lines(), nightShift: { autonomy: "propose" } });
+    const f = refused(ctx);
+    const built = failedJob(ctx, "verify falló");
+    await unjamLine(ctx, tienda(ctx), collectJams(ctx, tienda(ctx), at(3)), diagnosing([capability({ line: "otra", jams: [`job:${f.id}`] }), capability({ title: "Otra capacidad", jams: [`job:${built.id}`] })]).runner, at(3));
+    expect(ctx.store.listProposals()).toHaveLength(0);
+    const causes = readDiagnosis(ctx.store, "tienda")!.causes;
+    expect(causes.map((c) => c.action)).toEqual(["none", "none"]);
+    expect(causes[0]!.line).toBeUndefined();
+    expect(causes[0]!.todo).toContain("Pedile a zero");
+  });
+
+  it("does not repeat a pending proposal, and records it", async () => {
+    const { ctx } = factory({ lines: lines(), nightShift: { autonomy: "propose" } });
+    const f = refused(ctx);
+    const jams = collectJams(ctx, tienda(ctx), at(3));
+    await unjamLine(ctx, tienda(ctx), jams, diagnosing([capability({ jams: [`job:${f.id}`] })]).runner, at(3));
+    await unjamLine(ctx, tienda(ctx), jams, diagnosing([capability({ title: "agregar exportar a  pdf", jams: [`job:${f.id}`] })]).runner, at(4));
+    expect(onZero(ctx)).toHaveLength(1);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.proposal).toBe(onZero(ctx)[0]!.id);
+  });
+
+  describe("resending", () => {
+    /** An approved capability proposal on `target` for job `original`, whose job finished at 2:00. */
+    function approved(ctx: Ctx, target: string, original: string, delivery: { mode: "merge" | "pull-request"; commit?: string }) {
+      const proposal = ctx.store.createProposal({ line: target, title: "Agregar exportar a PDF", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam", forJobs: [original] });
+      const job = ctx.store.createJob({ line: target, kind: "request", request: "y", budgetUsd: 1 });
+      ctx.store.updateJob(job.id, { status: "delivered", finishedAt: at(2).toISOString(), delivery: { branch: `zero/${job.id}`, ...delivery, ...(delivery.mode === "pull-request" && { url: "https://github.com/owner/zero/pull/3", autoMerge: true }) } });
+      ctx.store.updateProposal(proposal.id, { status: "approved", jobId: job.id, decidedBy: "owner" });
+      return job;
+    }
+    const queuedOn = (ctx: Ctx, line: string) => ctx.store.listJobs({ line, status: ["queued"] });
+    const record = (over: Record<string, unknown>) => JSON.stringify({ checkedAt: at(3).toISOString(), behind: 0, staleBuild: false, repository: "owner/zero", ...over });
+
+    it("sends the original request again once, after a merge on another repository", async () => {
+      const { ctx } = factory({ lines: [...lines(), { name: "plus", repo: gitRepo() }] });
+      const f = refused(ctx);
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 5 }));
+      approved(ctx, "plus", f.id, { mode: "merge", commit: "abc123" });
+      expect(await resendAfterCapability(ctx, at(3))).toBe(1);
+      const [again] = queuedOn(ctx, "tienda");
+      expect(again!.request).toBe("arreglar el carrito");
+      expect(ctx.store.getKv(unjamResentKey(f.id))).toBe(again!.id);
+      const posts = await ctx.townhall.recall({ line: "tienda", kinds: ["lesson"] });
+      expect(posts.some((p) => p.topic.startsWith("capacidad agregada") && p.body.includes(again!.id))).toBe(true);
+      expect(await resendAfterCapability(ctx, at(4))).toBe(0);
+      expect(queuedOn(ctx, "tienda")).toHaveLength(1);
+    });
+
+    it("waits for the installed copy when the capability went into zero's own repository", async () => {
+      const { ctx } = factory({ lines: lines() });
+      const f = refused(ctx);
+      approved(ctx, "zero", f.id, { mode: "merge", commit: "abc123" });
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 1 }));
+      await resendAfterCapability(ctx, at(3));
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ checkedAt: at(1).toISOString() }));
+      await resendAfterCapability(ctx, at(3));
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ staleBuild: true }));
+      await resendAfterCapability(ctx, at(3));
+      expect(queuedOn(ctx, "tienda")).toHaveLength(0);
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({}));
+      expect(await resendAfterCapability(ctx, at(4))).toBe(1);
+      expect(queuedOn(ctx, "tienda")).toHaveLength(1);
+    });
+
+    it("waits for the pull request to merge", async () => {
+      const { ctx } = factory({ lines: [...lines(), { name: "plus", repo: gitRepo() }] });
+      const f = refused(ctx);
+      const job = approved(ctx, "plus", f.id, { mode: "pull-request" });
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "blocked", why: "fallaron los checks" }));
+      expect(await resendAfterCapability(ctx, at(3))).toBe(0);
+      ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "merged" }));
+      expect(await resendAfterCapability(ctx, at(3))).toBe(1);
+    });
+
+    it("leaves a job that is no longer failed", async () => {
+      const { ctx } = factory({ lines: [...lines(), { name: "plus", repo: gitRepo() }] });
+      const f = refused(ctx);
+      approved(ctx, "plus", f.id, { mode: "merge", commit: "abc123" });
+      ctx.store.updateJob(f.id, { status: "stopped" });
+      expect(await resendAfterCapability(ctx, at(3))).toBe(0);
+    });
   });
 });

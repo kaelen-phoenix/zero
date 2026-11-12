@@ -104,6 +104,9 @@ const MAX_BUSY_RETRIES = 2;
 /** The kv key that counts a job's locked-folder retries. */
 export const busyRetryKey = (jobId: string) => `busy-retry:${jobId}`;
 
+/** How a job refused at spec as not feasible starts its reason: the unjam station reads it as a missing capability. */
+export const SPEC_REFUSAL = "El pedido no se puede hacer sin ayuda";
+
 const BUSY_CODES = /\bEBUSY\b/;
 
 /** Whether an exception is a locked file or folder (EBUSY on Windows), by the `code` or message of the error or of its chain of causes. */
@@ -594,7 +597,7 @@ async function specStation(
     if (!spec) return `La estación spec no produjo una especificación válida: ${error}`;
 
     await learn(spec.learnings, spec.followUps.map((f) => ({ kind: "proposal" as const, line: line.name, job: job.id, source: "spec", topic: f.slice(0, 80), body: f })));
-    if (!spec.feasible) return `El pedido no se puede hacer sin ayuda: ${spec.reason}`;
+    if (!spec.feasible) return `${SPEC_REFUSAL}: ${spec.reason}`;
 
     spec = uniqueRequirementNames(spec, job.id, existingRequirementNames(copy.cwd, spec.capability, changeName(job.id)));
     const files = renderOpenSpecChange(spec, { jobId: job.id, newCapability: !capabilityExists(copy.cwd, spec.capability) });
