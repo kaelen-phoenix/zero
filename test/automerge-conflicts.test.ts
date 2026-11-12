@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answer, requestWork, stop } from "../src/app.js";
+import { answer, requestWork, retryJob, stop } from "../src/app.js";
 import type { AgentRequest, AgentRun } from "../src/agent.js";
 import type { QuotaReport } from "../src/engines/index.js";
 import { mergeKey, pollMerges, watchedJobs, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
@@ -169,6 +169,56 @@ describe("a pull request in conflict with its base", () => {
     f.contained(base, f.remoteTip());
     f.contained(f.head, f.remoteTip());
     expect(f.remoteTip()).not.toBe(f.head);
+  });
+
+  /** The pull request blocked in conflict, as the merges pass leaves it, then retried by the person in charge. */
+  const retried = (f: Awaited<ReturnType<typeof delivered>>) => {
+    const state: MergeState = { status: "blocked", why: "en conflicto con la rama base", backoff: { sha: f.head, mergeable: false, why: "en conflicto con la rama base", delayMs: 300_000, nextChecksAt: new Date(Date.now() - 1000).toISOString() } };
+    f.ctx.store.setKv(mergeKey(f.job.id), JSON.stringify(state));
+    expect(retryJob(f.ctx, f.job.id)).toMatchObject({ kind: "pull-request", job: { attempt: 0 } });
+  };
+
+  it("resumes at verify without building when a retried pull request at attempt 0 merges the base cleanly", async () => {
+    const log = join(tempDir("zero-log-"), "verify.log").replace(/\\/g, "/");
+    const f = await delivered({ verify: [`node -e "require('fs').appendFileSync('${log}','x')"`] });
+    retried(f);
+    const verified = readFileSync(log, "utf8").length;
+    const builds = f.agents.count.build;
+    const reviews = f.agents.count.review!;
+    const base = f.moveBase("other.txt", "new\n");
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", attempt: 0 });
+    const spansBefore = new Set(f.ctx.store.spansForJob(f.job.id).map((s) => s.id));
+    const done = await f.again();
+    expect(done).toMatchObject({ status: "delivered", attempt: 0, delivery: f.delivery });
+    expect(f.agents.count.build).toBe(builds);
+    expect(f.agents.count.review).toBe(reviews + 1);
+    expect(readFileSync(log, "utf8").length).toBe(verified + 1);
+    f.contained(base, f.remoteTip());
+    f.contained(f.head, f.remoteTip());
+    const attempts = f.ctx.store.spansForJob(f.job.id).filter((s) => s.name === "zero.attempt" && !spansBefore.has(s.id));
+    expect(attempts.map((s) => s.attrs["zero.attempt"])).toEqual([1]);
+  });
+
+  it("still builds a retried pull request at attempt 0 when its base merge conflicts", async () => {
+    const f = await delivered();
+    retried(f);
+    f.moveBase();
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", attempt: 0 });
+    const builds = f.agents.count.build!;
+    f.setBuild((req) => {
+      expect(inMerge(req.cwd)).toBe(true);
+      return resolves()(req);
+    });
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 1, delivery: f.delivery });
+    expect(f.agents.count.build).toBe(builds + 1);
+  });
+
+  it("builds a fresh job, which has no refresh mark", async () => {
+    const f = await delivered();
+    expect(f.agents.count.build).toBe(1);
+    expect(f.ctx.store.getJob(f.job.id)!.attempt).toBe(1);
   });
 
   it("gives the replacement engine the same merge in progress when the plan cuts the build", async () => {

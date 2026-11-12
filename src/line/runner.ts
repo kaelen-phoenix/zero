@@ -198,7 +198,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       if (merge.outcome === "refused") return await fail(`No se pudo mezclar ${copy.base}: ${merge.reason}`);
       if (merge.outcome === "merged") {
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, resolved: true });
-        // Nothing to build: it goes back through verify and the reviews, without spending an attempt.
+        // Nothing to build: it goes back through verify and the reviews, without spending an attempt, at any attempt count.
         job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
       } else {
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });
@@ -674,10 +674,13 @@ async function buildLoop(
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
     let job = store.getJob(jobId)!;
     // A job interrupted after building resumes at the station it was in, without rebuilding.
+    // A clean merge of the base resumes at verify at any attempt count, even 0 (a retried pull request).
+    const mark = prRefresh(store, jobId);
     const resumingWriter = job.attempt > 0 ? writers.findIndex((a) => a.name === job.station) : -1;
     const resumingCustom = job.attempt > 0 ? custom.findIndex((a) => a.name === job.station) : -1;
-    const resuming = job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security" || resumingWriter >= 0 || resumingCustom >= 0);
-    const attempt = resuming ? job.attempt : job.attempt + 1;
+    const cleanMerge = job.station === "verify" && mark?.resolved === true;
+    const resuming = cleanMerge || (job.attempt > 0 && (job.station === "verify" || job.station === "review" || job.station === "security" || resumingWriter >= 0 || resumingCustom >= 0));
+    const attempt = Math.max(resuming ? job.attempt : job.attempt + 1, 1);
     // A staged spec is built one stage at a time; the earlier ones are committed and verified.
     const stageNo = Math.min((job.stagesDone ?? 0) + 1, stages.length);
     const stage = stages[stageNo - 1];
@@ -701,7 +704,6 @@ async function buildLoop(
       attemptSpan.end("error", { "error.message": feedback.slice(0, 300) });
     };
     // This attempt resolves the conflicts of merging the base. Every engine call gets the merge started again from the tip, whatever the last one left.
-    const mark = prRefresh(store, jobId);
     const conflicted = !resuming && mark?.paths && mark.baseCommit && !mark.resolved ? { ...mark, paths: mark.paths, baseCommit: mark.baseCommit } : undefined;
     const startMerge = () => {
       if (!conflicted) return;
