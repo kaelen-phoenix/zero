@@ -342,6 +342,28 @@ zero panel rotate              # new key: previous links stop working
 - Remote access uses `cloudflared` (Apache-2.0). zero downloads it with your permission from its official releases and, on Windows, verifies Cloudflare's signature.
 - While the tunnel is open, Cloudflare carries the panel's traffic. Close it when you are not using it.
 
+### Remote chat (phone)
+
+You can run the factory from the chat on your phone (ChatGPT, the Claude app or another MCP client) with no PC in front of you. zero serves MCP over HTTP (streamable HTTP) at `/mcp`, through the same tunnel as the panel, with the same tools as `zero mcp`. The reasons, the official sources and why it is not published in the ChatGPT or Claude directories are in [`docs/adr/0007-chat-remoto.md`](docs/adr/0007-chat-remoto.md).
+
+```sh
+zero panel remote on           # the tunnel the chat goes through
+zero mcp remote on             # turns the remote chat on and shows the address for your chat's connector
+zero mcp clients               # connected chats: name, permissions, approval date and last use
+zero mcp revoke <client>       # disconnects a chat: its tokens stop working at once
+zero mcp pendientes            # delicate actions a chat asked for, waiting for you
+zero mcp confirmar <id>        # runs one of them (they expire after 15 minutes)
+zero mcp remote off            # turns it off
+```
+
+- It is off by default and only the terminal turns it on: no chat tool can.
+- zero is its own OAuth 2.1 authorization server, with PKCE (S256) and dynamic client registration. Each new connection is approved by you on the panel's page, with your key; the chat never gets a password.
+- Access tokens last 1 hour and refresh tokens 7 days, rotating on every use. zero keeps only their SHA-256 hash.
+- Two permissions: read (status, traces, proposals, research, reports) and act (request work, answer).
+- Merging, stopping, approving proposals or protected files and blocking sites from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
+- The "Chat remoto" tab lists the connected chats, revokes them (it asks for confirmation first) and confirms the held actions.
+- The quick tunnel's address changes every time it restarts, so the chat's connector has to be updated then.
+
 ## Monthly report
 
 A summary per line and calendar month, for you and to share with that line's client. Code writes it from `state.db`, never a model, and it writes nothing back.

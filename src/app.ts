@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync 
 import { mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
@@ -11,7 +11,7 @@ import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } 
 import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
-import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
+import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
@@ -38,10 +38,11 @@ import { jobStage } from "./line/spec.js";
 import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
+import { ageText, formatEgressSites, formatJob, formatMerge, formatRequest, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { tryGit } from "./shell.js";
@@ -1546,6 +1547,137 @@ export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {})
 export function setRemotePanel(ctx: FactoryContext, on: boolean) {
   if (on) ctx.store.setKv(REMOTE_KEY, "on");
   else ctx.store.deleteKv(REMOTE_KEY);
+}
+
+/** Turns the remote chat (MCP over HTTP with OAuth, through the panel's tunnel) on or off; only the owner's terminal calls it. */
+export function setRemoteMcp(ctx: Pick<FactoryContext, "store">, on: boolean) {
+  if (on) ctx.store.setKv(REMOTE_MCP_KEY, "on");
+  else ctx.store.deleteKv(REMOTE_MCP_KEY);
+}
+
+export function remoteMcpOn(ctx: Pick<FactoryContext, "store">): boolean {
+  return ctx.store.getKv(REMOTE_MCP_KEY) === "on";
+}
+
+/** The remote chat clients with a live connection, for the panel and `zero mcp clients`. */
+export function remoteChatClients(ctx: Pick<FactoryContext, "store">, now = new Date()): ConnectedClient[] {
+  return connectedClients(ctx.store, now);
+}
+
+/** Revokes a remote chat client and every token it holds; false when there is no such client. */
+export function revokeRemoteChatClient(ctx: Pick<FactoryContext, "store">, client: string): boolean {
+  return revokeClient(ctx.store, client.trim());
+}
+
+/** What the panel's `/remote-chat` page and `zero mcp clients` show: the switch, the address chats connect to, clients and held actions. */
+export interface RemoteChatView {
+  on: boolean;
+  /** `<tunnel>/mcp`, only while the panel's tunnel is open. */
+  url?: string;
+  clients: ConnectedClient[];
+  pending: PendingRemoteAction[];
+}
+
+export function remoteChatView(ctx: Pick<FactoryContext, "store">, now = new Date()): RemoteChatView {
+  const tunnel = ctx.store.getKv(REMOTE_URL_KEY);
+  return {
+    on: remoteMcpOn(ctx),
+    ...(tunnel && { url: `${tunnel.replace(/\/+$/, "")}/mcp` }),
+    clients: remoteChatClients(ctx, now),
+    pending: pendingRemoteActions(ctx, now),
+  };
+}
+
+export const PENDING_PREFIX = "mcp-pending:";
+export const PENDING_TTL_MS = 15 * 60_000;
+
+/** A delicate action a remote chat asked for, held until the person in charge confirms it. */
+export type RemoteAction =
+  | { tool: "zero_merge"; args: { target: string } }
+  | { tool: "zero_stop"; args: { job?: string } }
+  | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
+  | { tool: "zero_egress_block"; args: { site: string } }
+  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
+
+export type PendingRemoteAction = RemoteAction & { id: string; client?: string; clientName?: string; createdAt: string; expiresAt: string; text: string };
+
+/** What a held action would do, in the owner's words. */
+export function describeRemoteAction(a: RemoteAction): string {
+  switch (a.tool) {
+    case "zero_merge":
+      return `fundir el pull request de ${a.args.target}`;
+    case "zero_stop":
+      return a.args.job ? `detener el trabajo ${a.args.job}` : "detener toda la fábrica";
+    case "zero_proposal_decide":
+      return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
+    case "zero_egress_block":
+      return `bloquear ${a.args.site} para la caja`;
+    case "zero_answer":
+      return `aprobar los archivos protegidos del trabajo ${a.args.job}`;
+  }
+}
+
+/** Holds a remote chat's delicate action (kv `mcp-pending:<id>`) instead of running it. */
+export function holdRemoteAction(ctx: Pick<FactoryContext, "store">, action: RemoteAction, client?: string, now = new Date()): PendingRemoteAction {
+  const id = randomBytes(4).toString("hex");
+  const known = client ? getClient(ctx.store, client) : undefined;
+  const held: PendingRemoteAction = {
+    ...action,
+    id,
+    ...(client && { client }),
+    ...(known && { clientName: known.name }),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + PENDING_TTL_MS).toISOString(),
+    text: describeRemoteAction(action),
+  };
+  ctx.store.setKv(PENDING_PREFIX + id, JSON.stringify(held));
+  return held;
+}
+
+/** The held actions still in time, oldest first; expired ones are dropped. */
+export function pendingRemoteActions(ctx: Pick<FactoryContext, "store">, now = new Date()): PendingRemoteAction[] {
+  const out: PendingRemoteAction[] = [];
+  for (const [key, raw] of ctx.store.kvWithPrefix(PENDING_PREFIX)) {
+    let held: PendingRemoteAction | undefined;
+    try {
+      held = JSON.parse(raw) as PendingRemoteAction;
+    } catch {
+      held = undefined;
+    }
+    if (!held || Date.parse(held.expiresAt) <= now.getTime()) ctx.store.deleteKv(key);
+    else out.push(held);
+  }
+  return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Runs a held action once the person in charge confirmed it, through the same operations as the CLI. The record is
+ * removed before running, so a second confirmation does nothing; an expired one is only told.
+ */
+export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts: { now?: Date; merges?: MergeApiFactory } = {}): Promise<{ ok: boolean; text: string }> {
+  const key = PENDING_PREFIX + id.trim();
+  const raw = /^[0-9a-f]{8}$/.test(id.trim()) ? ctx.store.getKv(key) : undefined;
+  if (!raw) return { ok: false, text: `No hay ninguna acción pendiente ${id.trim()}: ya se confirmó, venció o no existe.` };
+  ctx.store.deleteKv(key);
+  const held = JSON.parse(raw) as PendingRemoteAction;
+  const now = opts.now ?? new Date();
+  if (Date.parse(held.expiresAt) <= now.getTime()) return { ok: false, text: `La acción pendiente ${held.id} (${held.text}) venció sin confirmarse: no se hizo nada.` };
+  const subscription = () => onSubscription(ctx.store, ctx.config.engine);
+  switch (held.tool) {
+    case "zero_merge":
+      return { ok: true, text: formatMerge(await mergePullRequest(ctx, held.args.target, { via: "chat", ...(opts.merges && { api: opts.merges }) })) };
+    case "zero_stop": {
+      const r = await stop(ctx, held.args.job);
+      return { ok: true, text: r.factory ? "Fábrica detenida: nada nuevo empieza hasta que la reanudes." : formatJob(r.job!, { subscription: subscription() }) };
+    }
+    case "zero_proposal_decide":
+      if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
+      return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };
+    case "zero_egress_block":
+      return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
+    case "zero_answer":
+      return { ok: true, text: formatJob(await answer(ctx, held.args.job, held.args.decision, held.args.note), { subscription: subscription() }) };
+  }
 }
 
 /** Turns a line's GitHub issue intake on (with its label) or off, keeping the file's comments. */

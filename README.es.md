@@ -341,6 +341,28 @@ zero panel rotate              # clave nueva: los links anteriores dejan de serv
 - El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
 - Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
 
+### Chat remoto (celular)
+
+Podés manejar la fábrica desde el chat del celular (ChatGPT, la app de Claude u otro cliente MCP) sin la PC delante. zero sirve MCP por HTTP (streamable HTTP) en `/mcp`, por el mismo túnel del panel, con las mismas herramientas que `zero mcp`. Los motivos, las fuentes oficiales y por qué no se publica en los directorios de ChatGPT ni de Claude están en [`docs/adr/0007-chat-remoto.md`](docs/adr/0007-chat-remoto.md).
+
+```sh
+zero panel remote on           # el túnel por el que entra el chat
+zero mcp remote on             # enciende el chat remoto y muestra la dirección para el conector de tu chat
+zero mcp clients               # chats conectados: nombre, permisos, fecha de aprobación y último uso
+zero mcp revoke <client>       # desconecta un chat: sus tokens dejan de servir en el momento
+zero mcp pendientes            # acciones delicadas que pidió un chat y te esperan
+zero mcp confirmar <id>        # hace una de ellas (vencen a los 15 minutos)
+zero mcp remote off            # lo apaga
+```
+
+- Viene apagado y solo se enciende desde la terminal: ninguna herramienta del chat puede.
+- zero es su propio servidor de autorización OAuth 2.1, con PKCE (S256) y registro dinámico de clientes. Cada conexión nueva la aprobás vos en la página del panel, con tu clave; el chat nunca recibe una contraseña.
+- Los tokens de acceso duran 1 hora y los de renovación 7 días, y rotan en cada uso. zero guarda solo su hash SHA-256.
+- Dos permisos: leer (estado, trazas, propuestas, investigación, informes) y actuar (pedir trabajos, responder).
+- Fundir, detener, aprobar propuestas o archivos protegidos y bloquear sitios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
+- La pestaña "Chat remoto" lista los chats conectados, los revoca (pide confirmación antes) y confirma las acciones retenidas.
+- La dirección del túnel rápido cambia cada vez que se reinicia, así que entonces hay que actualizar el conector del chat.
+
 ## Informe mensual
 
 Un resumen por línea y mes calendario, para vos y para compartir con el cliente de esa línea. Lo arma código a partir de `state.db`, nunca un modelo, y no escribe nada.
