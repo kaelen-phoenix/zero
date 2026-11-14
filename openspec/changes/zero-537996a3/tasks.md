@@ -2,10 +2,10 @@
 
 ## 1. Etapa 1: Documento de decisión y numeración de ADR
 
-- [ ] 1.1 Rename 0005-autoactualizacion.md to 0006-autoactualizacion.md (header ADR 0006).
-- [ ] 1.2 Write docs/adr/0007-fabrica-distribuida.md covering every topic.
-- [ ] 1.3 Add test/adr-distribuida.test.ts, with the prefix uniqueness check.
-- [ ] 1.4 Add the OpenSpec change skeleton (proposal, tasks, spec delta for distributed-factory).
+- [x] 1.1 Rename 0005-autoactualizacion.md to 0006-autoactualizacion.md (header ADR 0006).
+- [x] 1.2 Write docs/adr/0007-fabrica-distribuida.md covering every topic.
+- [x] 1.3 Add test/adr-distribuida.test.ts, with the prefix uniqueness check.
+- [x] 1.4 Add the OpenSpec change skeleton (proposal, tasks, spec delta for distributed-factory).
 
 ## 2. Etapa 2: Configuración distribuida e identidad de máquina
 
