@@ -1,6 +1,7 @@
 import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime } from "../format.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText } from "../format.js";
 import { billingText, outageText } from "../line/automerge.js";
+import type { SelfUpdateEntry } from "../self-update.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
 import type { EgressSummary, Metrics } from "../telemetry/metrics.js";
 import type { Post } from "./types.js";
@@ -56,7 +57,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness, selfUpdates: SelfUpdateEntry[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -141,6 +142,7 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     ...ofKind("proposal").map((p) => `- **Propuesta**${ref(p)}: ${p.body}`),
     ...outages.map((o) => `- **E${outageText(o.repository, o.since, o.checks).slice(1)}**: no se gasta nada en sus pull requests hasta que vuelva.`),
     ...billing.map((b) => `- **${billingText(b.repository, b.since)}**.`),
+    ...selfUpdates.map((e) => `- **Autoactualización**: ${selfUpdateEntryText(e, new Date(metrics.to))}.`),
     ...unmerged.map((m) => `- **Sin fundir**: ${m.url}: ${m.why ?? "no se puede fundir"}.`),
     ...(egress?.sites ?? [])
       .filter((s) => s.suspicious)

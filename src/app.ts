@@ -24,6 +24,7 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
+import { entryProblem, readSelfUpdate, type SelfUpdateEntry } from "./self-update.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
@@ -440,6 +441,8 @@ export interface FactoryStatus {
   stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
+  /** The self-update, only when it is on or has a history: the last update, a problem not told by it, and a version waiting to switch. */
+  selfUpdate?: SelfUpdateStatus;
   daemon: DaemonInfo;
   /** Zero daemons found on the machine; only `zero status` looks for them. */
   daemonProcesses?: number[];
@@ -588,6 +591,25 @@ function mergeViews(ctx: FactoryContext) {
   return { merges, outages: [...outages.values()], billing: [...billing.values()] };
 }
 
+export interface SelfUpdateStatus {
+  last?: SelfUpdateEntry;
+  problem?: string;
+  ready?: { from: string; to: string };
+}
+
+/** What the self-update has to tell; nothing while it is off and never ran. */
+export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefined {
+  const { state, history } = readSelfUpdate(ctx.store);
+  if (!ctx.config.selfUpdate.enabled && !history.length) return undefined;
+  const last = history.at(-1);
+  const problem = state.problem && !(last && state.problem === entryProblem(last)) ? state.problem : undefined;
+  return {
+    ...(last && { last }),
+    ...(problem && { problem }),
+    ...(state.status === "ready" && state.from && state.to && { ready: { from: state.from, to: state.to } }),
+  };
+}
+
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
   const now = (ctx.now ?? (() => new Date()))();
@@ -620,6 +642,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
+    selfUpdate: selfUpdateStatus(ctx),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -722,7 +745,8 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install);
+  const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */

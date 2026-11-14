@@ -783,6 +783,12 @@ export class Store {
       .run(key, value, this.stamp());
   }
 
+  /** When a kv entry was last written (ISO), for passes that act on changes since their last look. */
+  kvUpdatedAt(key: string): string | undefined {
+    const row = this.db.prepare("SELECT updated_at FROM kv WHERE key = ?").get(key) as Row | undefined;
+    return str(row?.updated_at);
+  }
+
   kvWithPrefix(prefix: string): [string, string][] {
     const rows = this.db.prepare("SELECT key, value FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key").all(prefix.length, prefix) as Row[];
     return rows.map((r) => [String(r.key), String(r.value)]);

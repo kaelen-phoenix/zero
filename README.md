@@ -528,6 +528,16 @@ Each call records in its trace which engine it used, which one it replaced and w
 
 Everything the factory builds is signed by zero in the loop. Every commit it makes (the specification, each attempt and the integration merge) ends with the trailer `Built-by: zero in the loop <https://zerointheloop.com>`, and the pull requests it opens, the issues it creates and the comments it posts end with `— Hecho con [zero in the loop](https://zerointheloop.com)`, before the hidden mark the factory uses to recognise its own comments. It is on by default with those texts; `text` and `trailer` change them (the trailer is one `Token: value` line) and `signature: off` turns it off. A line's own `signature` (`off` or `{ text, trailer }`) replaces the global one for that line.
 
+### Self-update (`selfUpdate`)
+
+zero can update itself after its own changes merge, so the person in charge does not have to pull, build and restart by hand. It is off by default and only the factory file turns it on; no chat tool can change it.
+
+```yaml
+selfUpdate: { enabled: true }   # remote: origin, branch: the install folder's, startTimeoutSeconds: 120
+```
+
+The daemon looks at the install folder's branch on its remote once a day and again after a pull request of a line working on that folder merges. It only takes a fast-forward, and never with local changes or on another branch: then it warns once and changes nothing. It prepares the new commit apart, under `~/.zero/self-update/`, without touching the version that runs: the same lock rules as the packages, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` and a load of the factory file. If a step fails it stays on the current version, warns once and never prepares that commit again. With the new version ready it starts no more jobs, and once none is running it hands over to a separate process (Node built-ins only) and shuts down as usual: that process puts the new build in place, starts the daemon detached like `zero start --detach` and waits for it to take the daemon lock. If it does not within `startTimeoutSeconds`, it stops it, puts the previous build and commit back and starts the previous version. Interrupted and queued jobs resume from their checkpoint. `zero status`, the panel and the briefing tell each update (from which commit to which), a rollback or a failure; `zero --version` prints the version and the commit. Packages update with `zero package update`.
+
 ## Custom agents
 
 Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). There are two types. `type: review` (the default) is a read-only reviewer that runs after `review` and `security`, on the same change. `type: build` writes in the work copy, after `build` and before `verify`, and can never run after `verify`. Within each type, the global ones go first, then the line's, each in file order.

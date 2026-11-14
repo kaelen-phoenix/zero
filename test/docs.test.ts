@@ -51,6 +51,14 @@ describe("README in English and Spanish", () => {
     expect(section(es, "## Próximas etapas")).not.toMatch(/ACP|OpenCode/);
   });
 
+  it("document self-update in both languages", () => {
+    for (const text of [en, es]) {
+      expect(text).toContain("selfUpdate");
+      expect(blocks(text).map((b) => b.body).join("\n")).toContain("selfUpdate: { enabled: true }");
+      expect(text).toContain("startTimeoutSeconds");
+    }
+  });
+
   it("document Codex without its sandbox in both languages", () => {
     for (const text of [en, es]) {
       expect(blocks(text).map((b) => b.body).join("\n")).toContain("codex: { sandbox: off }");

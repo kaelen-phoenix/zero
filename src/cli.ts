@@ -22,6 +22,8 @@ import { log } from "./log.js";
 import { serveStdio } from "./mcp/server.js";
 import { downloadCloudflared, downloadPlan, findCloudflared } from "./panel/tunnel.js";
 import { monthlyMarkdown } from "./report.js";
+import { factoryConfig } from "./packages.js";
+import { versionText } from "./self-update.js";
 import { runSetup } from "./setup.js";
 import { onPath } from "./shell.js";
 
@@ -32,6 +34,7 @@ Primeros pasos:
   zero install                   Registra zero en tus clientes de chat (Claude Code, …)
   zero setup                     Asistente: con qué motores trabajar (suscripción, API key o ambas), límites, caja, panel y GitHub.
                                  Se puede volver a correr; con Docker: docker compose run --rm zero setup
+  zero --version                 Versión instalada (y su commit)
 
 Uso diario (también desde el chat):
   zero request "<pedido>"        Pide un trabajo   [--line <nombre>] [--spec] [--prioridad baja|media|alta|urgente]
@@ -138,9 +141,14 @@ async function main(argv: string[]): Promise<number> {
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
     },
   });
   const [command, ...rest] = positionals;
+  if (values.version) {
+    console.log(versionText());
+    return 0;
+  }
   const home = factoryHome();
 
   if (!command || values.help || command === "help") {
@@ -216,6 +224,12 @@ async function main(argv: string[]): Promise<number> {
     case "mcp":
       await serveStdio(home);
       return -1; // keep running until the client closes stdin
+    case "self-update": {
+      // Hidden: a prepared version proves it can read the factory file before the factory switches to it.
+      if (rest[0] !== "check") break;
+      await factoryConfig(home);
+      return 0;
+    }
     case "line": {
       if (rest[0] !== "add") break;
       const line = await addLine(home, rest[1] ?? process.cwd(), values.name);
