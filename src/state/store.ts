@@ -544,6 +544,7 @@ export class Store {
     return this.updateJob(id, { ...patch, status, question: null, finishedAt: this.stamp() });
   }
 
+  /** Jobs oldest first, at most 1000 rows unless `limit` says otherwise; a cap drops the newest, so readers of live or recent jobs pass `-1` (no cap). */
   listJobs(filter: { status?: JobStatus[]; line?: string; limit?: number } = {}): Job[] {
     const where: string[] = [];
     const values: (string | number)[] = [];

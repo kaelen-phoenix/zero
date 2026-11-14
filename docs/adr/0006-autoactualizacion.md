@@ -1,4 +1,4 @@
-# ADR 0005 — La fábrica se actualiza sola
+# ADR 0006 — La fábrica se actualiza sola
 
 - **Estado:** aceptado
 - **Fecha:** 2026-11-11

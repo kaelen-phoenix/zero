@@ -249,7 +249,7 @@ export function recordMergeCommit(ctx: FactoryContext, job: Job, commit: string 
 
 /** Delivered jobs whose pull request the factory still has to merge. */
 export function watchedJobs(ctx: FactoryContext): Job[] {
-  return ctx.store.listJobs({ status: ["delivered"], limit: 200 }).filter((job) => {
+  return ctx.store.listJobs({ status: ["delivered"], limit: -1 }).filter((job) => {
     if (!job.delivery?.autoMerge || !job.delivery.url) return false;
     const raw = ctx.store.getKv(mergeKey(job.id));
     return !raw || !FINAL.has((JSON.parse(raw) as MergeState).status);

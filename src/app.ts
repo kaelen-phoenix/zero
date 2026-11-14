@@ -729,18 +729,18 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const unmerged = status.merges.filter((m) => m.status === "blocked");
   const autonomous = (j: Job) => j.source?.kind === "night-shift" && Boolean(j.source.autonomy);
   const finished = ctx.store
-    .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
+    .listJobs({ status: [...FINAL_STATUSES], limit: -1 })
     .filter((j) => j.source?.kind === "night-shift" && j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())
     .reverse();
   const night = {
     proposals: ctx.store.listProposals({ status: ["pending"], since: from }),
-    built: ctx.store.listJobs({ status: ["waiting"], limit: 10_000 }).filter((j) => autonomous(j) && awaitsIntegration(j)),
+    built: ctx.store.listJobs({ status: ["waiting"], limit: -1 }).filter((j) => autonomous(j) && awaitsIntegration(j)),
     integrated: finished.filter((j) => autonomous(j) && j.status === "delivered"),
     jobs: finished.filter((j) => !(autonomous(j) && j.status === "delivered")),
   };
   const research = ctx.store.listResearchNotes({ since: from }).filter((n) => n.createdAt <= to.toISOString());
   const packages = ctx.store
-    .listJobs({ limit: 10_000 })
+    .listJobs({ limit: -1 })
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
@@ -1255,7 +1255,7 @@ function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
     const pr = url ? pullRequestOf(url) : undefined;
     return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
   };
-  const job = ctx.store.listJobs({ status: ["delivered"], limit: 1000 }).find((j) => same(j.delivery?.url));
+  const job = ctx.store.listJobs({ status: ["delivered"], limit: -1 }).find((j) => same(j.delivery?.url));
   if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
   return job;
 }
