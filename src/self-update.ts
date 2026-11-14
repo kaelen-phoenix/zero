@@ -132,7 +132,7 @@ function due(ctx: FactoryContext, state: SelfUpdateState, install: string, at: D
   if (!state.checkedAt || at.getTime() - Date.parse(state.checkedAt) >= CHECK_EVERY_MS) return true;
   const lines = new Set(ctx.config.lines.filter((l) => samePath(l.repo, install)).map((l) => l.name));
   if (!lines.size) return false;
-  for (const job of ctx.store.listJobs({ status: ["delivered"] })) {
+  for (const job of ctx.store.listJobs({ status: ["delivered"], limit: -1 })) {
     if (!lines.has(job.line)) continue;
     const raw = ctx.store.getKv(mergeKey(job.id));
     if (!raw) continue;

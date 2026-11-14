@@ -734,3 +734,17 @@ describe("missing capabilities", () => {
     });
   });
 });
+
+describe("collecting jams behind a long history", () => {
+  it("sees a failure created after more than 10,000 older jobs", () => {
+    const { ctx } = factory();
+    ctx.store.transaction(() => {
+      for (let i = 0; i < 10_001; i++) {
+        const job = ctx.store.createJob({ line: "tienda", kind: "request", request: `viejo ${i}`, budgetUsd: 1 });
+        ctx.store.updateJob(job.id, { status: "stopped", finishedAt: at(1).toISOString() });
+      }
+    });
+    const failed = failedJob(ctx);
+    expect(collectJams(ctx, ctx.config.lines[0]!, at(3)).find((j) => j.kind === "failed-job")).toMatchObject({ job: failed.id });
+  });
+});

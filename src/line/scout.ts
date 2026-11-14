@@ -98,7 +98,7 @@ const scoutedKey = (line: string) => `scout:${line}`;
 /** What zero itself computes from the line's last 30 days, so the agent does not have to read the traces on its own. */
 export function scoutDigest(store: Store, line: string, now: Date): string {
   const since = new Date(now.getTime() - DIGEST_DAYS * DAY).toISOString();
-  const jobs = store.listJobs({ line, limit: 10_000 }).filter((j) => j.createdAt >= since);
+  const jobs = store.listJobs({ line, limit: -1 }).filter((j) => j.createdAt >= since);
   const name = (j: Job) => `${j.id} "${(j.title ?? j.request).split("\n")[0]!.slice(0, 120)}"`;
   const failed = jobs.filter((j) => j.status === "failed").map((j) => `- ${name(j)}: ${j.reason ?? "no reason"}`);
   const retried = jobs.filter((j) => j.attempt > 1 || j.feedback).map((j) => `- ${name(j)}: ${j.attempt} attempts${j.feedback ? `; sent back: ${j.feedback.slice(0, 300)}` : ""}`);

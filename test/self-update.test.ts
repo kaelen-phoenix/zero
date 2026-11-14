@@ -210,6 +210,22 @@ describe("self-update check and side preparation", () => {
     expect(fetches(f.calls, f.install)).toBe(2);
   });
 
+  it("sees a merge of its own line past 1000 delivered jobs", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({ tip: HEAD }, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    await selfUpdateCheck(ctx, f.deps);
+    later(clock, 60 * 60_000);
+    const jobs = ctx.store.transaction(() =>
+      Array.from({ length: 1001 }, () => ctx.store.finishJob(ctx.store.createJob({ line: "zero", kind: "request", request: "x", budgetUsd: 3 }).id, "delivered")),
+    );
+    later(clock, 60_000);
+    ctx.store.setKv(mergeKey(jobs.at(-1)!.id), JSON.stringify({ status: "merged" }));
+    later(clock, 60_000);
+    await selfUpdateCheck(ctx, f.deps);
+    expect(fetches(f.calls, f.install)).toBe(2);
+  });
+
   it("stops before npm when the target's lock resolves a git dependency", async () => {
     const clock = { at: new Date("2026-11-11T10:00:00Z") };
     const f = fakes({ lock: GIT_LOCK }, clock);
