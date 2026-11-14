@@ -185,17 +185,17 @@ export function parseScope(raw: unknown): Scope[] | undefined {
  * Checks an authorization request. `redirect` says whether an error may be sent
  * to the redirect URI: never when the client or the URI is not the registered one.
  */
-export function checkAuthorize(store: Store, params: Record<string, string | undefined>): AuthorizeRequest | (OAuthError & { redirect: boolean }) {
+export function checkAuthorize(store: Store, params: Record<string, string | undefined>): AuthorizeRequest | (OAuthError & { redirect: false }) | (OAuthError & { redirect: true; redirectUri: string }) {
   const client = getClient(store, params.client_id ?? "");
   if (!client) return { ...fail("invalid_client", "cliente desconocido"), redirect: false };
   const redirectUri = params.redirect_uri ?? (client.redirectUris.length === 1 ? client.redirectUris[0] : undefined);
   if (!redirectUri || !client.redirectUris.includes(redirectUri)) return { ...fail("invalid_request", "redirect_uri no registrada"), redirect: false };
-  if (params.response_type !== "code") return { ...fail("unsupported_response_type", "solo response_type=code"), redirect: true };
+  if (params.response_type !== "code") return { ...fail("unsupported_response_type", "solo response_type=code"), redirect: true, redirectUri };
   if (!params.code_challenge) return { ...fail("invalid_request", "falta code_challenge (PKCE)"), redirect: false };
   if (params.code_challenge_method !== "S256") return { ...fail("invalid_request", "code_challenge_method tiene que ser S256"), redirect: false };
   if (!/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge)) return { ...fail("invalid_request", "code_challenge inválido"), redirect: false };
   const scope = parseScope(params.scope);
-  if (!scope) return { ...fail("invalid_scope", "permisos desconocidos"), redirect: true };
+  if (!scope) return { ...fail("invalid_scope", "permisos desconocidos"), redirect: true, redirectUri };
   return { client, redirectUri, challenge: params.code_challenge, scope, state: params.state };
 }
 

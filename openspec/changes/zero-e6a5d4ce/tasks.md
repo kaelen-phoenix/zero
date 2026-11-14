@@ -14,9 +14,9 @@
 
 ## 3. Etapa 3: MCP por HTTP en el daemon
 
-- [ ] 3.1 Agregar la opción `remote` a createZeroMcpServer: herramientas según el permiso y acciones delicadas como pendientes (kv `mcp-pending:<id>`), con confirmRemoteAction/pendingRemoteActions en app.ts.
-- [ ] 3.2 Crear src/mcp/http.ts (metadatos, register, authorize, token, revoke, /mcp con StreamableHTTPServerTransport sin sesión, Bearer, Host, 404 apagado, 503 sin túnel) y conectarlo en src/panel/server.ts antes del chequeo de la cookie, con la página de aprobación en html.ts y el ingreso que vuelve a la ruta con query.
-- [ ] 3.3 Agregar test/mcp-remote.test.ts de punta a punta sobre el servidor del panel.
+- [x] 3.1 Agregar la opción `remote` a createZeroMcpServer: herramientas según el permiso y acciones delicadas como pendientes (kv `mcp-pending:<id>`), con confirmRemoteAction/pendingRemoteActions en app.ts.
+- [x] 3.2 Crear src/mcp/http.ts (metadatos, register, authorize, token, revoke, /mcp con StreamableHTTPServerTransport sin sesión, Bearer, Host, 404 apagado, 503 sin túnel) y conectarlo en src/panel/server.ts antes del chequeo de la cookie, con la página de aprobación en html.ts y el ingreso que vuelve a la ruta con query.
+- [x] 3.3 Agregar test/mcp-remote.test.ts de punta a punta sobre el servidor del panel.
 
 ## 4. Etapa 4: Control desde el panel y la terminal, y documentación
 

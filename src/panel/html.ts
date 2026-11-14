@@ -277,7 +277,13 @@ ${list.packages.length ? packages : `<div class="card muted">No hay paquetes ins
 }
 
 /** The only page without a session: exchanges the key in the link's fragment for a cookie, clears it from the address bar and goes back to the page the link pointed at. */
-export function loginPage(nonce: string, failed = false): string {
+/** A path of this panel to return to after signing in: relative, never to another site. */
+export const safeBack = (back: string | null | undefined): string | undefined =>
+  back && back.startsWith("/") && !back.startsWith("//") && !/[\\\r\n]/.test(back) && back.length <= 4000 ? back : undefined;
+
+/** `back` is where the pasted-key form returns to (path and query), as an approval link needs. */
+export function loginPage(nonce: string, failed = false, back?: string): string {
+  const to = safeBack(back);
   const script = `(() => {
   const k = new URLSearchParams(location.hash.slice(1)).get("k");
   if (!k) return;
@@ -292,7 +298,7 @@ export function loginPage(nonce: string, failed = false): string {
     `<div class="card"><h1>Panel de tu fábrica</h1>
 <p class="muted">Abrí el link que te dio <code>zero panel</code>, o pegá la clave.</p>
 <p id="msg" class="bad">${failed ? "La clave no es válida." : ""}</p>
-<form method="post" action="/login"><label for="k">Clave</label><input id="k" name="k" type="password" autocomplete="off"><button class="primary">Ingresar</button></form></div>
+<form method="post" action="/login">${to ? `<input type="hidden" name="back" value="${esc(to)}">` : ""}<label for="k">Clave</label><input id="k" name="k" type="password" autocomplete="off"><button class="primary">Ingresar</button></form>${to ? `<p class="muted">Si ya abriste el panel en este navegador, <a href="${esc(to)}">seguí desde acá</a>.</p>` : ""}</div>
 <script nonce="${nonce}">${script}</script>`,
     { nonce, nav: false },
   );
@@ -646,6 +652,30 @@ export function confirmMergePage(j: Job, nonce: string): string {
     `<div class="card"><h1>¿Fundir «${esc(jobName(j))}»?</h1><p>La fábrica funde <a href="${esc(url)}">${esc(url)}</a> en la rama base solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, te dice por qué sin forzar nada.</p>
 <form method="post" action="/job/${esc(j.id)}/merge"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, fundirlo</button></form>
 <p><a href="/job/${esc(j.id)}">Cancelar</a></p></div>`,
+    { nonce },
+  );
+}
+
+const SCOPE_TEXT: Record<string, string> = {
+  "zero:read": "leer: estado, trazas, propuestas, investigación e informes",
+  "zero:act": "actuar: pedir trabajos y responder consultas (fundir, detener, aprobar propuestas o archivos protegidos y bloquear sitios te piden una confirmación aparte)",
+};
+
+/** The approval of a new remote chat connection: who asks, where the answer goes and what it may do. */
+export function authorizePage(a: { clientName: string; clientId: string; redirectUri: string; scope: string[]; params: Record<string, string> }, nonce: string): string {
+  const hidden = Object.entries(a.params)
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
+    .join("");
+  return page(
+    "Conectar un chat",
+    `<div class="card"><h1>¿Conectar «${esc(a.clientName)}» con tu fábrica?</h1>
+<p>Un chat pide manejar la fábrica desde afuera. Aprobalo solo si lo acabás de conectar vos.</p>
+<p><b>Cliente:</b> ${esc(a.clientName)} <span class="muted">(${esc(a.clientId)})</span></p>
+<p><b>Vuelve a:</b> <code>${esc(a.redirectUri)}</code></p>
+<p><b>Permisos:</b></p><ul>${a.scope.map((s) => `<li>${esc(SCOPE_TEXT[s] ?? s)}</li>`).join("")}</ul>
+<p class="muted">Podés revocar la conexión cuando quieras desde el panel o con <code>zero mcp revoke</code>.</p>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="confirm" value="1"><button class="primary">Sí, conectar</button></form>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="deny" value="1"><button class="danger">No, rechazar</button></form></div>`,
     { nonce },
   );
 }
