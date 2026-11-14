@@ -41,6 +41,7 @@ import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { connectedClients, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { tryGit } from "./shell.js";
@@ -1522,6 +1523,26 @@ export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {})
 export function setRemotePanel(ctx: FactoryContext, on: boolean) {
   if (on) ctx.store.setKv(REMOTE_KEY, "on");
   else ctx.store.deleteKv(REMOTE_KEY);
+}
+
+/** Turns the remote chat (MCP over HTTP with OAuth, through the panel's tunnel) on or off; only the owner's terminal calls it. */
+export function setRemoteMcp(ctx: Pick<FactoryContext, "store">, on: boolean) {
+  if (on) ctx.store.setKv(REMOTE_MCP_KEY, "on");
+  else ctx.store.deleteKv(REMOTE_MCP_KEY);
+}
+
+export function remoteMcpOn(ctx: Pick<FactoryContext, "store">): boolean {
+  return ctx.store.getKv(REMOTE_MCP_KEY) === "on";
+}
+
+/** The remote chat clients with a live connection, for the panel and `zero mcp clients`. */
+export function remoteChatClients(ctx: Pick<FactoryContext, "store">, now = new Date()): ConnectedClient[] {
+  return connectedClients(ctx.store, now);
+}
+
+/** Revokes a remote chat client and every token it holds; false when there is no such client. */
+export function revokeRemoteChatClient(ctx: Pick<FactoryContext, "store">, client: string): boolean {
+  return revokeClient(ctx.store, client.trim());
 }
 
 /** Turns a line's GitHub issue intake on (with its label) or off, keeping the file's comments. */

@@ -8,9 +8,9 @@
 
 ## 2. Etapa 2: Servidor de autorización OAuth (lógica pura)
 
-- [ ] 2.1 Crear src/mcp/oauth.ts sobre Store: registro de clientes con redirect https o loopback, códigos de un solo uso de 5 minutos con PKCE S256, tokens de acceso de 1 h y de renovación de 7 días que rotan, permisos zero:read/zero:act, revocación por cliente, revocación por reutilización del código y solo hashes guardados, con el reloj inyectable.
-- [ ] 2.2 Agregar en app.ts setRemoteMcp/remoteMcpOn (kv `mcp.remote`), remoteChatClients y revokeRemoteChatClient.
-- [ ] 2.3 Agregar tests unitarios de oauth.ts y de las funciones de app.ts.
+- [x] 2.1 Crear src/mcp/oauth.ts sobre Store: registro de clientes con redirect https o loopback, códigos de un solo uso de 5 minutos con PKCE S256, tokens de acceso de 1 h y de renovación de 7 días que rotan, permisos zero:read/zero:act, revocación por cliente, revocación por reutilización del código y solo hashes guardados, con el reloj inyectable.
+- [x] 2.2 Agregar en app.ts setRemoteMcp/remoteMcpOn (kv `mcp.remote`), remoteChatClients y revokeRemoteChatClient.
+- [x] 2.3 Agregar tests unitarios de oauth.ts y de las funciones de app.ts.
 
 ## 3. Etapa 3: MCP por HTTP en el daemon
 
