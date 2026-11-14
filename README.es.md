@@ -527,6 +527,16 @@ Cada llamada registra en su traza qué motor usó, a cuál reemplazó y por qué
 
 Todo lo que construye la fábrica lleva la firma de zero in the loop. Cada commit que hace (la especificación, cada intento y el merge de integración) termina con el trailer `Built-by: zero in the loop <https://zerointheloop.com>`, y los pull requests que abre, los issues que crea y los comentarios que publica terminan con `— Hecho con [zero in the loop](https://zerointheloop.com)`, antes de la marca oculta con la que la fábrica reconoce sus propios comentarios. Viene encendida con esos textos; `text` y `trailer` los cambian (el trailer es una sola línea `Token: valor`) y `signature: off` la apaga. La `signature` propia de una línea (`off` o `{ text, trailer }`) reemplaza la global para esa línea.
 
+### Autoactualización (`selfUpdate`)
+
+zero puede actualizarse solo después de que se fusionan sus propios cambios, así quien está a cargo no tiene que hacer pull, compilar y reiniciar a mano. Viene apagada y solo el archivo de la fábrica la enciende; ninguna herramienta del chat puede cambiarla.
+
+```yaml
+selfUpdate: { enabled: true }   # remote: origin, branch: la de la carpeta de instalación, startTimeoutSeconds: 120
+```
+
+El daemon mira la rama de la carpeta de instalación en su remoto una vez por día y otra vez cuando se fusiona un pull request de una línea que trabaja sobre esa carpeta. Solo toma un avance rápido, y nunca con cambios locales ni en otra rama: en ese caso avisa una vez y no cambia nada. Prepara el commit nuevo aparte, en `~/.zero/self-update/`, sin tocar la versión que corre: las mismas reglas de lock que los paquetes, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` y una carga del archivo de la fábrica. Si falla un paso, sigue con la versión actual, avisa una vez y no vuelve a preparar ese commit. Con la versión nueva lista no empieza más trabajos, y cuando no corre ninguno le pasa la posta a un proceso aparte (solo módulos propios de Node) y se apaga como siempre: ese proceso pone en su lugar la compilación nueva, arranca el daemon desprendido como `zero start --detach` y espera a que tome el candado del daemon. Si no lo toma dentro de `startTimeoutSeconds`, lo detiene, vuelve a poner la compilación y el commit anteriores y arranca la versión anterior. Los trabajos interrumpidos y los de la cola siguen desde su punto de control. `zero status`, el panel y el resumen cuentan cada actualización (de qué commit a cuál), una vuelta atrás o una falla; `zero --version` muestra la versión y el commit. Los paquetes se actualizan con `zero package update`.
+
 ## Agentes a medida
 
 Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay dos tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.

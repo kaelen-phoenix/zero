@@ -39,6 +39,7 @@ import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { resendAfterCapability, unjamPass } from "./line/unjam.js";
+import { HISTORY_LIMIT, importSwitchResult, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -88,6 +89,10 @@ export interface DaemonOptions {
   killLeftovers?: (folder: string) => number;
   /** Makes the login entry match the file's `autostart`; tests inject a fake. Without it, `once` runs leave the entry alone. */
   autostart?: (home: FactoryHome, enabled: boolean) => AutostartResult;
+  /** git, npm and node for zero's own update; tests inject fakes. Without it, `once` runs do not look. */
+  selfUpdate?: SelfUpdateDeps;
+  /** Starts the switch to a prepared version; tests inject a fake. Without it, `once` runs never switch. */
+  launchSwitch?: SwitchLauncher;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -178,6 +183,9 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     }
   };
   followAutostart();
+
+  // What the switch that started this daemon did, when it already said so.
+  await importSwitchResult(ctx);
 
   for (const job of store.listJobs({ status: ["running"] })) {
     log.info("resuming interrupted job", { job: job.id, checkpoint: job.checkpoint, station: job.station });
@@ -399,6 +407,37 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
+  // zero's own new version, prepared off to the side when the person in charge turned it on; the check itself keeps to once a day or after an own merge.
+  let selfCheckedAt = 0;
+  let selfChecking: Promise<void> | undefined;
+  const checkSelfUpdate = () => {
+    if (selfChecking || (opts.once && !opts.selfUpdate) || !ctx.config.selfUpdate.enabled || Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    selfCheckedAt = Date.now();
+    selfChecking = selfUpdateCheck(ctx, opts.selfUpdate ?? realSelfUpdateDeps())
+      .catch((err) => log.warn("self-update check failed", { error: String(err) }))
+      .finally(() => (selfChecking = undefined));
+  };
+
+  // A prepared version of zero switches in once nothing runs: the switch process outlives this daemon, which stops as usual.
+  let selfReadyLogged = false;
+  const switchVersion = async () => {
+    const { state } = readSelfUpdate(store);
+    recordSelfUpdate(store, { state: { ...state, status: "switching", switchingAt: now().toISOString() } });
+    try {
+      await (opts.launchSwitch ?? launchSwitch)(ctx, state);
+    } catch (err) {
+      const why = `no pude iniciar el cambio a ${(state.to ?? "").slice(0, 12)}: ${String(err).slice(0, 300)}`;
+      log.warn("self-update switch not started; staying on the current version", { error: why });
+      recordSelfUpdate(store, {
+        state: { ...state, status: "idle", problem: why, failed: [...(state.failed ?? []), state.to ?? ""].filter(Boolean).slice(-HISTORY_LIMIT) },
+        entry: { from: state.from ?? "", to: state.to ?? "", at: now().toISOString(), outcome: "failed", reason: why },
+      });
+      return;
+    }
+    log.info("switching to the prepared version; stopping", { from: state.from, to: state.to });
+    store.setKv(SHUTDOWN_KEY, now().toISOString());
+  };
+
   // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line) and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
@@ -494,6 +533,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       runSchedules();
       runOnDemand();
       lookForPackageUpdates();
+      checkSelfUpdate();
+      await importSwitchResult(ctx);
       await expireQuestions(ctx);
 
       const andon = store.getKv(ANDON_KEY) === "on";
@@ -507,8 +548,16 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       if (boxWait && !boxWaitLogged) log.warn("waiting for the box: not starting jobs", { problems: currentBox(ctx).availability.problems.join("; ") });
       boxWaitLogged = boxWait;
 
+      const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && readSelfUpdate(store).state.status === "ready";
+      if (selfReady && !selfReadyLogged) log.info("self-update ready: not starting new jobs until the switch", { running: running.size });
+      selfReadyLogged = selfReady;
+      if (selfReady && !running.size) {
+        await switchVersion();
+        continue;
+      }
+
       let startable = false;
-      if (!andon && !budgetState(store, ctx.config, now()).reached) {
+      if (!selfReady && !andon && !budgetState(store, ctx.config, now()).reached) {
         const at = now();
         const queued = ownerFirst(store.listJobs({ status: ["queued"] }), at);
         for (const job of queued) {
@@ -547,7 +596,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         }
       }
 
-      if (!andon && !startable && !boxWait) {
+      if (!selfReady && !andon && !startable && !boxWait) {
         idlePasses();
       }
 
@@ -577,6 +626,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await scheduling;
     await demanding;
     await looking;
+    await selfChecking;
     await idle;
     tunnel.stop();
     panel?.close();
