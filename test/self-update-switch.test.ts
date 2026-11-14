@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { requestWork, SHUTDOWN_KEY } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { importSwitchResult, readSelfUpdate, recordSelfUpdate, SWITCH_STALE_MS, type SelfUpdateState } from "../src/self-update.js";
-import { previousPath, resultPath, runSwitch, type SwitchDeps, type SwitchFs, type SwitchPlan } from "../src/self-update-switch.js";
+import { previousPath, resultPath, runSwitch, stagingPath, type FileEntry, type SwitchDeps, type SwitchFs, type SwitchPlan } from "../src/self-update-switch.js";
 import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
@@ -29,27 +29,62 @@ interface World {
   releaseAfter?: number;
   /** Launches whose daemon takes the lock (by launch number, from 1). */
   takes: number[];
+  /** Renames between the home and the install folder fail as across volumes. */
   exdev?: boolean;
+  /** An error code for a rename, by its source and how many times that source was renamed before. */
+  renameFails?: (from: string, tries: number) => string | undefined;
+  /** A relative path the copy leaves out. */
+  dropOnCopy?: string;
+  /** What the version check rejects with. */
+  checkFails?: string;
+  launchThrows?: boolean;
+  /** Writes of result.json that fail before one goes through. */
+  resultWriteFails?: number;
+}
+
+function listTree(dir: string, rel = ""): FileEntry[] {
+  return readdirSync(join(dir, rel), { withFileTypes: true }).flatMap((e) => {
+    const path = rel ? `${rel}/${e.name}` : e.name;
+    return e.isDirectory() ? listTree(dir, path) : [{ path, size: lstatSync(join(dir, path)).size }];
+  });
 }
 
 /** git, the lock, the launcher, the kill and the clock as fakes; the clock moves on every sleep. */
-function fakes(world: World) {
+function fakes(world: World, install?: string) {
   const clock = { at: Date.parse("2026-11-11T10:00:00Z") };
   const git: string[][] = [];
   const launches: number[] = [];
   const killed: number[] = [];
+  const checks: string[] = [];
+  const tries = new Map<string, number>();
+  let writeFails = world.resultWriteFails ?? 0;
   let polls = 0;
   let holder: number | undefined;
+  const inInstall = (p: string) => install !== undefined && p.startsWith(install);
   const realFs: SwitchFs = {
     exists: existsSync,
     rename: async (a, b) => {
-      if (world.exdev) throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+      if (world.exdev && inInstall(a) !== inInstall(b)) throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+      const n = tries.get(a) ?? 0;
+      tries.set(a, n + 1);
+      const code = world.renameFails?.(a, n);
+      if (code) throw Object.assign(new Error(`${code}: operation not permitted, rename '${a}'`), { code });
       await rename(a, b);
     },
-    copy: (a, b) => cp(a, b, { recursive: true }),
+    copy: async (a, b) => {
+      await cp(a, b, { recursive: true });
+      if (world.dropOnCopy && existsSync(join(b, world.dropOnCopy))) rmSync(join(b, world.dropOnCopy));
+    },
     remove: (p) => rm(p, { recursive: true, force: true }),
     mkdir: async (p) => void (await mkdir(p, { recursive: true })),
-    writeFile: (p, t) => writeFile(p, t),
+    writeFile: async (p, t) => {
+      if (p.endsWith("result.json") && writeFails > 0) {
+        writeFails--;
+        throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+      }
+      await writeFile(p, t);
+    },
+    list: async (dir) => listTree(dir),
   };
   const deps: SwitchDeps = {
     fs: realFs,
@@ -63,6 +98,7 @@ function fakes(world: World) {
       return holder !== undefined;
     },
     launch: () => {
+      if (world.launchThrows) throw new Error("spawn EPERM");
       launches.push(clock.at);
       const pid = 1000 + launches.length;
       holder = world.takes.includes(launches.length) ? pid : undefined;
@@ -72,11 +108,15 @@ function fakes(world: World) {
       killed.push(pid);
       if (holder === pid) holder = undefined;
     },
+    check: async (cli) => {
+      checks.push(cli);
+      if (world.checkFails) throw new Error(world.checkFails);
+    },
     say: () => {},
     sleep: async (ms) => void (clock.at += ms),
     now: () => new Date(clock.at),
   };
-  return { deps, git, launches, killed };
+  return { deps, git, launches, killed, checks };
 }
 
 const read = (path: string) => readFileSync(path, "utf8");
@@ -97,12 +137,120 @@ describe("the switch process", () => {
     expect(JSON.parse(read(resultPath(home)))).toEqual(result);
   });
 
-  it("copies when the prepared folder is on another volume", async () => {
-    const { install, plan } = setup();
-    const f = fakes({ takes: [1], exdev: true });
+  it("copies only between volumes and swaps the install's parts by renames", async () => {
+    const { home, install, plan } = setup();
+    const f = fakes({ takes: [1], exdev: true }, install);
     expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
     expect(read(join(install, "dist", "cli.js"))).toBe("new");
-    expect(existsSync(join(plan.prepared, "dist"))).toBe(false);
+    expect(read(join(install, "node_modules", "x", "index.js"))).toBe("new");
+    expect(read(join(previousPath(home), "dist", "cli.js"))).toBe("old");
+    expect(read(join(previousPath(home), "node_modules", "x", "index.js"))).toBe("old");
+    expect(existsSync(stagingPath(install))).toBe(false);
+  });
+
+  it("touches nothing of the install when the staged copy comes out incomplete", async () => {
+    const { home, install, plan } = setup();
+    const f = fakes({ takes: [1], exdev: true, dropOnCopy: "x/index.js" }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(result.reason).toContain("node_modules");
+    expect(read(join(install, "dist", "cli.js"))).toBe("old");
+    expect(read(join(install, "node_modules", "x", "index.js"))).toBe("old");
+    expect(f.git.some((a) => a[0] === "merge")).toBe(false);
+    expect(f.checks).toEqual([]);
+    expect(JSON.parse(read(resultPath(home)))).toEqual(result);
+  });
+
+  it("tries a locked folder again", async () => {
+    const { install, plan } = setup();
+    const modules = join(install, "node_modules");
+    const f = fakes({ takes: [1], renameFails: (from, n) => (from === modules && n < 2 ? "EBUSY" : undefined) }, install);
+    expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
+    expect(read(join(modules, "x", "index.js"))).toBe("new");
+    expect(read(join(install, "dist", "cli.js"))).toBe("new");
+  });
+
+  it("gives up on a folder that stays locked and puts back what it moved", async () => {
+    const { home, install, plan } = setup();
+    const modules = join(install, "node_modules");
+    const f = fakes({ takes: [1], renameFails: (from) => (from === modules ? "EPERM" : undefined) }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(result.reason).toContain("node_modules");
+    expect(result.reason).toContain("EPERM");
+    expect(result.reason).toContain("servidor MCP");
+    expect(read(join(install, "dist", "cli.js"))).toBe("old");
+    expect(read(join(modules, "x", "index.js"))).toBe("old");
+    expect(f.git.some((a) => a[0] === "merge" || a[0] === "reset")).toBe(false);
+    expect(f.launches).toHaveLength(1);
+    expect(JSON.parse(read(resultPath(home)))).toEqual(result);
+    expect(existsSync(stagingPath(install))).toBe(false);
+  });
+
+  it("puts the previous build back when the installed copy does not run", async () => {
+    const { home, install, plan } = setup();
+    const f = fakes({ takes: [1], checkFails: "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@napi-rs/keyring'" }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(result.reason).toContain("ERR_MODULE_NOT_FOUND");
+    expect(f.checks).toEqual([join(install, "dist", "cli.js")]);
+    expect(read(join(install, "dist", "cli.js"))).toBe("old");
+    expect(read(join(install, "node_modules", "x", "index.js"))).toBe("old");
+    expect(f.git.some((a) => a[0] === "merge")).toBe(false);
+    expect(f.launches).toHaveLength(1);
+    expect(JSON.parse(read(resultPath(home))).outcome).toBe("failed");
+  });
+
+  it("checks the installed copy before merging and launching", async () => {
+    const { install, plan } = setup();
+    const order: string[] = [];
+    const f = fakes({ takes: [1] }, install);
+    const { check, git, launch } = f.deps;
+    f.deps.check = async (cli) => {
+      order.push("check");
+      await check(cli);
+    };
+    f.deps.git = async (args) => {
+      order.push(args[0]!);
+      return git(args);
+    };
+    f.deps.launch = () => {
+      order.push("launch");
+      return launch();
+    };
+    expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
+    expect(f.checks).toEqual([join(install, "dist", "cli.js")]);
+    expect(order).toEqual(["rev-parse", "check", "merge", "launch"]);
+  });
+
+  it("leaves a result even when the launch throws", async () => {
+    const { home, install, plan } = setup();
+    const modules = join(install, "node_modules");
+    const f = fakes({ takes: [], launchThrows: true, renameFails: (from) => (from === modules ? "EPERM" : undefined) }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(result.reason).toContain("no pude arrancar el daemon");
+    expect(JSON.parse(read(resultPath(home)))).toEqual(result);
+  });
+
+  it("writes the result again when the first write fails", async () => {
+    const { home, install, plan } = setup();
+    const f = fakes({ takes: [1], resultWriteFails: 1 }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(JSON.parse(read(resultPath(home)))).toEqual(result);
+  });
+
+  it("gets past a staging folder an earlier switch left", async () => {
+    const { install, plan } = setup();
+    writeTree(install, { ".zero-switch/new/dist/cli.js": "leftover" });
+    const f = fakes({ takes: [1] }, install);
+    expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
+    expect(read(join(install, "dist", "cli.js"))).toBe("new");
+    expect(existsSync(stagingPath(install))).toBe(false);
+  });
+
+  it("keeps its staging folder out of git", () => {
+    expect(read(".gitignore").split(/\r?\n/)).toContain(".zero-switch/");
   });
 
   it("kills a new daemon that does not take the lock, puts the previous version back and starts it", async () => {
@@ -118,6 +266,7 @@ describe("the switch process", () => {
     expect(f.launches).toHaveLength(2);
     expect(f.launches[1]! - f.launches[0]!).toBeGreaterThanOrEqual(5_000);
     expect(JSON.parse(read(resultPath(home))).outcome).toBe("rolled-back");
+    expect(existsSync(stagingPath(install))).toBe(false);
   });
 
   it("touches nothing while the old daemon keeps the lock", async () => {
@@ -165,6 +314,22 @@ describe("the switch's result in the next daemon", () => {
     expect(state.problem).toContain("volví a");
     expect(existsSync(resultPath(ctx.home.root))).toBe(false);
     expect(existsSync(dir)).toBe(false);
+  });
+
+  it("records a switch that gave up on a locked node_modules", async () => {
+    const ctx = testFactory({ lines: [] }, () => new Date("2026-11-11T10:05:00Z"));
+    const install = tempDir("zero-install-");
+    const prepared = join(ctx.home.root, "self-update", TO.slice(0, 12));
+    writeTree(install, { "dist/cli.js": "old", "node_modules/x/index.js": "old" });
+    writeTree(prepared, { "dist/cli.js": "new", "node_modules/x/index.js": "new" });
+    recordSelfUpdate(ctx.store, { state: switching(prepared) });
+    const plan: SwitchPlan = { home: ctx.home.root, install, prepared, from: FROM, to: TO, branch: "main", timeoutMs: 5_000, log: join(ctx.home.root, "daemon.log"), node: "node", git: "git" };
+    const modules = join(install, "node_modules");
+    await runSwitch(plan, fakes({ takes: [1], renameFails: (from) => (from === modules ? "EPERM" : undefined) }, install).deps);
+    await importSwitchResult(ctx);
+    const { history } = readSelfUpdate(ctx.store);
+    expect(history[0]).toMatchObject({ outcome: "failed", to: TO });
+    expect(history[0]!.reason).toContain("node_modules");
   });
 
   it("records an update without a problem", async () => {
