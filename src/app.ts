@@ -1545,6 +1545,25 @@ export function revokeRemoteChatClient(ctx: Pick<FactoryContext, "store">, clien
   return revokeClient(ctx.store, client.trim());
 }
 
+/** What the panel's `/remote-chat` page and `zero mcp clients` show: the switch, the address chats connect to, clients and held actions. */
+export interface RemoteChatView {
+  on: boolean;
+  /** `<tunnel>/mcp`, only while the panel's tunnel is open. */
+  url?: string;
+  clients: ConnectedClient[];
+  pending: PendingRemoteAction[];
+}
+
+export function remoteChatView(ctx: Pick<FactoryContext, "store">, now = new Date()): RemoteChatView {
+  const tunnel = ctx.store.getKv(REMOTE_URL_KEY);
+  return {
+    on: remoteMcpOn(ctx),
+    ...(tunnel && { url: `${tunnel.replace(/\/+$/, "")}/mcp` }),
+    clients: remoteChatClients(ctx, now),
+    pending: pendingRemoteActions(ctx, now),
+  };
+}
+
 export const PENDING_PREFIX = "mcp-pending:";
 export const PENDING_TTL_MS = 15 * 60_000;
 

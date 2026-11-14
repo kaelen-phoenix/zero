@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -9,7 +9,7 @@ import { log } from "../log.js";
 import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -120,6 +120,7 @@ function returnTo(path: string): string {
   if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
   if (path.startsWith("/packages")) return "/packages";
+  if (path.startsWith("/remote-chat")) return "/remote-chat";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -347,6 +348,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
+      if (path === "/remote-chat") return send(res, 200, remoteChatPage(remoteChatView(ctx, ctx.now?.()), nonce, flash), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
       if (path === "/monitor") return send(res, 200, monitorPage(monitorView(ctx, parsePeriod(url.searchParams.get("periodo")), ctx.now?.()), nonce), nonce);
       if (path === "/report") {
@@ -462,6 +464,23 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       const r = approveProposal(ctx, id);
       return back(res, "/proposals", `Propuesta aprobada: trabajo ${r.job.id}. ${r.next}`);
+    }
+    const revokeAction = /^\/remote-chat\/clients\/([0-9a-f-]{36})\/revoke$/.exec(path);
+    if (revokeAction) {
+      const id = revokeAction[1]!;
+      // Revoking cuts the chat off at once, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") {
+        const client = remoteChatView(ctx, ctx.now?.()).clients.find((c) => c.id === id);
+        if (!client) throw new Error(`No hay ningún chat conectado ${id}.`);
+        return send(res, 200, confirmRevokePage(client, nonce), nonce);
+      }
+      return back(res, "/remote-chat", revokeRemoteChatClient(ctx, id) ? "Chat revocado: sus tokens dejaron de servir." : `No hay ningún chat conectado ${id}.`);
+    }
+    const pendingAction = /^\/remote-chat\/pending\/([0-9a-f]{8})\/confirm$/.exec(path);
+    if (pendingAction) {
+      if (form.get("confirm") !== "1") return back(res, "/remote-chat");
+      const r = await confirmRemoteAction(ctx, pendingAction[1]!, { ...(ctx.now && { now: ctx.now() }), ...(opts.merges && { merges: opts.merges }) });
+      return back(res, "/remote-chat", r.text);
     }
     const researchAction = /^\/research\/([0-9a-f]{8})\/request$/.exec(path);
     if (researchAction) {

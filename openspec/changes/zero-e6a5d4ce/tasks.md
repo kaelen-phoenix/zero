@@ -20,6 +20,6 @@
 
 ## 4. Etapa 4: Control desde el panel y la terminal, y documentación
 
-- [ ] 4.1 Agregar la página `/remote-chat` del panel (clientes, revocar con confirm=1, acciones pendientes con Confirmar) y su entrada en NAV.
-- [ ] 4.2 Agregar en src/cli.ts `zero mcp remote on|off`, `zero mcp clients`, `zero mcp revoke`, `zero mcp pendientes` y `zero mcp confirmar`, con su ayuda.
-- [ ] 4.3 Escribir tests de la página y de los comandos. Actualizar README.md, README.es.md y AGENTS.md. Correr typecheck, test y openspec validate.
+- [x] 4.1 Agregar la página `/remote-chat` del panel (clientes, revocar con confirm=1, acciones pendientes con Confirmar) y su entrada en NAV.
+- [x] 4.2 Agregar en src/cli.ts `zero mcp remote on|off`, `zero mcp clients`, `zero mcp revoke`, `zero mcp pendientes` y `zero mcp confirmar`, con su ayuda.
+- [x] 4.3 Escribir tests de la página y de los comandos. Actualizar README.md, README.es.md y AGENTS.md. Correr typecheck, test y openspec validate.

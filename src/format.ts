@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { DaemonInfo, EgressReport, FactoryStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -88,6 +88,30 @@ export function formatRequest(r: RequestResult): string {
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
   return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+}
+
+/** The remote chat for `zero mcp clients`: the switch, the address and each connected client. */
+export function formatRemoteChat(v: RemoteChatView, now = new Date()): string {
+  const state = v.on
+    ? v.url
+      ? `Chat remoto encendido: conectá tu chat a ${v.url}`
+      : "Chat remoto encendido, pero el túnel del panel no está abierto: abrilo con `zero panel remote on`."
+    : "Chat remoto apagado: se enciende con `zero mcp remote on`.";
+  if (!v.clients.length) return `${state}
+No hay chats conectados.`;
+  const rows = v.clients.map(
+    (c) =>
+      `${c.id} · ${c.name} · ${c.scope.includes("zero:act") ? "leer y actuar" : "solo leer"} · aprobado ${ageText(c.approvedAt, now)}` +
+      ` · ${c.lastUsedAt ? `último uso ${ageText(c.lastUsedAt, now)}` : "sin uso todavía"}`,
+  );
+  return [state, "Chats conectados (revocá uno con `zero mcp revoke <cliente>`):", ...rows].join("\n");
+}
+
+/** The remote chat's held actions for `zero mcp pendientes`. */
+export function formatPendingActions(list: PendingRemoteAction[]): string {
+  if (!list.length) return "No hay acciones del chat remoto esperando tu confirmación.";
+  const rows = list.map((a) => `${a.id} · ${a.text} · pedido por ${a.clientName ?? a.client ?? "un chat remoto"} · vence ${a.expiresAt.slice(11, 16)} UTC`);
+  return ["Acciones del chat remoto para confirmar (con `zero mcp confirmar <id>`):", ...rows].join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */

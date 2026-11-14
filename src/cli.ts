@@ -7,14 +7,14 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -106,6 +106,12 @@ Fábrica:
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
+  zero mcp remote on|off         Deja manejar la fábrica desde el chat del celular (ChatGPT, Claude u otro cliente MCP) por
+                                 el túnel del panel; cada conexión nueva la aprobás vos en el panel
+  zero mcp clients               Chats remotos conectados: nombre, permisos, cuándo los aprobaste y su último uso
+  zero mcp revoke <cliente>      Desconecta un chat remoto: sus tokens dejan de servir en el momento
+  zero mcp pendientes            Acciones delicadas que pidió un chat remoto (fundir, detener, aprobar…) y esperan tu confirmación
+  zero mcp confirmar <id>        Hace una de esas acciones (vencen a los 15 minutos)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
@@ -214,6 +220,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "mcp":
+      if (rest.length) break;
       await serveStdio(home);
       return -1; // keep running until the client closes stdin
     case "line": {
@@ -367,6 +374,45 @@ Informe: ${r.report}`);
           `La línea ${r.line} toma los issues${repository ? ` de ${repository}` : ""} con la etiqueta "${r.label}". La fábrica los revisa cada minuto mientras está en marcha.\nSolo toma issues escritos y etiquetados por personas con permiso de escritura, comenta en cada uno cómo va su trabajo, y el pull request lo cierra al aceptarlo.`,
         );
         return 0;
+      }
+      case "mcp": {
+        const [action, arg] = rest;
+        if (action === "remote" && (arg === "on" || arg === "off")) {
+          setRemoteMcp(ctx, arg === "on");
+          if (arg === "off") {
+            console.log("Chat remoto apagado: los chats conectados dejan de poder usar la fábrica (sus conexiones quedan; revocalas con `zero mcp revoke`).");
+            return 0;
+          }
+          const view = remoteChatView(ctx);
+          console.log(
+            view.url
+              ? `Chat remoto encendido. En tu chat agregá un conector MCP con esta dirección: ${view.url}\nCada conexión nueva la aprobás en el panel; esta dirección cambia si el túnel se reinicia.`
+              : "Chat remoto encendido, pero hace falta el túnel del panel: abrilo con `zero panel remote on` y volvé a mirar la dirección con `zero mcp clients`.",
+          );
+          return 0;
+        }
+        if (action === "clients" && !arg) {
+          console.log(formatRemoteChat(remoteChatView(ctx)));
+          return 0;
+        }
+        if (action === "revoke" && arg) {
+          if (!revokeRemoteChatClient(ctx, arg)) {
+            console.log(`No hay ningún chat conectado ${arg}: mirá la lista con \`zero mcp clients\`.`);
+            return 1;
+          }
+          console.log(`Chat ${arg} revocado: sus tokens dejaron de servir.`);
+          return 0;
+        }
+        if (action === "pendientes" && !arg) {
+          console.log(formatPendingActions(pendingRemoteActions(ctx)));
+          return 0;
+        }
+        if (action === "confirmar" && arg) {
+          const r = await confirmRemoteAction(ctx, arg);
+          console.log(r.text);
+          return r.ok ? 0 : 1;
+        }
+        break;
       }
       case "panel": {
         const [action, arg] = rest;
