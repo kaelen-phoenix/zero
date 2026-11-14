@@ -344,7 +344,7 @@ zero panel rotate              # new key: previous links stop working
 
 ### Remote chat (phone)
 
-You can run the factory from the chat on your phone (ChatGPT, the Claude app or another MCP client) with no PC in front of you. zero serves MCP over HTTP (streamable HTTP) at `/mcp`, through the same tunnel as the panel, with the same tools as `zero mcp`. The reasons, the official sources and why it is not published in the ChatGPT or Claude directories are in [`docs/adr/0005-chat-remoto.md`](docs/adr/0005-chat-remoto.md).
+You can run the factory from the chat on your phone (ChatGPT, the Claude app or another MCP client) with no PC in front of you. zero serves MCP over HTTP (streamable HTTP) at `/mcp`, through the same tunnel as the panel, with the same tools as `zero mcp`. The reasons, the official sources and why it is not published in the ChatGPT or Claude directories are in [`docs/adr/0007-chat-remoto.md`](docs/adr/0007-chat-remoto.md).
 
 ```sh
 zero panel remote on           # the tunnel the chat goes through

@@ -1,4 +1,4 @@
-# ADR 0005 — Manejar la fábrica desde el chat del celular
+# ADR 0007 — Manejar la fábrica desde el chat del celular
 
 - **Estado:** propuesto
 - **Fecha:** 2026-11-14

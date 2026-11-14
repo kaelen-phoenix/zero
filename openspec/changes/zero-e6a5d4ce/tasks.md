@@ -3,7 +3,7 @@
 ## 1. Etapa 1: Investigación: ADR del chat remoto y cambio de OpenSpec
 
 - [x] 1.1 Crear openspec/changes/zero-e6a5d4ce/ (proposal.md, tasks.md, specs/chat-interface/spec.md con ADDED Requirements) y validarlo con `npx openspec validate --all`.
-- [x] 1.2 Escribir docs/adr/0005-chat-remoto.md (número libre en la base) con fuentes oficiales de OpenAI y Anthropic citadas, 'no verificado' donde corresponda, la recomendación de no publicar en los directorios con sus alternativas y la evaluación de la dirección estable.
+- [x] 1.2 Escribir docs/adr/0007-chat-remoto.md (número libre en la base) con fuentes oficiales de OpenAI y Anthropic citadas, 'no verificado' donde corresponda, la recomendación de no publicar en los directorios con sus alternativas y la evaluación de la dirección estable.
 - [x] 1.3 Agregar test/adr-chat-remoto.test.ts, que revisa el encabezado, las secciones, las palabras clave y las URLs de openai.com y anthropic.com/claude.com.
 
 ## 2. Etapa 2: Servidor de autorización OAuth (lógica pura)

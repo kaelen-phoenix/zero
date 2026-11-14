@@ -343,7 +343,7 @@ zero panel rotate              # clave nueva: los links anteriores dejan de serv
 
 ### Chat remoto (celular)
 
-Podés manejar la fábrica desde el chat del celular (ChatGPT, la app de Claude u otro cliente MCP) sin la PC delante. zero sirve MCP por HTTP (streamable HTTP) en `/mcp`, por el mismo túnel del panel, con las mismas herramientas que `zero mcp`. Los motivos, las fuentes oficiales y por qué no se publica en los directorios de ChatGPT ni de Claude están en [`docs/adr/0005-chat-remoto.md`](docs/adr/0005-chat-remoto.md).
+Podés manejar la fábrica desde el chat del celular (ChatGPT, la app de Claude u otro cliente MCP) sin la PC delante. zero sirve MCP por HTTP (streamable HTTP) en `/mcp`, por el mismo túnel del panel, con las mismas herramientas que `zero mcp`. Los motivos, las fuentes oficiales y por qué no se publica en los directorios de ChatGPT ni de Claude están en [`docs/adr/0007-chat-remoto.md`](docs/adr/0007-chat-remoto.md).
 
 ```sh
 zero panel remote on           # el túnel por el que entra el chat
