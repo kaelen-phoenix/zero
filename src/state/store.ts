@@ -544,6 +544,7 @@ export class Store {
     return this.updateJob(id, { ...patch, status, question: null, finishedAt: this.stamp() });
   }
 
+  /** Jobs oldest first, at most 1000 rows unless `limit` says otherwise; a cap drops the newest, so readers of live or recent jobs pass `-1` (no cap). */
   listJobs(filter: { status?: JobStatus[]; line?: string; limit?: number } = {}): Job[] {
     const where: string[] = [];
     const values: (string | number)[] = [];
@@ -781,6 +782,12 @@ export class Store {
     this.db
       .prepare("INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(key, value, this.stamp());
+  }
+
+  /** When a kv entry was last written (ISO), for passes that act on changes since their last look. */
+  kvUpdatedAt(key: string): string | undefined {
+    const row = this.db.prepare("SELECT updated_at FROM kv WHERE key = ?").get(key) as Row | undefined;
+    return str(row?.updated_at);
   }
 
   kvWithPrefix(prefix: string): [string, string][] {

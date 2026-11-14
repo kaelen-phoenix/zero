@@ -314,3 +314,42 @@ describe("from the panel", () => {
     expect(gh.did).toEqual([]);
   });
 });
+
+describe("with a long history of delivered jobs", () => {
+  /** Delivered auto-merge jobs straight through the store, in one transaction; the first `merged` of them get a final record. */
+  function history(ctx: FactoryContext, count: number, merged: number): Job[] {
+    return ctx.store.transaction(() =>
+      Array.from({ length: count }, (_, i) => {
+        const job = ctx.store.createJob({ line: "demo", kind: "request", request: `pedido ${i}`, budgetUsd: 1 });
+        const done = ctx.store.finishJob(job.id, "delivered", { delivery: { mode: "pull-request", branch: `zero/${job.id}`, url: `https://github.com/kaelen/demo/pull/${i + 1}`, autoMerge: true } });
+        if (i < merged) ctx.store.setKv(mergeKey(job.id), JSON.stringify({ status: "merged" }));
+        return done;
+      }),
+    );
+  }
+  const factory = () => testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo: gitRepo(), integrate: "pull-request", autoMerge: true }] });
+
+  it("watches the newest jobs past the old cap of 200", () => {
+    const ctx = factory();
+    const jobs = history(ctx, 250, 240);
+    expect(watchedJobs(ctx).map((j) => j.id)).toEqual(jobs.slice(240).map((j) => j.id));
+  });
+
+  it("polls the newest pull request when every older one is merged", async () => {
+    const ctx = factory();
+    const jobs = history(ctx, 201, 200);
+    const newest = jobs.at(-1)!;
+    const gh = fakeGitHub();
+    await pollMerges(ctx, () => gh.api);
+    expect(gh.asked).toContain("pr #201");
+    expect(ctx.store.getKv(mergeKey(newest.id))).toBeDefined();
+  });
+
+  it("merges on request a url delivered after more than 1000 other jobs", async () => {
+    const ctx = factory();
+    const jobs = history(ctx, 1001, 1000);
+    const newest = jobs.at(-1)!;
+    const gh = fakeGitHub();
+    expect(await mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/1001", { via: "cli", api: () => gh.api })).toMatchObject({ merged: true, job: newest.id });
+  });
+});

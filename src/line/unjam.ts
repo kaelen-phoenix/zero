@@ -173,7 +173,7 @@ function lineRepositories(own: string | undefined, jobs: Job[]): string[] {
  */
 export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): Jam[] {
   const jams: Jam[] = [];
-  const jobs = ctx.store.listJobs({ line: line.name, limit: 10_000 });
+  const jobs = ctx.store.listJobs({ line: line.name, limit: -1 });
   const since = new Date(now.getTime() - FAILED_DAYS * DAY).toISOString();
   for (const j of jobs) {
     if (j.status === "failed" && (j.finishedAt ?? j.updatedAt) >= since) {
