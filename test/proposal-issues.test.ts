@@ -168,6 +168,30 @@ describe("proposals as GitHub issues", () => {
     expect(body).not.toContain("<img");
   });
 
+  it("breaks @mentions in the issue's title and body, so nobody is notified", async () => {
+    const ctx = factory();
+    ctx.store.createProposal({ ...idea, line: "demo", title: "Avisar a @alguien", why: "lo pidió @alguien" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    const { title, body } = gh.ops("createIssue")[0]!;
+    expect(title).toContain("@​alguien");
+    expect(title).not.toContain("@alguien");
+    expect(body).toContain("lo pidió @​alguien");
+    expect(body).not.toContain("@alguien");
+  });
+
+  it("breaks @mentions in a rejection's reason", async () => {
+    const ctx = factory();
+    const p = ctx.store.createProposal({ ...idea, line: "demo" });
+    const gh = fakeGitHub();
+    await syncProposalIssues(ctx, () => gh.api);
+    await rejectProposal(ctx, p.id, "preguntale a @alguien");
+    await syncProposalIssues(ctx, () => gh.api);
+    const body = gh.ops("comment", 5)[0]!.body!;
+    expect(body).toContain("@​alguien");
+    expect(body).not.toContain("@alguien");
+  });
+
   it("leaves the source issue's URL whole", () => {
     const ctx = factory();
     const p = ctx.store.createProposal({ ...idea, line: "demo", sourceIssue: { number: 12, url: "https://github.com/o/r/issues/12?a=1&b=2" } });
