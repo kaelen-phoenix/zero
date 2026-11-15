@@ -37,6 +37,8 @@ export interface SwitchResult {
   at: string;
   outcome: "updated" | "rolled-back" | "failed";
   reason?: string;
+  /** The failure came from the machine (a locked file, a missing part), so the commit is tried again later. */
+  machine?: boolean;
 }
 
 export interface FileEntry {

@@ -39,7 +39,7 @@ import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { resendAfterCapability, unjamPass } from "./line/unjam.js";
-import { HISTORY_LIMIT, importSwitchResult, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
+import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -427,9 +427,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       await (opts.launchSwitch ?? launchSwitch)(ctx, state);
     } catch (err) {
       const why = `no pude iniciar el cambio a ${(state.to ?? "").slice(0, 12)}: ${String(err).slice(0, 300)}`;
-      log.warn("self-update switch not started; staying on the current version", { error: why });
+      const machine = isMachineFailure(err);
+      log.warn("self-update switch not started; staying on the current version", { error: why, machine });
       recordSelfUpdate(store, {
-        state: { ...state, status: "idle", problem: why, failed: [...(state.failed ?? []), state.to ?? ""].filter(Boolean).slice(-HISTORY_LIMIT) },
+        state: { ...state, status: "idle", problem: why, ...afterFailure(state, state.to ?? "", machine, now()) },
         entry: { from: state.from ?? "", to: state.to ?? "", at: now().toISOString(), outcome: "failed", reason: why },
       });
       return;

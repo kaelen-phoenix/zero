@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { requestWork, SHUTDOWN_KEY } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
-import { importSwitchResult, readSelfUpdate, recordSelfUpdate, SWITCH_STALE_MS, type SelfUpdateState } from "../src/self-update.js";
+import { importSwitchResult, readSelfUpdate, recordSelfUpdate, RETRY_FIRST_MS, SWITCH_STALE_MS, type SelfUpdateState } from "../src/self-update.js";
 import { previousPath, resultPath, runSwitch, stagingPath, type FileEntry, type SwitchDeps, type SwitchFs, type SwitchPlan } from "../src/self-update-switch.js";
 import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
@@ -353,7 +353,67 @@ describe("the switch's result in the next daemon", () => {
     await importSwitchResult(ctx);
     const { state, history } = readSelfUpdate(ctx.store);
     expect(state.status).toBe("idle");
-    expect(history[0]).toMatchObject({ outcome: "failed", to: TO });
+    expect(history[0]).toMatchObject({ outcome: "failed", to: TO, reason: "el cambio de versión no dejó resultado" });
+    // It says nothing of the commit: tried again later, never failed for good.
+    expect(state.failed).toBeUndefined();
+    expect(state.retry).toEqual({ commit: TO, at: new Date(clock.at.getTime() + RETRY_FIRST_MS).toISOString(), tries: 1 });
+  });
+
+  it("never takes a switch still at work for dead", async () => {
+    const clock = { at: new Date(Date.parse("2026-11-11T10:00:00Z") + SWITCH_STALE_MS + 60_000) };
+    const ctx = testFactory({ lines: [] }, () => clock.at);
+    recordSelfUpdate(ctx.store, { state: switching(join(ctx.home.root, "nothing")) });
+    await importSwitchResult(ctx, { switchRunning: () => true });
+    const { state, history } = readSelfUpdate(ctx.store);
+    expect(state.status).toBe("switching");
+    expect(history).toEqual([]);
+  });
+
+  it("only records a late result of an earlier switch and keeps the current target's folder", async () => {
+    const ctx = testFactory({ lines: [] }, () => new Date("2026-11-11T10:05:00Z"));
+    const earlier = "a1".repeat(20);
+    const dirA = join(ctx.home.root, "self-update", FROM.slice(0, 12));
+    const dirB = join(ctx.home.root, "self-update", TO.slice(0, 12));
+    mkdirSync(join(dirA, "dist"), { recursive: true });
+    mkdirSync(join(dirB, "dist"), { recursive: true });
+    const current = switching(dirB);
+    recordSelfUpdate(ctx.store, { state: current });
+    writeFileSync(resultPath(ctx.home.root), JSON.stringify({ from: earlier, to: FROM, at: "2026-11-11T08:00:00Z", outcome: "updated" }));
+    await importSwitchResult(ctx);
+    const { state, history } = readSelfUpdate(ctx.store);
+    expect(history).toEqual([{ from: earlier, to: FROM, at: "2026-11-11T08:00:00Z", outcome: "updated" }]);
+    expect(state).toEqual(current);
+    expect(existsSync(dirB)).toBe(true);
+    expect(existsSync(dirA)).toBe(false);
+    expect(existsSync(resultPath(ctx.home.root))).toBe(false);
+  });
+
+  it("takes a commit out of the failed ones when a late result says it went through", async () => {
+    const ctx = testFactory({ lines: [] });
+    recordSelfUpdate(ctx.store, { state: { status: "idle", checkedAt: "2026-11-11T09:00:00Z", failed: [TO, FROM], retry: { commit: TO, at: "2026-11-11T11:00:00Z", tries: 1 } } });
+    mkdirSync(join(ctx.home.root, "self-update"), { recursive: true });
+    writeFileSync(resultPath(ctx.home.root), JSON.stringify({ from: FROM, to: TO, at: "2026-11-11T10:03:00Z", outcome: "updated" }));
+    await importSwitchResult(ctx);
+    const { state, history } = readSelfUpdate(ctx.store);
+    expect(state).toEqual({ status: "idle", checkedAt: "2026-11-11T09:00:00Z", failed: [FROM] });
+    expect(history[0]?.outcome).toBe("updated");
+  });
+
+  it("tries again later a switch that failed for the machine", async () => {
+    const at = new Date("2026-11-11T10:05:00Z");
+    const ctx = testFactory({ lines: [] }, () => at);
+    const dir = join(ctx.home.root, "self-update", TO.slice(0, 12));
+    mkdirSync(dir, { recursive: true });
+    recordSelfUpdate(ctx.store, { state: switching(dir) });
+    const reason = `no pude poner ${TO.slice(0, 12)}: falta dist en la versión preparada`;
+    writeFileSync(resultPath(ctx.home.root), JSON.stringify({ from: FROM, to: TO, at: "2026-11-11T10:03:00Z", outcome: "failed", reason, machine: true }));
+    await importSwitchResult(ctx);
+    const { state } = readSelfUpdate(ctx.store);
+    expect(state.status).toBe("idle");
+    expect(state.failed).toBeUndefined();
+    expect(state.retry).toEqual({ commit: TO, at: new Date(at.getTime() + RETRY_FIRST_MS).toISOString(), tries: 1 });
+    expect(state.problem).toBe(reason);
+    expect(existsSync(dir)).toBe(false);
   });
 
   it("is imported when the daemon starts", async () => {
@@ -423,6 +483,17 @@ describe("the daemon with a prepared version", () => {
     expect(state.failed).toEqual([TO]);
     expect(history[0]).toMatchObject({ outcome: "failed" });
     expect(ctx.store.getKv(SHUTDOWN_KEY)).toBeUndefined();
+  });
+
+  it("tries again later a switch that could not start for the machine", async () => {
+    const ctx = factory();
+    recordSelfUpdate(ctx.store, { state: ready });
+    const locked = Object.assign(new Error("EBUSY: resource busy or locked, copyfile 'switch.mjs'"), { code: "EBUSY" });
+    await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => fakeAgents({}).runner, launchSwitch: async () => Promise.reject(locked) });
+    const { state } = readSelfUpdate(ctx.store);
+    expect(state.status).toBe("idle");
+    expect(state.failed).toBeUndefined();
+    expect(state.retry).toMatchObject({ commit: TO, tries: 1 });
   });
 
   it("never switches while self-update is off", async () => {
