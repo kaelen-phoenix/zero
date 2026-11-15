@@ -103,6 +103,14 @@ Con `autostart: true` en el archivo de la fábrica, zero registra su arranque al
 
 Si la fábrica se cae sin un `zero shutdown` (la máquina se reinició, el proceso murió) con trabajos en curso o en cola, la vuelve a encender lo próximo que corra: el arranque al iniciar sesión, el servidor MCP cuando tu chat lo abre o cualquier comando `zero`, que avisa `La fábrica se había caído con trabajo pendiente: la volví a encender.` Los trabajos se retoman desde su checkpoint. Una fábrica que apagaste a propósito queda apagada. `zero status` distingue los dos casos: `apagada a propósito desde HH:MM`, o `se cayó` con su último latido y cuántos trabajos quedaron en curso.
 
+### Varias máquinas (`zero unirse`)
+
+```sh
+zero unirse me/zero-coord
+```
+
+Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Con la fábrica reiniciada, cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Tomar trabajos de una cola común es el paso siguiente (ver `docs/adr/0007-fabrica-distribuida.md`); por ahora cada máquina corre sus propios trabajos. Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada.
+
 ## Instalar con Docker
 
 La imagen se construye desde este repositorio, con zero, Node 22, git, `gh`, el cliente de Docker y solo los CLI de IA que nombres. Después no se instala nada: para sumar un CLI hay que reconstruir.

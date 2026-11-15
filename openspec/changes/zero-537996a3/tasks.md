@@ -19,7 +19,7 @@
 
 ## 4. Etapa 4: Latido en el daemon, máquinas en el estado y zero unirse
 
-- [ ] 4.1 Add the daemon coordination pass, gated on `distributed`, heartbeatSeconds and githubHalt, with DaemonOptions.coord and kv `coord:machines`, plus tests.
-- [ ] 4.2 Show FactoryStatus.machines in formatStatus' `Máquinas:` block and the panel summary, with tests.
-- [ ] 4.3 Add joinFactory in app.ts and the CLI `zero unirse`, with the public repository refused, plus tests.
-- [ ] 4.4 Update README.md, README.es.md and AGENTS.md. Run typecheck, tests and openspec validate.
+- [x] 4.1 Add the daemon coordination pass, gated on `distributed`, heartbeatSeconds and githubHalt, with DaemonOptions.coord and kv `coord:machines`, plus tests.
+- [x] 4.2 Show FactoryStatus.machines in formatStatus' `Máquinas:` block and the panel summary, with tests.
+- [x] 4.3 Add joinFactory in app.ts and the CLI `zero unirse`, with the public repository refused, plus tests.
+- [x] 4.4 Update README.md, README.es.md and AGENTS.md. Run typecheck, tests and openspec validate.

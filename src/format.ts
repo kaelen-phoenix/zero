@@ -3,6 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
+import type { MachineView } from "./coord/protocol.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
@@ -250,6 +251,11 @@ export function installLine(r: InstallFreshness, now = new Date()): string {
   return `Instalación atrasada: ${parts.join(" y ")} (revisado ${resetTime(r.checkedAt, now)}).`;
 }
 
+/** One machine of a distributed factory: "pc-vieja · viva · último latido 10:05 · trabajos abc12345". */
+export function machineLine(m: MachineView, now = new Date()): string {
+  return `${m.name} · ${m.alive ? "viva" : "caída"} · último latido ${resetTime(m.at, now)} · ${m.jobs.length ? `trabajos ${m.jobs.join(", ")}` : "sin trabajos"}`;
+}
+
 /** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
 export function priorityNote(job: Job, now = new Date()): string {
   const level = effectivePriority(job, now);
@@ -319,6 +325,10 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.selfUpdate) for (const l of selfUpdateLines(s.selfUpdate, now)) out.push(l.text);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
+  if (s.machines) {
+    out.push(`Máquinas:${s.machines.length ? "" : " todavía sin latidos"}`);
+    for (const m of s.machines) out.push(`- ${machineLine(m, now)}`);
+  }
   out.push(budgetLine(s.budget, now));
   out.push(`Hoy:${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
   const origin = (j: Job) => (jobOrigin(j) ? ` · ${jobOrigin(j)}` : "");
