@@ -13,7 +13,8 @@ Esta evaluación se hizo leyendo el código de zero y lo que cada servidor dice 
 
 - **Claude** (`claudeOptions` en `src/engines/claude.ts`): corre con `strictMcpConfig: true`, sin `mcpServers`, con `settingSources: ["project"]` y `ENABLE_CLAUDEAI_MCP_SERVERS=false`. No carga ningún servidor MCP, ni siquiera el `.mcp.json` del repositorio.
 - **ACP** (`src/engines/acp.ts`): abre la sesión con `session/new` y `mcpServers: []`.
-- **Codex, opencode y agy** (`codexInvocation`, `opencodeInvocation`, `antigravityInvocation` en `src/engines/cli.ts`): se lanzan sin ninguna opción que desactive los servidores MCP de la configuración propia del usuario (`~/.codex/config.toml`, `opencode.json`, la de agy). `zero install` (`src/install.ts`) le indica a quien está a cargo que registre ahí el servidor de chat de zero, así que un agente de la fábrica podría tener a mano `zero_request`, `zero_merge`, `zero_proposal_decide` o `zero_stop`. **No verificado:** hay que confirmarlo con una corrida real de cada CLI.
+- **Codex** (`codexInvocation` en `src/engines/cli.ts`): corre siempre con `-c mcp_servers={}`, con el sandbox prendido o apagado y también dentro de la caja, que arma la misma invocación. Así no carga los servidores MCP de `~/.codex/config.toml`. Resuelto; falta confirmarlo con una corrida real.
+- **Opencode y agy** (`opencodeInvocation`, `antigravityInvocation` en `src/engines/cli.ts`): se lanzan sin ninguna opción que desactive los servidores MCP de la configuración propia del usuario (`opencode.json`, la de agy). `zero install` (`src/install.ts`) le indica a quien está a cargo que registre ahí el servidor de chat de zero, así que un agente de la fábrica podría tener a mano `zero_request`, `zero_merge`, `zero_proposal_decide` o `zero_stop`. **No verificado:** hay que confirmarlo con una corrida real de cada uno.
 
 ### La regla
 
@@ -55,7 +56,8 @@ Se reconsidera cuando zero se instale como paquete publicado y el servidor tenga
 
 ### Próximos pedidos
 
-- Que codex, opencode y agy ignoren los servidores MCP de la configuración del usuario cuando los lanza la fábrica, con un test de los argumentos y el entorno de cada invocación.
+- Que opencode y agy ignoren los servidores MCP de la configuración del usuario cuando los lanza la fábrica, con un test de los argumentos y el entorno de cada invocación.
+- Confirmar con una corrida real de codex que `-c mcp_servers={}` deja vacía la lista de servidores del usuario.
 - Comprobar con una corrida real qué servidores MCP carga cada motor CLI y anotarlo en este ADR.
 - Agregar Playwright con un navegador a la imagen de la caja, opcional por línea, para usarlo como comando de `verify` en líneas con front.
 - Agregar al archivo de la fábrica una opción `mcp` por estación que solo cambia quien está a cargo (ninguna herramienta del chat la toca), que zero pasa al motor y que corre dentro de la caja detrás de la puerta.
@@ -63,6 +65,6 @@ Se reconsidera cuando zero se instale como paquete publicado y el servidor tenga
 
 ## Consecuencias
 
-- Nada cambia ahora: no se instala ningún servidor ni se agrega configuración MCP al repositorio.
-- Queda sin verificar qué servidores cargan hoy codex, opencode y agy desde la configuración del usuario; mientras tanto el riesgo es que un agente vea el servidor de chat de zero.
+- No se instala ningún servidor ni se agrega configuración MCP al repositorio. Lo único que cambió es que codex se lanza con `-c mcp_servers={}`.
+- Queda sin verificar qué servidores cargan hoy opencode y agy desde la configuración del usuario; mientras tanto el riesgo es que un agente vea el servidor de chat de zero.
 - Cualquier servidor MCP futuro para los agentes empieza como un cambio de OpenSpec y respeta la regla: lo pasa zero, corre en la caja y sale por la puerta.
