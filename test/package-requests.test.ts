@@ -250,6 +250,27 @@ describe("a package's cost cap", () => {
     expect(jobs(ctx)).toHaveLength(1);
   });
 
+  it("shows the station limits.usdPerJob in ctx.limits", async () => {
+    const { dir, results } = stationPackage(`results.push(ctx.limits.usdPerJob);`, { perLinePerDay: 1 });
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    await pass(ctx);
+    expect(results()).toEqual([3]);
+  });
+
+  it("keeps the cap whatever the station does to ctx.limits", async () => {
+    const body = `try { ctx.limits.usdPerJob = 100; } catch { results.push("frozen"); }
+  results.push(ctx.limits.usdPerJob);
+  results.push(ctx.requestJob({ line: "web", text: "arreglar algo", maxUsd: 50 }));`;
+    const { dir, results } = stationPackage(body, { perLinePerDay: 1 });
+    const ctx = await factory(dir, { limits: { usdPerJob: 3 } });
+    await pass(ctx);
+    const out = results() as unknown[];
+    expect(out).toContain(3);
+    expect((out.at(-1) as { reason: string }).reason).toContain("limits.usdPerJob");
+    expect(ctx.config.limits.usdPerJob).toBe(3);
+    expect(jobs(ctx)).toEqual([]);
+  });
+
   it("is refused by requestWork above the limit", async () => {
     const ctx = await factory(stationPackage("").dir, { limits: { usdPerJob: 3 } });
     expect(() => requestWork(ctx, { text: "algo", line: "web", budgetUsd: 4 })).toThrow("limits.usdPerJob");
