@@ -1,7 +1,9 @@
+import { createReadStream, statSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, uploadToStation, type UploadContent, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -56,6 +58,38 @@ export interface ZeroMcpOptions {
    * the person in charge to confirm (`holdRemoteAction`) instead of running.
    */
   remote?: { scope: Scope[]; client?: string };
+}
+
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** The file zero_package_upload passes on, or why it refuses; it reads a local path only for a chat on this machine. */
+function uploadInput(input: { path?: string; content?: string; name?: string }, remote: boolean): { name: string; content: UploadContent } | { reason: string } {
+  const { path, content, name } = input;
+  if (path !== undefined && content !== undefined) return { reason: "Mandá path o content, no los dos." };
+  if (path === undefined && content === undefined) return { reason: "Falta el archivo: mandá path (ruta absoluta) o content (base64) con name." };
+  if (content !== undefined) {
+    if (!name?.trim()) return { reason: "Con content hace falta name, el nombre del archivo con su extensión." };
+    const compact = content.replace(/\s+/g, "");
+    if (!compact || !BASE64.test(compact)) return { reason: "content no es base64 válido." };
+    const bytes = Buffer.from(compact, "base64");
+    if (bytes.toString("base64") !== compact) return { reason: "content no es base64 válido." };
+    return { name, content: bytes };
+  }
+  if (remote) return { reason: "El chat remoto no lee archivos de esta máquina: mandá el archivo en content (base64) con name." };
+  if (!isAbsolute(path!)) return { reason: "path tiene que ser una ruta absoluta." };
+  let isFile = false;
+  try {
+    isFile = statSync(path!).isFile();
+  } catch {
+    return { reason: "No encontré el archivo de path." };
+  }
+  if (!isFile) return { reason: "path no es un archivo común." };
+  return { name: basename(path!), content: readLazily(path!) };
+}
+
+/** Opens the file only once the upload starts reading, so a refused upload leaves no open handle behind. */
+async function* readLazily(path: string): AsyncIterable<Uint8Array> {
+  yield* createReadStream(path) as AsyncIterable<Uint8Array>;
 }
 
 /** What a remote token with only `zero:read` sees. */
@@ -226,6 +260,31 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ station, request }) =>
       withFactory(home, async (ctx) => {
         const r = requestStationRun(ctx, station, new Date(), request);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
+    "zero_package_upload",
+    {
+      title: "Mandar un archivo a una estación de un paquete",
+      description: "Send a file (for example a zip) to a package station that accepts uploads and ask for one run of it, as zero_package_run does. Give either `path`, an absolute path to a regular file on this machine, or `content` in base64 plus its `name`. Over the remote chat only `content` works, and the request body is limited to about 1 MiB. Only when the owner asks for it.",
+      inputSchema: {
+        station: z.string().describe("The station, as <package>/<station>."),
+        path: z.string().optional().describe("Absolute path of the file on this machine; not over the remote chat."),
+        content: z.string().optional().describe("The file's bytes in base64, instead of path."),
+        name: z.string().optional().describe("The file's name, with its extension; required with content."),
+        request: z.string().optional().describe("Optional request text from the owner for this run; the station receives it cleaned of secrets and local paths."),
+      },
+    },
+    ({ station, path, content, name, request }) =>
+      withFactory(home, async (ctx) => {
+        const file = uploadInput({ path, content, name }, Boolean(remote));
+        if ("reason" in file) return file.reason;
+        const r = await uploadToStation(ctx, station, { ...file, ...(request !== undefined && { request }) });
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
         const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
