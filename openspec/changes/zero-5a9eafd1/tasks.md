@@ -8,5 +8,5 @@
 
 ## 2. Etapa 2: Estado, mensajes y documentación
 
-- [ ] 2.1 `RemoteChatView.stable`, `FactoryStatus.tunnel`, the `Túnel:` line in src/format.ts and the CLI messages, with tests.
-- [ ] 2.2 ADR 0008 (manual action, deployment, recovery, security, «no verificado»), the ADR 0007 pointer and the AGENTS.md line, with an ADR test; typecheck and the full test suite pass.
+- [x] 2.1 `RemoteChatView.stable`, `FactoryStatus.tunnel`, the `Túnel:` line in src/format.ts and the CLI messages, with tests.
+- [x] 2.2 ADR 0008 (manual action, deployment, recovery, security, «no verificado»), the ADR 0007 pointer and the AGENTS.md line, with an ADR test; typecheck and the full test suite pass.

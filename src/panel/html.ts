@@ -689,7 +689,7 @@ const scopeNames = (scope: string[]) => (scope.includes("zero:act") ? "leer y ac
 export function remoteChatPage(v: RemoteChatView, nonce: string, flash?: string): string {
   const state = v.on
     ? v.url
-      ? `<p>Encendido. Conectá tu chat a <code>${esc(v.url)}</code> (esta dirección cambia cuando el túnel se reinicia).</p>`
+      ? `<p>Encendido. Conectá tu chat a <code>${esc(v.url)}</code> (${v.stable ? "dirección fija: sigue igual después de reiniciar" : "esta dirección cambia cuando el túnel se reinicia"}).</p>`
       : `<p class="bad">Encendido, pero el túnel no está abierto: abrilo con <code>zero panel remote on</code>.</p>`
     : `<p class="muted">Apagado. Se enciende desde la terminal con <code>zero mcp remote on</code>.</p>`;
   const clients = v.clients.length
