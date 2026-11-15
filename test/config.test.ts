@@ -290,3 +290,19 @@ describe("panel.host", () => {
     expect(parseFactory("panel: { host: 0.0.0.0 }\nlines: []\n").panel.host).toBe("0.0.0.0");
   });
 });
+
+describe("panel.tunnel", () => {
+  it("takes a fixed hostname and stays absent without one", () => {
+    expect(parseFactory("panel: { tunnel: { hostname: zero.example.com } }\nlines: []\n").panel.tunnel).toEqual({ hostname: "zero.example.com" });
+    expect(parseFactory("lines: []\n").panel.tunnel).toBeUndefined();
+  });
+
+  it("refuses schemes, paths, ports, single labels, uppercase, quick tunnel domains and extra keys", () => {
+    expect(() => parseFactory("panel: { tunnel: { hostname: 'https://zero.example.com/mcp' } }\nlines: []\n")).toThrow(/panel\.tunnel\.hostname.*nombre DNS/);
+    for (const bad of ["zero.example.com:443", "zero", "Zero.Example.com", "user@zero.example.com", "-zero.example.com"]) {
+      expect(() => parseFactory(`panel: { tunnel: { hostname: '${bad}' } }\nlines: []\n`)).toThrow(/panel\.tunnel\.hostname/);
+    }
+    expect(() => parseFactory("panel: { tunnel: { hostname: abc.trycloudflare.com } }\nlines: []\n")).toThrow(/trycloudflare/);
+    expect(() => parseFactory("panel: { tunnel: { hostname: zero.example.com, token: abc } }\nlines: []\n")).toThrow(/token/);
+  });
+});
