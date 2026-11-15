@@ -447,6 +447,21 @@ export const FactorySchema = z
       })
       .strict()
       .prefault({}),
+    /** Absent: a single-machine factory, as always. Machines that share a factory coordinate through this private repository. */
+    distributed: z
+      .object({
+        repository: z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, "el repositorio de coordinación tiene que tener la forma cuenta/nombre"),
+        heartbeatSeconds: z.number().int().min(30).default(60),
+        leaseMinutes: z.number().int().min(2).default(10),
+        /** Absent: the host name. */
+        machine: z.string().min(1).optional(),
+      })
+      .strict()
+      .refine((d) => d.leaseMinutes * 60 >= d.heartbeatSeconds * 3, {
+        path: ["leaseMinutes"],
+        message: "el plazo tiene que durar al menos tres latidos",
+      })
+      .optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
     panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),

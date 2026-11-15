@@ -9,8 +9,8 @@
 
 ## 2. Etapa 2: Configuración distribuida e identidad de máquina
 
-- [ ] 2.1 Add the optional strict `distributed` block to FactorySchema with its refinement and tests.
-- [ ] 2.2 Add src/machine.ts (machineIdentity, machineCapabilities) with tests.
+- [x] 2.1 Add the optional strict `distributed` block to FactorySchema with its refinement and tests.
+- [x] 2.2 Add src/machine.ts (machineIdentity, machineCapabilities) with tests.
 
 ## 3. Etapa 3: Protocolo de coordinación
 
