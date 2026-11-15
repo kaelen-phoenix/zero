@@ -41,7 +41,7 @@ import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type P
 import { ageText, formatEgressSites, formatJob, formatMerge, formatRequest, jobName, jobOrigin } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
-import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
 import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
@@ -442,6 +442,8 @@ export interface FactoryStatus {
   stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
+  /** The panel's tunnel health, only while kv `panel.remote` is on; `hostname` with a fixed subdomain configured. */
+  tunnel?: TunnelState & { hostname?: string };
   /** The self-update, only when it is on or has a history: the last update, a problem not told by it, and a version waiting to switch. */
   selfUpdate?: SelfUpdateStatus;
   daemon: DaemonInfo;
@@ -643,6 +645,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
+    ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
     selfUpdate: selfUpdateStatus(ctx),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -653,6 +656,13 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     waiting: ctx.store.listJobs({ status: ["waiting"] }),
     recent: ctx.store.finishedSince(new Date(now.getTime() - 7 * 86_400_000)).slice(-5).reverse(),
   };
+}
+
+/** The tunnel's recorded health plus the fixed hostname; a remote panel the daemon has not opened yet reads as a disconnected tunnel. */
+function tunnelStatus(ctx: FactoryContext): TunnelState & { hostname?: string } {
+  const hostname = ctx.config.panel.tunnel?.hostname;
+  const state = readTunnelState(ctx.store) ?? { mode: "quick" as const, failures: 0 };
+  return { ...state, ...(hostname && { hostname }) };
 }
 
 export interface AgentGuide {
@@ -1574,15 +1584,19 @@ export interface RemoteChatView {
   on: boolean;
   /** `<tunnel>/mcp`, only while the panel's tunnel is open. */
   url?: string;
+  /** The open address is the configured `https://<panel.tunnel.hostname>`, so it survives restarts. */
+  stable: boolean;
   clients: ConnectedClient[];
   pending: PendingRemoteAction[];
 }
 
-export function remoteChatView(ctx: Pick<FactoryContext, "store">, now = new Date()): RemoteChatView {
+export function remoteChatView(ctx: Pick<FactoryContext, "store"> & Partial<Pick<FactoryContext, "config">>, now = new Date()): RemoteChatView {
   const tunnel = ctx.store.getKv(REMOTE_URL_KEY);
+  const hostname = ctx.config?.panel.tunnel?.hostname;
   return {
     on: remoteMcpOn(ctx),
     ...(tunnel && { url: `${tunnel.replace(/\/+$/, "")}/mcp` }),
+    stable: !!hostname && tunnel?.replace(/\/+$/, "") === `https://${hostname}`,
     clients: remoteChatClients(ctx, now),
     pending: pendingRemoteActions(ctx, now),
   };

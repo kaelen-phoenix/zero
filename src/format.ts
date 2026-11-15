@@ -95,7 +95,7 @@ export function formatMerge(r: MergeOutcome): string {
 export function formatRemoteChat(v: RemoteChatView, now = new Date()): string {
   const state = v.on
     ? v.url
-      ? `Chat remoto encendido: conectá tu chat a ${v.url}`
+      ? `Chat remoto encendido: conectá tu chat a ${v.url}${v.stable ? " (dirección fija)" : " (dirección temporal: cambia si el túnel se reinicia)"}`
       : "Chat remoto encendido, pero el túnel del panel no está abierto: abrilo con `zero panel remote on`."
     : "Chat remoto apagado: se enciende con `zero mcp remote on`.";
   if (!v.clients.length) return `${state}
@@ -241,6 +241,15 @@ function clock(iso: string, now: Date): string {
   return d.toDateString() === now.toDateString() ? time : `${two(d.getDate())}/${two(d.getMonth() + 1)} ${time}`;
 }
 
+/** The `Túnel:` line: fixed or temporary address, connected or not, failures and the problem. */
+export function tunnelLine(t: NonNullable<FactoryStatus["tunnel"]>, now = new Date()): string {
+  const kind = t.mode === "named" ? `fijo (${t.hostname ?? "subdominio propio"})` : "temporal (cambia al reiniciar)";
+  const parts = [kind, t.connectedSince ? `conectado desde ${clock(t.connectedSince, now)}` : "desconectado"];
+  if (t.failures) parts.push(`${t.failures} ${t.failures === 1 ? "caída seguida" : "caídas seguidas"}`);
+  if (t.problem) parts.push(`PROBLEMA: ${t.problem}`);
+  return `Túnel: ${parts.join(" · ")}`;
+}
+
 function daemonState(d: DaemonInfo, running: number, now: Date): string {
   const state = d.state ?? (d.alive ? "running" : d.lockHeld ? "unresponsive" : "stopped");
   if (state === "running") return "en marcha";
@@ -337,6 +346,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.install) out.push(installLine(s.install, now));
+  if (s.tunnel) out.push(tunnelLine(s.tunnel, now));
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
   for (const b of s.billing) out.push(billingLine(b));

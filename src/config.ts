@@ -91,6 +91,16 @@ const UnjamSchema = z.union([
 export const DEFAULT_SIGNATURE_TEXT = "— Hecho con [zero in the loop](https://zerointheloop.com)";
 export const DEFAULT_SIGNATURE_TRAILER = "Built-by: zero in the loop <https://zerointheloop.com>";
 
+/** A DNS name the person in charge controls: lowercase, two labels or more, no scheme, port, path or credentials, never a quick tunnel's. */
+const TunnelHostname = z
+  .string()
+  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+    message: "panel.tunnel.hostname debe ser un nombre DNS en minúsculas como zero.ejemplo.com, sin https://, puerto ni ruta",
+  })
+  .refine((h) => h !== "trycloudflare.com" && !h.endsWith(".trycloudflare.com"), {
+    message: "panel.tunnel.hostname no puede ser de trycloudflare.com: esas direcciones cambian; usá un subdominio de un dominio tuyo",
+  });
+
 /** zero in the loop's signature on what the factory builds, or `off`. */
 const SignatureSchema = z.union([
   z.literal("off"),
@@ -449,7 +459,14 @@ export const FactorySchema = z
       .prefault({}),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
-    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),
+    panel: z
+      .object({
+        port: z.number().int().min(0).max(65535).default(4848),
+        host: z.string().min(1).default("127.0.0.1"),
+        /** A Cloudflare named tunnel's fixed public hostname; its token is the secret CLOUDFLARE_TUNNEL_TOKEN, never the file. */
+        tunnel: z.object({ hostname: TunnelHostname }).strict().optional(),
+      })
+      .prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
     /** Installed agent packages; what they bring is loaded by `src/packages.ts`, never written here. */

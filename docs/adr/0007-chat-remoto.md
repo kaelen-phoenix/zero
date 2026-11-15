@@ -87,7 +87,7 @@ Alternativas, en orden:
 - Desde el celular se puede ver el estado, leer trazas y propuestas, pedir trabajo y responder preguntas, sin la PC delante, en cualquier cliente MCP que hable OAuth.
 - La superficie de ataque crece: un endpoint en internet que puede actuar sobre la fábrica. Lo acotan el apagado por defecto, la aprobación con la clave del panel, los tokens cortos guardados como hash, el chequeo de Host y la confirmación aparte para lo delicado. La revisión de seguridad tiene que mirar el transporte HTTP y las rutas que se atienden antes del chequeo de la cookie del panel.
 - Un chat de terceros (y el modelo que lo maneja) puede llamar herramientas por error o por una instrucción escondida en lo que lee; por eso lo delicado nunca se ejecuta desde el chat remoto sin confirmación de quien está a cargo.
-- Con el túnel rápido, cada reinicio del túnel cambia la URL y deja sin servicio a los clientes conectados hasta volver a conectarlos. La dirección estable es un pedido aparte.
+- Con el túnel rápido, cada reinicio del túnel cambia la URL y deja sin servicio a los clientes conectados hasta volver a conectarlos. La dirección estable es un pedido aparte (`docs/adr/0008-tunel-con-nombre.md`).
 - zero no aparece en ningún directorio: cada persona conecta su propia fábrica a mano, siguiendo el README.
 - Los datos marcados **no verificado** tienen que confirmarse en las fuentes citadas; si alguno cambió (planes, celular, redirecciones), se corrige este documento y, si hace falta, el servidor.
 
@@ -96,4 +96,4 @@ Alternativas, en orden:
 - Servidor de autorización OAuth (lógica pura) y su estado.
 - MCP por HTTP en el daemon, conectado al servidor del panel.
 - Página `/remote-chat` del panel y comandos `zero mcp remote|clients|revoke|pendientes|confirmar`.
-- Túnel con nombre de Cloudflare como dirección estable, con consentimiento.
+- Túnel con nombre de Cloudflare como dirección estable, con consentimiento: decidido en `docs/adr/0008-tunel-con-nombre.md`.

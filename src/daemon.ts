@@ -46,7 +46,7 @@ import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
-import { tunnelKeeper } from "./panel/tunnel.js";
+import { TUNNEL_TOKEN_SECRET, tunnelKeeper } from "./panel/tunnel.js";
 
 export interface DaemonOptions {
   /** How often the loop wakes up to beat, apply andon and start work. */
@@ -244,7 +244,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
   const host = ctx.config.panel.host;
   panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
-  const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+  const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0, hostname: ctx.config.panel.tunnel?.hostname, token: () => ctx.secrets.get(TUNNEL_TOKEN_SECRET) });
   // Every pass that talks to GitHub does it through this meter; while it holds a pause, none of them starts.
   const meter = githubMeter(store, now);
   let githubPauseLogged = false;

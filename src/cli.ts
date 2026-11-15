@@ -400,7 +400,7 @@ Informe: ${r.report}`);
           const view = remoteChatView(ctx);
           console.log(
             view.url
-              ? `Chat remoto encendido. En tu chat agregá un conector MCP con esta dirección: ${view.url}\nCada conexión nueva la aprobás en el panel; esta dirección cambia si el túnel se reinicia.`
+              ? `Chat remoto encendido. En tu chat agregá un conector MCP con esta dirección: ${view.url}\nCada conexión nueva la aprobás en el panel; ${view.stable ? "esta dirección es fija: sigue igual después de reiniciar la fábrica." : "esta dirección cambia si el túnel se reinicia (para una fija, mirá docs/adr/0008-tunel-con-nombre.md)."}`
               : "Chat remoto encendido, pero hace falta el túnel del panel: abrilo con `zero panel remote on` y volvé a mirar la dirección con `zero mcp clients`.",
           );
           return 0;

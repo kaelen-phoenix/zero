@@ -4,14 +4,15 @@ import type { ChildProcess } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { panelLinks, requestWork, setRemotePanel } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { askOwner } from "../src/line/finish.js";
 import { markdown } from "../src/panel/html.js";
 import { panelKey, rotatePanelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
-import { downloadCloudflared, downloadPlan, REMOTE_URL_KEY, tunnelKeeper } from "../src/panel/tunnel.js";
+import { log } from "../src/log.js";
+import { downloadCloudflared, downloadPlan, readTunnelState, REMOTE_URL_KEY, TUNNEL_STATE_KEY, tunnelKeeper } from "../src/panel/tunnel.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
 const servers: Server[] = [];
@@ -185,15 +186,17 @@ describe("panel pages and actions", () => {
 /** A child process that prints what cloudflared prints and exits when killed. */
 function fakeCloudflared() {
   const spawned: string[][] = [];
+  const envs: (NodeJS.ProcessEnv | undefined)[] = [];
   const procs: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; killed?: boolean })[] = [];
-  const spawn = (_bin: string, args: string[]) => {
+  const spawn = (_bin: string, args: string[], env?: NodeJS.ProcessEnv) => {
     spawned.push(args);
+    envs.push(env);
     const proc = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }) as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: () => boolean };
     proc.kill = () => (proc.emit("exit", 0), true);
     procs.push(proc);
     return proc as unknown as ChildProcess;
   };
-  return { spawn, spawned, procs };
+  return { spawn, spawned, envs, procs };
 }
 
 describe("remote panel", () => {
@@ -227,6 +230,90 @@ describe("remote panel", () => {
     setRemotePanel(ctx, false);
     keeper.tick();
     expect(ctx.store.getKv(REMOTE_URL_KEY)).toBeUndefined();
+  });
+
+  const withCloudflared = async () => {
+    const ctx = testFactory({ lines: [] });
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    mkdirSync(ctx.home.bin, { recursive: true });
+    writeFileSync(`${ctx.home.bin}/${process.platform === "win32" ? "cloudflared.exe" : "cloudflared"}`, "");
+    return ctx;
+  };
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it("runs a named tunnel with the token only in its environment and publishes the fixed address once it registered", async () => {
+    const ctx = await withCloudflared();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const cf = fakeCloudflared();
+    let clock = Date.parse("2026-11-15T10:00:00.000Z");
+    const keeper = tunnelKeeper({ home: ctx.home, store: ctx.store, port: 4848, hostname: "zero.example.com", token: () => "tok123", spawn: cf.spawn, now: () => clock });
+    setRemotePanel(ctx, true);
+    keeper.tick();
+    expect(cf.spawned[0]).toEqual(["tunnel", "--no-autoupdate", "run"]);
+    expect(cf.envs[0]?.TUNNEL_TOKEN).toBe("tok123");
+    expect(cf.spawned[0]!.some((a) => a.includes("tok123"))).toBe(false);
+
+    // Started, but nothing registered yet: no address.
+    cf.procs[0]!.stderr.write("INF Starting tunnel tunnelID=abc\n");
+    await flush();
+    expect(ctx.store.getKv(REMOTE_URL_KEY)).toBeUndefined();
+    expect(readTunnelState(ctx.store)).toMatchObject({ mode: "named", failures: 0 });
+    expect(readTunnelState(ctx.store)?.connectedSince).toBeUndefined();
+
+    cf.procs[0]!.stderr.write("INF Registered tunnel connection connIndex=0 location=eze01 protocol=quic\n");
+    await flush();
+    expect(ctx.store.getKv(REMOTE_URL_KEY)).toBe("https://zero.example.com");
+    expect(readTunnelState(ctx.store)).toEqual({ mode: "named", failures: 0, connectedSince: "2026-11-15T10:00:00.000Z" });
+
+    // It dies: the address goes, the failure counts, and it reopens only after the wait.
+    cf.procs[0]!.emit("exit", 1);
+    expect(ctx.store.getKv(REMOTE_URL_KEY)).toBeUndefined();
+    expect(readTunnelState(ctx.store)).toMatchObject({ mode: "named", failures: 1, lastExitAt: "2026-11-15T10:00:00.000Z" });
+    keeper.tick();
+    expect(cf.spawned).toHaveLength(1);
+    clock += 16_000;
+    keeper.tick();
+    expect(cf.spawned[1]).toEqual(["tunnel", "--no-autoupdate", "run"]);
+    cf.procs[1]!.stdout.write("Registered tunnel connection connIndex=0\n");
+    await flush();
+    expect(readTunnelState(ctx.store)).toMatchObject({ failures: 0, connectedSince: "2026-11-15T10:00:16.000Z" });
+    cf.procs[1]!.emit("exit", 0);
+
+    // The token never reaches kv or the keeper's log lines.
+    for (const [, value] of ctx.store.kvWithPrefix("")) expect(value).not.toContain("tok123");
+    for (const call of [...warn.mock.calls, ...info.mock.calls]) expect(JSON.stringify(call)).not.toContain("tok123");
+
+    setRemotePanel(ctx, false);
+    keeper.tick();
+    expect(ctx.store.getKv(REMOTE_URL_KEY)).toBeUndefined();
+    expect(ctx.store.getKv(TUNNEL_STATE_KEY)).toBeUndefined();
+    warn.mockRestore();
+    info.mockRestore();
+  });
+
+  it("keeps the quick tunnel without the token, warning once and recording the problem", async () => {
+    const ctx = await withCloudflared();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const cf = fakeCloudflared();
+    let clock = 0;
+    const keeper = tunnelKeeper({ home: ctx.home, store: ctx.store, port: 4848, hostname: "zero.example.com", token: () => undefined, spawn: cf.spawn, now: () => clock });
+    setRemotePanel(ctx, true);
+    keeper.tick();
+    expect(cf.spawned[0]).toEqual(["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:4848"]);
+    expect(cf.envs[0]?.TUNNEL_TOKEN).toBeUndefined();
+    expect(readTunnelState(ctx.store)).toMatchObject({ mode: "quick", problem: expect.stringContaining("CLOUDFLARE_TUNNEL_TOKEN") });
+    cf.procs[0]!.stderr.write("INF |  https://quiet-river-1234.trycloudflare.com  |\n");
+    await flush();
+    expect(ctx.store.getKv(REMOTE_URL_KEY)).toBe("https://quiet-river-1234.trycloudflare.com");
+    cf.procs[0]!.emit("exit", 1);
+    clock += 16_000;
+    keeper.tick();
+    expect(cf.spawned).toHaveLength(2);
+    const tokenWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes("zero secret set CLOUDFLARE_TUNNEL_TOKEN"));
+    expect(tokenWarnings).toHaveLength(1);
+    keeper.stop();
+    warn.mockRestore();
   });
 
   it("downloads cloudflared only from the official releases and drops it if the signature is not Cloudflare's", async () => {
