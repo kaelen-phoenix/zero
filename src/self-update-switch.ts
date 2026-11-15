@@ -2,8 +2,8 @@
 // from a copy outside the install folder (`<ZERO_HOME>/self-update/switch.mjs`), so it imports only Node's built-in modules:
 // the install folder's `dist` and `node_modules` are what it replaces.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cp, lstat, mkdir, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,6 +37,8 @@ export interface SwitchResult {
   at: string;
   outcome: "updated" | "rolled-back" | "failed";
   reason?: string;
+  /** The failure came from the machine (a locked file, a missing part), so the commit is tried again later. */
+  machine?: boolean;
 }
 
 export interface FileEntry {
@@ -54,6 +56,15 @@ export interface SwitchFs {
   writeFile(path: string, text: string): Promise<void>;
   /** Every file under a folder, recursively, with its size. */
   list(dir: string): Promise<FileEntry[]>;
+  /** The names right under a folder; none when it does not exist. */
+  entries(dir: string): string[];
+  /** Removes a folder only when it is empty; rejects otherwise. */
+  removeEmpty(path: string): Promise<void>;
+}
+
+/** The switch's own operating system lock, held from its start until its result is written. */
+export interface SwitchLock {
+  release(): void;
 }
 
 /** Everything the switch touches outside itself; tests inject fakes. */
@@ -63,6 +74,8 @@ export interface SwitchDeps {
   git(args: string[]): Promise<string>;
   /** Whether a daemon holds the factory's lock. */
   lockHeld(): boolean;
+  /** Takes the switch lock, or undefined when another switch holds it. */
+  switchLock(): SwitchLock | undefined;
   /** Starts `node <install>/dist/cli.js start` detached, like `zero start --detach`. */
   launch(): { pid?: number };
   /** Ends a started daemon and everything under it. */
@@ -90,19 +103,28 @@ export const resultPath = (home: string) => join(home, "self-update", "result.js
 export const previousPath = (home: string) => join(home, "self-update", "previous");
 /** Where the switch stages the new build and sets the old one aside: inside the install folder, so on its volume. */
 export const stagingPath = (install: string) => join(install, ".zero-switch");
+/** The switch lock: while it is held, a switch is at work and nothing else prepares or switches. */
+export const switchLockPath = (home: string) => join(home, "self-update", "switch.lock");
 
 const text = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 const tail = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(-300);
 const errCode = (err: unknown) => (err as NodeJS.ErrnoException | undefined)?.code;
 
-/** A rename, or a copy and a removal when the two folders are on different volumes. Never used on the install folder's parts. */
-async function move(fs: SwitchFs, from: string, to: string): Promise<void> {
+/** An error that comes from the machine (a missing or incomplete part), not from the commit. */
+const machineError = (message: string) => Object.assign(new Error(message), { machine: true });
+const fromMachine = (err: unknown) => (err as { machine?: unknown } | undefined)?.machine === true || LOCKED.has(errCode(err) ?? "");
+
+/**
+ * A rename, or a copy and a removal when the two folders are on different volumes. Never used on the install folder's parts.
+ * With `keepSource` the copy's source stays for the final cleanup, which comes after the result.
+ */
+async function move(fs: SwitchFs, from: string, to: string, keepSource = false): Promise<void> {
   try {
     await fs.rename(from, to);
   } catch (err) {
     if (errCode(err) !== "EXDEV") throw err;
     await fs.copy(from, to);
-    await fs.remove(from);
+    if (!keepSource) await fs.remove(from);
   }
 }
 
@@ -116,7 +138,7 @@ async function renameRetrying(deps: SwitchDeps, part: string, from: string, to: 
       const code = errCode(err);
       if (!code || !LOCKED.has(code)) throw err;
       if (attempt >= RENAME_TRIES) {
-        throw new Error(`no pude mover ${part} (${code}): otro proceso (por ejemplo el servidor MCP del chat) puede tener abiertos sus archivos`);
+        throw Object.assign(new Error(`no pude mover ${part} (${code}): otro proceso (por ejemplo el servidor MCP del chat) puede tener abiertos sus archivos`), { code });
       }
       deps.say(`${part} is locked (${code}); trying again`);
       await deps.sleep(RENAME_WAIT_MS * 2 ** (attempt - 1));
@@ -145,29 +167,73 @@ interface Staging {
   failed: string;
 }
 
-type Outcome = (outcome: SwitchResult["outcome"], reason?: string) => SwitchResult;
+type Outcome = (outcome: SwitchResult["outcome"], reason?: string, machine?: boolean) => SwitchResult;
 
 /**
- * Waits for the old daemon to stop, stages the prepared build inside the install folder and checks it arrived whole, swaps
- * the parts only by renames on the install folder's volume, checks that `dist/cli.js --version` runs from there,
- * fast-forwards the branch and starts the new daemon. Anything that fails puts the previous build, commit and daemon back.
- * Writes `result.json` for the next daemon to record; never throws.
+ * Takes the switch lock, waits for the old daemon to stop, stages the prepared build inside the install folder and checks it
+ * arrived whole, swaps the parts only by renames on the install folder's volume, checks that `dist/cli.js --version` runs
+ * from there, fast-forwards the branch and starts the new daemon. Anything that fails puts the previous build, commit and
+ * daemon back. Writes `result.json` for the next daemon to record, releases the lock and only then removes what is left
+ * under the staging folder, which can take hours on a locked file; never throws.
  */
 export async function runSwitch(plan: SwitchPlan, deps: SwitchDeps): Promise<SwitchResult> {
-  const result: Outcome = (outcome, reason) => ({ from: plan.from, to: plan.to, at: deps.now().toISOString(), outcome, ...(reason ? { reason } : {}) });
+  const result: Outcome = (outcome, reason, machine) => ({
+    from: plan.from,
+    to: plan.to,
+    at: deps.now().toISOString(),
+    outcome,
+    ...(reason ? { reason } : {}),
+    ...(machine && outcome === "failed" ? { machine: true } : {}),
+  });
+  let lock: SwitchLock | undefined;
+  try {
+    lock = deps.switchLock();
+  } catch (err) {
+    say(deps, `cannot take the switch lock: ${text(err)}`);
+  }
+  if (!lock) {
+    // Another switch is at work: its own result is the one to tell, so this one writes none and touches nothing.
+    const outcome = result("failed", "otro cambio de versión está en curso", true);
+    say(deps, `self-update switch not run: ${outcome.reason}`);
+    return outcome;
+  }
+  const root = stagingPath(plan.install);
+  // What earlier switches left, listed under the lock: this run picks fresh names and removes those only at the end.
+  const leftovers = safeEntries(deps, root).map((name) => join(root, name));
+  const own: string[] = [];
+  let keep: string | undefined;
   let outcome: SwitchResult;
   try {
-    outcome = await apply(plan, deps, result);
+    ({ outcome, keep } = await apply(plan, deps, result, own));
   } catch (err) {
-    outcome = result("failed", text(err));
+    outcome = result("failed", text(err), fromMachine(err));
   }
+  await finish(plan, deps, outcome);
   try {
-    const root = stagingPath(plan.install);
-    if (deps.fs.exists(root)) await deps.fs.remove(root);
+    lock.release();
   } catch (err) {
-    say(deps, `cannot remove ${stagingPath(plan.install)}: ${text(err)}`);
+    say(deps, `cannot release the switch lock: ${text(err)}`);
   }
-  return finish(plan, deps, outcome);
+  // Named folders only, never the root as a whole; a folder still holding the only copy of the previous build stays.
+  for (const dir of [...leftovers, ...own]) {
+    if (dir === keep) continue;
+    try {
+      if (deps.fs.exists(dir)) await deps.fs.remove(dir);
+    } catch (err) {
+      say(deps, `cannot remove ${dir}: ${text(err)}`);
+    }
+  }
+  if (deps.fs.exists(root)) await deps.fs.removeEmpty(root).catch(() => undefined);
+  return outcome;
+}
+
+function safeEntries(deps: SwitchDeps, dir: string): string[] {
+  try {
+    return deps.fs.entries(dir);
+  } catch (err) {
+    say(deps, `cannot list ${dir}: ${text(err)}`);
+    return [];
+  }
 }
 
 function say(deps: SwitchDeps, message: string): void {
@@ -178,7 +244,8 @@ function say(deps: SwitchDeps, message: string): void {
   }
 }
 
-async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promise<SwitchResult> {
+/** The switch itself; `own` gets the staging folders it makes, `keep` names one the final cleanup must leave. */
+async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome, own: string[]): Promise<{ outcome: SwitchResult; keep?: string }> {
   const { fs } = deps;
   const install = (part: Part) => join(plan.install, part);
   const moved: Part[] = [];
@@ -221,7 +288,7 @@ async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promi
     else if (!(await waitFor(deps, true, plan.timeoutMs))) problems.push("la versión anterior tampoco tomó el candado");
     return problems.length ? problems.join("; ") : undefined;
   };
-  const giveUp = async (outcome: "failed" | "rolled-back", why: string): Promise<SwitchResult> => {
+  const giveUp = async (outcome: "failed" | "rolled-back", why: string, machine = false): Promise<{ outcome: SwitchResult; keep?: string }> => {
     say(deps, why);
     let trouble: string | undefined;
     try {
@@ -229,28 +296,30 @@ async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promi
     } catch (err) {
       trouble = text(err);
     }
-    return result(outcome, trouble ? `${why}; ${trouble}` : why);
+    // A part that did not go back still sits among the old ones: that folder is the only copy of it.
+    const stranded = stage && moved.some((part) => fs.exists(join(stage!.old, part)));
+    return { outcome: result(outcome, trouble ? `${why}; ${trouble}` : why, machine), ...(stranded ? { keep: stage!.old } : {}) };
   };
 
   if (!(await waitFor(deps, false, RELEASE_WAIT_MS))) {
     // Nothing was touched: the old daemon still runs, or a launch here finds the lock taken and ends.
     const started = launch();
     const why = "la fábrica no se apagó a tiempo; sigo en la versión actual";
-    return result("failed", started.problem ? `${why}; ${started.problem}` : why);
+    return { outcome: result("failed", started.problem ? `${why}; ${started.problem}` : why, true) };
   }
 
   try {
     const branch = await deps.git(["rev-parse", "--abbrev-ref", "HEAD"]);
     if (branch !== plan.branch) throw new Error(`${plan.install} ya no está en la rama ${plan.branch}`);
-    const staged = await freshStaging(plan, deps);
+    const staged = await freshStaging(plan, deps, own);
     stage = staged;
     // The new build arrives whole next to the install before anything of the install moves.
     for (const part of PARTS) {
       const from = join(plan.prepared, part);
-      if (!fs.exists(from)) throw new Error(`falta ${part} en la versión preparada`);
+      if (!fs.exists(from)) throw machineError(`falta ${part} en la versión preparada`);
       const listed = await fs.list(from);
       await move(fs, from, join(staged.fresh, part));
-      if (!sameFiles(listed, await fs.list(join(staged.fresh, part)))) throw new Error(`la copia de ${part} de la versión nueva quedó incompleta`);
+      if (!sameFiles(listed, await fs.list(join(staged.fresh, part)))) throw machineError(`la copia de ${part} de la versión nueva quedó incompleta`);
     }
     for (const part of PARTS) {
       if (fs.exists(install(part))) {
@@ -261,7 +330,7 @@ async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promi
       placed.push(part);
     }
   } catch (err) {
-    return giveUp("failed", `no pude poner ${plan.to.slice(0, 12)}: ${text(err)}`);
+    return giveUp("failed", `no pude poner ${plan.to.slice(0, 12)}: ${text(err)}`, fromMachine(err));
   }
 
   try {
@@ -280,7 +349,7 @@ async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promi
   const started = launch();
   if (!started.problem && (await waitFor(deps, true, plan.timeoutMs))) {
     if (stage) await keepPrevious(plan, deps, stage.old, moved);
-    return result("updated");
+    return { outcome: result("updated") };
   }
   const why = started.problem ?? `la versión ${plan.to.slice(0, 12)} no tomó el candado en ${Math.round(plan.timeoutMs / 1000)} s`;
   say(deps, `${why}; vuelvo a ${plan.from.slice(0, 12)}`);
@@ -289,19 +358,13 @@ async function apply(plan: SwitchPlan, deps: SwitchDeps, result: Outcome): Promi
   return giveUp("rolled-back", why);
 }
 
-/** Clears a staging folder an earlier switch left, or picks fresh names inside it when that cannot be removed. */
-async function freshStaging(plan: SwitchPlan, deps: SwitchDeps): Promise<Staging> {
+/** Picks names inside the staging folder that no earlier switch left; those stay as they are until the end of the run. */
+async function freshStaging(plan: SwitchPlan, deps: SwitchDeps, own: string[]): Promise<Staging> {
   const root = stagingPath(plan.install);
-  if (deps.fs.exists(root)) {
-    try {
-      await deps.fs.remove(root);
-    } catch (err) {
-      say(deps, `cannot remove the leftover ${root}: ${text(err)}`);
-    }
-  }
   let suffix = "";
   for (let n = 1; ["new", "old", "failed"].some((name) => deps.fs.exists(join(root, name + suffix))); n++) suffix = `-${n}`;
   const stage = { fresh: join(root, `new${suffix}`), old: join(root, `old${suffix}`), failed: join(root, `failed${suffix}`) };
+  own.push(stage.fresh, stage.old, stage.failed);
   await deps.fs.mkdir(stage.fresh);
   await deps.fs.mkdir(stage.old);
   return stage;
@@ -313,7 +376,8 @@ async function keepPrevious(plan: SwitchPlan, deps: SwitchDeps, old: string, mov
   try {
     if (deps.fs.exists(previous)) await deps.fs.remove(previous);
     await deps.fs.mkdir(previous);
-    for (const part of moved) await move(deps.fs, join(old, part), join(previous, part));
+    // Across volumes the old parts are copied; removing them is the final cleanup's, after the result.
+    for (const part of moved) await move(deps.fs, join(old, part), join(previous, part), true);
   } catch (err) {
     say(deps, `cannot keep the previous build in ${previous}: ${text(err)}`);
   }
@@ -351,17 +415,54 @@ async function listFiles(dir: string): Promise<FileEntry[]> {
 /** The lock check of `daemonLockHeld`: a read-only open that SQLite refuses as busy while a daemon holds it. */
 function lockHeldAt(file: string): boolean {
   if (!existsSync(file)) return false;
-  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+  const { DatabaseSync } = sqlite();
   let db: InstanceType<typeof DatabaseSync> | undefined;
   try {
     db = new DatabaseSync(file, { readOnly: true });
     db.prepare("SELECT count(*) FROM sqlite_master").get();
     return false;
   } catch (err) {
-    return (((err as { errcode?: number }).errcode ?? 0) & 0xff) === 5;
+    return isBusy(err);
   } finally {
     db?.close();
   }
+}
+
+const sqlite = () => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+const isBusy = (err: unknown) => (((err as { errcode?: number }).errcode ?? 0) & 0xff) === 5;
+
+/** Whether a switch holds its lock, this process included; a read-only look. */
+export const switchLockHeldAt = (home: string): boolean => lockHeldAt(switchLockPath(home));
+
+/**
+ * Takes the switch lock the way `acquireDaemonLock` takes the factory's: an exclusive SQLite transaction on an empty file,
+ * an operating system lock that dies with the process. Undefined when another switch holds it.
+ */
+export function acquireSwitchLock(home: string): SwitchLock | undefined {
+  mkdirSync(join(home, "self-update"), { recursive: true });
+  const { DatabaseSync } = sqlite();
+  const db = new DatabaseSync(switchLockPath(home));
+  try {
+    db.exec("PRAGMA busy_timeout=1000");
+    db.exec("PRAGMA journal_mode=MEMORY");
+    db.exec("BEGIN EXCLUSIVE");
+  } catch (err) {
+    db.close();
+    if (isBusy(err)) return undefined;
+    throw err;
+  }
+  let held = true;
+  return {
+    release() {
+      if (!held) return;
+      held = false;
+      try {
+        db.exec("ROLLBACK");
+      } finally {
+        db.close();
+      }
+    },
+  };
 }
 
 export function realSwitchDeps(plan: SwitchPlan): SwitchDeps {
@@ -381,6 +482,8 @@ export function realSwitchDeps(plan: SwitchPlan): SwitchDeps {
       mkdir: async (path) => void (await mkdir(path, { recursive: true })),
       writeFile: (path, body) => writeFile(path, body),
       list: listFiles,
+      entries: (dir) => (existsSync(dir) ? readdirSync(dir) : []),
+      removeEmpty: (path) => rmdir(path),
     },
     git: (args) =>
       new Promise((done, fail) => {
@@ -389,6 +492,7 @@ export function realSwitchDeps(plan: SwitchPlan): SwitchDeps {
         else fail(new Error(`git ${args[0]}: ${(r.stderr || r.error?.message || "").trim().slice(-300)}`));
       }),
     lockHeld: () => lockHeldAt(join(plan.home, "daemon.lock")),
+    switchLock: () => acquireSwitchLock(plan.home),
     launch: () => {
       const out = openSync(plan.log, "a");
       const child = spawn(plan.node, [join(plan.install, "dist", "cli.js"), "start"], {

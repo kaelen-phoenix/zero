@@ -7,7 +7,7 @@ import type { FactoryContext } from "./app.js";
 import { mergeKey, type MergeState } from "./line/automerge.js";
 import { log } from "./log.js";
 import { findGit, gitEnv, lockProblemAt, npmCiArgs, runNpm, runProcess, type GitRunner } from "./package-install.js";
-import { resultPath, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
+import { resultPath, switchLockHeldAt, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
 import { tryGit } from "./shell.js";
 import type { Store } from "./state/store.js";
 
@@ -48,8 +48,55 @@ export interface SelfUpdateState {
   problem?: string;
   /** Commits whose preparation or start failed; never prepared again. */
   failed?: string[];
+  /** A commit that failed for the machine (a locked file, a folder left without its build), prepared again from `at`. */
+  retry?: SelfUpdateRetry;
+  /** The install folder's HEAD at the last check: a different one makes the check due. */
+  head?: string;
   /** When the switch process was launched (ISO). */
   switchingAt?: string;
+}
+
+export interface SelfUpdateRetry {
+  commit: string;
+  /** When it may be prepared again (ISO). */
+  at: string;
+  /** Consecutive machine failures of that commit. */
+  tries: number;
+}
+
+/** The first wait after a machine failure, doubling with each one in a row up to RETRY_MAX_MS. */
+export const RETRY_FIRST_MS = 60 * 60_000;
+export const RETRY_MAX_MS = 24 * 60 * 60_000;
+
+const MACHINE_CODE = /\b(EPERM|EBUSY|EACCES|ENOTEMPTY)\b/;
+
+/** Whether an error comes from the machine (a file held by another process, a refused removal) rather than from the commit. */
+export function isMachineFailure(err: unknown, depth = 0): boolean {
+  if (!err || depth > 5) return false;
+  if (typeof err === "string") return MACHINE_CODE.test(err);
+  if (typeof err !== "object") return false;
+  const { code, message, cause } = err as { code?: unknown; message?: unknown; cause?: unknown };
+  if (typeof code === "string" && MACHINE_CODE.test(code)) return true;
+  if (typeof message === "string" && MACHINE_CODE.test(message)) return true;
+  return isMachineFailure(cause, depth + 1);
+}
+
+/** The next retry of a commit that failed for the machine: one more try in a row of the same commit, a longer wait. */
+export function machineRetry(state: SelfUpdateState, commit: string, at: Date): SelfUpdateRetry {
+  const tries = state.retry?.commit === commit ? state.retry.tries + 1 : 1;
+  const wait = Math.min(RETRY_FIRST_MS * 2 ** (tries - 1), RETRY_MAX_MS);
+  return { commit, at: new Date(at.getTime() + wait).toISOString(), tries };
+}
+
+/**
+ * Where a failed commit goes: a machine failure only waits for a retry, any other failure is kept among the failed
+ * ones for good. A retry of that commit is dropped in the latter case.
+ */
+export function afterFailure(state: SelfUpdateState, commit: string, machine: boolean, at: Date): Pick<SelfUpdateState, "failed" | "retry"> {
+  if (!commit) return { failed: state.failed, retry: state.retry };
+  if (machine) return { failed: state.failed, retry: machineRetry(state, commit, at) };
+  const failed = state.failed?.includes(commit) ? state.failed : [...(state.failed ?? []), commit].slice(-HISTORY_LIMIT);
+  return { failed, retry: state.retry?.commit === commit ? undefined : state.retry };
 }
 
 export type SelfUpdateOutcome = "updated" | "rolled-back" | "failed";
@@ -127,9 +174,14 @@ const samePath = (a: string, b: string) => {
   }
 };
 
-/** Due when it was never checked, a day has passed, or a pull request of a line working on the install folder merged since. */
-function due(ctx: FactoryContext, state: SelfUpdateState, install: string, at: Date): boolean {
+/**
+ * Due when it was never checked, a day has passed, a machine retry's time came, the install folder's HEAD moved (an
+ * update by hand) or a pull request of a line working on the install folder merged since.
+ */
+function due(ctx: FactoryContext, state: SelfUpdateState, install: string, at: Date, head: string | undefined): boolean {
   if (!state.checkedAt || at.getTime() - Date.parse(state.checkedAt) >= CHECK_EVERY_MS) return true;
+  if (state.retry && at.getTime() >= Date.parse(state.retry.at)) return true;
+  if (head && state.head && head !== state.head) return true;
   const lines = new Set(ctx.config.lines.filter((l) => samePath(l.repo, install)).map((l) => l.name));
   if (!lines.size) return false;
   for (const job of ctx.store.listJobs({ status: ["delivered"], limit: -1 })) {
@@ -158,18 +210,30 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
   if (!settings?.enabled) return;
   const at = (deps.now ?? ctx.now ?? (() => new Date()))();
   const { state } = readSelfUpdate(ctx.store);
-  // A prepared version waits for its switch, and a switch under way is the next daemon's to tell.
-  if (state.status !== "idle") return;
+  // A switch under way is the next daemon's to tell.
+  if (state.status === "switching") return;
+  // A switch still at work (even one taken for dead) owns the install folder and the prepared folders.
+  if (switchLockHeldAt(ctx.home.root)) return;
   const install = deps.install ?? installFolder();
-  if (!due(ctx, state, install, at)) return;
-  const checked: SelfUpdateState = { ...state, checkedAt: at.toISOString() };
+  const git = (args: string[]) => deps.git(args, { cwd: install });
+  const installed = await git(["rev-parse", "HEAD"]).catch(() => undefined);
+  const clean = (head: string): SelfUpdateState => ({ status: "idle", checkedAt: at.toISOString(), head });
+  if (state.status === "ready") {
+    // A prepared version waits for its switch, unless that commit was already put in place by hand.
+    if (!installed || installed !== state.to) return;
+    log.info("self-update target already installed; dropping the prepared version", { to: state.to, dir: state.dir });
+    recordSelfUpdate(ctx.store, { state: clean(installed) });
+    if (state.dir) await rm(state.dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir: state.dir, error: String(err) }));
+    return;
+  }
+  if (!due(ctx, state, install, at, installed)) return;
+  const checked: SelfUpdateState = { ...state, checkedAt: at.toISOString(), ...(installed ? { head: installed } : {}) };
   const save = (next: SelfUpdateState) => recordSelfUpdate(ctx.store, { state: next });
   // Each distinct problem is said once; the check time moves on either way.
   const problem = (text: string) => {
     if (text !== state.problem) log.warn("self-update held back", { problem: text });
     save({ ...checked, problem: text });
   };
-  const git = (args: string[]) => deps.git(args, { cwd: install });
 
   let head: string;
   let tip: string;
@@ -190,9 +254,12 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
   } catch (err) {
     return problem(`no pude mirar ${settings.remote}: ${reason(err)}`);
   }
-  if (tip === head) return save({ ...checked, problem: undefined });
+  // Up to date, by an update or by hand: nothing of earlier failures is left to tell.
+  if (tip === head) return save(clean(head));
   // A commit that already failed is never prepared again; its failure was already told.
   if (state.failed?.includes(tip)) return save(checked);
+  // A commit that failed for the machine waits for its retry.
+  if (state.retry?.commit === tip && at.getTime() < Date.parse(state.retry.at)) return save(checked);
   try {
     await git(["merge-base", "--is-ancestor", "HEAD", tip]);
   } catch {
@@ -204,16 +271,17 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
     await prepare(deps, install, tip, dir);
   } catch (err) {
     const why = `no pude preparar ${tip.slice(0, 12)}: ${reason(err)}`;
-    log.warn("self-update preparation failed; staying on the current version", { from: head, to: tip, error: why });
+    const machine = isMachineFailure(err);
+    log.warn("self-update preparation failed; staying on the current version", { from: head, to: tip, error: why, machine });
     await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((e) => log.warn("cannot remove a failed self-update folder", { dir, error: String(e) }));
     recordSelfUpdate(ctx.store, {
-      state: { ...checked, problem: why, failed: [...(state.failed ?? []), tip].slice(-HISTORY_LIMIT) },
+      state: { ...checked, problem: why, ...afterFailure(state, tip, machine, at) },
       entry: { from: head, to: tip, at: at.toISOString(), outcome: "failed", reason: why },
     });
     return;
   }
   log.info("self-update ready; switching once the factory is free", { from: head, to: tip, dir });
-  save({ ...checked, status: "ready", from: head, to: tip, dir, problem: undefined });
+  save({ ...checked, status: "ready", from: head, to: tip, dir, problem: undefined, retry: state.retry?.commit === tip ? undefined : state.retry });
 }
 
 /** The target commit in a fresh folder of its own, built and tried; throws on the first step that fails. */
@@ -294,17 +362,23 @@ const OUTCOMES: readonly string[] = ["updated", "rolled-back", "failed"];
  * target that did not start (or could not be put in place) kept among the failed ones. Called when the daemon starts and
  * on its passes, since the switch writes its result only after the new daemon took the lock. Never throws.
  */
-export async function importSwitchResult(ctx: FactoryContext): Promise<SelfUpdateEntry | undefined> {
+export interface ImportOptions {
+  /** Whether a switch process is still at work, so a switch without a result is not taken for dead; absent: its lock is held. */
+  switchRunning?: () => boolean;
+}
+
+export async function importSwitchResult(ctx: FactoryContext, opts: ImportOptions = {}): Promise<SelfUpdateEntry | undefined> {
   const file = resultPath(ctx.home.root);
   const at = (ctx.now ?? (() => new Date()))();
   const { state } = readSelfUpdate(ctx.store);
   if (!existsSync(file)) {
-    // A switch that died without a word must not hold the factory forever.
+    // A switch that died without a word must not hold the factory forever; it says nothing of the commit, so it is tried again later.
     const since = state.switchingAt ? Date.parse(state.switchingAt) : NaN;
     if (state.status !== "switching" || !(at.getTime() - since >= SWITCH_STALE_MS)) return undefined;
+    if ((opts.switchRunning ?? (() => switchLockHeldAt(ctx.home.root)))()) return undefined;
     const entry: SelfUpdateEntry = { from: state.from ?? "", to: state.to ?? "", at: at.toISOString(), outcome: "failed", reason: "el cambio de versión no dejó resultado" };
     log.warn("self-update switch left no result; staying on what runs", { from: entry.from, to: entry.to });
-    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry), entry });
+    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, true, at), entry });
     return entry;
   }
   let result: SwitchResult | undefined;
@@ -319,18 +393,46 @@ export async function importSwitchResult(ctx: FactoryContext): Promise<SelfUpdat
   const entry: SelfUpdateEntry = { from: result.from, to: result.to, at: result.at, outcome: result.outcome, ...(result.reason ? { reason: result.reason } : {}) };
   if (entry.outcome === "updated") log.info("self-update done", { from: entry.from, to: entry.to });
   else log.warn("self-update did not go through; running the previous version", { from: entry.from, to: entry.to, outcome: entry.outcome, reason: entry.reason });
-  recordSelfUpdate(ctx.store, { state: idleAfter(state, entry), entry });
-  // What is left of the prepared folder is no longer needed: its build is in place or was given up.
-  if (state.dir) await rm(state.dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir: state.dir, error: String(err) }));
+  const own = state.status === "switching" && Boolean(entry.to) && entry.to === state.to;
+  let dir: string | undefined;
+  if (own) {
+    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, result.machine === true, at), entry });
+    dir = state.dir;
+  } else {
+    // A result of an earlier switch, arriving late: it goes to the history and touches nothing of the current target,
+    // except that a commit it put in place is no longer a failed one.
+    log.info("self-update result of an earlier switch; only recorded", { to: entry.to, current: state.to, status: state.status });
+    const succeeded = entry.outcome === "updated" ? withoutCommit(state, entry.to) : undefined;
+    recordSelfUpdate(ctx.store, { ...(succeeded ? { state: succeeded } : {}), entry });
+    if (entry.to && entry.to !== state.to) dir = join(selfUpdateDir(ctx), entry.to.slice(0, 12));
+  }
+  // What is left of that result's prepared folder is no longer needed: its build is in place or was given up.
+  if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir, error: String(err) }));
   return entry;
 }
 
-function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry): SelfUpdateState {
-  const failed = entry.outcome === "updated" || !entry.to || state.failed?.includes(entry.to) ? state.failed : [...(state.failed ?? []), entry.to].slice(-HISTORY_LIMIT);
+/** The state without a commit among the failed ones or its retry, when it holds either; else undefined. */
+function withoutCommit(state: SelfUpdateState, commit: string): SelfUpdateState | undefined {
+  if (!state.failed?.includes(commit) && state.retry?.commit !== commit) return undefined;
+  const next: SelfUpdateState = { ...state };
+  const failed = state.failed?.filter((c) => c !== commit);
+  if (failed?.length) next.failed = failed;
+  else delete next.failed;
+  if (next.retry?.commit === commit) delete next.retry;
+  return next;
+}
+
+function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry, machine: boolean, at: Date): SelfUpdateState {
+  const { failed, retry } =
+    entry.outcome === "updated"
+      ? { failed: state.failed?.filter((c) => c !== entry.to), retry: state.retry?.commit === entry.to ? undefined : state.retry }
+      : afterFailure(state, entry.to, machine, at);
   return {
     status: "idle",
     ...(state.checkedAt ? { checkedAt: state.checkedAt } : {}),
+    ...(state.head ? { head: state.head } : {}),
     ...(failed?.length ? { failed } : {}),
+    ...(retry ? { retry } : {}),
     ...(entry.outcome === "updated" ? {} : { problem: entryProblem(entry) }),
   };
 }

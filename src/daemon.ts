@@ -39,7 +39,8 @@ import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { resendAfterCapability, unjamPass } from "./line/unjam.js";
-import { HISTORY_LIMIT, importSwitchResult, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
+import { switchLockHeldAt } from "./self-update-switch.js";
+import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -420,6 +421,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   // A prepared version of zero switches in once nothing runs: the switch process outlives this daemon, which stops as usual.
   let selfReadyLogged = false;
+  let switchBusyLogged = false;
   const switchVersion = async () => {
     const { state } = readSelfUpdate(store);
     recordSelfUpdate(store, { state: { ...state, status: "switching", switchingAt: now().toISOString() } });
@@ -427,9 +429,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       await (opts.launchSwitch ?? launchSwitch)(ctx, state);
     } catch (err) {
       const why = `no pude iniciar el cambio a ${(state.to ?? "").slice(0, 12)}: ${String(err).slice(0, 300)}`;
-      log.warn("self-update switch not started; staying on the current version", { error: why });
+      const machine = isMachineFailure(err);
+      log.warn("self-update switch not started; staying on the current version", { error: why, machine });
       recordSelfUpdate(store, {
-        state: { ...state, status: "idle", problem: why, failed: [...(state.failed ?? []), state.to ?? ""].filter(Boolean).slice(-HISTORY_LIMIT) },
+        state: { ...state, status: "idle", problem: why, ...afterFailure(state, state.to ?? "", machine, now()) },
         entry: { from: state.from ?? "", to: state.to ?? "", at: now().toISOString(), outcome: "failed", reason: why },
       });
       return;
@@ -551,7 +554,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && readSelfUpdate(store).state.status === "ready";
       if (selfReady && !selfReadyLogged) log.info("self-update ready: not starting new jobs until the switch", { running: running.size });
       selfReadyLogged = selfReady;
-      if (selfReady && !running.size) {
+      // A switch still at work (an earlier one taken for dead) is never doubled: the ready version waits for it to end.
+      const switchBusy = selfReady && !running.size && switchLockHeldAt(ctx.home.root);
+      if (switchBusy && !switchBusyLogged) log.warn("self-update ready but another switch is still at work; waiting for it");
+      switchBusyLogged = switchBusy;
+      if (selfReady && !running.size && !switchBusy) {
         await switchVersion();
         continue;
       }
