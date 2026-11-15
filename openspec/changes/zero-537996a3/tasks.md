@@ -14,8 +14,8 @@
 
 ## 3. Etapa 3: Protocolo de coordinación
 
-- [ ] 3.1 Add src/coord/protocol.ts (CoordApi, CoordConflict, memoryCoord, claimJob, stillHolds, releaseJob, heartbeat, listMachines) with tests.
-- [ ] 3.2 Add src/coord/github.ts (githubCoord over git refs, 422 mapped to CoordConflict) and the `coord` GithubPass, with stubbed-Octokit tests.
+- [x] 3.1 Add src/coord/protocol.ts (CoordApi, CoordConflict, memoryCoord, claimJob, stillHolds, releaseJob, heartbeat, listMachines) with tests.
+- [x] 3.2 Add src/coord/github.ts (githubCoord over git refs, 422 mapped to CoordConflict) and the `coord` GithubPass, with stubbed-Octokit tests.
 
 ## 4. Etapa 4: Latido en el daemon, máquinas en el estado y zero unirse
 
