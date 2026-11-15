@@ -7,7 +7,7 @@ import type { FactoryContext } from "./app.js";
 import { mergeKey, type MergeState } from "./line/automerge.js";
 import { log } from "./log.js";
 import { findGit, gitEnv, lockProblemAt, npmCiArgs, runNpm, runProcess, type GitRunner } from "./package-install.js";
-import { resultPath, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
+import { resultPath, switchLockHeldAt, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
 import { tryGit } from "./shell.js";
 import type { Store } from "./state/store.js";
 
@@ -212,6 +212,8 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
   const { state } = readSelfUpdate(ctx.store);
   // A switch under way is the next daemon's to tell.
   if (state.status === "switching") return;
+  // A switch still at work (even one taken for dead) owns the install folder and the prepared folders.
+  if (switchLockHeldAt(ctx.home.root)) return;
   const install = deps.install ?? installFolder();
   const git = (args: string[]) => deps.git(args, { cwd: install });
   const installed = await git(["rev-parse", "HEAD"]).catch(() => undefined);
@@ -361,7 +363,7 @@ const OUTCOMES: readonly string[] = ["updated", "rolled-back", "failed"];
  * on its passes, since the switch writes its result only after the new daemon took the lock. Never throws.
  */
 export interface ImportOptions {
-  /** Whether a switch process is still at work, so a switch without a result is not taken for dead; absent: never. */
+  /** Whether a switch process is still at work, so a switch without a result is not taken for dead; absent: its lock is held. */
   switchRunning?: () => boolean;
 }
 
@@ -373,7 +375,7 @@ export async function importSwitchResult(ctx: FactoryContext, opts: ImportOption
     // A switch that died without a word must not hold the factory forever; it says nothing of the commit, so it is tried again later.
     const since = state.switchingAt ? Date.parse(state.switchingAt) : NaN;
     if (state.status !== "switching" || !(at.getTime() - since >= SWITCH_STALE_MS)) return undefined;
-    if (opts.switchRunning?.()) return undefined;
+    if ((opts.switchRunning ?? (() => switchLockHeldAt(ctx.home.root)))()) return undefined;
     const entry: SelfUpdateEntry = { from: state.from ?? "", to: state.to ?? "", at: at.toISOString(), outcome: "failed", reason: "el cambio de versión no dejó resultado" };
     log.warn("self-update switch left no result; staying on what runs", { from: entry.from, to: entry.to });
     recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, true, at), entry });

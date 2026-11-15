@@ -1,11 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { requestWork, SHUTDOWN_KEY } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { importSwitchResult, readSelfUpdate, recordSelfUpdate, RETRY_FIRST_MS, SWITCH_STALE_MS, type SelfUpdateState } from "../src/self-update.js";
-import { previousPath, resultPath, runSwitch, stagingPath, type FileEntry, type SwitchDeps, type SwitchFs, type SwitchPlan } from "../src/self-update-switch.js";
+import { acquireSwitchLock, previousPath, resultPath, runSwitch, stagingPath, switchLockHeldAt, type FileEntry, type SwitchDeps, type SwitchFs, type SwitchPlan } from "../src/self-update-switch.js";
 import { cleanup, fakeAgents, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
@@ -40,6 +40,8 @@ interface World {
   launchThrows?: boolean;
   /** Writes of result.json that fail before one goes through. */
   resultWriteFails?: number;
+  /** Another switch holds the switch lock. */
+  switchLocked?: boolean;
 }
 
 function listTree(dir: string, rel = ""): FileEntry[] {
@@ -56,6 +58,8 @@ function fakes(world: World, install?: string) {
   const launches: number[] = [];
   const killed: number[] = [];
   const checks: string[] = [];
+  /** The fs calls and the lock's, in order, as `<call> <path>`. */
+  const calls: string[] = [];
   const tries = new Map<string, number>();
   let writeFails = world.resultWriteFails ?? 0;
   let polls = 0;
@@ -68,6 +72,7 @@ function fakes(world: World, install?: string) {
       const n = tries.get(a) ?? 0;
       tries.set(a, n + 1);
       const code = world.renameFails?.(a, n);
+      calls.push(`rename ${a} ${b}`);
       if (code) throw Object.assign(new Error(`${code}: operation not permitted, rename '${a}'`), { code });
       await rename(a, b);
     },
@@ -75,9 +80,13 @@ function fakes(world: World, install?: string) {
       await cp(a, b, { recursive: true });
       if (world.dropOnCopy && existsSync(join(b, world.dropOnCopy))) rmSync(join(b, world.dropOnCopy));
     },
-    remove: (p) => rm(p, { recursive: true, force: true }),
+    remove: (p) => {
+      calls.push(`remove ${p}`);
+      return rm(p, { recursive: true, force: true });
+    },
     mkdir: async (p) => void (await mkdir(p, { recursive: true })),
     writeFile: async (p, t) => {
+      calls.push(`writeFile ${p}`);
       if (p.endsWith("result.json") && writeFails > 0) {
         writeFails--;
         throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
@@ -85,6 +94,11 @@ function fakes(world: World, install?: string) {
       await writeFile(p, t);
     },
     list: async (dir) => listTree(dir),
+    entries: (dir) => (existsSync(dir) ? readdirSync(dir) : []),
+    removeEmpty: async (p) => {
+      calls.push(`removeEmpty ${p}`);
+      rmdirSync(p);
+    },
   };
   const deps: SwitchDeps = {
     fs: realFs,
@@ -96,6 +110,10 @@ function fakes(world: World, install?: string) {
       polls++;
       if (holder === undefined && launches.length === 0) return polls <= (world.releaseAfter ?? 0);
       return holder !== undefined;
+    },
+    switchLock: () => {
+      calls.push("switchLock");
+      return world.switchLocked ? undefined : { release: () => void calls.push("release") };
     },
     launch: () => {
       if (world.launchThrows) throw new Error("spawn EPERM");
@@ -116,7 +134,7 @@ function fakes(world: World, install?: string) {
     sleep: async (ms) => void (clock.at += ms),
     now: () => new Date(clock.at),
   };
-  return { deps, git, launches, killed, checks };
+  return { deps, git, launches, killed, checks, calls };
 }
 
 const read = (path: string) => readFileSync(path, "utf8");
@@ -289,6 +307,134 @@ describe("the switch process", () => {
     expect(f.launches).toHaveLength(1);
   });
 
+  it("touches nothing and writes no result when another switch holds the switch lock", async () => {
+    const { home, install, prepared, plan } = setup();
+    const f = fakes({ takes: [1], switchLocked: true }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result).toMatchObject({ outcome: "failed", machine: true });
+    expect(f.calls).toEqual(["switchLock"]);
+    expect(f.git).toEqual([]);
+    expect(f.launches).toEqual([]);
+    expect(read(join(install, "dist", "cli.js"))).toBe("old");
+    expect(existsSync(join(prepared, "dist"))).toBe(true);
+    expect(existsSync(resultPath(home))).toBe(false);
+  });
+
+  it("marks a prepared folder without dist as a machine failure", async () => {
+    const { install, prepared, plan } = setup();
+    rmSync(join(prepared, "dist"), { recursive: true });
+    const f = fakes({ takes: [1] }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(result.reason).toContain("falta dist");
+    expect(result.machine).toBe(true);
+    expect(read(join(install, "dist", "cli.js"))).toBe("old");
+  });
+
+  it("marks a staged copy that came out incomplete as a machine failure", async () => {
+    const { install, plan } = setup();
+    const result = await runSwitch(plan, fakes({ takes: [1], exdev: true, dropOnCopy: "x/index.js" }, install).deps);
+    expect(result).toMatchObject({ outcome: "failed", machine: true });
+  });
+
+  it("marks an install part that stays locked as a machine failure", async () => {
+    const { install, plan } = setup();
+    const modules = join(install, "node_modules");
+    const result = await runSwitch(plan, fakes({ takes: [1], renameFails: (from) => (from === modules ? "EPERM" : undefined) }, install).deps);
+    expect(result).toMatchObject({ outcome: "failed", machine: true });
+  });
+
+  it("marks a factory that did not stop in time as a machine failure", async () => {
+    const { plan } = setup();
+    const result = await runSwitch(plan, fakes({ releaseAfter: Infinity, takes: [] }).deps);
+    expect(result).toMatchObject({ outcome: "failed", machine: true });
+  });
+
+  it("does not mark a new version that does not run, a failed merge or a new daemon without the lock", async () => {
+    const check = await runSwitch(setup().plan, fakes({ takes: [1], checkFails: "boom" }).deps);
+    expect(check.outcome).toBe("failed");
+    expect(check.machine).toBeUndefined();
+    const merging = fakes({ takes: [1] });
+    const { git } = merging.deps;
+    merging.deps.git = async (args) => (args[0] === "merge" ? Promise.reject(new Error("git merge: not possible to fast-forward")) : git(args));
+    const merge = await runSwitch(setup().plan, merging.deps);
+    expect(merge.outcome).toBe("failed");
+    expect(merge.machine).toBeUndefined();
+    const start = await runSwitch(setup().plan, fakes({ takes: [2] }).deps);
+    expect(start.outcome).toBe("rolled-back");
+    expect(start.machine).toBeUndefined();
+  });
+
+  it("writes its result and releases the lock before removing anything under the staging folder", async () => {
+    const { home, install, plan } = setup();
+    const f = fakes({ takes: [1] }, install);
+    expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
+    const root = stagingPath(install);
+    const written = f.calls.indexOf(`writeFile ${resultPath(home)}`);
+    const released = f.calls.indexOf("release");
+    const removes = f.calls.flatMap((c, i) => (c.startsWith("remove ") && c.slice(7).startsWith(root) ? [i] : []));
+    expect(f.calls[0]).toBe("switchLock");
+    expect(written).toBeGreaterThan(0);
+    expect(released).toBe(written + 1);
+    expect(removes.length).toBeGreaterThan(0);
+    expect(removes.every((i) => i > released)).toBe(true);
+  });
+
+  it("leaves an earlier switch's leftovers alone until its result is written, under fresh names", async () => {
+    const { home, install, plan } = setup();
+    writeTree(install, { ".zero-switch/old/node_modules/x/index.js": "older" });
+    const f = fakes({ takes: [1] }, install);
+    expect((await runSwitch(plan, f.deps)).outcome).toBe("updated");
+    const root = stagingPath(install);
+    const written = f.calls.indexOf(`writeFile ${resultPath(home)}`);
+    const before = f.calls.slice(0, written);
+    expect(before.some((c) => c === `remove ${root}` || c === `remove ${join(root, "old")}`)).toBe(false);
+    expect(before).toContain(`rename ${join(plan.prepared, "dist")} ${join(root, "new-1", "dist")}`);
+    expect(f.calls.slice(written)).toContain(`remove ${join(root, "old")}`);
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("never removes the staging root as a whole, whatever the outcome", async () => {
+    const outcomes: string[] = [];
+    for (const world of [{ takes: [1] }, { takes: [2] }, { takes: [1], checkFails: "boom" }, { releaseAfter: Infinity, takes: [] }] as World[]) {
+      const { install, plan } = setup();
+      writeTree(install, { ".zero-switch/failed/dist/cli.js": "leftover" });
+      const f = fakes(world, install);
+      outcomes.push((await runSwitch(plan, f.deps)).outcome);
+      expect(f.calls).not.toContain(`remove ${stagingPath(install)}`);
+    }
+    expect(outcomes).toEqual(["updated", "rolled-back", "failed", "failed"]);
+  });
+
+  it("keeps the folder holding the only copy of a part that did not go back", async () => {
+    const { install, plan } = setup();
+    const modules = join(install, "node_modules");
+    const root = stagingPath(install);
+    // node_modules goes aside, the new one is refused, and it cannot come back either.
+    const f = fakes({ takes: [1], renameFails: (from) => (from === join(root, "new", "node_modules") || from === join(root, "old", "node_modules") ? "EPERM" : undefined) }, install);
+    const result = await runSwitch(plan, f.deps);
+    expect(result.outcome).toBe("failed");
+    expect(existsSync(modules)).toBe(false);
+    expect(read(join(root, "old", "node_modules", "x", "index.js"))).toBe("old");
+  });
+
+  it("holds an operating system lock that a second taker and the daemon's look both see", () => {
+    const home = tempDir("zero-home-");
+    expect(switchLockHeldAt(home)).toBe(false);
+    const lock = acquireSwitchLock(home);
+    expect(lock).toBeDefined();
+    try {
+      expect(switchLockHeldAt(home)).toBe(true);
+      expect(acquireSwitchLock(home)).toBeUndefined();
+    } finally {
+      lock!.release();
+    }
+    expect(switchLockHeldAt(home)).toBe(false);
+    const again = acquireSwitchLock(home);
+    expect(again).toBeDefined();
+    again!.release();
+  });
+
   it("imports only node built-in modules", () => {
     const source = read(join("src", "self-update-switch.ts"));
     const imports = [...source.matchAll(/^import [^;]+ from "([^"]+)";/gm)].map((m) => m[1]);
@@ -367,6 +513,27 @@ describe("the switch's result in the next daemon", () => {
     const { state, history } = readSelfUpdate(ctx.store);
     expect(state.status).toBe("switching");
     expect(history).toEqual([]);
+  });
+
+  it("never takes a switch for dead while its lock is held", async () => {
+    const clock = { at: new Date(Date.parse("2026-11-11T10:00:00Z") + SWITCH_STALE_MS + 60_000) };
+    const ctx = testFactory({ lines: [] }, () => clock.at);
+    recordSelfUpdate(ctx.store, { state: switching(join(ctx.home.root, "nothing")) });
+    const lock = acquireSwitchLock(ctx.home.root)!;
+    try {
+      await importSwitchResult(ctx);
+      const { state, history } = readSelfUpdate(ctx.store);
+      expect(state.status).toBe("switching");
+      expect(history).toEqual([]);
+    } finally {
+      lock.release();
+    }
+    await importSwitchResult(ctx);
+    const { state, history } = readSelfUpdate(ctx.store);
+    expect(state.status).toBe("idle");
+    expect(history[0]).toMatchObject({ outcome: "failed", reason: "el cambio de versión no dejó resultado" });
+    expect(state.failed).toBeUndefined();
+    expect(state.retry).toMatchObject({ commit: TO, tries: 1 });
   });
 
   it("only records a late result of an earlier switch and keeps the current target's folder", async () => {
@@ -494,6 +661,21 @@ describe("the daemon with a prepared version", () => {
     expect(state.status).toBe("idle");
     expect(state.failed).toBeUndefined();
     expect(state.retry).toMatchObject({ commit: TO, tries: 1 });
+  });
+
+  it("launches no second switch while one holds the switch lock", async () => {
+    const ctx = factory();
+    recordSelfUpdate(ctx.store, { state: ready });
+    let calls = 0;
+    const lock = acquireSwitchLock(ctx.home.root)!;
+    try {
+      await runDaemon(ctx, { once: true, pollMs: 10, agentRunner: () => fakeAgents({}).runner, launchSwitch: async () => void calls++ });
+    } finally {
+      lock.release();
+    }
+    expect(calls).toBe(0);
+    expect(readSelfUpdate(ctx.store).state).toEqual(ready);
+    expect(ctx.store.getKv(SHUTDOWN_KEY)).toBeUndefined();
   });
 
   it("never switches while self-update is off", async () => {

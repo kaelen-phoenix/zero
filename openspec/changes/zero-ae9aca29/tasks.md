@@ -11,8 +11,8 @@
 
 ## 2. Etapa 2: Switch lock, machine flag in the switch and result before cleanup
 
-- [ ] 2.1 In src/self-update-switch.ts add the switch lock (built-ins only) behind `SwitchDeps`; `runSwitch` takes it first and refuses without touching anything when it cannot.
-- [ ] 2.2 Keep the error code on `renameRetrying`'s error and set `machine: true` on the machine causes in `apply`/`runSwitch`.
-- [ ] 2.3 `freshStaging` stops removing leftovers. `runSwitch` lists the leftovers under the lock, writes result.json, releases the lock, then removes only named folders (never the root).
-- [ ] 2.4 Wire `switchLockHeldAt` into `importSwitchResult` (no stale verdict while held), `selfUpdateCheck` (no preparation while held) and the daemon's `switchVersion` (no launch while held, logged once).
-- [ ] 2.5 Tests for the lock, the machine flag cases, the order of result and cleanup, no root removal, and no second launch; update AGENTS.md; run typecheck, tests and openspec validate.
+- [x] 2.1 In src/self-update-switch.ts add the switch lock (built-ins only) behind `SwitchDeps`; `runSwitch` takes it first and refuses without touching anything when it cannot.
+- [x] 2.2 Keep the error code on `renameRetrying`'s error and set `machine: true` on the machine causes in `apply`/`runSwitch`.
+- [x] 2.3 `freshStaging` stops removing leftovers. `runSwitch` lists the leftovers under the lock, writes result.json, releases the lock, then removes only named folders (never the root).
+- [x] 2.4 Wire `switchLockHeldAt` into `importSwitchResult` (no stale verdict while held), `selfUpdateCheck` (no preparation while held) and the daemon's `switchVersion` (no launch while held, logged once).
+- [x] 2.5 Tests for the lock, the machine flag cases, the order of result and cleanup, no root removal, and no second launch; update AGENTS.md; run typecheck, tests and openspec validate.

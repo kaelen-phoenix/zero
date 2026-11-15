@@ -7,6 +7,7 @@ import { runDaemon } from "../src/daemon.js";
 import { mergeKey } from "../src/line/automerge.js";
 import { log } from "../src/log.js";
 import type { GitRunner } from "../src/package-install.js";
+import { acquireSwitchLock } from "../src/self-update-switch.js";
 import {
   CHECK_EVERY_MS,
   HISTORY_LIMIT,
@@ -366,6 +367,21 @@ describe("self-update check and side preparation", () => {
     await selfUpdateCheck(ctx, f.deps);
     expect(readSelfUpdate(ctx.store).state).toEqual({ status: "idle", checkedAt: clock.at.toISOString(), head: TIP });
     expect(existsSync(dir)).toBe(false);
+  });
+
+  it("prepares nothing while a switch holds its lock", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({}, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    const lock = acquireSwitchLock(ctx.home.root)!;
+    try {
+      await selfUpdateCheck(ctx, f.deps);
+    } finally {
+      lock.release();
+    }
+    expect(f.calls.some((c) => c.tool === "npm")).toBe(false);
+    expect(existsSync(join(ctx.home.root, "self-update", TIP.slice(0, 12)))).toBe(false);
+    expect(readSelfUpdate(ctx.store).state.status).toBe("idle");
   });
 
   it("prepares the new version in its own folder and becomes ready", async () => {
