@@ -8,7 +8,7 @@ import { billingText, outageText, type MergeOutcome } from "./line/automerge.js"
 import { describeDelivery } from "./line/finish.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
-import type { SelfUpdateEntry } from "./self-update.js";
+import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
@@ -446,11 +446,17 @@ export function selfUpdateEntryText(e: SelfUpdateEntry, now = new Date()): strin
   return `no pudo pasar a ${commit(e.to)}, sigue en ${commit(e.from)} (${when})${e.reason ? `: ${e.reason}` : ""}`;
 }
 
-/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update and a problem), `bad` when they warn. */
+/** A retry after a machine failure: «vuelve a intentar pasar a <commit> a las HH:MM (intento N)». */
+export function selfUpdateRetryText(r: SelfUpdateRetry, now = new Date()): string {
+  return `vuelve a intentar pasar a ${commit(r.commit)} a las ${resetTime(r.at, now)} (intento ${r.tries + 1})`;
+}
+
+/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update, a pending retry and a problem), `bad` when they warn. */
 export function selfUpdateLines(s: SelfUpdateStatus, now = new Date()): { text: string; bad: boolean }[] {
   return [
     ...(s.ready ? [{ text: `Autoactualización: ${commit(s.ready.to)} está lista; cambia de versión cuando no haya trabajos corriendo (ahora ${commit(s.ready.from)})`, bad: false }] : []),
     ...(s.last ? [{ text: `Autoactualización: ${selfUpdateEntryText(s.last, now)}`, bad: s.last.outcome !== "updated" }] : []),
+    ...(s.retry ? [{ text: `Autoactualización: ${selfUpdateRetryText(s.retry, now)}`, bad: false }] : []),
     ...(s.problem ? [{ text: `Autoactualización: PROBLEMA: ${s.problem}`, bad: true }] : []),
   ];
 }
