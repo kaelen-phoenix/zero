@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -95,6 +95,13 @@ export function formatRequest(r: RequestResult): string {
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
   return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+}
+
+/** One line per pull request of `zero actualizar-pr`. */
+export function formatAdoptions(list: Adoption[]): string {
+  return list
+    .map((a) => (a.job ? `#${a.number.replace("#", "")}: trabajo ${a.job.id} en cola, actualiza la rama ${a.job.branch} con ${a.job.base}.` : `#${a.number.replace("#", "")}: no lo tomé: ${a.why}`))
+    .join("\n");
 }
 
 /** The remote chat for `zero mcp clients`: the switch, the address and each connected client. */

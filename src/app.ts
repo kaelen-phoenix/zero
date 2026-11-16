@@ -1378,6 +1378,26 @@ export async function adoptPullRequest(ctx: FactoryContext, input: { line: strin
   });
 }
 
+export interface Adoption {
+  number: string;
+  job?: Job;
+  why?: string;
+}
+
+/** `zero actualizar-pr`: adopts each pull request in the order given; a refusal is told and the rest still go. */
+export async function adoptPullRequests(ctx: FactoryContext, input: { line: string; numbers: string[]; api?: MergeApiFactory }): Promise<Adoption[]> {
+  const out: Adoption[] = [];
+  for (const number of input.numbers) {
+    try {
+      if (!/^#?\d+$/.test(number)) throw new Error(`"${number}" no es un número de pull request.`);
+      out.push({ number, job: await adoptPullRequest(ctx, { line: input.line, number: Number(number.replace("#", "")), api: input.api }) });
+    } catch (err) {
+      out.push({ number, why: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
+}
+
 /** Runs git in a repository, throwing its error. */
 function git(args: string[], cwd: string): string {
   const r = spawnGit(args, cwd, { timeout: 60_000 });

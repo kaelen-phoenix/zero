@@ -1,7 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adoptPullRequest, answer, requestWork } from "../src/app.js";
+import { adoptPullRequest, adoptPullRequests, answer, requestWork } from "../src/app.js";
+import { formatAdoptions } from "../src/format.js";
 import type { AgentRequest } from "../src/agent.js";
 import type { MergeApi, PullRequestState } from "../src/line/automerge.js";
 import { prRefreshKey } from "../src/line/finish.js";
@@ -75,7 +76,7 @@ function fixture(opts: { feature?: Record<string, string>; conflict?: boolean } 
   };
   const localRef = (name: string) => tryRev(repo, `refs/heads/${name}`);
   const remoteRef = (name: string) => tryRev(bare, `refs/heads/${name}`);
-  return { ctx, repo, bare, other, head, mainTip, state, adopt, runToEnd, localRef, remoteRef, prompts, opened, asked, setBuild: (b: typeof build) => void (build = b) };
+  return { ctx, repo, bare, other, head, mainTip, state, api, adopt, runToEnd, localRef, remoteRef, prompts, opened, asked, setBuild: (b: typeof build) => void (build = b) };
 }
 
 function tryRev(cwd: string, rev: string): string | undefined {
@@ -283,5 +284,39 @@ describe("an adopted pull request's job", () => {
     await f.runToEnd(adopted.id);
     expect(f.prompts[0]).toContain("pull request #7");
     expect(f.prompts[0]).not.toContain("The owner sent");
+  });
+});
+
+describe("zero actualizar-pr", () => {
+  it("adopts each pull request in order and tells why one was refused", async () => {
+    const f = fixture();
+    const api = (repository: string) => {
+      const gh = f.api(repository);
+      return { ...gh, pullRequest: async (n: number) => (n === 8 ? { ...f.state.pr, open: false } : gh.pullRequest(n)) };
+    };
+    const adopted = await adoptPullRequests(f.ctx, { line: "demo", numbers: ["7", "8"], api });
+    expect(adopted.map((a) => a.number)).toEqual(["7", "8"]);
+    const jobs = f.ctx.store.listJobs({ limit: -1 });
+    expect(jobs).toHaveLength(1);
+    expect(adopted[0]!.job?.id).toBe(jobs[0]!.id);
+    expect(adopted[1]!.job).toBeUndefined();
+    const text = formatAdoptions(adopted).split("\n");
+    expect(text).toHaveLength(2);
+    expect(text[0]).toContain(jobs[0]!.id);
+    expect(text[1]).toContain("#8");
+    expect(text[1]).toContain("no está abierto");
+  });
+
+  it("refuses something that is not a number without stopping the rest", async () => {
+    const f = fixture();
+    const adopted = await adoptPullRequests(f.ctx, { line: "demo", numbers: ["abc", "7"], api: f.api });
+    expect(adopted[0]!.why).toContain("no es un número");
+    expect(adopted[1]!.job).toBeDefined();
+  });
+
+  it("is in the CLI help and exits 1 when any pull request was refused", () => {
+    const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toContain("zero actualizar-pr <línea> <número>...");
+    expect(cli).toContain("return adopted.every((a) => a.job) ? 0 : 1;");
   });
 });
