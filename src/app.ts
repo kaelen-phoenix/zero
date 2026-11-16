@@ -25,16 +25,16 @@ import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
-import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
+import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
-import { jobStage } from "./line/spec.js";
+import { jobStage, type Spec } from "./line/spec.js";
 import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
@@ -45,7 +45,8 @@ import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from ".
 import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
-import { tryGit } from "./shell.js";
+import { spawnGit, tryGit } from "./shell.js";
+import { checkedOutAt } from "./workspace.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
@@ -1285,6 +1286,103 @@ export async function mergePullRequest(ctx: FactoryContext, target: string, opts
   const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
   if (!gh) return { job: job.id, url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
   return mergeRequested(ctx, job, gh, opts.via);
+}
+
+/** The spec zero writes itself for a pull request it takes: no model reads the pull request to write it. */
+function adoptionSpec(number: number, branch: string, base: string): Spec {
+  return {
+    feasible: true,
+    reason: "",
+    title: `Actualizar el pull request #${number} con ${base}`,
+    summary: `La rama ${branch} del pull request #${number} queda con ${base} mezclada, sin conflictos y con la verificación en verde, en el mismo pull request.`,
+    capability: "pull-request-update",
+    requirements: [
+      {
+        name: `La rama del pull request #${number} contiene ${base}`,
+        text: `The branch ${branch} SHALL contain ${base}, without conflict markers, keeping the intent of both sides, and MUST pass the line's verify commands.`,
+        scenarios: [{ name: "Mezcla de la base", when: `${base} is merged into ${branch}`, then: "the branch has no conflict markers, contains both tips and verify passes" }],
+      },
+    ],
+    tasks: [`Resolve the conflicts of merging ${base} into ${branch}, keeping the intent of the pull request and of ${base}.`],
+    risks: [],
+    learnings: [],
+    followUps: [],
+  };
+}
+
+/**
+ * Takes an open pull request of a line's GitHub repository, made by anyone, to update it with its base the way
+ * zero updates its own: its branch is fetched as a local branch at the pull request's head, a backup branch
+ * `respaldo/pr<N>` is left at that head, and a queued job with a spec written by zero and the `prRefreshKey` mark
+ * merges the base, resolves the conflicts at build and pushes to the same branch, opening nothing.
+ * Every refusal comes before anything is written.
+ */
+export async function adoptPullRequest(ctx: FactoryContext, input: { line: string; number: number; api?: MergeApiFactory }): Promise<Job> {
+  const line = findLine(ctx.config, input.line);
+  const number = input.number;
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`"${number}" no es un número de pull request.`);
+  if (line.integrate !== "pull-request") throw new Error(`La línea ${line.name} no integra por pull request: no tomo pull requests en ella.`);
+  const repository = lineRepository(line);
+  if (!repository) throw new Error(`El remoto ${line.remote} de la línea ${line.name} no está en GitHub.`);
+  const gh = (input.api ?? directMerges(ctx))(repository, line);
+  if (!gh) throw new Error("Sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN.");
+  let pr: PullRequestState;
+  try {
+    pr = await gh.pullRequest(number);
+  } catch (err) {
+    throw new Error(`No pude leer el pull request #${number} de ${repository}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (pr.merged || !pr.open) throw new Error(`El pull request #${number} de ${repository} no está abierto${pr.merged ? ": ya se fundió" : ""}.`);
+  if (!pr.headRepository || pr.headRepository.toLowerCase() !== repository.toLowerCase()) throw new Error(`La rama del pull request #${number} no está en ${repository} (viene de un fork): no puedo subir a ella.`);
+  if (pr.base !== line.baseBranch) throw new Error(`El pull request #${number} va a ${pr.base ?? "otra rama"}, no a ${line.baseBranch}, la rama base de la línea ${line.name}.`);
+  const branch = pr.headRef ?? "";
+  const head = pr.headSha;
+  if (!branch || branch.startsWith("-") || tryGit(["check-ref-format", "--branch", branch], line.repo) === undefined) throw new Error(`La rama del pull request #${number} tiene un nombre que no acepto.`);
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new Error(`GitHub no dio un commit válido para el pull request #${number}.`);
+  const taken = ctx.store.listJobs({ line: line.name, limit: -1 }).find((j) => (!FINAL_STATUSES.includes(j.status) || j.status === "delivered") && (j.branch === branch || j.delivery?.branch === branch));
+  if (taken) throw new Error(`La rama ${branch} ya es del trabajo ${taken.id}.`);
+  if (checkedOutAt(line.repo, branch)) throw new Error(`La rama ${branch} está abierta en una copia de trabajo de ${line.repo}: cerrala antes.`);
+  const ref = (name: string) => tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`], line.repo);
+  const local = ref(branch);
+  if (local && local !== head) throw new Error(`Ya hay una rama local ${branch} en otro commit (${local.slice(0, 8)}): no la piso.`);
+  const fetched = spawnGit(["fetch", "-q", line.remote, `refs/heads/${branch}`, line.baseBranch], line.repo, { timeout: 120_000 });
+  if (fetched.status !== 0 || tryGit(["cat-file", "-e", `${head}^{commit}`], line.repo) === undefined) {
+    throw new Error(`No pude traer la rama ${branch} del pull request #${number} en ${head.slice(0, 8)}: ${(fetched.stderr || String(fetched.error ?? "el commit no llegó")).trim().slice(0, 300)}`);
+  }
+
+  // The backup goes first, so whatever comes after can be undone by hand; one left at another commit is never moved.
+  const backup = `respaldo/pr${number}`;
+  const backupAt = ref(backup);
+  if (!backupAt) git(["update-ref", `refs/heads/${backup}`, head, ""], line.repo);
+  if (!local) git(["update-ref", `refs/heads/${branch}`, head, ""], line.repo);
+  const url = `https://github.com/${repository}/pull/${number}`;
+  const base = `${line.remote}/${line.baseBranch}`;
+  const spec = adoptionSpec(number, branch, base);
+  return ctx.store.transaction(() => {
+    const { job } = requestWork(ctx, {
+      line: line.name,
+      text: `Actualizar el pull request #${number} de ${repository} (${url}): mezclar ${base} en su rama ${branch}, resolver los conflictos conservando la intención del pull request y subirlo a la misma rama, sin abrir otro.`,
+      source: { kind: "pull-request", repository, number, url },
+    });
+    if (backupAt && backupAt !== head) git(["update-ref", `refs/heads/${backup}-${job.id}`, head, ""], line.repo);
+    ctx.store.setKv(prRefreshKey(job.id), JSON.stringify({ head } satisfies PrRefresh));
+    return ctx.store.updateJob(job.id, {
+      title: spec.title,
+      spec,
+      branch,
+      base,
+      checkpoint: "review",
+      station: "integrate",
+      delivery: { mode: "pull-request", branch, url, ...(line.autoMerge && { autoMerge: true }) },
+    });
+  });
+}
+
+/** Runs git in a repository, throwing its error. */
+function git(args: string[], cwd: string): string {
+  const r = spawnGit(args, cwd, { timeout: 60_000 });
+  if (r.status !== 0) throw new Error(`git ${args[0]} falló: ${(r.stderr || String(r.error ?? "")).trim().slice(0, 300)}`);
+  return r.stdout.trim();
 }
 
 export function trace(ctx: FactoryContext, id: string): string {

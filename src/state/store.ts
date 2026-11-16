@@ -80,7 +80,9 @@ export type JobSource =
   /** A package's station asked for it with `ctx.requestJob`. */
   | { kind: "package"; package: string; station: string }
   /** Open Dependabot alerts of one package (ecosystem plus name) on the line's GitHub repository; `severity` is the highest of them. */
-  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity };
+  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity }
+  /** An open pull request of the line's GitHub repository that zero took to update with its base (`adoptPullRequest`). */
+  | { kind: "pull-request"; repository: string; number: number; url: string };
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 

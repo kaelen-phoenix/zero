@@ -52,9 +52,15 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
-/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it. */
+/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it or it updates a pull request zero took. */
 export const jobOrigin = (j: Job) =>
-  j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : j.source?.kind === "security-alert" ? `seguridad: alerta de Dependabot ${j.source.package}` : undefined;
+  j.source?.kind === "package"
+    ? `pedido por paquete ${j.source.package}/${j.source.station}`
+    : j.source?.kind === "security-alert"
+      ? `seguridad: alerta de Dependabot ${j.source.package}`
+      : j.source?.kind === "pull-request"
+        ? `actualiza el pull request #${j.source.number}`
+        : undefined;
 
 /** Spanish severity names, for what the owner reads. */
 export const SEVERITY_TEXT: Record<AlertSeverity, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
