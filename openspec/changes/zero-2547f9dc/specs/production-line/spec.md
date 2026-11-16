@@ -92,11 +92,15 @@ The train MUST merge its head only when `mergeDecision` returns `merge` for it, 
 - **THEN** startTrain throws and no train kv is written
 
 ### Requirement: Pull requests ajenos fijados al commit verificado
-For a train pull request the factory did not open, the merge MUST be pinned to the head zero recorded for it (at adoption or after its own push); if GitHub's head differs, the train SHALL stop at that pull request with a reason saying someone pushed to the branch.
+For a train pull request the factory did not open, the merge MUST be pinned to the head zero recorded for it only after its job passed verify and the reviews and was integrated (never at adoption); an adopted pull request without such a head MUST NOT be merged and SHALL stop the train with the owner as who has to act; if GitHub's head differs from the recorded one, the train SHALL stop at that pull request with a reason saying someone pushed to the branch.
 
 #### Scenario: Alguien empujó
 - **WHEN** an adopted train head is green but its headSha differs from the recorded head
 - **THEN** merge is not called and the train records a block naming the pull request's author as who has to act
+
+#### Scenario: Nunca verificado
+- **WHEN** an adopted train head's job was rejected by verify or the reviews and ended delivered through the refresh mark, and its checks are green
+- **THEN** merge is not called and the train records a block with the owner as who has to act
 
 ### Requirement: zero fusionar con pull requests verdes ajenos
 `mergePullRequest` SHALL accept the URL of an open pull request of a line's GitHub repository that the factory did not deliver and merge it, pinned to the head it read, only when `mergeDecision` returns `merge`, recording a `zero.merge` span and writing no job.

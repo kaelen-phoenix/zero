@@ -47,17 +47,29 @@ export function saveTrain(ctx: Pick<FactoryContext, "store">, train: Train): voi
 /** What a pull request the factory did not open needs when someone pushed to it after zero verified it. */
 export const PUSHED = "alguien empujó a la rama después de que la fábrica la verificó";
 
+/** What a pull request the factory did not open needs when its job never passed verify and the reviews. */
+export const UNVERIFIED = "la fábrica no verificó la rama (la rechazaron verify o las revisiones, o el trabajo se detuvo): revisá el trabajo y sacalo del tren";
+
+/** The commit an adopted job's pull request was at when it passed verify and the reviews and was integrated. */
+export const verifiedHeadKey = (job: string) => `verified-head:${job}`;
+
+export function verifiedHead(ctx: Pick<FactoryContext, "store">, job: string): string | undefined {
+  return ctx.store.getKv(verifiedHeadKey(job)) ?? undefined;
+}
+
 /**
- * Records `head` as the commit zero verified for a job's pull request in its line's train, after the job's own
- * push: the only commit the train merges for a pull request the factory did not open. A block for someone
- * else's push to it is over, since zero checked what is there now.
+ * Records `head` as the commit zero verified for a job's pull request, after the job passed verify and the
+ * reviews and was integrated: the only commit a train merges for a pull request the factory did not open (an
+ * adopted entry without one is never merged). A block for someone else's push to it is over, since zero
+ * checked what is there now.
  */
 export function pinTrainHead(ctx: Pick<FactoryContext, "store">, line: string, job: string, head: string): void {
+  ctx.store.setKv(verifiedHeadKey(job), head);
   const raw = ctx.store.getKv(trainKey(line));
   if (!raw) return;
   const train = JSON.parse(raw) as Train;
   const entry = train.entries.find((e) => e.job === job);
-  if (!entry?.head || entry.head === head) return;
+  if (!entry || (entry.head === head && train.block?.pull !== entry.url)) return;
   entry.head = head;
   if (train.block?.pull === entry.url) delete train.block;
   saveTrain(ctx, train);

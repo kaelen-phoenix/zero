@@ -6,7 +6,7 @@ import { formatStatus } from "../src/format.js";
 import { mergeKey, pollMerges, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
-import { advanceTrains, PUSHED, readTrain, trainKey } from "../src/line/train.js";
+import { advanceTrains, pinTrainHead, PUSHED, readTrain, trainKey, UNVERIFIED } from "../src/line/train.js";
 import { overviewPage } from "../src/panel/html.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory, writeTree } from "./helpers.js";
 
@@ -184,16 +184,50 @@ async function withForeign() {
 }
 
 describe("pull requests the factory did not open, in a train", () => {
-  it("adopts a given number the factory did not deliver, pinned to the head read", async () => {
-    const { ctx, head, mine, gh } = await withForeign();
+  it("adopts a given number the factory did not deliver, with no head until its job verifies one", async () => {
+    const { ctx, mine, gh } = await withForeign();
     const train = await startTrain(ctx, { line: "demo", numbers: ["1", "7"], api: () => gh.api });
     expect(train.entries.map((e) => e.url)).toEqual([url(1), url(7)]);
     expect(train.entries[0]).toEqual({ job: mine.id, url: url(1) });
     const adopted = ctx.store.getJob(train.entries[1]!.job)!;
     expect(adopted.source).toMatchObject({ kind: "pull-request", number: 7 });
     expect(adopted.status).toBe("queued");
-    expect(train.entries[1]!.head).toBe(head);
+    expect(train.entries[1]!.head).toBeUndefined();
     expect(readTrain(ctx, "demo")).toEqual(train);
+  });
+
+  it("never merges an adopted pull request whose job gave up, however green", async () => {
+    const { ctx, head, gh, pass } = await withForeign();
+    const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    const adopted = ctx.store.getJob(train.entries[0]!.job)!;
+    // Rejected by verify or the reviews: the refresh mark ends it delivered, back at the head adopted.
+    const done = await finalizeJob(ctx, adopted, "failed", { reason: "la revisión de seguridad lo rechazó" });
+    expect(done.status).toBe("delivered");
+    await pass();
+    await pass();
+    expect(gh.did).toEqual([]);
+    expect(readTrain(ctx, "demo")!.entries.map((e) => e.job)).toEqual([adopted.id]);
+    expect(readTrain(ctx, "demo")!.block).toEqual({ pull: url(7), what: UNVERIFIED, who: "owner" });
+    const state = JSON.parse(ctx.store.getKv(mergeKey(adopted.id))!) as MergeState;
+    expect(state).toMatchObject({ status: "blocked", why: UNVERIFIED });
+    expect(formatStatus(factoryStatus(ctx))).toContain(`qué falta: ${UNVERIFIED} · lo tiene que hacer: vos`);
+
+    // Once a run of its job verifies that head, the block is over and it is merged there.
+    pinTrainHead(ctx, "demo", adopted.id, head);
+    expect(readTrain(ctx, "demo")!.block).toBeUndefined();
+    await pass();
+    expect(gh.did).toEqual([`merge #7 @${head}`]);
+  });
+
+  it("puts an adopted pull request delivered earlier in a train at the head its job verified", async () => {
+    const { ctx, head, gh } = await withForeign();
+    const first = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    const adopted = ctx.store.getJob(first.entries[0]!.job)!;
+    pinTrainHead(ctx, "demo", adopted.id, head);
+    await finalizeJob(ctx, adopted, "delivered", { delivery: adopted.delivery! });
+    ctx.store.deleteKv(trainKey("demo"));
+    const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    expect(train.entries).toEqual([{ job: adopted.id, url: url(7), head }]);
   });
 
   it("writes no train when the adoption is refused", async () => {
@@ -223,6 +257,7 @@ describe("pull requests the factory did not open, in a train", () => {
     const { ctx, head, gh, prs, pass } = await withForeign();
     const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
     const adopted = ctx.store.getJob(train.entries[0]!.job)!;
+    pinTrainHead(ctx, "demo", adopted.id, head);
     await finalizeJob(ctx, adopted, "delivered", { delivery: adopted.delivery! });
     prs[7]!.pr = { ...prs[7]!.pr, headSha: "b".repeat(40) };
     await pass();

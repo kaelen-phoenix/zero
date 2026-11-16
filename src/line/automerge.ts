@@ -9,7 +9,7 @@ import type { Job } from "../state/store.js";
 import { cleanupKey } from "./cleanup.js";
 import { prRefreshKey, type PrRefresh } from "./finish.js";
 import { scrubLocal } from "./research.js";
-import { advanceTrains, PUSHED, readTrain, saveTrain, trainOf } from "./train.js";
+import { advanceTrains, PUSHED, readTrain, saveTrain, trainOf, UNVERIFIED } from "./train.js";
 
 /**
  * Merges the pull requests of lines with `autoMerge` once GitHub says they
@@ -772,6 +772,15 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   const pr = await gh.pullRequest(number);
   // A pull request the factory did not open is acted on only at the head zero verified: a later push is unchecked.
   const pinned = train ? trainHead!.head : undefined;
+  // One whose job never passed verify and the reviews (it gave up, or was stopped, back at the head adopted) has
+  // nothing zero checked, whatever its CI says.
+  if (train && !pinned && job.source?.kind === "pull-request" && pr.open && !pr.merged) {
+    if (train.block?.pull !== trainHead!.url || train.block.what !== UNVERIFIED) {
+      saveTrain(ctx, { ...train, block: { pull: trainHead!.url, what: UNVERIFIED, who: "owner" } });
+      log.info("train stopped: a pull request the factory did not open was never verified", { job: job.id, url: trainHead!.url, head: pr.headSha });
+    }
+    return save({ status: "blocked", why: UNVERIFIED, reported: state.reported });
+  }
   if (train && pinned && pr.open && !pr.merged) {
     if (pr.headSha !== pinned) {
       if (train.block?.pull !== trainHead!.url || train.block.what !== PUSHED) {

@@ -27,7 +27,7 @@ import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
-import { allTrains, readTrain, trainKey, type Train } from "./line/train.js";
+import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
@@ -1421,7 +1421,8 @@ export async function adoptPullRequest(ctx: FactoryContext, input: { line: strin
  * `zero tren`: starts the integration train of a line with its delivered pull requests not merged yet, oldest
  * delivery first, or with the ones given, in that order. The daemon then merges them one at a time (see
  * `advanceTrains`), even on a line without `autoMerge`, and only when `mergeDecision` says so. A number given
- * that the factory did not deliver is adopted (`adoptPullRequest`) and pinned to the head read at adoption.
+ * that the factory did not deliver is adopted (`adoptPullRequest`) and merged only at the head its job verified
+ * (`pinTrainHead`, once verify and the reviews passed), never at the head read at adoption.
  * The line's refusals come before anything is written; a refused adoption writes no train.
  */
 export async function startTrain(ctx: FactoryContext, input: { line: string; numbers?: string[]; api?: MergeApiFactory }): Promise<Train> {
@@ -1438,23 +1439,26 @@ export async function startTrain(ctx: FactoryContext, input: { line: string; num
     return status === "waiting" || status === "blocked";
   });
   const entries: Train["entries"] = [];
+  // An adopted pull request carries only a head its job verified: one adopted now gets it once its job passes.
+  const entryOf = (j: Job): TrainEntry => {
+    const head = j.source?.kind === "pull-request" ? verifiedHead(ctx, j.id) : undefined;
+    return { job: j.id, url: j.delivery!.url!, ...(head && { head }) };
+  };
   if (input.numbers?.length) {
     for (const given of input.numbers) if (!/^#?\d+$/.test(given)) throw new Error(`"${given}" no es un número de pull request.`);
     const numbers = [...new Set(input.numbers.map((given) => Number(given.replace("#", ""))))];
     for (const number of numbers) {
       const job = open.find((j) => pullRequestOf(j.delivery!.url!)!.number === number);
       if (job) {
-        entries.push({ job: job.id, url: job.delivery!.url! });
+        entries.push(entryOf(job));
         continue;
       }
       // One the factory did not deliver is adopted, and merged only at the head zero verifies for it.
       const adopted = await adoptPullRequest(ctx, { line: line.name, number, api: input.api });
-      const refresh = ctx.store.getKv(prRefreshKey(adopted.id));
-      const head = refresh ? (JSON.parse(refresh) as PrRefresh).head : undefined;
-      entries.push({ job: adopted.id, url: adopted.delivery!.url!, ...(head && { head }) });
+      entries.push({ job: adopted.id, url: adopted.delivery!.url! });
     }
   } else {
-    for (const j of [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt))) entries.push({ job: j.id, url: j.delivery!.url! });
+    for (const j of [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt))) entries.push(entryOf(j));
   }
   if (!entries.length) throw new Error(`La línea ${line.name} no tiene pull requests entregados sin fundir.`);
   const train: Train = { line: line.name, repository, entries, startedAt: (ctx.now ?? (() => new Date()))().toISOString() };
