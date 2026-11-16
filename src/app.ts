@@ -24,7 +24,7 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, readSelfUpdate, type SelfUpdateEntry } from "./self-update.js";
+import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
 import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
@@ -598,6 +598,8 @@ export interface SelfUpdateStatus {
   last?: SelfUpdateEntry;
   problem?: string;
   ready?: { from: string; to: string };
+  /** A commit that failed for the machine and is tried again at `at`. */
+  retry?: SelfUpdateRetry;
 }
 
 /** What the self-update has to tell; nothing while it is off and never ran. */
@@ -610,6 +612,7 @@ export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefi
     ...(last && { last }),
     ...(problem && { problem }),
     ...(state.status === "ready" && state.from && state.to && { ready: { from: state.from, to: state.to } }),
+    ...(state.retry && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
   };
 }
 
@@ -757,7 +760,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */

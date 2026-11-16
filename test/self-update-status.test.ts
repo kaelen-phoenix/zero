@@ -69,4 +69,46 @@ describe("self-update in status, panel and briefing", () => {
     expect(formatStatus(s)).toContain(`Autoactualización: no pudo pasar a bbbbbbbbbbbb, sigue en aaaaaaaaaaaa`);
     expect((await briefing(ctx)).body).toContain(`- **Autoactualización**: no pudo pasar a bbbbbbbbbbbb, sigue en aaaaaaaaaaaa`);
   });
+
+  it("exposes a pending machine retry", () => {
+    const ctx = testFactory({ lines: [], selfUpdate: { enabled: true } }, NOW);
+    recordSelfUpdate(ctx.store, { state: { status: "idle", retry: { commit: TO, at: "2026-11-11T13:00:00Z", tries: 2 } } });
+    expect(factoryStatus(ctx).selfUpdate?.retry).toEqual({ commit: TO, at: "2026-11-11T13:00:00Z", tries: 2 });
+  });
+
+  it("has no retry when the state holds none", () => {
+    const ctx = testFactory({ lines: [], selfUpdate: { enabled: true } }, NOW);
+    recordSelfUpdate(ctx.store, { state: { status: "idle" } });
+    expect(factoryStatus(ctx).selfUpdate).toBeDefined();
+    expect(factoryStatus(ctx).selfUpdate?.retry).toBeUndefined();
+  });
+
+  it("tells a pending retry in status, panel and briefing without alarm", async () => {
+    const ctx = testFactory({ lines: [], selfUpdate: { enabled: true } }, NOW);
+    const why = "EPERM al mover .zero-switch";
+    recordSelfUpdate(ctx.store, {
+      state: { status: "idle", problem: why, retry: { commit: TO, at: "2026-11-11T13:00:00Z", tries: 1 } },
+      entry: { from: FROM, to: TO, at: "2026-11-11T11:00:00Z", outcome: "failed", reason: why },
+    });
+    const s = factoryStatus(ctx);
+    const text = formatStatus(s);
+    expect(text).toContain("Autoactualización: vuelve a intentar pasar a bbbbbbbbbbbb a las ");
+    expect(text).toContain("(intento 2)");
+    expect(text).toContain("no pudo pasar a bbbbbbbbbbbb");
+    const html = overviewPage(s, [], "nonce");
+    expect(html).toContain("Autoactualización: vuelve a intentar pasar a bbbbbbbbbbbb a las ");
+    expect(html).not.toContain('<span class="bad">Autoactualización: vuelve a intentar');
+    const body = (await briefing(ctx)).body;
+    expect(body).toContain("- **Autoactualización**: vuelve a intentar pasar a bbbbbbbbbbbb a las ");
+    expect(body).toContain("(intento 2)");
+  });
+
+  it("tells no retry when none is pending", async () => {
+    const ctx = testFactory({ lines: [], selfUpdate: { enabled: true } }, NOW);
+    recordSelfUpdate(ctx.store, { state: { status: "idle" }, entry: { from: FROM, to: TO, at: "2026-11-11T09:00:00Z", outcome: "updated" } });
+    const s = factoryStatus(ctx);
+    expect(formatStatus(s)).not.toContain("vuelve a intentar");
+    expect(overviewPage(s, [], "nonce")).not.toContain("vuelve a intentar");
+    expect((await briefing(ctx)).body).not.toContain("vuelve a intentar");
+  });
 });
