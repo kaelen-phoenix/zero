@@ -259,6 +259,15 @@ export interface MergeState {
   train?: string;
   /** Given back, once, what conflicts and refreshes spent on it when it became the head of its line's train (see `advanceTrains`). */
   trainHead?: true;
+  /** When it was first seen blocked, kept while it stays blocked and gone in any other state (see `urgentUnjamPass`). */
+  blockedSince?: string;
+}
+
+/** `next` with `blockedSince`: the earlier one while it stays blocked, `at` when it becomes blocked, none otherwise. */
+export function stampBlocked(prev: MergeState, next: MergeState, at: string): MergeState {
+  const { blockedSince: _since, ...rest } = next;
+  if (next.status !== "blocked") return rest;
+  return { ...rest, blockedSince: (prev.status === "blocked" && prev.blockedSince) || at };
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -751,7 +760,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   });
   // What the checks of this look left queued: saved with whatever comes next, until a look that reads none.
   let queued: string[] = [];
-  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...(queued.length && { queued }), ...next } satisfies MergeState));
+  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify(stampBlocked(state, { ...kept(), ...(queued.length && { queued }), ...next }, iso(now))));
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const since = now - Date.parse(job.finishedAt ?? job.updatedAt);
 
@@ -1070,7 +1079,8 @@ function probeFailed(outage: ChecksOutage, job: Job, head: string, failed: Check
 function waiting(ctx: FactoryContext, job: Job, why: string) {
   const raw = ctx.store.getKv(mergeKey(job.id));
   const state: MergeState = raw ? JSON.parse(raw) : { status: "waiting" };
-  ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...state, status: "waiting", why: why.slice(0, 300) } satisfies MergeState));
+  const { blockedSince: _since, ...rest } = state;
+  ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...rest, status: "waiting", why: why.slice(0, 300) } satisfies MergeState));
 }
 
 /** One pass over every pull request waiting to be merged; one that fails never stops the others. */
@@ -1195,7 +1205,8 @@ async function followBilling(ctx: FactoryContext, api: (repository: string, line
     }
     for (const run of runs) await gh.rerun(run);
     const at = iso(now);
-    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...rest, status: "waiting", why: "GitHub volvió a arrancar los checks: los que frenó la facturación corren de nuevo", billingRerun: [...(state.billingRerun ?? []), ...runs], refreshing: { head: pr.headSha, at, rerun: true } } satisfies MergeState));
+    const { blockedSince: _since, ...left } = rest;
+    ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...left, status: "waiting", why: "GitHub volvió a arrancar los checks: los que frenó la facturación corren de nuevo", billingRerun: [...(state.billingRerun ?? []), ...runs], refreshing: { head: pr.headSha, at, rerun: true } } satisfies MergeState));
     refreshing.add(repository);
     log.info("checks GitHub refused over billing run again", { repository, job: job.id, head: pr.headSha, runs });
     break;
@@ -1270,7 +1281,7 @@ async function followOutage(ctx: FactoryContext, api: (repository: string, line?
     outage.probe = { job: job.id, head: pr.headSha, at };
     save();
     // Its own second run stays untouched: the probe is the outage's, not the pull request's.
-    const { backoff: _backoff, ...rest } = state;
+    const { backoff: _backoff, blockedSince: _since, ...rest } = state;
     ctx.store.setKv(mergeKey(job.id), JSON.stringify({ ...rest, status: "waiting", why: "probando si el entorno se recuperó: sus checks fallidos corren de nuevo", refreshing: { head: pr.headSha, at, rerun: true } } satisfies MergeState));
     refreshing.add(repository);
     log.info("probing whether the environment of the checks is back", { repository, job: job.id, head: pr.headSha, runs });

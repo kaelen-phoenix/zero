@@ -84,6 +84,8 @@ const UnjamSchema = z.union([
     .object({
       /** Fix jobs and retries the unjam station opens on its own per local day, across every line. */
       maxJobsPerDay: z.number().int().min(0).default(2),
+      /** Hours a pull request stays blocked before the unjam station looks at its line during the day, busy factory or not; 0 turns it off. */
+      urgentAfterHours: z.number().min(0).default(2),
     })
     .strict(),
 ]);
@@ -440,7 +442,7 @@ export const FactorySchema = z
     /** Absent: on, one note per line with a research skill per day. */
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
     /** Absent: on, with the night shift's gates, at most two jobs a day. */
-    unjam: UnjamSchema.default({ maxJobsPerDay: 2 }),
+    unjam: UnjamSchema.default({ maxJobsPerDay: 2, urgentAfterHours: 2 }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
 

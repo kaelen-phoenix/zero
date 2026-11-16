@@ -1,12 +1,13 @@
 import { z } from "zod";
 import type { AgentRunner } from "../agent.js";
-import { ANDON_KEY, currentBox, requestWork, retryJob, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { ANDON_KEY, currentBox, requestWork, retryJob, startTrain, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type LineConfig } from "../config.js";
 import { installBehind, readInstallFreshness } from "../install-freshness.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
+import { effectivePriority } from "../priority.js";
 import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/store.js";
 import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
@@ -14,6 +15,7 @@ import { pendingCleanups } from "./cleanup.js";
 import { scrubLocal } from "./research.js";
 import { SPEC_REFUSAL } from "./runner.js";
 import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
+import { readTrain } from "./train.js";
 import { ALWAYS_PROTECTED } from "./verify.js";
 
 /** Causes kept per line per diagnosis, whatever the agent returns. */
@@ -47,7 +49,7 @@ export interface Jam {
 }
 
 export const CAUSE_KINDS = ["code", "flaky-test", "ci", "github-account", "machine"] as const;
-export const CAUSE_ACTIONS = ["fix", "retry", "capability", "none"] as const;
+export const CAUSE_ACTIONS = ["fix", "retry", "capability", "train", "none"] as const;
 
 export const UnjamOutput = z.object({
   causes: z.array(
@@ -548,6 +550,34 @@ export function retryCauses(ctx: FactoryContext, line: LineConfig, causes: Cause
   }
 }
 
+/**
+ * The pull requests of each `train` cause become the line's integration train through `startTrain`, on lines at
+ * `build` or `auto` and when the line has none yet. On a line at `propose` nothing is started: the cause tells the
+ * person in charge the command. A train zero cannot start leaves the cause with what to do instead.
+ */
+export async function trainCauses(ctx: FactoryContext, line: LineConfig, causes: Cause[], jams: Jam[]): Promise<void> {
+  const byId = new Map(jams.map((j) => [j.id, j]));
+  const autonomous = lineAutonomy(ctx.config, line) !== "propose";
+  for (const cause of causes) {
+    if (cause.action !== "train") continue;
+    // Only the factory's own pull requests: the jams come from its records.
+    const numbers = [...new Set(cause.jams.map((id) => byId.get(id)).filter((j): j is Jam => j?.kind === "pull-request" && !!j.url).map((j) => pullRequestOf(j.url!)?.number).filter((n): n is number => n !== undefined))];
+    const command = `zero tren ${line.name}${numbers.length ? ` ${numbers.join(" ")}` : ""}`;
+    if (!autonomous || !numbers.length) {
+      cause.todo = [cause.todo, command].filter(Boolean).join(" ");
+      continue;
+    }
+    if (readTrain(ctx, line.name)) continue;
+    try {
+      await startTrain(ctx, { line: line.name, numbers: numbers.map(String) });
+      log.info("unjam started a line's train", { line: line.name, title: cause.title, pulls: numbers });
+    } catch (err) {
+      log.warn("unjam could not start a line's train", { line: line.name, error: String(err) });
+      cause.todo = [cause.todo, command].filter(Boolean).join(" ");
+    }
+  }
+}
+
 /** One diagnosis of one line: asks the agent, then keeps only what zero accepts as the line's diagnosis. */
 export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam[], runAgent: AgentRunner, now: Date, opts: { maxBudgetUsd?: number; signal?: AbortSignal } = {}): Promise<Cause[] | undefined> {
   const choice = pickEngine(ctx.store, ctx.config, "unjam", now);
@@ -571,6 +601,7 @@ export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam
   openFixes(ctx, line, causes, now, jams);
   openCapabilities(ctx, line, causes, now, jams);
   retryCauses(ctx, line, causes, jams, now);
+  await trainCauses(ctx, line, causes, jams);
   const diagnosis: Diagnosis = { at: now.toISOString(), causes };
   ctx.store.setKv(unjamKey(line.name), JSON.stringify(diagnosis));
   await publishLessons(ctx, line, causes, jams);
@@ -617,4 +648,56 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
       log.warn("unjam failed", { line: line.name, error: String(err) });
     }
   }
+}
+
+/** When the line was last diagnosed during the day for a pull request blocked too long (ISO): once per `urgentAfterHours`. */
+export const unjamUrgentKey = (line: string) => `unjam-urgent:${line}`;
+
+/**
+ * The unjam station during the day, outside the idle run and whatever the night shift's hours: a line with a pull
+ * request blocked at least `unjam.urgentAfterHours` gets a diagnosis, at most once per that many hours. It never
+ * competes with the owner's work: only with the andon off, budget left, an engine for unjam, a free slot under
+ * `concurrency` and no queued job above low priority, and with the rest of `limits.usdPerNight` as its cap.
+ */
+export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { running: number; signal?: AbortSignal; merges?: MergeApiFactory }): Promise<number> {
+  const unjam = ctx.config.unjam;
+  if (unjam === "off" || !unjam.urgentAfterHours) return 0;
+  const after = unjam.urgentAfterHours * 3_600_000;
+  const logs: LogCache = new Map();
+  let ran = 0;
+  for (const line of ctx.config.lines) {
+    if (line.package) continue;
+    // Checked again before every line, so owner work that arrives mid-pass goes first.
+    if (opts.signal?.aborted || ctx.store.getKv(ANDON_KEY) === "on") return ran;
+    if (opts.running >= ctx.config.concurrency) return ran;
+    if (ctx.store.listJobs({ status: ["queued"], limit: -1 }).some((j) => effectivePriority(j, now) !== "baja")) return ran;
+    const last = ctx.store.getKv(unjamUrgentKey(line.name));
+    if (last && now.getTime() - Date.parse(last) < after) continue;
+    let jams = collectJams(ctx, line, now);
+    const stuck = jams.some((j) => {
+      if (j.kind !== "pull-request" || !j.job) return false;
+      const since = readJson<MergeState>(ctx.store, mergeKey(j.job))?.blockedSince;
+      return !!since && now.getTime() - Date.parse(since) >= after;
+    });
+    if (!stuck) continue;
+    if (budgetState(ctx.store, ctx.config, now).reached) return ran;
+    const choice = pickEngine(ctx.store, ctx.config, "unjam", now);
+    if (!choice.available) return ran;
+    let maxBudgetUsd: number | undefined;
+    if (choice.billing !== "subscription") {
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
+      if (left <= 0) return ran;
+      maxBudgetUsd = Math.round(left * 1e6) / 1e6;
+    }
+    ctx.store.setKv(unjamUrgentKey(line.name), now.toISOString());
+    ran++;
+    try {
+      if (opts.merges) jams = await withCheckLogs(line, jams, opts.merges, logs);
+      log.info("unjam looks at a line during the day: a pull request is blocked too long", { line: line.name, hours: unjam.urgentAfterHours });
+      await unjamLine(ctx, line, jams, runAgent, now, { maxBudgetUsd, signal: opts.signal });
+    } catch (err) {
+      log.warn("daytime unjam failed", { line: line.name, error: String(err) });
+    }
+  }
+  return ran;
 }

@@ -33,13 +33,13 @@
 
 ## 5. Etapa 5: Destrabe de día y acción train
 
-- [ ] 5.1 src/config.ts: agregar `urgentAfterHours` a UnjamSchema (número >= 0, default 2).
-- [ ] 5.2 automerge.ts: agregar `MergeState.blockedSince`. Se pone al pasar a blocked, se conserva mientras siga blocked y desaparece en cualquier otro estado.
-- [ ] 5.3 src/line/unjam.ts: `urgentUnjamPass(ctx, runAgent, now, {running, signal, merges})`. Revisa unjam no off, andon, budgetState, pickEngine, running < concurrency, que no haya en cola un trabajo que no sea `lowPriority`, y por línea un pull request (en jams `pull-request`) con blockedSince de al menos urgentAfterHours. Respeta kv `unjam-urgent:<line>` y usa como tope el resto de usdPerNight del período. Llama `unjamLine`.
-- [ ] 5.4 src/daemon.ts: correrlo como pasada de fondo en el intervalo de intake, fuera de `idlePasses`, una a la vez, esperada al salir y cortada al apagar (como runSchedules). Agregar `DaemonOptions.urgentUnjam` para los tests y que esté apagada en las corridas `once` salvo que se inyecte.
-- [ ] 5.5 Agregar `train` a CAUSE_ACTIONS. En `unjamLine`, `trainCauses`: en build/auto llamar `startTrain` con los pull requests de las trabas (los ajenos no, porque las trabas son de la fábrica). En propose poner `todo` con 'zero tren <línea>'.
-- [ ] 5.6 Actualizar agents/unjam.md (en inglés): corre también de día, sabe de la acción train, de las corridas canceladas por concurrencia que zero relanza sola y de los conflictos simples que zero resuelve sola.
-- [ ] 5.7 Tests en test/unjam.test.ts: corre con trabajos, no corre con un pedido en cola, una vez por plazo, blockedSince, train en build y en propose.
+- [x] 5.1 src/config.ts: agregar `urgentAfterHours` a UnjamSchema (número >= 0, default 2).
+- [x] 5.2 automerge.ts: agregar `MergeState.blockedSince`. Se pone al pasar a blocked, se conserva mientras siga blocked y desaparece en cualquier otro estado.
+- [x] 5.3 src/line/unjam.ts: `urgentUnjamPass(ctx, runAgent, now, {running, signal, merges})`. Revisa unjam no off, andon, budgetState, pickEngine, running < concurrency, que no haya en cola un trabajo que no sea `lowPriority`, y por línea un pull request (en jams `pull-request`) con blockedSince de al menos urgentAfterHours. Respeta kv `unjam-urgent:<line>` y usa como tope el resto de usdPerNight del período. Llama `unjamLine`.
+- [x] 5.4 src/daemon.ts: correrlo como pasada de fondo en el intervalo de intake, fuera de `idlePasses`, una a la vez, esperada al salir y cortada al apagar (como runSchedules). Agregar `DaemonOptions.urgentUnjam` para los tests y que esté apagada en las corridas `once` salvo que se inyecte.
+- [x] 5.5 Agregar `train` a CAUSE_ACTIONS. En `unjamLine`, `trainCauses`: en build/auto llamar `startTrain` con los pull requests de las trabas (los ajenos no, porque las trabas son de la fábrica). En propose poner `todo` con 'zero tren <línea>'.
+- [x] 5.6 Actualizar agents/unjam.md (en inglés): corre también de día, sabe de la acción train, de las corridas canceladas por concurrencia que zero relanza sola y de los conflictos simples que zero resuelve sola.
+- [x] 5.7 Tests en test/unjam.test.ts: corre con trabajos, no corre con un pedido en cola, una vez por plazo, blockedSince, train en build y en propose.
 
 ## 6. Etapa 6: Qué falta y quién lo tiene que hacer
 

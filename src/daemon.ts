@@ -38,7 +38,7 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
-import { resendAfterCapability, unjamPass } from "./line/unjam.js";
+import { resendAfterCapability, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
@@ -78,6 +78,8 @@ export interface DaemonOptions {
   scout?: boolean;
   /** Run the unjam station (diagnosis of what holds the lines up) while the factory is idle. Defaults to on, except in `once` runs. */
   unjam?: boolean;
+  /** Run the unjam station during the day for a line with a pull request blocked too long (`unjam.urgentAfterHours`), busy factory or not. Defaults to on, except in `once` runs. */
+  urgentUnjam?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
@@ -448,7 +450,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   let packagesAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
-    if (idle || running.size) return;
+    // Never two diagnoses at once: the daytime one may still be at work.
+    if (idle || urgent || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
@@ -497,6 +500,22 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (demanding = undefined));
   };
 
+  // A pull request blocked for hours cannot wait for an idle factory: the unjam station looks at its line during the day, in the background
+  // and one pass at a time. urgentUnjamPass itself keeps it off the owner's way (andon, budget, a free slot, nothing of the owner queued).
+  let urgentAt = 0;
+  let urgent: Promise<unknown> | undefined;
+  const runUrgentUnjam = () => {
+    if (urgent || idle || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
+    urgentAt = Date.now();
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+    urgent = urgentUnjamPass(ctx, passRunner(ctx.config), now(), { running: running.size, signal: researchStop.signal, merges })
+      .catch((err) => log.warn("daytime unjam failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("unjam");
+        urgent = undefined;
+      });
+  };
+
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
   let stopped: DaemonStopReason | undefined;
   try {
@@ -535,6 +554,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       exportTraces();
       runSchedules();
       runOnDemand();
+      runUrgentUnjam();
       lookForPackageUpdates();
       checkSelfUpdate();
       await importSwitchResult(ctx);
@@ -632,6 +652,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await exporting;
     await scheduling;
     await demanding;
+    await urgent;
     await looking;
     await selfChecking;
     await idle;
