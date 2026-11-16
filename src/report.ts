@@ -155,6 +155,8 @@ function originLabel(job: Job): string {
       return `Pedido por paquete ${job.source.package}/${job.source.station}`;
     case "security-alert":
       return `Seguridad: alerta de Dependabot ${job.source.package}`;
+    case "pull-request":
+      return `Pull request de GitHub #${job.source.number}`;
     default:
       return "Pedido de la persona responsable";
   }

@@ -35,6 +35,10 @@ export interface PullRequestState {
   mergeCommitSha?: string;
   /** The branch it would be merged into. */
   base?: string;
+  /** The name of its branch. */
+  headRef?: string;
+  /** owner/repo of the repository its branch lives in: another one for a fork. */
+  headRepository?: string;
 }
 
 export interface Check {
@@ -83,7 +87,7 @@ export function githubMerges(token: string, repository: string, client?: Octokit
   return {
     async pullRequest(number) {
       const { data } = await gh.pulls.get({ owner, repo, pull_number: number });
-      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha, mergeCommitSha: data.merged ? (data.merge_commit_sha ?? undefined) : undefined, base: (data.base as { ref?: string } | undefined)?.ref };
+      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha, mergeCommitSha: data.merged ? (data.merge_commit_sha ?? undefined) : undefined, base: (data.base as { ref?: string } | undefined)?.ref, headRef: data.head.ref, headRepository: data.head.repo?.full_name };
     },
     async checks(sha) {
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });

@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -52,9 +52,15 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
-/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it. */
+/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it or it updates a pull request zero took. */
 export const jobOrigin = (j: Job) =>
-  j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : j.source?.kind === "security-alert" ? `seguridad: alerta de Dependabot ${j.source.package}` : undefined;
+  j.source?.kind === "package"
+    ? `pedido por paquete ${j.source.package}/${j.source.station}`
+    : j.source?.kind === "security-alert"
+      ? `seguridad: alerta de Dependabot ${j.source.package}`
+      : j.source?.kind === "pull-request"
+        ? `actualiza el pull request #${j.source.number}`
+        : undefined;
 
 /** Spanish severity names, for what the owner reads. */
 export const SEVERITY_TEXT: Record<AlertSeverity, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
@@ -89,6 +95,13 @@ export function formatRequest(r: RequestResult): string {
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
   return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+}
+
+/** One line per pull request of `zero actualizar-pr`. */
+export function formatAdoptions(list: Adoption[]): string {
+  return list
+    .map((a) => (a.job ? `#${a.number.replace("#", "")}: trabajo ${a.job.id} en cola, actualiza la rama ${a.job.branch} con ${a.job.base}.` : `#${a.number.replace("#", "")}: no lo tomé: ${a.why}`))
+    .join("\n");
 }
 
 /** The remote chat for `zero mcp clients`: the switch, the address and each connected client. */

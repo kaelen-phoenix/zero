@@ -7,14 +7,14 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, adoptPullRequests, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -47,6 +47,10 @@ Uso diario (también desde el chat):
                                  fábrica vuelva a actualizar un pull request en conflicto
   zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
                                  solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
+  zero actualizar-pr <línea> <número>...
+                                 Toma pull requests abiertos de la línea (de quien sea, no de un fork), en ese orden: deja
+                                 un respaldo local respaldo/pr<N>, mezcla la rama base, resuelve los conflictos y sube a la
+                                 misma rama, sin abrir otro pull request
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -320,6 +324,14 @@ async function main(argv: string[]): Promise<number> {
         const r = await mergePullRequest(ctx, rest[0], { via: "cli" });
         console.log(formatMerge(r));
         return r.merged ? 0 : 1;
+      }
+      case "actualizar-pr": {
+        const [line, ...numbers] = rest;
+        if (!line || !numbers.length) throw new Error("Indicá la línea y los pull requests: zero actualizar-pr <línea> <número>...");
+        const adopted = await adoptPullRequests(ctx, { line, numbers });
+        console.log(formatAdoptions(adopted));
+        if (adopted.some((a) => a.job) && (await ensureDaemon(ctx))) console.log("La fábrica estaba apagada: la encendí.");
+        return adopted.every((a) => a.job) ? 0 : 1;
       }
       case "resume":
         resume(ctx);
