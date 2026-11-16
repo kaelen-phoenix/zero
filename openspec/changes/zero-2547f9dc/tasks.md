@@ -43,8 +43,8 @@
 
 ## 6. Etapa 6: Qué falta y quién lo tiene que hacer
 
-- [ ] 6.1 UnjamOutput y Cause: agregar `who` (enum owner, author, github, factory; nullable). `acceptCauses` lo conserva. Si action es none y falta `who`, usar `owner`.
-- [ ] 6.2 Agregar `who` a JamView y a `jamViews`. En `jamLine` (src/format.ts), mostrar `qué falta: <todo> · lo tiene que hacer: vos | quien abrió el pull request | GitHub | la fábrica`. En `trainLine`, mostrar el block con lo mismo.
-- [ ] 6.3 Panel (src/panel/html.ts) y briefing: que usen las mismas funciones, con esc.
-- [ ] 6.4 Actualizar AGENTS.md (unjam, automerge, tren, conflicts.ts), README.md y README.es.md (`zero tren` con la misma estructura). Revisar que test/wording.test.ts y test/docs.test.ts pasen.
-- [ ] 6.5 Tests: formatStatus, panel y briefing con causa `who` y con tren bloqueado. Correr npm run typecheck, npm test y npx openspec validate --all.
+- [x] 6.1 UnjamOutput y Cause: agregar `who` (enum owner, author, github, factory; nullable). `acceptCauses` lo conserva. Si action es none y falta `who`, usar `owner`.
+- [x] 6.2 Agregar `who` a JamView y a `jamViews`. En `jamLine` (src/format.ts), mostrar `qué falta: <todo> · lo tiene que hacer: vos | quien abrió el pull request | GitHub | la fábrica`. En `trainLine`, mostrar el block con lo mismo.
+- [x] 6.3 Panel (src/panel/html.ts) y briefing: que usen las mismas funciones, con esc.
+- [x] 6.4 Actualizar AGENTS.md (unjam, automerge, tren, conflicts.ts), README.md y README.es.md (`zero tren` con la misma estructura). Revisar que test/wording.test.ts y test/docs.test.ts pasen.
+- [x] 6.5 Tests: formatStatus, panel y briefing con causa `who` y con tren bloqueado. Correr npm run typecheck, npm test y npx openspec validate --all.

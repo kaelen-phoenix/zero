@@ -50,6 +50,8 @@ export interface Jam {
 
 export const CAUSE_KINDS = ["code", "flaky-test", "ci", "github-account", "machine"] as const;
 export const CAUSE_ACTIONS = ["fix", "retry", "capability", "train", "none"] as const;
+/** Who has to act on what is missing: the person in charge, the pull request's author, GitHub or the factory. */
+export const CAUSE_WHO = ["owner", "author", "github", "factory"] as const;
 
 export const UnjamOutput = z.object({
   causes: z.array(
@@ -71,6 +73,8 @@ export const UnjamOutput = z.object({
       needsNewCredentials: z.boolean().default(false),
       /** For `none`: what the person in charge has to do. */
       todo: z.string().nullable().default(null),
+      /** For `none`: who has to do the `todo`. */
+      who: z.enum(CAUSE_WHO).nullable().default(null),
     }),
   ),
 });
@@ -90,6 +94,8 @@ export interface Cause {
   estimatedUsd: number;
   needsNewCredentials: boolean;
   todo?: string;
+  /** Who has to do the `todo`; always set for `none` (the person in charge when the agent did not say). */
+  who?: (typeof CAUSE_WHO)[number];
   /** For `fix` and `capability`: the unjam proposal that carries it, new or already open. */
   proposal?: string;
   /** The job working on it, while it is not finished. */
@@ -326,6 +332,7 @@ export function acceptCauses(drafts: UnjamOutput["causes"], jams: Jam[], line: P
       estimatedUsd: d.estimatedUsd,
       needsNewCredentials: d.needsNewCredentials,
       ...(text(d.todo) && { todo: text(d.todo) }),
+      ...(d.who ? { who: d.who } : d.action === "none" && { who: "owner" as const }),
     });
   }
   return [...byTitle.values()];

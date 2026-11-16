@@ -542,6 +542,8 @@ export interface JamView {
   /** Its unjam proposal while it waits for the person in charge. */
   proposal?: string;
   todo?: string;
+  /** Who has to do the `todo`. */
+  who?: NonNullable<Cause["who"]>;
   /** When the line was diagnosed. */
   at: string;
 }
@@ -563,6 +565,7 @@ export function jamViews(ctx: FactoryContext): JamView[] {
         ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
         ...(proposal?.status === "pending" && { proposal: proposal.id }),
         ...(c.todo && { todo: c.todo }),
+        ...(c.todo && { who: c.who ?? "owner" }),
         at: diagnosis.at,
       };
     });

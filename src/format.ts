@@ -445,16 +445,27 @@ export const JAM_KIND_TEXT: Record<FactoryStatus["jams"][number]["kind"], string
   machine: "máquina",
 };
 
-/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué hacer». */
+/** Who has to act, as the person in charge reads it (with the author's login when GitHub said it). */
+export function whoText(who: NonNullable<FactoryStatus["jams"][number]["who"]>, author?: string): string {
+  if (who === "author") return `quien abrió el pull request${author ? ` (${author})` : ""}`;
+  return { owner: "vos", github: "GitHub", factory: "la fábrica" }[who];
+}
+
+/** What is missing and who has to do it: «qué falta: <todo> · lo tiene que hacer: <who>». */
+export function missingText(todo: string, who: NonNullable<FactoryStatus["jams"][number]["who"]>, author?: string): string {
+  return `qué falta: ${todo} · lo tiene que hacer: ${whoText(who, author)}`;
+}
+
+/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué falta y quién». */
 export function jamLine(j: FactoryStatus["jams"][number]): string {
-  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? `qué hacer: ${j.todo}` : undefined;
+  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? missingText(j.todo, j.who ?? "owner") : undefined;
   return [j.line, j.title, `${j.jams} ${j.jams === 1 ? "traba" : "trabas"}`, JAM_KIND_TEXT[j.kind], next].filter(Boolean).join(" · ");
 }
 
 /** A line's integration train: «Tren de <línea>: N pull requests; ahora <url> (<why>)», and where it stopped. */
 export function trainLine(t: FactoryStatus["trains"][number]): string {
   const now = `${t.pulls} ${t.pulls === 1 ? "pull request" : "pull requests"}; ahora ${t.head}${t.why ? ` (${t.why})` : ""}`;
-  return `Tren de ${t.line}: ${now}${t.block ? ` · detenido en ${t.block.pull}: ${t.block.what}` : ""}`;
+  return `Tren de ${t.line}: ${now}${t.block ? ` · detenido en ${t.block.pull} · ${missingText(t.block.what, t.block.who, t.block.author)}` : ""}`;
 }
 
 /** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */

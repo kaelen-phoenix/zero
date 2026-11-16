@@ -568,7 +568,34 @@ describe("jams in sight", () => {
     const s = factoryStatus(ctx);
     expect(s.jams[0]!.job).toBeUndefined();
     const machine = diagnosed([cause({ kind: "machine", jams: ["box"], todo: "Instalá Podman o Docker" })]);
-    expect(formatStatus(factoryStatus(machine))).toContain("tienda · Checks de android rotos · 1 traba · máquina · qué hacer: Instalá Podman o Docker");
+    expect(formatStatus(factoryStatus(machine))).toContain("tienda · Checks de android rotos · 1 traba · máquina · qué falta: Instalá Podman o Docker · lo tiene que hacer: vos");
+  });
+
+  it("says what is missing and who has to do it, in status, panel and briefing", async () => {
+    const ctx = diagnosed([cause({ kind: "code", jams: ["pr:1"], todo: "Volvé a subir el commit que verificó zero", who: "author" })]);
+    const s = factoryStatus(ctx);
+    expect(s.jams[0]).toMatchObject({ todo: "Volvé a subir el commit que verificó zero", who: "author" });
+    const missing = "qué falta: Volvé a subir el commit que verificó zero · lo tiene que hacer: quien abrió el pull request";
+    expect(formatStatus(s)).toContain(missing);
+    expect(overviewPage(s, ["tienda"], "nonce")).toContain(missing);
+    expect((await briefing(ctx)).body).toContain(missing);
+    const github = diagnosed([cause({ jams: ["pr:1"], todo: "Esperar a que vuelva Actions", who: "github" })]);
+    expect(formatStatus(factoryStatus(github))).toContain("lo tiene que hacer: GitHub");
+    const factoryWho = diagnosed([cause({ jams: ["pr:1"], todo: "Esperar la próxima pasada", who: "factory" })]);
+    expect(formatStatus(factoryStatus(factoryWho))).toContain("lo tiene que hacer: la fábrica");
+  });
+
+  it("keeps the agent's who and makes a none cause without one the owner's", async () => {
+    const { ctx } = factory();
+    const a = failedJob(ctx);
+    const line = ctx.config.lines[0]!;
+    const jams = collectJams(ctx, line, at(3));
+    const id = `job:${a.id}`;
+    const drafts = [cause({ title: "Uno", jams: [id], who: "github" }), cause({ title: "Dos", jams: [id] }), cause({ title: "Tres", jams: [id], action: "retry", todo: undefined })];
+    const causes = (await unjamLine(ctx, line, jams, diagnosing(drafts).runner, at(3)))!;
+    expect(causes.find((c) => c.title === "Uno")!.who).toBe("github");
+    expect(causes.find((c) => c.title === "Dos")!.who).toBe("owner");
+    expect(causes.find((c) => c.title === "Tres")!.who).toBeUndefined();
   });
 
   it("is in the panel's overview", () => {

@@ -230,6 +230,13 @@ describe("pull requests the factory did not open, in a train", () => {
     expect(readTrain(ctx, "demo")!.block).toEqual({ pull: url(7), what: PUSHED, who: "author", author: "alguien" });
     const state = JSON.parse(ctx.store.getKv(mergeKey(adopted.id))!) as MergeState;
     expect(state).toMatchObject({ status: "blocked", why: expect.stringContaining(PUSHED) });
+    const told = `Tren de demo: 1 pull request; ahora ${url(7)}`;
+    const missing = `detenido en ${url(7)} · qué falta: ${PUSHED} · lo tiene que hacer: quien abrió el pull request (alguien)`;
+    const status = formatStatus(factoryStatus(ctx));
+    expect(status).toContain(told);
+    expect(status).toContain(missing);
+    expect(overviewPage(factoryStatus(ctx), ["demo"], "nonce")).toContain(missing);
+    expect((await briefing(ctx)).body).toContain(missing);
 
     // Back at the verified head, the block is over and it is merged there.
     prs[7]!.pr = { ...prs[7]!.pr, headSha: head };
