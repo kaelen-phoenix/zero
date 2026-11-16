@@ -10,10 +10,10 @@
 
 ## 2. Etapa 2: Resolución mecánica de conflictos simples
 
-- [ ] 2.1 Crear src/line/conflicts.ts con `resolveDiff3(text): string | undefined` (pura). Parsea los bloques `<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`. Si los lados son iguales, quedarse con uno. Si ambos lados solo tienen líneas de import de una línea (JS/TS `import ...`/`export ... from`, Python `import`/`from x import`), unir las líneas, primero las nuestras, cada una una sola vez. Si la base está vacía y los lados no comparten líneas, poner las nuestras y después las de ellos. Cualquier otro caso devuelve undefined.
-- [ ] 2.2 `resolveSimply(cwd, paths): boolean`: por archivo, `git checkout --conflict=diff3 -- <path>` (con spawnGit). Leerlo, resolverlo y, si todos los archivos se resuelven, escribirlos y hacer `git add`. Si un archivo es binario, falta una de las etapas o queda un bloque sin resolver, no se escribe nada y devuelve false.
-- [ ] 2.3 En runJob (src/line/runner.ts, rama `conflict` cerca de la línea 202): llamar `resolveSimply`. Si devuelve true, `copy.commit(mergeMessage...)`, guardar el refresh `resolved: true`, poner checkpoint spec y station verify, y abrir un span `zero.conflicts.simple`. Si no, seguir como hasta ahora.
-- [ ] 2.4 Tests: test/conflicts.test.ts para la función pura (imports, ambos agregan, se pisan, iguales) y un test del runner con repositorio git real donde una mezcla con imports en conflicto llega a verify sin llamar al agente build.
+- [x] 2.1 Crear src/line/conflicts.ts con `resolveDiff3(text): string | undefined` (pura). Parsea los bloques `<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`. Si los lados son iguales, quedarse con uno. Si ambos lados solo tienen líneas de import de una línea (JS/TS `import ...`/`export ... from`, Python `import`/`from x import`), unir las líneas, primero las nuestras, cada una una sola vez. Si la base está vacía y los lados no comparten líneas, poner las nuestras y después las de ellos. Cualquier otro caso devuelve undefined.
+- [x] 2.2 `resolveSimply(cwd, paths): boolean`: por archivo, `git checkout --conflict=diff3 -- <path>` (con spawnGit). Leerlo, resolverlo y, si todos los archivos se resuelven, escribirlos y hacer `git add`. Si un archivo es binario, falta una de las etapas o queda un bloque sin resolver, no se escribe nada y devuelve false.
+- [x] 2.3 En runJob (src/line/runner.ts, rama `conflict` cerca de la línea 202): llamar `resolveSimply`. Si devuelve true, `copy.commit(mergeMessage...)`, guardar el refresh `resolved: true`, poner checkpoint spec y station verify, y abrir un span `zero.conflicts.simple`. Si no, seguir como hasta ahora.
+- [x] 2.4 Tests: test/conflicts.test.ts para la función pura (imports, ambos agregan, se pisan, iguales) y un test del runner con repositorio git real donde una mezcla con imports en conflicto llega a verify sin llamar al agente build.
 
 ## 3. Etapa 3: Tren de integración de una línea
 

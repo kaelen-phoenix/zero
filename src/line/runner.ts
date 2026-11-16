@@ -34,6 +34,7 @@ import {
   writeFiles,
   type Spec,
 } from "./spec.js";
+import { resolveSimply } from "./conflicts.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
 import { localCommands, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
@@ -205,6 +206,12 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       if (merge.outcome === "merged") {
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, resolved: true });
         // Nothing to build: it goes back through verify and the reviews, without spending an attempt, at any attempt count.
+        job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
+      } else if (resolveSimply(copy.cwd, merge.paths)) {
+        // Imports to join or lines both sides added: resolved without a model, so like a clean merge it costs no attempt.
+        tracer.start("zero.conflicts.simple", { jobId, parentId: jobSpan, attrs: { "zero.conflicts.files": merge.paths.length } }).end("ok");
+        copy.commitAll(mergeMessage(deps, line, jobId, copy));
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths, resolved: true });
         job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
       } else {
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });

@@ -171,6 +171,26 @@ describe("a pull request in conflict with its base", () => {
     expect(f.remoteTip()).not.toBe(f.head);
   });
 
+  it("resolves imports in conflict without a model and goes on at verify without spending an attempt", async () => {
+    const f = await delivered({ change: { "shared.txt": `import { a } from "./a.js";\nbase\n` } });
+    const builds = f.agents.count.build;
+    const base = f.moveBase("shared.txt", `import { b } from "./b.js";\nbase\n`);
+    await f.pass();
+    expect(f.ctx.store.getJob(f.job.id)).toMatchObject({ status: "queued", attempt: 1 });
+    f.setBuild(() => {
+      throw new Error("build must not be called");
+    });
+    const done = await f.again();
+    expect(done).toMatchObject({ status: "delivered", attempt: 1, delivery: f.delivery });
+    expect(f.agents.count.build).toBe(builds);
+    const tip = f.remoteTip();
+    f.contained(base, tip);
+    f.contained(f.head, tip);
+    expect(f.parents(tip)).toBe(2);
+    expect(run("git", ["show", `${tip}:shared.txt`], f.bare)).toBe(`import { a } from "./a.js";\nimport { b } from "./b.js";\nbase`);
+    expect(f.ctx.store.spansForJob(f.job.id).some((s) => s.name === "zero.conflicts.simple")).toBe(true);
+  });
+
   /** The pull request blocked in conflict, as the merges pass leaves it, then retried by the person in charge. */
   const retried = (f: Awaited<ReturnType<typeof delivered>>) => {
     const state: MergeState = { status: "blocked", why: "en conflicto con la rama base", backoff: { sha: f.head, mergeable: false, why: "en conflicto con la rama base", delayMs: 300_000, nextChecksAt: new Date(Date.now() - 1000).toISOString() } };
