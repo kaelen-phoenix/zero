@@ -95,7 +95,7 @@ export function formatRequest(r: RequestResult): string {
 
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
-  return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+  return r.merged ? `Fundí ${r.url}${r.job ? ` (trabajo ${r.job})` : ""}:el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
 }
 
 /** One line per pull request of `zero actualizar-pr`. */

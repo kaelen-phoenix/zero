@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { factoryStatus, startTrain, briefing } from "../src/app.js";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { answer, factoryStatus, startTrain, briefing } from "../src/app.js";
 import { formatStatus } from "../src/format.js";
 import { mergeKey, pollMerges, type Check, type MergeApi, type MergeState, type PullRequestState } from "../src/line/automerge.js";
 import { finalizeJob } from "../src/line/finish.js";
-import { advanceTrains, readTrain, trainKey } from "../src/line/train.js";
+import { runJob, type RunnerDeps } from "../src/line/runner.js";
+import { advanceTrains, PUSHED, readTrain, trainKey } from "../src/line/train.js";
 import { overviewPage } from "../src/panel/html.js";
-import { cleanup, gitIn, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory, writeTree } from "./helpers.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  return cleanup();
+});
 
 const MINUTE = 60_000;
 const AT = "2026-11-10T11:50:00Z";
@@ -134,6 +140,104 @@ describe("the integration train of a line", () => {
   });
 });
 
+/**
+ * A pull-request line with a bare remote whose path looks like GitHub, one pull request (#1) the factory
+ * delivered, and a branch `feature` of pull request #7 that someone else pushed, with `main` moved cleanly.
+ */
+async function withForeign() {
+  const bare = join(tempDir("zero-remote-"), "github.com", "kaelen", "demo.git").replace(/\\/g, "/");
+  mkdirSync(bare, { recursive: true });
+  run("git", ["init", "-q", "--bare", "-b", "main"], bare);
+  const repo = gitRepo({ "shared.txt": "base\n" });
+  gitIn(repo, "remote", "add", "origin", bare);
+  gitIn(repo, "push", "-q", "origin", "main");
+  const other = tempDir("zero-other-");
+  run("git", ["clone", "-q", "-c", "core.autocrlf=false", bare, "."], other);
+  gitIn(other, "checkout", "-q", "-b", "feature");
+  writeTree(other, { "feature.txt": "feature\n" });
+  gitIn(other, "add", "-A");
+  gitIn(other, "commit", "-q", "-m", "feature");
+  gitIn(other, "push", "-q", "origin", "feature");
+  const head = run("git", ["rev-parse", "HEAD"], other);
+  gitIn(other, "checkout", "-q", "main");
+  writeTree(other, { "other.txt": "main\n" });
+  gitIn(other, "add", "-A");
+  gitIn(other, "commit", "-q", "-m", "main moves");
+  gitIn(other, "push", "-q", "origin", "main");
+  vi.stubEnv("GH_TOKEN", "test-token");
+
+  const clock = { ms: Date.parse("2026-11-10T12:00:00Z") };
+  const ctx = testFactory({ level: "L2", lines: [{ name: "demo", repo, integrate: "pull-request", maxAttempts: 3, verify: [`node -e "process.exit(0)"`] }] }, () => new Date(clock.ms));
+  const mine = ctx.store.createJob({ line: "demo", kind: "request", request: "x1", budgetUsd: 3 });
+  await finalizeJob(ctx, mine, "delivered", { delivery: { mode: "pull-request", branch: `zero/${mine.id}`, url: url(1) } });
+  clock.ms += 1_000;
+  const prs: Record<number, FakePr> = {
+    1: pull("a", [ok("ci")]),
+    7: { pr: { open: true, merged: false, mergeable: true, headSha: head, base: "main", headRef: "feature", headRepository: "kaelen/demo", author: "alguien" }, checks: [ok("ci")] },
+  };
+  const gh = fakeGitHub(prs);
+  const pass = async () => {
+    clock.ms += 10 * MINUTE;
+    await pollMerges(ctx, () => gh.api);
+  };
+  return { ctx, repo, bare, other, head, mine, prs, gh, pass };
+}
+
+describe("pull requests the factory did not open, in a train", () => {
+  it("adopts a given number the factory did not deliver, pinned to the head read", async () => {
+    const { ctx, head, mine, gh } = await withForeign();
+    const train = await startTrain(ctx, { line: "demo", numbers: ["1", "7"], api: () => gh.api });
+    expect(train.entries.map((e) => e.url)).toEqual([url(1), url(7)]);
+    expect(train.entries[0]).toEqual({ job: mine.id, url: url(1) });
+    const adopted = ctx.store.getJob(train.entries[1]!.job)!;
+    expect(adopted.source).toMatchObject({ kind: "pull-request", number: 7 });
+    expect(adopted.status).toBe("queued");
+    expect(train.entries[1]!.head).toBe(head);
+    expect(readTrain(ctx, "demo")).toEqual(train);
+  });
+
+  it("writes no train when the adoption is refused", async () => {
+    const { ctx, prs, gh } = await withForeign();
+    prs[7]!.pr = { ...prs[7]!.pr, headRepository: "someone/fork" };
+    await expect(startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api })).rejects.toThrow(/fork/);
+    expect(ctx.store.getKv(trainKey("demo"))).toBeUndefined();
+  });
+
+  it("pins the head the adopted job pushed", async () => {
+    const { ctx, repo, bare, gh } = await withForeign();
+    const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    const agents = fakeAgents({});
+    const deps: RunnerDeps = { ...ctx, runAgent: agents.runner };
+    let job = await runJob(train.entries[0]!.job, deps);
+    while (job.status === "waiting") {
+      await answer(ctx, job.id, "approve");
+      job = await runJob(job.id, deps);
+    }
+    expect(job.status).toBe("delivered");
+    const pushed = run("git", ["rev-parse", "refs/heads/feature"], bare);
+    expect(run("git", ["rev-parse", "refs/heads/feature"], repo)).toBe(pushed);
+    expect(readTrain(ctx, "demo")!.entries[0]!.head).toBe(pushed);
+  });
+
+  it("stops at an adopted head someone pushed to after zero verified it, naming its author", async () => {
+    const { ctx, head, gh, prs, pass } = await withForeign();
+    const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    const adopted = ctx.store.getJob(train.entries[0]!.job)!;
+    await finalizeJob(ctx, adopted, "delivered", { delivery: adopted.delivery! });
+    prs[7]!.pr = { ...prs[7]!.pr, headSha: "b".repeat(40) };
+    await pass();
+    expect(gh.did).toEqual([]);
+    expect(readTrain(ctx, "demo")!.block).toEqual({ pull: url(7), what: PUSHED, who: "author", author: "alguien" });
+    const state = JSON.parse(ctx.store.getKv(mergeKey(adopted.id))!) as MergeState;
+    expect(state).toMatchObject({ status: "blocked", why: expect.stringContaining(PUSHED) });
+
+    // Back at the verified head, the block is over and it is merged there.
+    prs[7]!.pr = { ...prs[7]!.pr, headSha: head };
+    await pass();
+    expect(gh.did).toEqual([`merge #7 @${head}`]);
+  });
+});
+
 describe("startTrain", () => {
   it("orders the delivered pull requests oldest delivery first, or as given", async () => {
     const { ctx, jobs } = await factoryWith([5, 3, 4]);
@@ -151,7 +255,8 @@ describe("startTrain", () => {
   it("refuses before writing anything", async () => {
     const { ctx } = await factoryWith([1]);
     await expect(startTrain(ctx, { line: "nope" })).rejects.toThrow(/No existe la línea/);
-    await expect(startTrain(ctx, { line: "demo", numbers: ["9"] })).rejects.toThrow(/#9/);
+    // A number the factory did not deliver is adopted, and a pull request GitHub does not give is refused.
+    await expect(startTrain(ctx, { line: "demo", numbers: ["9"], api: () => fakeGitHub({}).api })).rejects.toThrow(/#9/);
     await expect(startTrain(ctx, { line: "demo", numbers: ["x"] })).rejects.toThrow(/no es un número/);
     expect(ctx.store.getKv(trainKey("demo"))).toBeUndefined();
     const first = await startTrain(ctx, { line: "demo" });

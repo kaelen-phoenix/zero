@@ -26,10 +26,10 @@
 
 ## 4. Etapa 4: Pull requests ajenos en el tren y en zero fusionar
 
-- [ ] 4.1 `startTrain`: cuando el número dado no corresponde a un trabajo entregado, adoptarlo con `adoptPullRequest` (mismas reglas) y guardar `entry.head` con el head al momento de adoptarlo. Cuando el trabajo adoptado empuja, actualizar `entry.head` con el tip local de su rama.
-- [ ] 4.2 En `watch`, para una cabeza adoptada (source pull-request): si `pr.headSha !== entry.head`, no fundir y poner `train.block = {pull, what: 'alguien empujó a la rama después de que la fábrica la verificó', who: 'author'}`.
-- [ ] 4.3 `deliveredPullRequest`/`mergePullRequest` (src/app.ts): para la URL de un pull request de un repositorio de una línea sin trabajo entregado, leer el pull request y sus checks, y fundirlo con su headSha solo cuando `mergeDecision` da `merge`. Abrir un span `zero.merge` sin jobId y no escribir ningún trabajo ni MergeState. Si el repositorio no es de ninguna línea, rechazarlo.
-- [ ] 4.4 Tests en test/merge-request.test.ts y test/train.test.ts: ajeno verde, ajeno rojo, repositorio ajeno, adoptado al tren, head movido.
+- [x] 4.1 `startTrain`: cuando el número dado no corresponde a un trabajo entregado, adoptarlo con `adoptPullRequest` (mismas reglas) y guardar `entry.head` con el head al momento de adoptarlo. Cuando el trabajo adoptado empuja, actualizar `entry.head` con el tip local de su rama.
+- [x] 4.2 En `watch`, para una cabeza adoptada (source pull-request): si `pr.headSha !== entry.head`, no fundir y poner `train.block = {pull, what: 'alguien empujó a la rama después de que la fábrica la verificó', who: 'author'}`.
+- [x] 4.3 `deliveredPullRequest`/`mergePullRequest` (src/app.ts): para la URL de un pull request de un repositorio de una línea sin trabajo entregado, leer el pull request y sus checks, y fundirlo con su headSha solo cuando `mergeDecision` da `merge`. Abrir un span `zero.merge` sin jobId y no escribir ningún trabajo ni MergeState. Si el repositorio no es de ninguna línea, rechazarlo.
+- [x] 4.4 Tests en test/merge-request.test.ts y test/train.test.ts: ajeno verde, ajeno rojo, repositorio ajeno, adoptado al tren, head movido.
 
 ## 5. Etapa 5: Destrabe de día y acción train
 

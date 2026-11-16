@@ -30,7 +30,7 @@ import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, type Train } from "./line/train.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
@@ -1281,8 +1281,11 @@ const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line
   return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
-function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+/**
+ * The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. A URL of a line's
+ * repository the factory delivered nothing for gives its line instead; one of no line's repository is refused.
+ */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job | { line: LineConfig; url: string } {
   const wanted = pullRequestOf(target.trim());
   if (!wanted) {
     const job = getJob(ctx, target.trim());
@@ -1295,16 +1298,25 @@ function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
     return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
   };
   const job = ctx.store.listJobs({ status: ["delivered"], limit: -1 }).find((j) => same(j.delivery?.url));
-  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
-  return job;
+  if (job) return job;
+  const line = ctx.config.lines.find((l) => lineRepository(l)?.toLowerCase() === wanted.repository.toLowerCase());
+  if (!line) throw new Error(`El pull request ${wanted.repository}#${wanted.number} no es de un repositorio de ninguna línea: no lo fundo.`);
+  return { line, url: `https://github.com/${lineRepository(line)}/pull/${wanted.number}` };
 }
 
 /**
  * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
- * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ * with or without `autoMerge` on its line, only when GitHub says it is ready. An open pull request of a line's
+ * repository that the factory did not deliver is merged the same way, pinned to the head read, writing no job.
  */
 export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
-  const job = deliveredPullRequest(ctx, target);
+  const found = deliveredPullRequest(ctx, target);
+  if (!("id" in found)) {
+    const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(found.url)!.repository, found.line);
+    if (!gh) return { url: found.url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+    return mergeForeignRequested(ctx, found.url, gh, opts.via);
+  }
+  const job = found;
   const url = job.delivery!.url!;
   const line = ctx.config.lines.find((l) => l.name === job.line);
   const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
@@ -1405,10 +1417,11 @@ export async function adoptPullRequest(ctx: FactoryContext, input: { line: strin
 /**
  * `zero tren`: starts the integration train of a line with its delivered pull requests not merged yet, oldest
  * delivery first, or with the ones given, in that order. The daemon then merges them one at a time (see
- * `advanceTrains`), even on a line without `autoMerge`, and only when `mergeDecision` says so.
- * Every refusal comes before anything is written.
+ * `advanceTrains`), even on a line without `autoMerge`, and only when `mergeDecision` says so. A number given
+ * that the factory did not deliver is adopted (`adoptPullRequest`) and pinned to the head read at adoption.
+ * The line's refusals come before anything is written; a refused adoption writes no train.
  */
-export async function startTrain(ctx: FactoryContext, input: { line: string; numbers?: string[] }): Promise<Train> {
+export async function startTrain(ctx: FactoryContext, input: { line: string; numbers?: string[]; api?: MergeApiFactory }): Promise<Train> {
   const line = findLine(ctx.config, input.line);
   if (line.integrate !== "pull-request") throw new Error(`La línea ${line.name} no integra por pull request: no armo un tren en ella.`);
   if (readTrain(ctx, line.name)) throw new Error(`La línea ${line.name} ya tiene un tren en marcha.`);
@@ -1421,21 +1434,27 @@ export async function startTrain(ctx: FactoryContext, input: { line: string; num
     const status = raw ? (JSON.parse(raw) as MergeState).status : "waiting";
     return status === "waiting" || status === "blocked";
   });
-  let jobs: Job[];
+  const entries: Train["entries"] = [];
   if (input.numbers?.length) {
-    jobs = [];
-    for (const given of input.numbers) {
-      if (!/^#?\d+$/.test(given)) throw new Error(`"${given}" no es un número de pull request.`);
-      const number = Number(given.replace("#", ""));
+    for (const given of input.numbers) if (!/^#?\d+$/.test(given)) throw new Error(`"${given}" no es un número de pull request.`);
+    const numbers = [...new Set(input.numbers.map((given) => Number(given.replace("#", ""))))];
+    for (const number of numbers) {
       const job = open.find((j) => pullRequestOf(j.delivery!.url!)!.number === number);
-      if (!job) throw new Error(`El pull request #${number} de ${repository} no es un pull request entregado por la fábrica y sin fundir.`);
-      if (!jobs.includes(job)) jobs.push(job);
+      if (job) {
+        entries.push({ job: job.id, url: job.delivery!.url! });
+        continue;
+      }
+      // One the factory did not deliver is adopted, and merged only at the head zero verifies for it.
+      const adopted = await adoptPullRequest(ctx, { line: line.name, number, api: input.api });
+      const refresh = ctx.store.getKv(prRefreshKey(adopted.id));
+      const head = refresh ? (JSON.parse(refresh) as PrRefresh).head : undefined;
+      entries.push({ job: adopted.id, url: adopted.delivery!.url!, ...(head && { head }) });
     }
   } else {
-    jobs = [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt));
+    for (const j of [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt))) entries.push({ job: j.id, url: j.delivery!.url! });
   }
-  if (!jobs.length) throw new Error(`La línea ${line.name} no tiene pull requests entregados sin fundir.`);
-  const train: Train = { line: line.name, repository, entries: jobs.map((j) => ({ job: j.id, url: j.delivery!.url! })), startedAt: (ctx.now ?? (() => new Date()))().toISOString() };
+  if (!entries.length) throw new Error(`La línea ${line.name} no tiene pull requests entregados sin fundir.`);
+  const train: Train = { line: line.name, repository, entries, startedAt: (ctx.now ?? (() => new Date()))().toISOString() };
   ctx.store.setKv(trainKey(line.name), JSON.stringify(train));
   log.info("train of a line started", { line: line.name, pulls: train.entries.map((e) => e.url) });
   return train;

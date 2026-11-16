@@ -9,7 +9,7 @@ import type { Job } from "../state/store.js";
 import { cleanupKey } from "./cleanup.js";
 import { prRefreshKey, type PrRefresh } from "./finish.js";
 import { scrubLocal } from "./research.js";
-import { advanceTrains, readTrain, trainOf } from "./train.js";
+import { advanceTrains, PUSHED, readTrain, saveTrain, trainOf } from "./train.js";
 
 /**
  * Merges the pull requests of lines with `autoMerge` once GitHub says they
@@ -40,6 +40,8 @@ export interface PullRequestState {
   headRef?: string;
   /** owner/repo of the repository its branch lives in: another one for a fork. */
   headRepository?: string;
+  /** The login of whoever opened it. */
+  author?: string;
 }
 
 export interface Check {
@@ -90,7 +92,7 @@ export function githubMerges(token: string, repository: string, client?: Octokit
   return {
     async pullRequest(number) {
       const { data } = await gh.pulls.get({ owner, repo, pull_number: number });
-      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha, mergeCommitSha: data.merged ? (data.merge_commit_sha ?? undefined) : undefined, base: (data.base as { ref?: string } | undefined)?.ref, headRef: data.head.ref, headRepository: data.head.repo?.full_name };
+      return { open: data.state === "open", merged: data.merged, mergeable: data.mergeable, headSha: data.head.sha, mergeCommitSha: data.merged ? (data.merge_commit_sha ?? undefined) : undefined, base: (data.base as { ref?: string } | undefined)?.ref, headRef: data.head.ref, headRepository: data.head.repo?.full_name, author: (data.user as { login?: string } | null | undefined)?.login };
     },
     async checks(sha) {
       const runs = await gh.paginate(gh.checks.listForRef, { owner, repo, ref: sha, per_page: 100 });
@@ -759,6 +761,21 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (train && trainHead!.job !== job.id) return save({ reported: state.reported, status: "waiting", why: `en el tren: espera a ${trainHead!.url}`, train: trainHead!.url });
 
   const pr = await gh.pullRequest(number);
+  // A pull request the factory did not open is acted on only at the head zero verified: a later push is unchecked.
+  const pinned = train ? trainHead!.head : undefined;
+  if (train && pinned && pr.open && !pr.merged) {
+    if (pr.headSha !== pinned) {
+      if (train.block?.pull !== trainHead!.url || train.block.what !== PUSHED) {
+        saveTrain(ctx, { ...train, block: { pull: trainHead!.url, what: PUSHED, who: "author", ...(pr.author && { author: pr.author }) } });
+        log.info("train stopped: someone pushed to a pull request after zero verified it", { job: job.id, url: trainHead!.url, verified: pinned, head: pr.headSha });
+      }
+      return save({ status: "blocked", why: `${PUSHED} (en ${pinned.slice(0, 8)}, ahora en ${pr.headSha.slice(0, 8)})`, reported: state.reported });
+    }
+    if (train.block?.pull === trainHead!.url && train.block.what === PUSHED) {
+      const { block: _block, ...rest } = train;
+      saveTrain(ctx, rest);
+    }
+  }
   const backoff = state.backoff;
   const unchanged = backoff && backoff.sha === pr.headSha && backoff.mergeable === pr.mergeable ? backoff : undefined;
   if (pr.open && !pr.merged && unchanged && now < Date.parse(unchanged.nextChecksAt)) {
@@ -933,7 +950,8 @@ async function rerunCancelled(job: Job, gh: MergeApi, pr: PullRequestState, deci
 export type MergeVia = "cli" | "chat" | "panel";
 
 export interface MergeOutcome {
-  job: string;
+  /** The delivered job, absent for a pull request the factory did not deliver. */
+  job?: string;
   url: string;
   merged: boolean;
   /** The merge commit, once merged. */
@@ -991,6 +1009,33 @@ export async function mergeRequested(ctx: FactoryContext, job: Job, gh: MergeApi
     log.warn("cannot record the merge in the townhall", { job: job.id, error: String(err) });
   }
   return { job: job.id, url, merged: true, ...(commit && { commit }) };
+}
+
+/**
+ * Merges, because the person in charge asked for it, an open pull request of a line's repository that the
+ * factory did not deliver: pinned to the head it read, and only when `mergeDecision` says it is ready. No job
+ * or merge state is written; the merge leaves a `zero.merge` span with no job.
+ */
+export async function mergeForeignRequested(ctx: FactoryContext, url: string, gh: MergeApi, via: MergeVia): Promise<MergeOutcome> {
+  const number = pullRequestOf(url)!.number;
+  const not = (why: string): MergeOutcome => ({ url, merged: false, why });
+  const pr = await gh.pullRequest(number);
+  if (pr.merged) return not("ya estaba fundido");
+  if (!pr.open) return not("está cerrado sin fundir");
+  const checks = await gh.checks(pr.headSha);
+  // Nothing was delivered, so no grace for checks to appear: what is there now is what is judged.
+  const decision = mergeDecision(pr, checks, Number.POSITIVE_INFINITY);
+  if (decision.kind !== "merge") return not(decision.kind === "gone" ? "ya no está abierto" : decision.why);
+  let commit: string | undefined;
+  try {
+    commit = await gh.merge(number, pr.headSha);
+  } catch (err) {
+    if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    return not(`GitHub no lo dejó fundir: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  ctx.tracer.start("zero.merge", { attrs: { "zero.merge.via": via, "zero.merge.url": url, "zero.merge.head": pr.headSha, ...(commit && { "zero.merge.commit": commit }) } }).end("ok");
+  log.info("pull request the factory did not deliver merged on request", { url, via, head: pr.headSha });
+  return { url, merged: true, ...(commit && { commit }) };
 }
 
 /** The checks that ended well at the tips looked at in a pass, per repository: what tells an environment is back. */

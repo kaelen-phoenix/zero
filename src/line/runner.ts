@@ -35,6 +35,7 @@ import {
   type Spec,
 } from "./spec.js";
 import { resolveSimply } from "./conflicts.js";
+import { pinTrainHead } from "./train.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
 import { localCommands, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
@@ -276,6 +277,11 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       });
     });
     if (!result.ok && refresh) return await fail(result.reason);
+    // What zero pushed to a pull request it did not open is what its line's train may merge.
+    if (result.ok && refresh && job!.source?.kind === "pull-request") {
+      const tip = tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${copy.branch}^{commit}`], line.repo);
+      if (tip) pinTrainHead(deps, line.name, jobId, tip);
+    }
     if (!result.ok) {
       return askOwner(deps, reload(), { kind: "integration-blocked", text: `${result.reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
     }

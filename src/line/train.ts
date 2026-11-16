@@ -24,7 +24,7 @@ export interface Train {
   entries: TrainEntry[];
   startedAt: string;
   /** Where the train stopped and what it needs, and from whom. */
-  block?: { pull: string; what: string; who: "owner" | "author" | "github" | "factory" };
+  block?: { pull: string; what: string; who: "owner" | "author" | "github" | "factory"; /** The login of the pull request's author, when `who` is `author` and GitHub said it. */ author?: string };
 }
 
 export const trainKey = (line: string) => `train:${line}`;
@@ -38,6 +38,30 @@ export function readTrain(ctx: FactoryContext, line: string): Train | undefined 
 export function trainOf(ctx: FactoryContext, job: Job): Train | undefined {
   const train = readTrain(ctx, job.line);
   return train?.entries.some((e) => e.job === job.id) ? train : undefined;
+}
+
+export function saveTrain(ctx: Pick<FactoryContext, "store">, train: Train): void {
+  ctx.store.setKv(trainKey(train.line), JSON.stringify(train));
+}
+
+/** What a pull request the factory did not open needs when someone pushed to it after zero verified it. */
+export const PUSHED = "alguien empujó a la rama después de que la fábrica la verificó";
+
+/**
+ * Records `head` as the commit zero verified for a job's pull request in its line's train, after the job's own
+ * push: the only commit the train merges for a pull request the factory did not open. A block for someone
+ * else's push to it is over, since zero checked what is there now.
+ */
+export function pinTrainHead(ctx: Pick<FactoryContext, "store">, line: string, job: string, head: string): void {
+  const raw = ctx.store.getKv(trainKey(line));
+  if (!raw) return;
+  const train = JSON.parse(raw) as Train;
+  const entry = train.entries.find((e) => e.job === job);
+  if (!entry?.head || entry.head === head) return;
+  entry.head = head;
+  if (train.block?.pull === entry.url) delete train.block;
+  saveTrain(ctx, train);
+  log.info("train pull request pinned to the head zero pushed", { line, job, head });
 }
 
 /** Every train under way. */
