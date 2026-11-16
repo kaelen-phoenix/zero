@@ -27,9 +27,10 @@ import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
+import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
@@ -424,6 +425,8 @@ export interface FactoryStatus {
   billing: BillingHold[];
   /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
   jams: JamView[];
+  /** The integration trains under way, one per line (see `startTrain`). */
+  trains: TrainView[];
   /** The installed copy of zero, only while it misses merged commits or a rebuild (see `checkInstall`). */
   install?: InstallFreshness;
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
@@ -539,6 +542,8 @@ export interface JamView {
   /** Its unjam proposal while it waits for the person in charge. */
   proposal?: string;
   todo?: string;
+  /** Who has to do the `todo`. */
+  who?: NonNullable<Cause["who"]>;
   /** When the line was diagnosed. */
   at: string;
 }
@@ -560,9 +565,30 @@ export function jamViews(ctx: FactoryContext): JamView[] {
         ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
         ...(proposal?.status === "pending" && { proposal: proposal.id }),
         ...(c.todo && { todo: c.todo }),
+        ...(c.todo && { who: c.who ?? "owner" }),
         at: diagnosis.at,
       };
     });
+  });
+}
+
+/** A line's integration train as the person in charge sees it: how many pull requests, the head and how it is doing. */
+export interface TrainView {
+  line: string;
+  pulls: number;
+  head: string;
+  why?: string;
+  block?: Train["block"];
+}
+
+/** Every train under way, with what its head's last look said. */
+export function trainViews(ctx: FactoryContext): TrainView[] {
+  return allTrains(ctx).flatMap((t) => {
+    const head = t.entries[0];
+    if (!head) return [];
+    const raw = ctx.store.getKv(mergeKey(head.job));
+    const why = raw ? (JSON.parse(raw) as MergeState).why : undefined;
+    return [{ line: t.line, pulls: t.entries.length, head: head.url, ...(why && { why }), ...(t.block && { block: t.block }) }];
   });
 }
 
@@ -636,6 +662,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     outages,
     billing,
     jams: jamViews(ctx),
+    trains: trainViews(ctx),
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
     box,
@@ -761,7 +788,7 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry, status.trains);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -1257,8 +1284,11 @@ const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line
   return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
-function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+/**
+ * The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. A URL of a line's
+ * repository the factory delivered nothing for gives its line instead; one of no line's repository is refused.
+ */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job | { line: LineConfig; url: string } {
   const wanted = pullRequestOf(target.trim());
   if (!wanted) {
     const job = getJob(ctx, target.trim());
@@ -1271,16 +1301,25 @@ function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
     return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
   };
   const job = ctx.store.listJobs({ status: ["delivered"], limit: -1 }).find((j) => same(j.delivery?.url));
-  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
-  return job;
+  if (job) return job;
+  const line = ctx.config.lines.find((l) => lineRepository(l)?.toLowerCase() === wanted.repository.toLowerCase());
+  if (!line) throw new Error(`El pull request ${wanted.repository}#${wanted.number} no es de un repositorio de ninguna línea: no lo fundo.`);
+  return { line, url: `https://github.com/${lineRepository(line)}/pull/${wanted.number}` };
 }
 
 /**
  * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
- * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ * with or without `autoMerge` on its line, only when GitHub says it is ready. An open pull request of a line's
+ * repository that the factory did not deliver is merged the same way, pinned to the head read, writing no job.
  */
 export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
-  const job = deliveredPullRequest(ctx, target);
+  const found = deliveredPullRequest(ctx, target);
+  if (!("id" in found)) {
+    const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(found.url)!.repository, found.line);
+    if (!gh) return { url: found.url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+    return mergeForeignRequested(ctx, found.url, gh, opts.via);
+  }
+  const job = found;
   const url = job.delivery!.url!;
   const line = ctx.config.lines.find((l) => l.name === job.line);
   const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
@@ -1376,6 +1415,56 @@ export async function adoptPullRequest(ctx: FactoryContext, input: { line: strin
       delivery: { mode: "pull-request", branch, url, ...(line.autoMerge && { autoMerge: true }) },
     });
   });
+}
+
+/**
+ * `zero tren`: starts the integration train of a line with its delivered pull requests not merged yet, oldest
+ * delivery first, or with the ones given, in that order. The daemon then merges them one at a time (see
+ * `advanceTrains`), even on a line without `autoMerge`, and only when `mergeDecision` says so. A number given
+ * that the factory did not deliver is adopted (`adoptPullRequest`) and merged only at the head its job verified
+ * (`pinTrainHead`, once verify and the reviews passed), never at the head read at adoption.
+ * The line's refusals come before anything is written; a refused adoption writes no train.
+ */
+export async function startTrain(ctx: FactoryContext, input: { line: string; numbers?: string[]; api?: MergeApiFactory }): Promise<Train> {
+  const line = findLine(ctx.config, input.line);
+  if (line.integrate !== "pull-request") throw new Error(`La línea ${line.name} no integra por pull request: no armo un tren en ella.`);
+  if (readTrain(ctx, line.name)) throw new Error(`La línea ${line.name} ya tiene un tren en marcha.`);
+  const repository = lineRepository(line);
+  if (!repository) throw new Error(`El remoto ${line.remote} de la línea ${line.name} no está en GitHub.`);
+  const open = ctx.store.listJobs({ line: line.name, status: ["delivered"], limit: -1 }).filter((j) => {
+    const pr = j.delivery?.url ? pullRequestOf(j.delivery.url) : undefined;
+    if (!pr || pr.repository.toLowerCase() !== repository.toLowerCase()) return false;
+    const raw = ctx.store.getKv(mergeKey(j.id));
+    const status = raw ? (JSON.parse(raw) as MergeState).status : "waiting";
+    return status === "waiting" || status === "blocked";
+  });
+  const entries: Train["entries"] = [];
+  // An adopted pull request carries only a head its job verified: one adopted now gets it once its job passes.
+  const entryOf = (j: Job): TrainEntry => {
+    const head = j.source?.kind === "pull-request" ? verifiedHead(ctx, j.id) : undefined;
+    return { job: j.id, url: j.delivery!.url!, ...(head && { head }) };
+  };
+  if (input.numbers?.length) {
+    for (const given of input.numbers) if (!/^#?\d+$/.test(given)) throw new Error(`"${given}" no es un número de pull request.`);
+    const numbers = [...new Set(input.numbers.map((given) => Number(given.replace("#", ""))))];
+    for (const number of numbers) {
+      const job = open.find((j) => pullRequestOf(j.delivery!.url!)!.number === number);
+      if (job) {
+        entries.push(entryOf(job));
+        continue;
+      }
+      // One the factory did not deliver is adopted, and merged only at the head zero verifies for it.
+      const adopted = await adoptPullRequest(ctx, { line: line.name, number, api: input.api });
+      entries.push({ job: adopted.id, url: adopted.delivery!.url! });
+    }
+  } else {
+    for (const j of [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt))) entries.push(entryOf(j));
+  }
+  if (!entries.length) throw new Error(`La línea ${line.name} no tiene pull requests entregados sin fundir.`);
+  const train: Train = { line: line.name, repository, entries, startedAt: (ctx.now ?? (() => new Date()))().toISOString() };
+  ctx.store.setKv(trainKey(line.name), JSON.stringify(train));
+  log.info("train of a line started", { line: line.name, pulls: train.entries.map((e) => e.url) });
+  return train;
 }
 
 export interface Adoption {

@@ -13,7 +13,7 @@ import { jobPage } from "../src/panel/html.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
 import type { Job, JobSource } from "../src/state/store.js";
-import { cleanup, gitRepo, testFactory } from "./helpers.js";
+import { cleanup, gitIn, gitRepo, testFactory } from "./helpers.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -89,11 +89,13 @@ describe("merging on request", () => {
     expect(await mergePullRequest(ctx, "https://github.com/Kaelen/Demo/pull/6", { via: "cli", api: () => gh2.api })).toMatchObject({ merged: true, job: other.id });
   });
 
-  it("refuses a pull request the factory did not deliver", async () => {
+  it("refuses a pull request of a repository of no line", async () => {
     const { ctx } = await delivered();
     const gh = fakeGitHub();
-    await expect(mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/99", { via: "cli", api: () => gh.api })).rejects.toThrow(/no entregó/);
+    await expect(mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/99", { via: "cli", api: () => gh.api })).rejects.toThrow(/ninguna línea/);
+    await expect(mergePullRequest(ctx, "https://github.com/someone/else/pull/3", { via: "cli", api: () => gh.api })).rejects.toThrow(/ninguna línea/);
     expect(gh.did).toEqual([]);
+    expect(gh.asked).toEqual([]);
   });
 
   it("refuses a job that is not delivered or has no pull request", async () => {
@@ -109,6 +111,45 @@ describe("merging on request", () => {
   it("says how to sign in without a token, merging nothing", async () => {
     const { ctx, job } = await delivered();
     expect(await mergePullRequest(ctx, job.id, { via: "cli", api: () => undefined })).toMatchObject({ merged: false, why: expect.stringContaining("gh auth login") });
+  });
+});
+
+describe("a pull request the factory did not deliver", () => {
+  function foreign() {
+    const repo = gitRepo();
+    gitIn(repo, "remote", "add", "origin", "https://github.com/kaelen/demo.git");
+    return testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request" }] });
+  }
+
+  it("is merged when green, pinned to the head it read, writing no job or merge state", async () => {
+    const ctx = foreign();
+    const gh = fakeGitHub(green, { headSha: "f00d" });
+    const r = await mergePullRequest(ctx, "https://github.com/Kaelen/demo/pull/475", { via: "cli", api: () => gh.api });
+    expect(r).toEqual({ url: "https://github.com/kaelen/demo/pull/475", merged: true, commit: "merged-sha" });
+    expect(gh.did).toEqual(["merge #475 @f00d"]);
+    expect(ctx.store.listJobs({ limit: -1 })).toEqual([]);
+    expect(ctx.store.kvWithPrefix("automerge:")).toEqual([]);
+    const span = ctx.store.spansSinceAny(new Date(0)).find((s) => s.name === "zero.merge")!;
+    expect(span.jobId).toBeUndefined();
+    expect(span.attrs).toMatchObject({ "zero.merge.via": "cli", "zero.merge.url": "https://github.com/kaelen/demo/pull/475", "zero.merge.commit": "merged-sha" });
+  });
+
+  it("is not merged in red, and nothing is written to GitHub", async () => {
+    const ctx = foreign();
+    const gh = fakeGitHub([{ name: "e2e", done: true, ok: false }]);
+    const r = await mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/475", { via: "cli", api: () => gh.api });
+    expect(r).toMatchObject({ merged: false, why: expect.stringContaining("e2e") });
+    expect(gh.did).toEqual([]);
+    expect(ctx.store.spansSinceAny(new Date(0)).some((s) => s.name === "zero.merge")).toBe(false);
+  });
+
+  it("is not merged while checks run or once closed", async () => {
+    const ctx = foreign();
+    const running = fakeGitHub([{ name: "ci", done: false, ok: false }]);
+    expect(await mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/7", { via: "cli", api: () => running.api })).toMatchObject({ merged: false, why: "esperando checks" });
+    const closed = fakeGitHub(green, { open: false });
+    expect(await mergePullRequest(ctx, "https://github.com/kaelen/demo/pull/7", { via: "cli", api: () => closed.api })).toMatchObject({ merged: false, why: expect.stringContaining("cerrado") });
+    expect([...running.did, ...closed.did]).toEqual([]);
   });
 });
 

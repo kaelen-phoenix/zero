@@ -1,5 +1,5 @@
-import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText, selfUpdateRetryText } from "../format.js";
+import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage, TrainView } from "../app.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText, selfUpdateRetryText, trainLine } from "../format.js";
 import { billingText, outageText } from "../line/automerge.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "../self-update.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
@@ -57,7 +57,7 @@ const jobLabel = (j: Job) => `\`${j.id}\` (${j.line}) ${j.title ?? j.request.spl
  * human and what the network learned. Built from the shared metrics and the
  * townhall, without calling any model.
  */
-export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness, selfUpdates: SelfUpdateEntry[] = [], selfUpdateRetry?: SelfUpdateRetry): Briefing {
+export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressSummary, unmerged: { url: string; why?: string }[] = [], night: NightShiftReport = { proposals: [], jobs: [] }, research: ResearchNote[] = [], packages: Job[] = [], alerts: BriefingAlert[] = [], onDemand: BriefingOnDemand = { pending: [], runs: [] }, outages: Outage[] = [], billing: BillingHold[] = [], jams: JamView[] = [], install?: InstallFreshness, selfUpdates: SelfUpdateEntry[] = [], selfUpdateRetry?: SelfUpdateRetry, trains: TrainView[] = []): Briefing {
   const ofKind = (kind: Post["kind"]) => posts.filter((p) => p.kind === kind);
   const day = metrics.to.slice(0, 10);
   const sections: string[] = [];
@@ -108,6 +108,9 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   }
   if (jams.length) {
     sections.push(["## Trabas", ...jams.map((j) => `- ${jamLine(j)}`)].join("\n"));
+  }
+  if (trains.length) {
+    sections.push(["## Trenes de integración", ...trains.map((t) => `- ${trainLine(t)}`)].join("\n"));
   }
   if (onDemand.pending.length || onDemand.runs.length) {
     const now = new Date(metrics.to);

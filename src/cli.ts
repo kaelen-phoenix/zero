@@ -7,14 +7,14 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, adoptPullRequests, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -51,6 +51,10 @@ Uso diario (también desde el chat):
                                  Toma pull requests abiertos de la línea (de quien sea, no de un fork), en ese orden: deja
                                  un respaldo local respaldo/pr<N>, mezcla la rama base, resuelve los conflictos y sube a la
                                  misma rama, sin abrir otro pull request
+  zero tren <línea> [<número>...]
+                                 Arma el tren de integración de la línea con sus pull requests entregados sin fundir (o
+                                 esos, en ese orden): los funde de a uno, aunque la línea no tenga autoMerge, actualizando
+                                 y resolviendo el siguiente recién después, y nunca funde uno en rojo
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -332,6 +336,14 @@ async function main(argv: string[]): Promise<number> {
         console.log(formatAdoptions(adopted));
         if (adopted.some((a) => a.job) && (await ensureDaemon(ctx))) console.log("La fábrica estaba apagada: la encendí.");
         return adopted.every((a) => a.job) ? 0 : 1;
+      }
+      case "tren": {
+        const [line, ...numbers] = rest;
+        if (!line) throw new Error("Indicá la línea: zero tren <línea> [<número>...]");
+        const train = await startTrain(ctx, { line, numbers });
+        console.log(formatTrain(train));
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        return 0;
       }
       case "resume":
         resume(ctx);

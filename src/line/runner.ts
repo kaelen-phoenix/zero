@@ -34,6 +34,8 @@ import {
   writeFiles,
   type Spec,
 } from "./spec.js";
+import { resolveSimply } from "./conflicts.js";
+import { pinTrainHead } from "./train.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
 import { localCommands, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
@@ -206,6 +208,12 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, resolved: true });
         // Nothing to build: it goes back through verify and the reviews, without spending an attempt, at any attempt count.
         job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
+      } else if (resolveSimply(copy.cwd, merge.paths)) {
+        // Imports to join or lines both sides added: resolved without a model, so like a clean merge it costs no attempt.
+        tracer.start("zero.conflicts.simple", { jobId, parentId: jobSpan, attrs: { "zero.conflicts.files": merge.paths.length } }).end("ok");
+        copy.commitAll(mergeMessage(deps, line, jobId, copy));
+        saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths, resolved: true });
+        job = store.updateJob(jobId, { checkpoint: "spec", station: "verify" });
       } else {
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });
         job = store.updateJob(jobId, { checkpoint: "spec", station: "build", feedback: conflictFeedback(copy, merge.paths, adoptedOf(job, { head: taken.head, baseCommit })) });
@@ -269,6 +277,11 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       });
     });
     if (!result.ok && refresh) return await fail(result.reason);
+    // What zero pushed to a pull request it did not open is what its line's train may merge.
+    if (result.ok && refresh && job!.source?.kind === "pull-request") {
+      const tip = tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${copy.branch}^{commit}`], line.repo);
+      if (tip) pinTrainHead(deps, line.name, jobId, tip);
+    }
     if (!result.ok) {
       return askOwner(deps, reload(), { kind: "integration-blocked", text: `${result.reason}\n\nCuando esté resuelto, aprobá para reintentar la integración, o rechazá para dejar la rama como está.` });
     }
