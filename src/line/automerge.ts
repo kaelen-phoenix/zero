@@ -323,7 +323,7 @@ function ended(started: NonNullable<MergeState["refreshing"]>, head: string, now
  * keeps one run waiting and cancels the others, so a run started on top of another loses one of the two.
  * Returns what it did, or undefined when there is nothing left to try. Never throws: a GitHub that refuses means nothing was done (`refused`).
  */
-async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestState, failed: Check[], state: MergeState, busy: boolean, now: number, after: Recovery): Promise<Unblocking | undefined> {
+async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestState, failed: Check[], state: MergeState, busy: boolean, now: number, after: Recovery, pinned = false): Promise<Unblocking | undefined> {
   try {
     // GitHub takes a moment to make the new tip: until it shows, the refresh asked for this one is still under way.
     const started = state.refreshing;
@@ -335,6 +335,8 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
       if (busy) return { kind: "turn", why: "espera su turno para actualizarse con la rama base" };
       const down = await baseFailures(gh, pr.base, failed, after.since);
       if (down.length) return { kind: "outage", failed: down };
+      // A head pinned to what zero verified is never moved on GitHub: the base comes in through its job, which verifies it and pins the new head.
+      if (pinned) return { kind: "job" };
       await gh.updateBranch(number, pr.headSha);
       log.info("pull request brought up to date with its base; its checks run again", { job: job.id, head: pr.headSha, refresh: refreshes + 1 });
       return { kind: "done", why: "actualizado con la rama base; esperando sus checks", patch: { refreshes: refreshes + 1, refreshing: { head: pr.headSha, at: new Date(now).toISOString() } }, refreshed: true };
@@ -365,7 +367,7 @@ async function unblock(job: Job, gh: MergeApi, number: number, pr: PullRequestSt
 /** What an environment that came back changes for a pull request: failures until `since` are not counted, and `again` allows one more run. */
 type Recovery = { since?: number; again: boolean };
 
-type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string } | { kind: "outage"; failed: Check[] } | { kind: "conflict" } | { kind: "refused" };
+type Unblocking = { kind: "done"; why: string; patch: Partial<MergeState>; refreshed?: boolean } | { kind: "turn"; why: string } | { kind: "outage"; failed: Check[] } | { kind: "conflict" } | { kind: "refused" } | { kind: "job" };
 
 /** Whether GitHub is still to show what the factory asked for this tip (a refresh or a second run). */
 function showing(state: MergeState, head: string, now: number): boolean {
@@ -631,16 +633,19 @@ function conflictsLocally(ctx: FactoryContext, job: Job, head: string): boolean 
  * has its own limit (`MAX_RESOLUTIONS`) instead of the build's attempts, and
  * the job goes back with at least one attempt left. State is saved first:
  * should the rest not happen, the tip counts as tried and the pull request is
- * only told about it.
+ * only told about it. With `refresh` it brings the base into a train head pinned
+ * to what zero verified, which GitHub must not update: counted as one of its
+ * `refreshes`, and the job pins the head it pushes.
  */
-function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void, inTrain = false): true | { why?: string } {
+function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void, inTrain = false, refresh = false): true | { why?: string } {
   const line = ctx.config.lines.find((l) => l.name === job.line);
   if (!line || !(line.autoMerge || inTrain) || !job.spec) return {};
   const resolutions = state.resolutions ?? 0;
-  if (resolutions >= MAX_RESOLUTIONS) {
+  const refreshes = state.refreshes ?? 0;
+  if (!refresh && resolutions >= MAX_RESOLUTIONS) {
     return { why: `${CONFLICT}; ya se usaron las ${MAX_RESOLUTIONS} resoluciones automáticas: falta resolverlo a mano o correr \`zero reintentar ${job.id}\`` };
   }
-  if (state.resolving === head) return { why: `${CONFLICT}; falló la resolución automática de este head` };
+  if (!refresh && state.resolving === head) return { why: `${CONFLICT}; falló la resolución automática de este head` };
   // Its last work copy is still waiting to be removed: the job would start in a half-removed folder. The tip stays untried, so a later look takes it back.
   if (ctx.store.getKv(cleanupKey(job.id))) return {};
   if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${job.delivery!.branch}`], line.repo) !== head) return {};
@@ -649,12 +654,12 @@ function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState
     log.warn("cannot fetch the base branch; pull request left as it is", { job: job.id, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
     return {};
   }
-  save({ reported: state.reported, status: "waiting", why: "actualizándolo con la rama base", resolving: head, resolutions: resolutions + 1 });
+  save({ reported: state.reported, status: "waiting", why: "actualizándolo con la rama base", ...(refresh ? { refreshes: refreshes + 1 } : { resolving: head, resolutions: resolutions + 1 }) });
   ctx.store.setKv(prRefreshKey(job.id), JSON.stringify({ head, ...(job.approvals.integrate && { approved: true }) } satisfies PrRefresh));
   // Approving the earlier code does not cover what the merge brings in.
   const { integrate: _approved, ...approvals } = job.approvals;
   ctx.store.updateJob(job.id, { status: "queued", checkpoint: "review", station: "integrate", finishedAt: null, stopRequested: false, base: `${line.remote}/${line.baseBranch}`, approvals, attempt: Math.min(job.attempt, line.maxAttempts - 1) });
-  log.info("pull request in conflict; job back in the queue to update it", { job: job.id, head });
+  log.info(refresh ? "pull request behind its base; job back in the queue to update it" : "pull request in conflict; job back in the queue to update it", { job: job.id, head });
   return true;
 }
 
@@ -875,7 +880,13 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (decision.kind === "blocked" && decision.failed) {
     const busy = (refreshing.has(repository) && !state.refreshing) || firstChecksElsewhere(ctx, job, repository, now);
     const again = Boolean(state.outage) && !readOutage(ctx, repository);
-    const did = await unblock(job, gh, number, pr, decision.failed, state, busy, now, { since: recoveredAt(ctx, repository), again });
+    const did = await unblock(job, gh, number, pr, decision.failed, state, busy, now, { since: recoveredAt(ctx, repository), again }, Boolean(pinned));
+    if (did?.kind === "job") {
+      const taken = takeBack(ctx, job, pr.headSha, state, save, true, true);
+      if (taken === true) return;
+      const why = `${decision.why}; espera actualizarse con la rama base en la fábrica`;
+      return save({ status: "blocked", why, reported: state.reported, backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs: FIRST_BACKOFF_MS, nextChecksAt: iso(now + FIRST_BACKOFF_MS) } });
+    }
     if (did?.kind === "outage") {
       const names = new Set(did.failed.map((c) => c.name));
       const failures = [...did.failed, ...decision.failed.filter((c) => names.has(c.name))].map((c) => ({ check: c.name, at: c.at ?? iso(now) }));

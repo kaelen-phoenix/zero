@@ -278,6 +278,40 @@ describe("pull requests the factory did not open, in a train", () => {
     await pass();
     expect(gh.did).toEqual([`merge #7 @${head}`]);
   });
+
+  it("brings the base into an adopted head with failed checks through its job, never through GitHub", async () => {
+    const { ctx, repo, bare, head, gh, prs, pass } = await withForeign();
+    const train = await startTrain(ctx, { line: "demo", numbers: ["7"], api: () => gh.api });
+    const adopted = ctx.store.getJob(train.entries[0]!.job)!;
+    pinTrainHead(ctx, "demo", adopted.id, head);
+    await finalizeJob(ctx, adopted, "delivered", { delivery: adopted.delivery! });
+    prs[7]!.checks = [failed("e2e", 7)];
+    await pass();
+    // GitHub's own update would move the head away from what zero verified.
+    expect(gh.did).toEqual([]);
+    const back = ctx.store.getJob(adopted.id)!;
+    expect(back).toMatchObject({ status: "queued", checkpoint: "review", station: "integrate" });
+    expect(JSON.parse(ctx.store.getKv(mergeKey(adopted.id))!) as MergeState).toMatchObject({ status: "waiting", refreshes: 1 });
+    expect(readTrain(ctx, "demo")!.block).toBeUndefined();
+
+    // The job merges the base, verifies and pushes: the head it pushed is the one the train merges.
+    const agents = fakeAgents({});
+    const deps: RunnerDeps = { ...ctx, runAgent: agents.runner };
+    let job = await runJob(adopted.id, deps);
+    while (job.status === "waiting") {
+      await answer(ctx, job.id, "approve");
+      job = await runJob(job.id, deps);
+    }
+    expect(job.status).toBe("delivered");
+    const pushed = run("git", ["rev-parse", "refs/heads/feature"], bare);
+    expect(pushed).not.toBe(head);
+    expect(run("git", ["rev-parse", `${pushed}:other.txt`], repo)).toBeTruthy();
+    expect(readTrain(ctx, "demo")!.entries[0]!.head).toBe(pushed);
+    prs[7] = { pr: { ...prs[7]!.pr, headSha: pushed }, checks: [ok("ci")] };
+    await pass();
+    expect(gh.did).toEqual([`merge #7 @${pushed}`]);
+    expect(readTrain(ctx, "demo")?.block).toBeUndefined();
+  });
 });
 
 describe("startTrain", () => {
