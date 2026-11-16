@@ -17,12 +17,12 @@
 
 ## 3. Etapa 3: Tren de integración de una línea
 
-- [ ] 3.1 Crear src/line/train.ts con `Train` ({line, repository, entries: {job, url, head?}[], startedAt, block?: {pull, what, who}}), `trainKey(line)`, `readTrain` y `trainOf(ctx, job)`.
-- [ ] 3.2 `startTrain(ctx, {line, numbers?})` en app.ts, con `zero tren <línea> [<número>...]` en src/cli.ts y salida en castellano. Por ahora toma solo pull requests entregados por la fábrica. Ordenar por finishedAt o en el orden dado. Antes de escribir, rechazar una línea desconocida, una línea que no es pull-request, una línea que ya tiene tren o un número que no corresponde a un trabajo entregado.
-- [ ] 3.3 `watchedJobs` incluye los trabajos de un tren aunque no tengan autoMerge. En `pollMerges`/`watch`, a quien no es cabeza guardarlo waiting con 'en el tren: espera a <url>', sin ninguna llamada que escriba en GitHub.
-- [ ] 3.4 Cuando la cabeza queda merged o closed, sacarla del tren. A la nueva cabeza, borrarle una vez resolutions, refreshes, resolving y conflict (marca `trainHead` en MergeState). Con el tren vacío, borrar la kv.
-- [ ] 3.5 Mostrar `Tren de <línea>: N pull requests; ahora <url> (<why>)` en formatStatus (src/format.ts, `trainLine`), en el resumen del panel y en el briefing.
-- [ ] 3.6 Tests en test/train.test.ts: solo la cabeza, avanza al fundirse, no funde en rojo, sin autoMerge, rechazos de startTrain.
+- [x] 3.1 Crear src/line/train.ts con `Train` ({line, repository, entries: {job, url, head?}[], startedAt, block?: {pull, what, who}}), `trainKey(line)`, `readTrain` y `trainOf(ctx, job)`.
+- [x] 3.2 `startTrain(ctx, {line, numbers?})` en app.ts, con `zero tren <línea> [<número>...]` en src/cli.ts y salida en castellano. Por ahora toma solo pull requests entregados por la fábrica. Ordenar por finishedAt o en el orden dado. Antes de escribir, rechazar una línea desconocida, una línea que no es pull-request, una línea que ya tiene tren o un número que no corresponde a un trabajo entregado.
+- [x] 3.3 `watchedJobs` incluye los trabajos de un tren aunque no tengan autoMerge. En `pollMerges`/`watch`, a quien no es cabeza guardarlo waiting con 'en el tren: espera a <url>', sin ninguna llamada que escriba en GitHub.
+- [x] 3.4 Cuando la cabeza queda merged o closed, sacarla del tren. A la nueva cabeza, borrarle una vez resolutions, refreshes, resolving y conflict (marca `trainHead` en MergeState). Con el tren vacío, borrar la kv.
+- [x] 3.5 Mostrar `Tren de <línea>: N pull requests; ahora <url> (<why>)` en formatStatus (src/format.ts, `trainLine`), en el resumen del panel y en el briefing.
+- [x] 3.6 Tests en test/train.test.ts: solo la cabeza, avanza al fundirse, no funde en rojo, sin autoMerge, rechazos de startTrain.
 
 ## 4. Etapa 4: Pull requests ajenos en el tren y en zero fusionar
 

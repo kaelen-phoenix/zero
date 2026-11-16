@@ -9,6 +9,7 @@ import type { Job } from "../state/store.js";
 import { cleanupKey } from "./cleanup.js";
 import { prRefreshKey, type PrRefresh } from "./finish.js";
 import { scrubLocal } from "./research.js";
+import { advanceTrains, readTrain, trainOf } from "./train.js";
 
 /**
  * Merges the pull requests of lines with `autoMerge` once GitHub says they
@@ -252,6 +253,10 @@ export interface MergeState {
   queued?: string[];
   /** Every check of its tip ended and it only waits its turn to run its cancelled runs again: nothing of its own is waiting to be cancelled. */
   turn?: true;
+  /** Waits behind the head of its line's train, whose url this is: nothing of its own is under way. */
+  train?: string;
+  /** Given back, once, what conflicts and refreshes spent on it when it became the head of its line's train (see `advanceTrains`). */
+  trainHead?: true;
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -269,10 +274,15 @@ export function recordMergeCommit(ctx: FactoryContext, job: Job, commit: string 
   return ctx.store.updateJob(job.id, { delivery: { ...job.delivery, commit } });
 }
 
-/** Delivered jobs whose pull request the factory still has to merge. */
+/** Delivered jobs whose pull request the factory still has to merge: on lines with `autoMerge`, or in a train. */
 export function watchedJobs(ctx: FactoryContext): Job[] {
+  const trains = new Map<string, Set<string>>();
+  const inTrain = (job: Job) => {
+    if (!trains.has(job.line)) trains.set(job.line, new Set(readTrain(ctx, job.line)?.entries.map((e) => e.job) ?? []));
+    return trains.get(job.line)!.has(job.id);
+  };
   return ctx.store.listJobs({ status: ["delivered"], limit: -1 }).filter((job) => {
-    if (!job.delivery?.autoMerge || !job.delivery.url) return false;
+    if (!job.delivery?.url || !(job.delivery.autoMerge || inTrain(job))) return false;
     const raw = ctx.store.getKv(mergeKey(job.id));
     return !raw || !FINAL.has((JSON.parse(raw) as MergeState).status);
   });
@@ -385,7 +395,7 @@ function refreshedElsewhere(ctx: FactoryContext, job: Job, repository: string, n
  * first checks: a run started now could cancel the one it has waiting. Read from what is saved, without asking GitHub.
  */
 function firstChecksElsewhere(ctx: FactoryContext, job: Job, repository: string, now: number): boolean {
-  return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && !other.state.turn && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
+  return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && !other.state.turn && !other.state.train && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
 }
 
 /** Another watched pull request of the repository last seen with checks queued but not started, which the run a merge starts on the base could cancel. */
@@ -612,9 +622,9 @@ function conflictsLocally(ctx: FactoryContext, job: Job, head: string): boolean 
  * should the rest not happen, the tip counts as tried and the pull request is
  * only told about it.
  */
-function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void): true | { why?: string } {
+function takeBack(ctx: FactoryContext, job: Job, head: string, state: MergeState, save: (next: MergeState) => void, inTrain = false): true | { why?: string } {
   const line = ctx.config.lines.find((l) => l.name === job.line);
-  if (!line?.autoMerge || !job.spec) return {};
+  if (!line || !(line.autoMerge || inTrain) || !job.spec) return {};
   const resolutions = state.resolutions ?? 0;
   if (resolutions >= MAX_RESOLUTIONS) {
     return { why: `${CONFLICT}; ya se usaron las ${MAX_RESOLUTIONS} resoluciones automáticas: falta resolverlo a mano o correr \`zero reintentar ${job.id}\`` };
@@ -690,9 +700,9 @@ export async function checksFeedback(gh: MergeApi, failed: Check[], line: Pick<L
  * first, and anything not ready yet (a cleanup, a branch that moved, a base that does not fetch) leaves it as
  * it is for a later look. The job goes back with all its attempts: the fix is new work, not the build's retry.
  */
-async function fixChecks(ctx: FactoryContext, job: Job, gh: MergeApi, head: string, failed: Check[], state: MergeState, save: (next: MergeState) => void): Promise<true | { why?: string }> {
+async function fixChecks(ctx: FactoryContext, job: Job, gh: MergeApi, head: string, failed: Check[], state: MergeState, save: (next: MergeState) => void, inTrain = false): Promise<true | { why?: string }> {
   const line = ctx.config.lines.find((l) => l.name === job.line);
-  if (!line?.autoMerge || !job.spec) return {};
+  if (!line || !(line.autoMerge || inTrain) || !job.spec) return {};
   const names = failed.map((c) => c.name).join(", ");
   const fixes = state.fixes ?? 0;
   if (fixes >= MAX_CHECK_FIXES) {
@@ -735,12 +745,18 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     ...(state.billing && { billing: state.billing }),
     ...(state.billingRerun && { billingRerun: state.billingRerun }),
     ...(state.cancelledReruns && { cancelledReruns: state.cancelledReruns }),
+    ...(state.trainHead && { trainHead: state.trainHead }),
   });
   // What the checks of this look left queued: saved with whatever comes next, until a look that reads none.
   let queued: string[] = [];
   const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...(queued.length && { queued }), ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const since = now - Date.parse(job.finishedAt ?? job.updatedAt);
+
+  // In a train only its head is acted on: the others wait, asking GitHub nothing.
+  const train = trainOf(ctx, job);
+  const trainHead = train?.entries[0];
+  if (train && trainHead!.job !== job.id) return save({ reported: state.reported, status: "waiting", why: `en el tren: espera a ${trainHead!.url}`, train: trainHead!.url });
 
   const pr = await gh.pullRequest(number);
   const backoff = state.backoff;
@@ -754,7 +770,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   const conflicted = pr.open && !pr.merged && (pr.mergeable === false || state.conflict === pr.headSha);
   let refused: string | undefined;
   if (conflicted && since <= WATCH_MS) {
-    const taken = takeBack(ctx, job, pr.headSha, state, save);
+    const taken = takeBack(ctx, job, pr.headSha, state, save, Boolean(train));
     if (taken === true) return;
     refused = taken.why;
   }
@@ -771,7 +787,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   // Failed checks on a tip GitHub has not called mergeable may hide a conflict, which comes first: no update, rerun or fix gets it merged.
   if (decision.kind === "blocked" && decision.failed && !conflicted && pr.mergeable !== true && conflictsLocally(ctx, job, pr.headSha)) {
     state.conflict = pr.headSha;
-    const taken = takeBack(ctx, job, pr.headSha, state, save);
+    const taken = takeBack(ctx, job, pr.headSha, state, save, Boolean(train));
     if (taken === true) return;
     decision = { kind: "blocked", key: `conflict:${pr.headSha}`, why: taken.why ?? CONFLICT };
   }
@@ -849,7 +865,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
         const why = `${decision.why}; espera su turno para arreglar sus checks`;
         return save({ status: "blocked", why, reported: state.reported, backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs: FIRST_BACKOFF_MS, nextChecksAt: iso(now + FIRST_BACKOFF_MS) } });
       }
-      const fixed = await fixChecks(ctx, job, gh, pr.headSha, decision.failed, state, save);
+      const fixed = await fixChecks(ctx, job, gh, pr.headSha, decision.failed, state, save, Boolean(train));
       if (fixed === true) return;
       if (fixed.why) decision = { ...decision, why: fixed.why };
     }
@@ -1018,6 +1034,7 @@ export async function pollMerges(ctx: FactoryContext, api: (repository: string, 
   const refreshing: Refreshing = new Set();
   const passed: Passed = new Map();
   const started: Passed = new Map();
+  advanceTrains(ctx);
   for (const job of watchedJobs(ctx)) {
     const repository = pullRequestOf(job.delivery!.url!)?.repository;
     if (repository && holds(JSON.parse(ctx.store.getKv(mergeKey(job.id)) ?? "{}") as MergeState, now)) refreshing.add(repository);
@@ -1113,7 +1130,7 @@ async function followBilling(ctx: FactoryContext, api: (repository: string, line
   }
 
   if (!gh.rerun) return;
-  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
+  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && !w.state.train && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
   if (busy) return;
   const released = new Set<string>();
   for (const { job, state } of held) {
@@ -1193,7 +1210,7 @@ async function followOutage(ctx: FactoryContext, api: (repository: string, line?
     save();
   }
   if (outage.probe || !gh.rerun || (outage.nextProbeAt && now < Date.parse(outage.nextProbeAt))) return;
-  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
+  const busy = refreshing.has(repository) || watched.some((w) => holds(w.state, now) || (w.state.status === "waiting" && !w.state.train && now - Date.parse(w.job.finishedAt ?? w.job.updatedAt) < REFRESH_HOLD_MS));
   if (busy) return;
   for (const { job, state } of held) {
     const number = pullRequestOf(job.delivery!.url!)!.number;

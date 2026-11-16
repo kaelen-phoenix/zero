@@ -6,6 +6,7 @@ import type { GithubStatus } from "./github-quota.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
+import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
@@ -102,6 +103,11 @@ export function formatAdoptions(list: Adoption[]): string {
   return list
     .map((a) => (a.job ? `#${a.number.replace("#", "")}: trabajo ${a.job.id} en cola, actualiza la rama ${a.job.branch} con ${a.job.base}.` : `#${a.number.replace("#", "")}: no lo tomé: ${a.why}`))
     .join("\n");
+}
+
+/** What `zero tren` started: the pull requests in merge order. */
+export function formatTrain(t: Train): string {
+  return [`Tren de ${t.line} con ${t.entries.length} ${t.entries.length === 1 ? "pull request" : "pull requests"}, en este orden:`, ...t.entries.map((e, i) => `${i + 1}. ${e.url} (trabajo ${e.job})`), "La fábrica los funde de a uno, solo con los checks en verde, y actualiza el siguiente recién después."].join("\n");
 }
 
 /** The remote chat for `zero mcp clients`: the switch, the address and each connected client. */
@@ -363,6 +369,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
   for (const b of s.billing) out.push(billingLine(b));
+  for (const t of s.trains) out.push(trainLine(t));
   if (s.selfUpdate) for (const l of selfUpdateLines(s.selfUpdate, now)) out.push(l.text);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
@@ -442,6 +449,12 @@ export const JAM_KIND_TEXT: Record<FactoryStatus["jams"][number]["kind"], string
 export function jamLine(j: FactoryStatus["jams"][number]): string {
   const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? `qué hacer: ${j.todo}` : undefined;
   return [j.line, j.title, `${j.jams} ${j.jams === 1 ? "traba" : "trabas"}`, JAM_KIND_TEXT[j.kind], next].filter(Boolean).join(" · ");
+}
+
+/** A line's integration train: «Tren de <línea>: N pull requests; ahora <url> (<why>)», and where it stopped. */
+export function trainLine(t: FactoryStatus["trains"][number]): string {
+  const now = `${t.pulls} ${t.pulls === 1 ? "pull request" : "pull requests"}; ahora ${t.head}${t.why ? ` (${t.why})` : ""}`;
+  return `Tren de ${t.line}: ${now}${t.block ? ` · detenido en ${t.block.pull}: ${t.block.what}` : ""}`;
 }
 
 /** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */
