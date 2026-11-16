@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Corridas canceladas por concurrencia
 
-- [ ] 1.1 Crear openspec/changes/zero-2547f9dc con proposal.md, tasks.md y un delta de production-line con los requisitos de esta etapa (más adelante cada etapa agrega los suyos).
-- [ ] 1.2 En src/line/automerge.ts: agregar `cancelled?: true` a Check y completarlo en `githubMerges.checks` cuando conclusion es 'cancelled'. En `mergeDecision`, los checks cancelados no van a `failed`. Si todos terminaron y solo quedan cancelados, devolver un decision nuevo `{kind: 'cancelled', runs}`.
-- [ ] 1.3 En `watch`: con `cancelled`, si el repositorio está libre (refreshing/firstChecksElsewhere), llamar `gh.rerun` para cada corrida, guardar `MergeState.cancelledReruns` ({head, count}, que sobrevive en `kept`) y retener el repositorio con `refreshing: {head, at, rerun: true}`. Si está ocupado, guardarlo waiting con 'espera su turno para relanzar corridas canceladas'. Después de MAX_CANCELLED_RERUNS (3) por tip, bloquearlo con 'las corridas se siguen cancelando (grupo de concurrencia)'. Nunca `recordOutage`, `sameFailures`, `fixChecks` ni comentar.
-- [ ] 1.4 Guardar `MergeState.queued` (nombres de checks sin terminar y sin `started`) en cada mirada. Antes de `gh.merge` en `watch`, si otro pull request vigilado del mismo repositorio (`elsewhere`) tiene `queued` no vacío, guardarlo waiting con `espera que arranquen los checks de <url>`.
-- [ ] 1.5 Tests en un test/automerge-cancelled.test.ts nuevo con MergeApi falso: solo canceladas, cancelada más fallida, dos pull requests en turno, límite por tip, espera por checks en cola de otro.
+- [x] 1.1 Crear openspec/changes/zero-2547f9dc con proposal.md, tasks.md y un delta de production-line con los requisitos de esta etapa (más adelante cada etapa agrega los suyos).
+- [x] 1.2 En src/line/automerge.ts: agregar `cancelled?: true` a Check y completarlo en `githubMerges.checks` cuando conclusion es 'cancelled'. En `mergeDecision`, los checks cancelados no van a `failed`. Si todos terminaron y solo quedan cancelados, devolver un decision nuevo `{kind: 'cancelled', runs}`.
+- [x] 1.3 En `watch`: con `cancelled`, si el repositorio está libre (refreshing/firstChecksElsewhere), llamar `gh.rerun` para cada corrida, guardar `MergeState.cancelledReruns` ({head, count}, que sobrevive en `kept`) y retener el repositorio con `refreshing: {head, at, rerun: true}`. Si está ocupado, guardarlo waiting con 'espera su turno para relanzar corridas canceladas'. Después de MAX_CANCELLED_RERUNS (3) por tip, bloquearlo con 'las corridas se siguen cancelando (grupo de concurrencia)'. Nunca `recordOutage`, `sameFailures`, `fixChecks` ni comentar.
+- [x] 1.4 Guardar `MergeState.queued` (nombres de checks sin terminar y sin `started`) en cada mirada. Antes de `gh.merge` en `watch`, si otro pull request vigilado del mismo repositorio (`elsewhere`) tiene `queued` no vacío, guardarlo waiting con `espera que arranquen los checks de <url>`.
+- [x] 1.5 Tests en un test/automerge-cancelled.test.ts nuevo con MergeApi falso: solo canceladas, cancelada más fallida, dos pull requests en turno, límite por tip, espera por checks en cola de otro.
 
 ## 2. Etapa 2: Resolución mecánica de conflictos simples
 

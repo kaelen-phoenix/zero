@@ -54,6 +54,8 @@ export interface Check {
   started?: string;
   /** Failed because GitHub refused to start it over the account's payments or spending limit (see `billingRefusal`). */
   billing?: true;
+  /** Ended cancelled, as a newer run of the same concurrency group does to a pending one: not the code failing. */
+  cancelled?: true;
 }
 
 /** The slice of GitHub automatic merging needs; tests use a fake. */
@@ -107,7 +109,7 @@ export function githubMerges(token: string, repository: string, client?: Octokit
           ...actionsRun(r.details_url),
           ...(r.completed_at && { at: r.completed_at }),
           ...((r.status === "in_progress" || r.status === "completed") && r.started_at && { started: r.started_at }),
-          ...((await refused(r)) && { billing: true as const }),
+          ...((await refused(r)) ? { billing: true as const } : r.status === "completed" && r.conclusion === "cancelled" && { cancelled: true as const }),
         })),
       );
       return [
@@ -180,12 +182,20 @@ const REFRESH_SHOWS_MS = 10 * 60_000;
 /** How long GitHub is given to show that the runs it was asked to run again are under way. */
 const RERUN_SHOWS_MS = 2 * 60_000;
 
+/** How many times the factory runs the cancelled runs of one pull request tip again. */
+export const MAX_CANCELLED_RERUNS = 3;
+
 const CONFLICT = "en conflicto con la rama base";
+const CANCELLED = "se cancelaron corridas de sus checks (grupo de concurrencia)";
+const CANCELLED_TURN = "espera su turno para relanzar corridas canceladas";
+const KEEP_CANCELLING = "las corridas se siguen cancelando (grupo de concurrencia)";
 
 export type MergeDecision =
   | { kind: "merge" }
   | { kind: "wait"; why: string }
   | { kind: "blocked"; key: string; why: string; failed?: Check[] }
+  /** Every check ended and the only ones that did not pass were cancelled: run them again, they say nothing of the code. */
+  | { kind: "cancelled"; why: string; runs: number[]; checks: Check[] }
   | { kind: "gone"; merged: boolean };
 
 /** What to do with a pull request now. Pure, so every case is tested without GitHub. */
@@ -193,10 +203,12 @@ export function mergeDecision(pr: PullRequestState, checks: Check[], sinceDelive
   if (pr.merged || !pr.open) return { kind: "gone", merged: pr.merged };
   // No check or rerun gets a branch in conflict merged: only resolving it does.
   if (pr.mergeable === false) return { kind: "blocked", key: `conflict:${pr.headSha}`, why: CONFLICT };
-  const failedChecks = checks.filter((c) => c.done && !c.ok);
+  const failedChecks = checks.filter((c) => c.done && !c.ok && !c.cancelled);
   const failed = failedChecks.map((c) => c.name);
   if (failed.length) return { kind: "blocked", key: `checks:${pr.headSha}:${failed.join(",")}`, why: `fallaron los checks ${failed.join(", ")}`, failed: failedChecks };
   if (checks.some((c) => !c.done)) return { kind: "wait", why: "esperando checks" };
+  const cancelled = checks.filter((c) => c.done && !c.ok && c.cancelled);
+  if (cancelled.length) return { kind: "cancelled", why: `${CANCELLED}: ${cancelled.map((c) => c.name).join(", ")}`, runs: [...new Set(cancelled.flatMap((c) => (c.run ? [c.run] : [])))], checks: cancelled };
   if (!checks.length && sinceDeliveryMs < CHECKS_GRACE_MS) return { kind: "wait", why: "esperando que aparezcan los checks" };
   if (pr.mergeable === null) return { kind: "wait", why: "GitHub todavía está calculando si se puede fundir" };
   return { kind: "merge" };
@@ -234,6 +246,12 @@ export interface MergeState {
   billing?: true;
   /** The runs refused over billing that the factory already ran again for it: each at most once in its life. */
   billingRerun?: number[];
+  /** How many times the cancelled runs of the tip `head` were run again (see `MAX_CANCELLED_RERUNS`). */
+  cancelledReruns?: { head: string; count: number };
+  /** GitHub Actions checks of the tip last seen neither done nor started: queued in a concurrency group, which a merge's run on the base could cancel. */
+  queued?: string[];
+  /** Every check of its tip ended and it only waits its turn to run its cancelled runs again: nothing of its own is waiting to be cancelled. */
+  turn?: true;
 }
 
 export const mergeKey = (jobId: string) => `automerge:${jobId}`;
@@ -367,7 +385,12 @@ function refreshedElsewhere(ctx: FactoryContext, job: Job, repository: string, n
  * first checks: a run started now could cancel the one it has waiting. Read from what is saved, without asking GitHub.
  */
 function firstChecksElsewhere(ctx: FactoryContext, job: Job, repository: string, now: number): boolean {
-  return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
+  return elsewhere(ctx, job, repository).some((other) => other.state.status === "waiting" && !other.state.turn && now - Date.parse(other.job.finishedAt ?? other.job.updatedAt) < REFRESH_HOLD_MS);
+}
+
+/** Another watched pull request of the repository last seen with checks queued but not started, which the run a merge starts on the base could cancel. */
+function queuedElsewhere(ctx: FactoryContext, job: Job, repository: string): Job | undefined {
+  return elsewhere(ctx, job, repository).find((other) => other.state.queued?.length)?.job;
 }
 
 /** A failed check seen at the tip of a pull request, remembered for a day to tell an environment down from a change. */
@@ -711,8 +734,11 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     ...(state.outage && { outage: state.outage }),
     ...(state.billing && { billing: state.billing }),
     ...(state.billingRerun && { billingRerun: state.billingRerun }),
+    ...(state.cancelledReruns && { cancelledReruns: state.cancelledReruns }),
   });
-  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...next } satisfies MergeState));
+  // What the checks of this look left queued: saved with whatever comes next, until a look that reads none.
+  let queued: string[] = [];
+  const save = (next: MergeState) => ctx.store.setKv(key, JSON.stringify({ ...kept(), ...(queued.length && { queued }), ...next } satisfies MergeState));
   const now = (ctx.now ?? (() => new Date()))().getTime();
   const since = now - Date.parse(job.finishedAt ?? job.updatedAt);
 
@@ -736,6 +762,7 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   const checks = pr.open && !conflicted ? await gh.checks(pr.headSha) : [];
   seenPassing(passed, repository, checks);
   seenStarted(started, repository, checks);
+  queued = checks.filter((c) => !c.done && !c.started && c.run).map((c) => c.name);
   let decision = mergeDecision(conflicted ? { ...pr, mergeable: false } : pr, checks, since);
   if (decision.kind === "blocked" && conflicted && refused) decision = { ...decision, why: refused };
   if (decision.kind === "gone" && decision.merged) recordMergeCommit(ctx, job, pr.mergeCommitSha);
@@ -758,6 +785,10 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     if (!state.refreshing.rerun) followRemoteTip(ctx, job);
     delete state.refreshing;
     if (!refreshedElsewhere(ctx, job, repository, now)) refreshing.delete(repository);
+  }
+  if (decision.kind === "cancelled") {
+    const busy = (refreshing.has(repository) && !state.refreshing) || firstChecksElsewhere(ctx, job, repository, now);
+    return rerunCancelled(job, gh, pr, decision, state, save, refreshing, repository, busy, unchanged, now);
   }
   // GitHub did not start some of its checks over the account's billing: nothing the change, a comment or a rerun can fix until it lets runs start again.
   // Until the rerun asked for shows, what is seen is the refusal it answers.
@@ -841,6 +872,10 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
     });
   }
 
+  // The run a merge starts on the base would cancel the checks another pull request has queued in the same concurrency group.
+  const queuer = queuedElsewhere(ctx, job, repository);
+  if (queuer) return save({ reported: state.reported, status: "waiting", why: `espera que arranquen los checks de ${queuer.delivery!.url}` });
+
   recordMergeCommit(ctx, job, await gh.merge(number, pr.headSha));
   save({ status: "merged", why: "fundido por la fábrica" });
   log.info("pull request merged", { job: job.id, url: job.delivery!.url });
@@ -848,6 +883,34 @@ async function watch(ctx: FactoryContext, job: Job, gh: MergeApi, number: number
   if (job.source?.kind === "github-issue") {
     await gh.comment(job.source.number, `La fábrica fundió ${job.delivery!.url}: el cambio ya está en la rama base.`);
   }
+}
+
+/**
+ * Runs the cancelled runs of a pull request's tip again once every check of it ended: one pull request of the
+ * repository at a time (`busy`), holding it like a second run, and at most `MAX_CANCELLED_RERUNS` times per tip.
+ * A cancellation is not the code failing: nothing is commented, remembered as a failure or sent to be fixed.
+ */
+async function rerunCancelled(job: Job, gh: MergeApi, pr: PullRequestState, decision: Extract<MergeDecision, { kind: "cancelled" }>, state: MergeState, save: (next: MergeState) => void, refreshing: Refreshing, repository: string, busy: boolean, unchanged: MergeState["backoff"], now: number) {
+  const blocked = (why: string) => {
+    const delayMs = unchanged ? Math.min(unchanged.delayMs * 2, LAST_BACKOFF_MS) : FIRST_BACKOFF_MS;
+    return save({ status: "blocked", why, reported: state.reported, backoff: { sha: pr.headSha, mergeable: pr.mergeable, why, delayMs, nextChecksAt: iso(now + delayMs) } });
+  };
+  // Until GitHub shows the runs asked for under way, what is seen is the cancellation they answer.
+  if (showing(state, pr.headSha, now)) return save({ reported: state.reported, status: "waiting", why: "sus corridas canceladas corren de nuevo" });
+  const count = state.cancelledReruns?.head === pr.headSha ? state.cancelledReruns.count : 0;
+  if (count >= MAX_CANCELLED_RERUNS) return blocked(`${KEEP_CANCELLING}: ya se relanzaron ${MAX_CANCELLED_RERUNS} veces en este head`);
+  if (!gh.rerun || !decision.runs.length) return blocked(`${decision.why}; no son corridas de GitHub Actions que la fábrica pueda relanzar`);
+  if (busy) return save({ reported: state.reported, status: "waiting", why: `${decision.why}; ${CANCELLED_TURN}`, turn: true });
+  try {
+    for (const run of decision.runs) await gh.rerun(run);
+  } catch (err) {
+    if (err instanceof GithubHalted || isRateLimit(err)) throw err;
+    log.warn("could not run the cancelled runs of a pull request again; left as it is", { job: job.id, error: err instanceof Error ? err.message : String(err) });
+    return blocked(`${decision.why}; GitHub no dejó relanzarlas`);
+  }
+  refreshing.add(repository);
+  log.info("cancelled runs of a pull request run again", { job: job.id, head: pr.headSha, runs: decision.runs, time: count + 1 });
+  return save({ reported: state.reported, status: "waiting", why: "sus corridas canceladas corren de nuevo", cancelledReruns: { head: pr.headSha, count: count + 1 }, refreshing: { head: pr.headSha, at: iso(now), rerun: true } });
 }
 
 /** Where the person in charge asked for a merge. */
