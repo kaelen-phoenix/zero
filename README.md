@@ -586,7 +586,7 @@ The daemon looks at the install folder's branch on its remote once a day and aga
 
 ## Custom agents
 
-Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). There are two types. `type: review` (the default) is a read-only reviewer that runs after `review` and `security`, on the same change. `type: build` writes in the work copy, after `build` and before `verify`, and can never run after `verify`. Within each type, the global ones go first, then the line's, each in file order.
+Each line can add its own agents to the fixed stations: an accessibility reviewer, one that checks every text is in every language, an SEO one, a documentation one. They go in `zero.factory.yaml`, under `lines[].agents` (only that line) or under the top-level `agents` (every line). There are three types. `type: review` (the default) is a read-only reviewer that runs after `review` and `security`, on the same change. `type: build` writes in the work copy, after `build` and before `verify`, and can never run after `verify`. `type: conflict` resolves the conflicts left by bringing the base branch into a job's branch (see below). Within each type, the global ones go first, then the line's, each in file order.
 
 ```yaml
 lines:
@@ -645,6 +645,24 @@ lines:
 The line becomes `spec → build → docs → verify → review → security → integrate`. It runs in every attempt after build, with its own `engine`, `model`, `maxTurns`, `timeoutMinutes` and `skills`. Without `files` it runs on every job; with `files`, zero compares the patterns (case-sensitive) with what the change touches so far, without the job's specification files, and otherwise skips it without calling it. When it ends well zero commits what it wrote, naming the agent, before the next agent or `verify`; ending without changes is fine. If it ends abnormally, zero discards what it left uncommitted, the next agents do not run, and the attempt goes back to `build` with feedback naming the agent, using up the attempt. If the plan cuts it short, it goes on with a replacement from its chain or the job goes back to the queue; if the job's budget does, the budget rule applies; in both cases the job resumes at that agent without redoing `build` or the agents that finished. `after`, `access: read` and `blocking: false` are refused on these agents, and `files` on a reviewer.
 
 The same guarantees as `build`: timeouts, the isolation box mounted read-write when there is one, the engine chosen from its chain, and its span in the trace (`zero.station.<name>`). Its instructions are read from the line's repository or the factory folder, never from the work copy, and if the file is missing the job fails naming the path. All it writes goes through `verify`, protected paths (including `.zero/**`), `review`, `security` and the reviewing agents, like what `build` writes. Each one adds a call per attempt under the same job budget, so `files` also keeps the cost down.
+
+**Agents that resolve conflicts.** An agent with `type: conflict` is a generic hook to resolve with your own agent the conflicts of merging the base branch: when the factory updates a pull request (or one in conflict comes back to the line) and some files stay in conflict after the model-free resolution of simple conflicts, it calls these agents before the usual `build`.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: resolver
+        type: conflict                    # resolves conflicts with the base branch, before build
+        timeoutMinutes: 15
+```
+
+```sh
+zero agent add resolver --line web --tipo conflict   # creates .zero/agents/resolver.md from a conflict template and adds the agent
+```
+
+Each one gets, as data and never as instructions, the job's request and specification, every conflicted file with its conflict blocks and the base commits that touched those files, and works on the merge in progress in the work copy (write access, the box mounted read-write when there is one). It answers with a schema, file by file: `resolved`, or `returned` with a reason. zero keeps the resolution only when every file is `resolved`, no conflict markers are left and, once zero commits the merge, the branch contains both the base and the previous head; then the job goes on at `verify` without spending an attempt, and verification, the reviews and the rest run as always. If an agent returns a file, ends abnormally, gives no valid answer or leaves something wrong, zero discards what it did and tries the next one, starting the merge again from the head; when none resolves it, everything goes on as without them: `build` resolves the conflict with the usual feedback, as one more attempt. A missing instructions file only skips the agent. Global ones go first, then the packages', then the line's, each in file order. `after`, `files`, `blocking: false` and an `access` other than `write` are refused on these agents. Each call is recorded as `zero.station.<name>` with the number of files, how many it resolved and returned and the outcome (`resolved`, `returned`, `failed` or `invalid`), which `zero trace` shows. Without a conflict agent nothing changes.
 
 **Additions to the fixed stations.** A line can add instructions to a fixed station (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) with a file `.zero/agents/<station>.md` in its repository, for example `.zero/agents/build.md` with "always use pnpm". The agent receives zero's instructions first and then the project's, marked as additions that cannot contradict or relax the rules above.
 

@@ -352,7 +352,7 @@ export function widening(before: PackageManifest | undefined, after: PackageMani
     secrets: declaredSecrets(after).filter((s) => !oldSecrets.includes(s)),
     stations: after.stations.filter((s) => !oldStation(s.name)).map((s) => s.name),
     requests: after.stations.filter((s) => s.requests && s.requests.perLinePerDay > (oldStation(s.name)?.requests?.perLinePerDay ?? 0)).map((s) => s.name),
-    buildAgents: after.agents.filter((a) => a.type === "build" && old.agents.find((o) => o.name === a.name)?.type !== "build").map((a) => a.name),
+    buildAgents: after.agents.filter((a) => a.type !== "review" && old.agents.find((o) => o.name === a.name)?.type !== a.type).map((a) => a.name),
   };
 }
 

@@ -1031,7 +1031,12 @@ function agentSkillsSection(s: AgentGuide["skills"]): string {
 function lineAgentItems(agents: FactoryGuide["lines"][number]["agents"]): string {
   if (!agents.length) return `<li>No tiene agentes a medida.</li>`;
   const items = agents.map((a) => {
-    const kind = a.type === "build" ? `<span class="badge warn">modifica el código</span> <span class="muted">entre build y verify</span>` : `<span class="badge ok">solo lectura</span> <span class="muted">después de security${a.blocking ? "" : ", solo informa"}</span>`;
+    const kind =
+      a.type === "build"
+        ? `<span class="badge warn">modifica el código</span> <span class="muted">entre build y verify</span>`
+        : a.type === "conflict"
+          ? `<span class="badge warn">resuelve conflictos</span> <span class="muted">al traer la rama base, antes de build</span>`
+          : `<span class="badge ok">solo lectura</span> <span class="muted">después de security${a.blocking ? "" : ", solo informa"}</span>`;
     return `<li data-agent="${esc(a.name)}"><code>${esc(a.name)}</code> ${kind}${a.files.length ? ` · solo si el cambio toca ${codes(a.files, "")}` : ""}</li>`;
   });
   return `<li>Agentes a medida, en el orden en que corren:<ul class="skills">${items.join("")}</ul></li>`;

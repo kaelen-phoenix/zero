@@ -6,7 +6,7 @@ import { agentName, createAgentRunner, type EngineExecute } from "../src/agent.j
 import { addSkill, agentList, ANDON_KEY, factoryStatus, npmInstallArgs, packageAdd, packageList, packageRemove, requestWork, skillList, type FactoryContext } from "../src/app.js";
 import { stationEngines } from "../src/box/credentials.js";
 import { budgetState } from "../src/budget.js";
-import { ConfigError, parseFactory } from "../src/config.js";
+import { ConfigError, lineAgents, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import type { EngineRequest } from "../src/engines/index.js";
 import { formatPackages, formatStatus } from "../src/format.js";
@@ -318,6 +318,13 @@ describe("a package's agents", () => {
     expect(agents.calls.map(agentName)).toEqual(["spec", "build", "hello-writer", "review", "security"]);
     expect(readFileSync(join(repo, "docs/x.md"), "utf8")).toContain("# x");
     expect(gitIn(repo, "log", "--format=%s", "main")).toContain("hello-writer");
+  });
+
+  it("may resolve conflicts, joining lineAgents with type conflict", async () => {
+    const ctx = await factory([{ path: pkg({ agents: [{ name: "hello-merger", type: "conflict", instructions: "m.md" }] }, { "m.md": "# m\n" }) }]);
+    expect(ctx.config.loadedPackages!.problems).toEqual([]);
+    expect(lineAgents(ctx.config, ctx.config.lines[0]!)).toEqual([expect.objectContaining({ name: "hello-merger", type: "conflict", access: "write", origin: "package" })]);
+    expect(agentList(ctx, "web")[0]!.agents).toEqual([expect.objectContaining({ name: "hello-merger", type: "conflict", origin: "package", missing: false })]);
   });
 
   it("are listed with origin package and the path inside the package", async () => {

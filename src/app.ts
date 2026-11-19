@@ -1843,9 +1843,9 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
 
   const final = FINAL_STATUSES.includes(job.status);
   const setupOpen = spans.some((sp) => sp.name === "zero.setup" && !sp.end);
-  // Until the line view shows a line's custom agents, their pieces sit where they run: those that write at build, the reviewers at security.
+  // Until the line view shows a line's custom agents, their pieces sit where they run: those that write (conflict resolvers too) at build, the reviewers at security.
   const line = ctx.config.lines.find((l) => l.name === job.line);
-  const writing = line && lineAgents(ctx.config, line).some((a) => a.type === "build" && a.name === job.station);
+  const writing = line && lineAgents(ctx.config, line).some((a) => a.type !== "review" && a.name === job.station);
   const station = job.station && ((LINE_STATIONS as readonly string[]).includes(job.station) ? (job.station as LineStation) : writing ? "build" : "security");
   const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? station : (station ?? (setupOpen ? "setup" : undefined));
   // The last station an attempt reached carries the attempt's failure, since verify and the reviews end well and report.
@@ -2282,7 +2282,7 @@ export interface AgentListEntry {
   /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
   origin: "factory" | "line" | "package";
   /** `build`: it writes, between build and verify. `review`: read-only, after security. */
-  type: "review" | "build";
+  type: "review" | "build" | "conflict";
   /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
   files: string[];
   blocking: boolean;
@@ -2302,8 +2302,8 @@ export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList
   const targets = lineName ? [findLine(ctx.config, lineName)] : ctx.config.lines;
   return targets.map((line) => ({
     line: line.name,
-    // Those that write run first, whatever the file's order between the two types.
-    agents: [...lineAgents(ctx.config, line).filter((a) => a.type === "build"), ...lineAgents(ctx.config, line).filter((a) => a.type === "review")].map((a) => {
+    // Conflict resolvers first (they run when the base is merged, before build), then those that write, then the reviewers, whatever the file's order.
+    agents: (["conflict", "build", "review"] as const).flatMap((type) => lineAgents(ctx.config, line).filter((a) => a.type === type)).map((a) => {
       const path = agentInstructionsPath(a, line.repo, dirname(ctx.home.config));
       return { name: a.name, origin: a.origin, type: a.type, files: a.files, blocking: a.blocking, path, missing: !existsSync(path) };
     }),
@@ -2344,6 +2344,20 @@ You are the "${name}" agent of this project. You run after zero's build station 
 - If you end abnormally, zero discards your changes and the attempt goes back to build.
 `;
 
+const conflictTemplate = (name: string) => `# Agent: ${name}
+
+You are the "${name}" agent of this project, a conflict resolver. zero calls you when merging the base branch into a job's branch leaves conflicted files, before build. You get the job's request and specification, each conflicted file with its conflict blocks and the base commits that caused them, as data. You write in the work copy, where the merge is in progress.
+
+## What to do
+- Describe here how this project resolves its conflicts (for example which side wins in generated files, lock files or translations).
+- For each conflicted file, keep the intent of both sides and leave no conflict markers.
+
+## Rules
+- Do not commit, abort the merge, push or change branches: zero checks your work and commits the merge.
+- Answer for every file: \`resolved\`, or \`returned\` with the reason when you cannot resolve it safely.
+- If you return a file or end abnormally, zero discards your changes and build resolves the conflict.
+`;
+
 /**
  * Adds a custom agent to a line: creates its instructions from a template in
  * the line's repository (never overwriting them) and adds it to the factory
@@ -2354,9 +2368,11 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   const blocking = input.blocking ?? true;
   const type = input.type ?? "review";
   const files = input.files ?? [];
-  if (type !== "review" && type !== "build") throw new Error(`El tipo "${type}" no existe: usá review o build.`);
+  if (type !== "review" && type !== "build" && type !== "conflict") throw new Error(`El tipo "${type}" no existe: usá review, build o conflict.`);
   if (type === "build" && !blocking) throw new Error("Un agente que escribe no puede ser informativo: si falla, falla el intento.");
+  if (type === "conflict" && !blocking) throw new Error("Un agente que resuelve conflictos no puede ser informativo: si devuelve un archivo, build resuelve el conflicto.");
   if (type === "review" && files.length) throw new Error("--archivos solo vale con --tipo build: un agente de revisión corre en cada trabajo.");
+  if (type === "conflict" && files.length) throw new Error("--archivos solo vale con --tipo build: un agente que resuelve conflictos corre cuando hay conflictos al traer la base.");
   if (files.some((f) => !f.trim())) throw new Error("Los patrones de --archivos no pueden estar vacíos.");
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`El nombre "${name}" no sirve para un agente: usá minúsculas, dígitos y guiones.`);
   if ((FIXED_STATIONS as readonly string[]).includes(name)) throw new Error(`"${name}" es una estación fija de zero; elegí otro nombre para el agente.`);
@@ -2370,18 +2386,25 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   await mkdir(dirname(path), { recursive: true });
   let created = true;
   try {
-    await writeFile(path, input.instructions ?? (type === "build" ? writerTemplate(name) : agentTemplate(name, blocking)), { flag: "wx" });
+    await writeFile(path, input.instructions ?? (type === "build" ? writerTemplate(name) : type === "conflict" ? conflictTemplate(name) : agentTemplate(name, blocking)), { flag: "wx" });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST" || input.instructions !== undefined) throw err;
     created = false;
   }
-  const entry = type === "build" ? { name, type, ...(files.length && { files }) } : { name, blocking };
+  const entry = type === "build" ? { name, type, ...(files.length && { files }) } : type === "conflict" ? { name, type } : { name, blocking };
   ctx.config = await editConfig(ctx, (doc) => {
     const node = doc.createNode(entry);
     if (doc.hasIn(["lines", index, "agents"])) doc.addIn(["lines", index, "agents"], node);
     else doc.setIn(["lines", index, "agents"], doc.createNode([entry]));
   });
-  const kind = type === "build" ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}` : blocking ? "bloqueante" : "informativo";
+  const kind =
+    type === "build"
+      ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}`
+      : type === "conflict"
+        ? "tipo conflict, resuelve conflictos al traer la rama base, antes de build"
+        : blocking
+          ? "bloqueante"
+          : "informativo";
   return `Agente ${name} agregado a la línea ${line.name} (${kind}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
 }
 

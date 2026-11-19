@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { spawnGit } from "../shell.js";
 
 /**
@@ -105,4 +106,54 @@ export function resolveSimply(cwd: string, paths: string[]): boolean {
   }
   for (const { path, text } of resolved) writeFileSync(join(cwd, path), text, "latin1");
   return spawnGit(["add", "--", ...paths], cwd).status === 0;
+}
+
+/** What a conflict agent answers: for every conflicted file, resolved in the work copy or returned with why. */
+export const ConflictSchema = z.object({
+  files: z
+    .array(
+      z.object({
+        path: z.string().describe("The conflicted file, exactly as listed."),
+        status: z.enum(["resolved", "returned"]).describe("`resolved`: written in the work copy without conflict markers. `returned`: left for the build station."),
+        reason: z.string().describe("Why it was returned; empty when resolved."),
+      }),
+    )
+    .describe("One entry per conflicted file."),
+  summary: z.string(),
+});
+
+export type ConflictAnswer = z.infer<typeof ConflictSchema>;
+
+/** At most this much of a file's conflict blocks reaches the prompt. */
+const BLOCKS_CHARS = 6000;
+/** At most this many base commits reach the prompt. */
+const MAX_BASE_COMMITS = 20;
+
+/** The conflict blocks (from `<<<<<<<` to `>>>>>>>`) of a file with a merge in progress, cut to `BLOCKS_CHARS`; empty for a binary or missing file. */
+export function conflictBlocks(cwd: string, path: string): string {
+  let text: string;
+  try {
+    text = readFileSync(join(cwd, path), "utf8");
+  } catch {
+    return "";
+  }
+  if (text.includes("\0")) return "";
+  const blocks: string[] = [];
+  let open: string[] | undefined;
+  for (const line of text.split("\n")) {
+    if (!open && OPEN.test(line)) open = [line];
+    else if (open) {
+      open.push(line);
+      if (CLOSE.test(line)) (blocks.push(open.join("\n")), (open = undefined));
+    }
+  }
+  const all = blocks.join("\n\n");
+  return all.length > BLOCKS_CHARS ? `${all.slice(0, BLOCKS_CHARS)}\n[…]` : all;
+}
+
+/** The commits of the base (from `baseCommit`, not reachable from `head`) that touched these paths, newest first: short hash and subject. */
+export function baseCommits(cwd: string, head: string, baseCommit: string, paths: string[]): string[] {
+  const r = spawnGit(["log", `--max-count=${MAX_BASE_COMMITS}`, "--no-color", "--format=%h %s", `${head}..${baseCommit}`, "--", ...paths], cwd);
+  if (r.status !== 0) return [];
+  return r.stdout.split("\n").map((l) => l.replace(/[\p{Cc}\p{Cf}]/gu, " ").trim()).filter(Boolean);
 }

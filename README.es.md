@@ -585,7 +585,7 @@ El daemon mira la rama de la carpeta de instalación en su remoto una vez por d�
 
 ## Agentes a medida
 
-Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay dos tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.
+Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay tres tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. `type: conflict` resuelve los conflictos que deja traer la rama base a la rama de un trabajo (ver más abajo). Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.
 
 ```yaml
 lines:
@@ -644,6 +644,24 @@ lines:
 La línea queda `spec → build → docs → verify → review → security → integrate`. Corre en cada intento después de build, con sus propios `engine`, `model`, `maxTurns`, `timeoutMinutes` y `skills`. Sin `files` corre en cada trabajo; con `files`, zero compara los patrones (distingue mayúsculas) con lo que el cambio toca hasta ese momento, sin contar los archivos de la especificación del trabajo, y si nada coincide lo saltea sin llamarlo. Cuando termina bien, zero commitea lo que escribió, con el nombre del agente, antes del agente siguiente o de `verify`; terminar sin cambios está bien. Si termina de forma anormal, zero descarta lo que dejó sin commitear, los agentes siguientes no corren y el intento vuelve a `build` con un feedback que nombra al agente, consumiendo el intento. Si el plan lo corta, sigue con un reemplazo de su cadena o el trabajo vuelve a la cola; si lo corta el presupuesto del trabajo, se aplica la regla del presupuesto; en los dos casos el trabajo retoma en ese agente sin rehacer `build` ni los agentes que ya terminaron. En estos agentes se rechazan `after`, `access: read` y `blocking: false`, y en un revisor, `files`.
 
 Las mismas garantías que `build`: tiempos límite, la caja de aislamiento montada con escritura cuando la hay, el motor elegido de su cadena y su span en la traza (`zero.station.<nombre>`). Sus instrucciones se leen del repo de la línea o de la carpeta de la fábrica, nunca de la copia de trabajo, y si falta el archivo el trabajo falla nombrando la ruta. Todo lo que escribe pasa por `verify`, las rutas protegidas (incluida `.zero/**`), `review`, `security` y los agentes revisores, igual que lo que escribe `build`. Cada uno suma una llamada por intento con el mismo presupuesto del trabajo, así que `files` también ayuda a cuidar el costo.
+
+**Agentes que resuelven conflictos.** Un agente con `type: conflict` es un enganche genérico para resolver con un agente propio los conflictos de mezclar la rama base: cuando la fábrica actualiza un pull request (o uno en conflicto vuelve a la línea) y quedan archivos en conflicto después de la resolución sin modelo de los conflictos simples, llama a estos agentes antes del `build` de siempre.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: resolver
+        type: conflict                    # resuelve los conflictos con la rama base, antes de build
+        timeoutMinutes: 15
+```
+
+```sh
+zero agent add resolver --line web --tipo conflict   # crea .zero/agents/resolver.md con una plantilla de conflictos y suma el agente
+```
+
+Cada uno recibe, como datos y nunca como instrucciones, el pedido y la especificación del trabajo, cada archivo en conflicto con sus bloques de conflicto y los commits de la base que tocaron esos archivos, y trabaja sobre la mezcla en curso en la copia de trabajo (acceso de escritura, la caja montada con escritura cuando la hay). Responde con un esquema, archivo por archivo: `resolved`, o `returned` con el motivo. zero se queda con la resolución solo cuando todos los archivos vienen `resolved`, no quedan marcadores de conflicto y, una vez que zero commitea la mezcla, la rama contiene la base y la punta anterior; entonces el trabajo sigue en `verify` sin consumir un intento, y la verificación, las revisiones y el resto corren como siempre. Si un agente devuelve un archivo, termina de forma anormal, no da una respuesta válida o deja algo mal, zero descarta lo que hizo y prueba con el siguiente, empezando la mezcla de nuevo desde la punta; si ninguno la resuelve, todo sigue como sin ellos: `build` resuelve el conflicto con el feedback de siempre, como un intento más. Si falta el archivo de instrucciones, solo se saltea el agente. Van primero los globales, después los de los paquetes y después los de la línea, cada grupo en el orden del archivo. En estos agentes se rechazan `after`, `files`, `blocking: false` y un `access` que no sea `write`. Cada llamada queda registrada como `zero.station.<nombre>` con la cantidad de archivos, cuántos resolvió y devolvió y el resultado (`resolved`, `returned`, `failed` o `invalid`), que muestra `zero trace`. Sin un agente de conflictos no cambia nada.
 
 **Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
 

@@ -52,6 +52,20 @@ describe("agent types in the factory file", () => {
     expect(agentsOf("[{ name: docs, type: build, access: write, files: ['site/**'] }]")[0]).toMatchObject({ files: ["site/**"] });
   });
 
+  it("derive write access for a conflict resolver, with its instructions in .zero/agents", () => {
+    expect(agentsOf("[{ name: resolver, type: conflict }]")[0]).toMatchObject({ type: "conflict", access: "write", after: "conflict", blocking: true, files: [], instructions: ".zero/agents/resolver.md" });
+    expect(agentsOf("[{ name: resolver, type: conflict, access: write }]")[0]).toMatchObject({ type: "conflict", access: "write" });
+    const line = parseFactory(`lines: [{ name: web, repo: /tmp/web, agents: [{ name: resolver, type: conflict }] }]`).lines[0]!;
+    expect(line.agents).toMatchObject([{ name: "resolver", type: "conflict", access: "write", instructions: ".zero/agents/resolver.md" }]);
+  });
+
+  it("refuse what a conflict resolver cannot have", () => {
+    expect(() => agentsOf("[{ name: resolver, type: conflict, files: ['src/**'] }]")).toThrow(/files/);
+    expect(() => agentsOf("[{ name: resolver, type: conflict, after: build }]")).toThrow(/sin after/);
+    expect(() => agentsOf("[{ name: resolver, type: conflict, blocking: false }]")).toThrow(/blocking: false/);
+    expect(() => agentsOf("[{ name: resolver, type: conflict, access: read }]")).toThrow(/access solo puede ser write/);
+  });
+
   it("refuse an unknown type, in Spanish", () => {
     expect(() => agentsOf("[{ name: docs, type: deploy }]")).toThrow(/tiene que ser review o build/);
   });
@@ -383,6 +397,37 @@ describe("zero agent with types", () => {
     expect((await loadFactory(ctx.home.config)).lines[0]!.agents).toMatchObject([{ name: "seo", type: "review", access: "read" }]);
     expect(readFileSync(ctx.home.config, "utf8")).not.toContain("type:");
     expect(readFileSync(join(repo, ".zero/agents/seo.md"), "utf8")).toContain("read-only");
+  });
+
+  it("adds a conflict resolver", async () => {
+    const { ctx, repo } = factory({ agents: [] });
+    const message = await addAgent(ctx, { name: "resolver", line: "web", type: "conflict" });
+    expect(message).toContain("tipo conflict");
+    expect((await loadFactory(ctx.home.config)).lines[0]!.agents).toMatchObject([{ name: "resolver", type: "conflict", access: "write", files: [] }]);
+    expect(readFileSync(ctx.home.config, "utf8")).not.toContain("blocking");
+    const template = readFileSync(join(repo, ".zero/agents/resolver.md"), "utf8");
+    expect(template).toContain('"resolver" agent');
+    expect(template).toContain("conflict resolver");
+    expect(template).toMatch(/`returned`/);
+  });
+
+  it("refuses files and blocking: false on a conflict resolver without touching anything", async () => {
+    const { ctx, repo } = factory({ agents: [] });
+    const before = readFileSync(ctx.home.config, "utf8");
+    await expect(addAgent(ctx, { name: "x1", line: "web", type: "conflict", files: ["a"] })).rejects.toThrow(/--archivos/);
+    await expect(addAgent(ctx, { name: "x1", line: "web", type: "conflict", blocking: false })).rejects.toThrow(/informativo/);
+    expect(readFileSync(ctx.home.config, "utf8")).toBe(before);
+    expect(existsSync(join(repo, ".zero/agents/x1.md"))).toBe(false);
+  });
+
+  it("lists conflict resolvers first, as such", () => {
+    const { ctx } = factory({ agents: [{ name: "a11y" }, docs, { name: "resolver", type: "conflict" }], files: { ".zero/agents/resolver.md": "# r\n" } });
+    const lists = agentList(ctx, "web");
+    expect(lists[0]!.agents.map((a) => [a.name, a.type])).toEqual([["resolver", "conflict"], ["docs", "build"], ["a11y", "review"]]);
+    const text = formatAgents(lists);
+    expect(text).toContain("spec → build → docs → verify → review → security → a11y → integrate");
+    expect(text).toContain("Conflictos al traer la base: resolver → build");
+    expect(text).toContain("- resolver (resuelve conflictos al traer la base, antes de build, de la línea)");
   });
 
   it("refuses bad combinations without touching anything", async () => {
