@@ -17,6 +17,6 @@
 
 ## 3. Etapa 3: Documentation and OpenSpec change
 
-- [ ] 3.1 README.md and README.es.md custom agents section with type conflict, same structure
-- [ ] 3.2 AGENTS.md custom agents paragraph
-- [ ] 3.3 openspec/changes/<name>/ with proposal, tasks and production-line delta; openspec validate, typecheck and tests pass
+- [x] 3.1 README.md and README.es.md custom agents section with type conflict, same structure
+- [x] 3.2 AGENTS.md custom agents paragraph
+- [x] 3.3 openspec/changes/<name>/ with proposal, tasks and production-line delta; openspec validate, typecheck and tests pass
