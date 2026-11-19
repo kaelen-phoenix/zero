@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { addAgent, addFromCatalog, agentCatalog, agentList, rejectCatalogEntry } from "../src/app.js";
+import { addAgent, addFromCatalog, agentCatalog, agentList, catalogAddPlan, catalogInstructions, factoryGuide, rejectCatalogEntry } from "../src/app.js";
 import { acceptFindings, catalogKey, normalizeLicense, screenAgentText, type CatalogFinding, type NewCatalogEntry } from "../src/catalog.js";
 import { formatCatalog } from "../src/format.js";
+import { agentsPage, confirmCatalogPage } from "../src/panel/html.js";
 import { Store } from "../src/state/store.js";
 import { gitRepo, testFactory } from "./helpers.js";
 
@@ -129,6 +130,21 @@ describe("propuesta o listado", () => {
     expect(accept([finding({ source: "http://github.com/a/b" })]).entries).toEqual([]);
     expect(accept([finding({ type: "deploy" })]).entries).toEqual([]);
   });
+
+  it("guarda un hallazgo de tipo conflict, listado o propuesto", () => {
+    const listed = accept([finding({ name: "lock-resolver", type: "conflict", source: "https://github.com/acme/lock-resolver" })]);
+    expect(listed.dropped).toEqual([]);
+    expect(listed.entries).toHaveLength(1);
+    expect(listed.entries[0]).toMatchObject({ type: "conflict", status: "listed" });
+    const proposed = accept([finding({ name: "lock-resolver", type: "conflict", source: "https://github.com/acme/lock-resolver", line: "demo", gap: "el PR #214 se traba por conflictos" })]);
+    expect(proposed.entries[0]).toMatchObject({ type: "conflict", status: "proposed", line: "demo" });
+  });
+
+  it("descarta otro tipo con el motivo que nombra los tres", () => {
+    const { entries, dropped } = accept([finding({ type: "deploy" })]);
+    expect(entries).toEqual([]);
+    expect(dropped).toEqual([{ name: "a11y-reviewer", reason: "el tipo no es review, build ni conflict" }]);
+  });
 });
 
 describe("catálogo en el almacén", () => {
@@ -158,6 +174,21 @@ describe("zero agent catalog", () => {
     for (const field of ["Qué hace: Reviews accessibility.", "https://github.com/acme/listed", "https://github.com/acme/proposed", "Licencia: MIT", "Motores: claude", "Revisado: 2026-11-16", "Tipo: build", "Tipo: review"]) expect(text).toContain(field);
     expect(text).toContain("para la línea demo");
     expect(text).toContain("Hueco que llena: nadie escribe traducciones");
+  });
+
+  it("describe el tipo conflict y no lo muestra como review", () => {
+    const text = formatCatalog([{ ...entry({ name: "lock-resolver", type: "conflict" }), id: "c1", createdAt: AT }]);
+    expect(text).toContain("Tipo: conflict (resuelve conflictos al traer la rama base, antes de build)");
+    expect(text).not.toContain("Tipo: review");
+  });
+
+  it("el panel muestra el tipo conflict en la tarjeta y en la confirmación", async () => {
+    const ctx = factory();
+    const e = ctx.store.createCatalogEntry(entry({ name: "lock-resolver", type: "conflict", source: "https://github.com/acme/lock-resolver" }));
+    const html = agentsPage(await factoryGuide(ctx), "n", agentCatalog(ctx));
+    const card = html.slice(html.indexOf(`data-entry="${e.id}"`));
+    expect(card.slice(0, card.indexOf("</ul>"))).toContain("Tipo: <b>conflict</b>");
+    expect(confirmCatalogPage(catalogAddPlan(ctx, { id: e.id, line: "demo" }), "n")).toContain("<b>conflict</b>");
   });
 
   it("dice en castellano que el catálogo está vacío", () => {
@@ -205,6 +236,46 @@ describe("sumar y rechazar desde el catálogo", () => {
     const e = ctx.store.createCatalogEntry(entry({ name: "translator", type: "build", source: "https://github.com/acme/translator" }));
     await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true });
     expect(agentList(ctx, "demo")[0]!.agents.map((a) => [a.name, a.type])).toEqual([["translator", "build"]]);
+  });
+
+  it("suma uno de tipo conflict como conflict bloqueante y sin archivos", async () => {
+    const { ctx, repo } = setup();
+    const e = ctx.store.createCatalogEntry(entry({ name: "lock-resolver", type: "conflict", source: "https://github.com/acme/lock-resolver" }));
+    const r = await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true });
+    expect(r.added).toBe(true);
+    expect(agentList(ctx, "demo")[0]!.agents.map((a) => [a.name, a.type])).toEqual([["lock-resolver", "conflict"]]);
+    const file = factoryFile(ctx);
+    expect(file).toMatch(/- name: lock-resolver\s+type: conflict/);
+    expect(file).not.toContain("files:");
+    expect(file).not.toContain("blocking: false");
+    expect(readFileSync(agentFile(repo, "lock-resolver"), "utf8")).toContain("> From https://github.com/acme/lock-resolver (license MIT)");
+    expect(ctx.store.getCatalogEntry(e.id)).toMatchObject({ status: "added", line: "demo" });
+  });
+
+  it("sin confirmación no suma uno de tipo conflict", async () => {
+    const { ctx, repo } = setup();
+    const e = ctx.store.createCatalogEntry(entry({ name: "lock-resolver", type: "conflict" }));
+    const before = factoryFile(ctx);
+    expect(await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => false })).toEqual({ added: false, text: "No sumé nada." });
+    expect(factoryFile(ctx)).toBe(before);
+    expect(existsSync(join(repo, ".zero"))).toBe(false);
+    expect(ctx.store.getCatalogEntry(e.id)?.status).toBe("listed");
+  });
+
+  it("sin instrucciones, uno de tipo conflict usa la plantilla de conflictos", () => {
+    const content = catalogInstructions({ ...entry({ name: "lock-resolver", type: "conflict", instructions: "" }), id: "c1", createdAt: AT });
+    expect(content).toContain("> From https://github.com/acme/agents");
+    expect(content).toContain("conflict resolver");
+    expect(content).toContain("`resolved`, or `returned`");
+    expect(content).not.toContain("## What to check");
+    expect(content.match(/^# Agent: /gm)).toHaveLength(1);
+  });
+
+  it("las instrucciones del reclutador nombran el tipo conflict", () => {
+    const text = readFileSync(join(import.meta.dirname, "..", "agents", "recruit.md"), "utf8");
+    expect(text).toContain("`review`, `build` or `conflict`");
+    expect(text).not.toContain("custom agents of two types");
+    expect(text).toContain("- `conflict`: an agent with write access");
   });
 
   it("sin confirmación, o sin terminal, no escribe nada", async () => {

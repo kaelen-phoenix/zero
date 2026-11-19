@@ -7,7 +7,7 @@ import { FIXED_STATIONS } from "./config.js";
  * reaches the network stays out.
  */
 
-export type CatalogType = "review" | "build";
+export type CatalogType = "review" | "build" | "conflict";
 export type CatalogStatus = "listed" | "proposed" | "added" | "rejected";
 export const CATALOG_STATUSES: readonly CatalogStatus[] = ["proposed", "listed", "added", "rejected"];
 export type CatalogLicense = "MIT" | "Apache-2.0" | "BSD-2-Clause" | "BSD-3-Clause";
@@ -156,11 +156,11 @@ export function acceptFindings(findings: CatalogFinding[], ctx: CatalogContext):
     const license = normalizeLicense(f.license);
     const description = String(f.description ?? "").trim();
     const instructions = String(f.instructions ?? "").trim();
-    const type = f.type === "review" || f.type === "build" ? f.type : undefined;
+    const type = f.type === "review" || f.type === "build" || f.type === "conflict" ? f.type : undefined;
     if (!name || (FIXED_STATIONS as readonly string[]).includes(name)) drop("el nombre no sirve para un agente");
     else if (!source) drop("la fuente no es una dirección https");
     else if (!license) drop("la licencia no es MIT, Apache 2.0 ni BSD");
-    else if (!type) drop("el tipo no es review ni build");
+    else if (!type) drop("el tipo no es review, build ni conflict");
     else if (!description) drop("no dice qué hace");
     else if (instructions.length > MAX_INSTRUCTIONS) drop("las instrucciones son demasiado largas");
     else {

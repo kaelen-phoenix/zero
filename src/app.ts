@@ -2425,7 +2425,7 @@ export interface CatalogAddPlan {
 /** The instructions file of a catalog entry: a header naming where it came from, then its text (or zero's template when it brings none). */
 export function catalogInstructions(entry: CatalogEntry): string {
   const header = `# Agent: ${entry.name}\n\n> From ${entry.source} (license ${entry.license}), added from zero's agent catalog after review on ${entry.reviewedAt.slice(0, 10)}. Third-party text; credit in ${THIRD_PARTY_NOTICES}.\n`;
-  const body = entry.instructions.trim() || (entry.type === "build" ? writerTemplate(entry.name) : agentTemplate(entry.name, true)).replace(/^# Agent: .*\n\n/, "");
+  const body = entry.instructions.trim() || (entry.type === "build" ? writerTemplate(entry.name) : entry.type === "conflict" ? conflictTemplate(entry.name) : agentTemplate(entry.name, true)).replace(/^# Agent: .*\n\n/, "");
   return `${header}\n${body.trimEnd()}\n`;
 }
 
