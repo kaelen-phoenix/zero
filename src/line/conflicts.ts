@@ -87,6 +87,15 @@ function threeStages(cwd: string, path: string): boolean {
 }
 
 /**
+ * Rewrites a conflicted path of a merge in progress with diff3 markers, so each block also shows the common base
+ * between `|||||||` and `=======`. False, with the file left as it was, when the path lacks the three stages of a
+ * regular file or the checkout fails.
+ */
+export function diff3Markers(cwd: string, path: string): boolean {
+  return threeStages(cwd, path) && spawnGit(["checkout", "--conflict=diff3", "--", path], cwd).status === 0;
+}
+
+/**
  * Resolves the conflicts of a merge in progress in `cwd` without a model, all files or none: each one is
  * rewritten with diff3 markers and resolved by `resolveDiff3`; only when every file resolves are they written
  * and added. A binary file, a missing stage or one hunk that is not simple writes nothing and gives false.
@@ -95,8 +104,7 @@ export function resolveSimply(cwd: string, paths: string[]): boolean {
   if (!paths.length) return false;
   const resolved: { path: string; text: string }[] = [];
   for (const path of paths) {
-    if (!threeStages(cwd, path)) return false;
-    if (spawnGit(["checkout", "--conflict=diff3", "--", path], cwd).status !== 0) return false;
+    if (!diff3Markers(cwd, path)) return false;
     // latin1 keeps every byte as it is, whatever the file's encoding.
     const text = readFileSync(join(cwd, path), "latin1");
     if (text.includes("\0")) return false;
@@ -129,7 +137,10 @@ const BLOCKS_CHARS = 6000;
 /** At most this many base commits reach the prompt. */
 const MAX_BASE_COMMITS = 20;
 
-/** The conflict blocks (from `<<<<<<<` to `>>>>>>>`) of a file with a merge in progress, cut to `BLOCKS_CHARS`; empty for a binary or missing file. */
+/**
+ * The conflict blocks (from `<<<<<<<` to `>>>>>>>`, with the diff3 base section between `|||||||` and `=======`
+ * when the file has it) of a file with a merge in progress, cut to `BLOCKS_CHARS`; empty for a binary or missing file.
+ */
 export function conflictBlocks(cwd: string, path: string): string {
   let text: string;
   try {

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveDiff3, resolveSimply } from "../src/line/conflicts.js";
+import { conflictBlocks, diff3Markers, resolveDiff3, resolveSimply } from "../src/line/conflicts.js";
 import { cleanup, gitIn, gitRepo, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
@@ -89,5 +89,28 @@ describe("resolveSimply", () => {
   it("refuses a file added on both sides, which has no base stage", () => {
     const { repo } = conflicted({ "README.md": "# demo\n" }, { "new.ts": `import a from "a";\n` }, { "new.ts": `import b from "b";\n` });
     expect(resolveSimply(repo, ["new.ts"])).toBe(false);
+  });
+});
+
+describe("diff3Markers", () => {
+  it("rewrites a regular conflict with the base section", () => {
+    const { repo } = conflicted({ "c.txt": "value 0\n" }, { "c.txt": "value 1\n" }, { "c.txt": "value 2\n" });
+    expect(readFileSync(join(repo, "c.txt"), "utf8")).not.toMatch(/^\|{7}/m);
+    expect(diff3Markers(repo, "c.txt")).toBe(true);
+    expect(readFileSync(join(repo, "c.txt"), "utf8")).toMatch(/^<{7}[^\n]*\nvalue 1\n\|{7}[^\n]*\nvalue 0\n={7}\nvalue 2\n>{7}/m);
+  });
+
+  it("leaves a file added on both sides as the merge left it", () => {
+    const { repo } = conflicted({ "README.md": "# demo\n" }, { "new.ts": "a\n" }, { "new.ts": "b\n" });
+    const before = readFileSync(join(repo, "new.ts"));
+    expect(diff3Markers(repo, "new.ts")).toBe(false);
+    expect(readFileSync(join(repo, "new.ts")).equals(before)).toBe(true);
+  });
+});
+
+describe("conflictBlocks", () => {
+  it("keeps the base section of a diff3 block", () => {
+    const repo = gitRepo({ "f.txt": `head\n${hunk(["a"], ["o"], ["b"])}\ntail\n` });
+    expect(conflictBlocks(repo, "f.txt")).toBe(hunk(["a"], ["o"], ["b"]));
   });
 });

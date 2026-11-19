@@ -113,6 +113,7 @@ describe("a conflict agent", () => {
     f.on("resolver", (req, n) => {
       seen = req;
       expect(inMerge(req.cwd)).toBe(true);
+      expect(readFileSync(join(req.cwd, "shared.txt"), "utf8")).toMatch(/^<{7}[^\n]*\njob\n\|{7}[^\n]*\nbase\n={7}\ntheirs\n>{7}/m);
       return resolves()(req, n);
     });
     f.on("build", () => {
@@ -130,7 +131,8 @@ describe("a conflict agent", () => {
     expect(seen!.prompt).toContain("cambiá shared.txt");
     expect(seen!.prompt).toContain(spec.title);
     expect(seen!.prompt).toContain("shared.txt");
-    expect(seen!.prompt).toMatch(/<<<<<<<[^\n]*\njob\n=======\ntheirs\n>>>>>>>/);
+    expect(seen!.prompt).toMatch(/<<<<<<<[^\n]*\njob\n\|{7}[^\n]*\nbase\n=======\ntheirs\n>>>>>>>/);
+    expect(seen!.prompt).toMatch(/between `\|{7}` and `=======`, the common base: the version before either side changed it/);
     expect(seen!.prompt).toContain("base: shared.txt");
 
     const [span] = f.spans("zero.station.resolver");
@@ -234,6 +236,16 @@ describe("falling back to build", () => {
     const f = await delivered();
     f.on("resolver", (req) => {
       writeTree(req.cwd, { "shared.txt": "<<<<<<< HEAD\njob\n=======\ntheirs\n>>>>>>> origin/main\n" });
+      return { output: { files: [{ path: "shared.txt", status: "resolved", reason: "" }], summary: "ok" } };
+    });
+    await fallsBack(f, "invalid");
+    expect(f.spans("zero.station.resolver")[0]!.attrs["zero.conflicts.reason"]).toMatch(/marcadores/);
+  });
+
+  it("goes to build when the agent leaves the base marker", async () => {
+    const f = await delivered();
+    f.on("resolver", (req) => {
+      writeTree(req.cwd, { "shared.txt": "job\n||||||| base\nbase\ntheirs\n" });
       return { output: { files: [{ path: "shared.txt", status: "resolved", reason: "" }], summary: "ok" } };
     });
     await fallsBack(f, "invalid");
