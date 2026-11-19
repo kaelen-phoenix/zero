@@ -546,7 +546,9 @@ export class Store {
 
   createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority }): Job {
     const at = this.stamp();
-    const id = newId();
+    // Ids are 32 random bits: with thousands of jobs a repeat is rare but possible, so draw again.
+    let id = newId();
+    while (this.getJob(id)) id = newId();
     this.db
       .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, priority, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
       .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), at, at);
