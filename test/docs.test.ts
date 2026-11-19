@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +11,14 @@ import { cleanup, fakeAgents, tempDir, testFactory, writeTree } from "./helpers.
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const en = read("README.md");
 const es = read("README.es.md");
+
+const AREAS = [
+  "core", "daemon", "production-line", "auto-merge", "night-shift", "packages", "engines",
+  "panel", "reports", "box-and-egress", "intake", "self-update", "site",
+];
+const areaFiles = () => readdirSync(new URL("../docs/agents/", import.meta.url)).filter((f) => f.endsWith(".md"));
+/** The guide for agents: the AGENTS.md index plus every area file under docs/agents/. */
+const guide = () => [read("AGENTS.md"), ...areaFiles().map((f) => read(`docs/agents/${f}`))].join("\n");
 
 const levels = (text: string) => text.split("\n").filter((l) => /^###? /.test(l)).map((l) => l.indexOf(" "));
 
@@ -227,9 +236,9 @@ describe("documentation up to date", () => {
     for (const text of [en, es]) {
       for (const piece of ["## Social media", "## Redes sociales", "zero social", "INSTAGRAM_ACCESS_TOKEN"]) expect(text, piece).not.toContain(piece);
     }
-    const guide = read("AGENTS.md");
-    for (const piece of ["src/social/", "src/line/community.ts", "communityPass"]) expect(guide, piece).not.toContain(piece);
-    expect(guide).toContain("(`idlePasses`: scout, then research, then the packages' stations)");
+    const text = guide();
+    for (const piece of ["src/social/", "src/line/community.ts", "communityPass"]) expect(text, piece).not.toContain(piece);
+    expect(text).toContain("(`idlePasses`: scout, then research, then the packages' stations)");
     expect(read("docs/revision-linea-produccion.md")).not.toMatch(/community|zero social/);
     const agents = readdirSync(new URL("../agents/", import.meta.url));
     expect(agents).not.toContain("community.md");
@@ -290,9 +299,9 @@ describe("install with Docker", () => {
     expect(section(es, "## Instalar con Docker")).toContain("mismo contenedor que la llave y los secretos");
   });
 
-  it("describes it in AGENTS.md", () => {
-    const guide = read("AGENTS.md");
-    for (const piece of ["src/setup.ts", "encryptedFileKeyring", "ZERO_CONTAINER", "panel.host"]) expect(guide, piece).toContain(piece);
+  it("describes it in the guide for agents", () => {
+    const text = guide();
+    for (const piece of ["src/setup.ts", "encryptedFileKeyring", "ZERO_CONTAINER", "panel.host"]) expect(text, piece).toContain(piece);
   });
 });
 
@@ -384,8 +393,8 @@ describe("agent packages", () => {
     expect(JSON.parse(ctx.store.getKv("package:hello/note:state:lastCheck")!)).toBe("12:00");
   });
 
-  it("describes the scheduled passes in AGENTS.md", () => {
-    expect(read("AGENTS.md")).toContain("scheduledPass");
+  it("describes the scheduled passes in the guide for agents", () => {
+    expect(guide()).toContain("scheduledPass");
   });
 });
 
@@ -469,9 +478,8 @@ describe("what the factory produces", () => {
   });
 
   it("is a rule of AGENTS.md", () => {
-    const agents = read("AGENTS.md");
-    for (const word of ["allowedArtifacts", "operationArtifacts", "saveReport"]) expect(agents).toContain(word);
-    expect(agents.split("## Conventions")[1]).toContain("stays only in ZERO_HOME");
+    for (const word of ["allowedArtifacts", "operationArtifacts", "saveReport"]) expect(guide()).toContain(word);
+    expect(read("AGENTS.md").split("## Conventions")[1]).toContain("stays only in ZERO_HOME");
   });
 });
 
@@ -493,5 +501,54 @@ describe("AGENTS.md", () => {
     expect(rule).toBeDefined();
     expect(rule).toContain("both");
     expect(rule).toContain("Spanish");
+  });
+
+  it("is a short index with commands, areas and conventions", () => {
+    const index = read("AGENTS.md");
+    expect(Buffer.byteLength(index)).toBeLessThan(16000);
+    expect(index.split("\n").filter((l) => l.startsWith("## "))).toEqual(["## Commands", "## Areas", "## Conventions"]);
+    expect(index).not.toContain("## Layout");
+  });
+
+  it("links every area file exactly once, and only files that exist", () => {
+    const links = [...read("AGENTS.md").matchAll(/\]\(docs\/agents\/([^)]+\.md)\)/g)].map((m) => m[1]!);
+    const files = areaFiles();
+    expect([...links].sort()).toEqual([...files].sort());
+    expect(new Set(links).size).toBe(links.length);
+  });
+
+  it("keeps one file per area, each with a title and bullets", () => {
+    expect(areaFiles()).toEqual(expect.arrayContaining(AREAS.map((a) => `${a}.md`)));
+    for (const file of areaFiles()) {
+      const lines = read(`docs/agents/${file}`).split("\n");
+      expect(lines[0], file).toMatch(/^# \S/);
+      expect(lines.some((l) => l.startsWith("- ")), file).toBe(true);
+    }
+  });
+
+  it("asks each change to write in the file of its area", () => {
+    const conventions = read("AGENTS.md").split("## Conventions")[1]!;
+    expect(conventions.split("\n").find((l) => l.includes("docs/agents/") && /\barea\b/.test(l))).toBeDefined();
+  });
+
+  // The commit that held the whole guide in AGENTS.md, before it was split; skipped where history is not there.
+  const before = "7b8496be9a41f45149f25f43ae528b2e0bf3291b";
+  const old = (() => {
+    try {
+      return execFileSync("git", ["show", `${before}:AGENTS.md`], { cwd: new URL("..", import.meta.url), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return undefined;
+    }
+  })();
+  it.runIf(old !== undefined)("loses no code fragment of the guide it was split from", () => {
+    const text = guide();
+    const missing = [...old!.replace(/\r\n/g, "\n").matchAll(/`[^`\n]+`/g)].map((m) => m[0]).filter((f) => !text.includes(f));
+    expect(missing).toEqual([]);
+  });
+});
+
+describe("CLAUDE.md", () => {
+  it("only points to AGENTS.md", () => {
+    expect(read("CLAUDE.md").trimEnd()).toBe("@AGENTS.md");
   });
 });
