@@ -14,8 +14,8 @@
 
 ## 3. Etapa 3: Catálogo en el panel
 
-- [ ] 3.1 Catalog section in agentsPage, confirmCatalogPage, POST /agents/catalog/add (confirm=1) and /agents/catalog/reject in server.ts through app.ts
-- [ ] 3.2 Panel tests: confirm page first, confirmed add, reject, escaped text
+- [x] 3.1 Catalog section in agentsPage, confirmCatalogPage, POST /agents/catalog/add (confirm=1) and /agents/catalog/reject in server.ts through app.ts
+- [x] 3.2 Panel tests: confirm page first, confirmed add, reject, escaped text
 
 ## 4. Etapa 4: Estación reclutadora nocturna
 

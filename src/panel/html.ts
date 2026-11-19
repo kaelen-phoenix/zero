@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import type { CatalogAddPlan } from "../app.js";
+import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
 import { billingLine, budgetLine, installLine, jamLine, trainLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
@@ -1029,7 +1031,43 @@ function lineAgentItems(agents: FactoryGuide["lines"][number]["agents"]): string
   return `<li>Agentes a medida, en el orden en que corren:<ul class="skills">${items.join("")}</ul></li>`;
 }
 
-export function agentsPage(g: FactoryGuide, nonce: string): string {
+const CATALOG_STATUS: Record<CatalogEntry["status"], string> = { proposed: "propuesto", listed: "en el catálogo", added: "agregado", rejected: "rechazado" };
+
+/** One catalog entry with its fields and, while it can still be added, the add and reject forms. */
+function catalogCard(e: CatalogEntry, lines: string[]): string {
+  const open = e.status === "listed" || e.status === "proposed";
+  const options = lines.map((l) => `<option value="${esc(l)}"${l === e.line ? " selected" : ""}>${esc(l)}</option>`).join("");
+  const forms = open
+    ? `<form method="post" action="/agents/catalog/add"><input type="hidden" name="id" value="${esc(e.id)}"><label>Línea <select name="line">${options}</select></label> <button class="primary">Sumar</button></form>
+<form method="post" action="/agents/catalog/reject"><input type="hidden" name="id" value="${esc(e.id)}"><input name="note" placeholder="motivo (opcional)"> <button>Rechazar</button></form>`
+    : "";
+  return `<div class="card catalog" data-entry="${esc(e.id)}"><h3>${esc(e.name)} <span class="chip" data-status="${esc(e.status)}">${CATALOG_STATUS[e.status]}</span> <span class="muted">${esc(e.id)}</span></h3>
+<p>${esc(e.description)}</p>
+<ul class="kv"><li>Tipo: <b>${esc(e.type)}</b></li>
+<li>Fuente: ${webLink(e.source)}</li>
+<li>Licencia: <b>${esc(e.license)}</b></li>
+<li>Motores: ${e.engines.length ? esc(e.engines.join(", ")) : "sin dato"}</li>
+<li>Revisado: ${esc(e.reviewedAt.slice(0, 10))}</li>
+${e.line ? `<li>Línea: <b>${esc(e.line)}</b></li>` : ""}${e.gap ? `<li>Hueco que llena: ${esc(e.gap)}</li>` : ""}${e.note ? `<li>Motivo del rechazo: ${esc(e.note)}</li>` : ""}</ul>
+${forms}</div>`;
+}
+
+/** The step before adding a catalog entry: it writes the factory file and the line's repository, so the owner reads what and confirms. */
+export function confirmCatalogPage(plan: CatalogAddPlan, nonce: string): string {
+  const e = plan.entry;
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Sumar ${esc(e.name)} a la línea ${esc(plan.line)}?</h1>
+<p>Lo agrega como agente <b>${esc(e.type)}</b> de la línea y escribe <code>${esc(plan.path)}</code> con esto:</p><pre>${esc(plan.content)}</pre>
+${plan.copied ? `<p>También da crédito a ${webLink(e.source)} (licencia ${esc(e.license)}) en <code>THIRD-PARTY-NOTICES.md</code>, en la raíz del repositorio de la línea.</p>` : ""}
+<p class="muted">No instala ni ejecuta nada de lo que trae el agente.</p>
+<form method="post" action="/agents/catalog/add"><input type="hidden" name="id" value="${esc(e.id)}"><input type="hidden" name="line" value="${esc(plan.line)}"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, sumarlo</button></form>
+<p><a href="/agents">Cancelar</a></p></div>`,
+    { nonce, active: "/agents" },
+  );
+}
+
+export function agentsPage(g: FactoryGuide, nonce: string, catalog: CatalogEntry[] = [], flash?: string): string {
   const agents = g.agents
     .map((a) => {
       const t = AGENT_SUMMARY[a.station];
@@ -1062,8 +1100,13 @@ ${lineAgentItems(l.agents)}</ul></div>`,
   return page(
     "Agentes",
     `<div class="card"><h1>Agentes</h1><p class="muted">Cada paso de la línea lo hace un agente con sus propias instrucciones y límites. Los límites los controla la fábrica, no el agente.</p></div>
-${agents}<h2>Líneas</h2>${lines}`,
-    { nonce, active: "/agents" },
+${agents}<h2>Líneas</h2>${lines}
+<h2>Catálogo</h2>${
+      catalog.length
+        ? catalog.map((e) => catalogCard(e, g.lines.map((l) => l.name))).join("")
+        : `<div class="card muted">El catálogo todavía no tiene agentes. Los suma el reclutador del turno nocturno; se ven también con <code>zero agent catalog</code>.</div>`
+    }`,
+    { nonce, flash, active: "/agents" },
   );
 }
 
