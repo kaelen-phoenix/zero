@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -2083,7 +2083,7 @@ You are the "${name}" agent of this project. You run after zero's build station 
  * the line's repository (never overwriting them) and adds it to the factory
  * file, keeping the file's comments.
  */
-export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean; type?: string; files?: string[] }): Promise<string> {
+export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean; type?: string; files?: string[]; instructions?: string }): Promise<string> {
   const name = input.name.trim();
   const blocking = input.blocking ?? true;
   const type = input.type ?? "review";
@@ -2099,12 +2099,14 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   const index = ctx.config.lines.findIndex((l) => l.name === line.name);
   const instructions = `.zero/agents/${name}.md`;
   const path = join(line.repo, instructions);
+  // Given instructions never replace someone else's file, nor take it as theirs.
+  if (input.instructions !== undefined && existsSync(path)) throw new Error(`Ya existe ${path}: no lo piso. Borralo o elegí otro nombre para el agente.`);
   await mkdir(dirname(path), { recursive: true });
   let created = true;
   try {
-    await writeFile(path, type === "build" ? writerTemplate(name) : agentTemplate(name, blocking), { flag: "wx" });
+    await writeFile(path, input.instructions ?? (type === "build" ? writerTemplate(name) : agentTemplate(name, blocking)), { flag: "wx" });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST" || input.instructions !== undefined) throw err;
     created = false;
   }
   const entry = type === "build" ? { name, type, ...(files.length && { files }) } : { name, blocking };
@@ -2115,6 +2117,86 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   });
   const kind = type === "build" ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}` : blocking ? "bloqueante" : "informativo";
   return `Agente ${name} agregado a la línea ${line.name} (${kind}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
+}
+
+export const THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.md";
+
+/** What adding a catalog entry to a line would write, once every check passed. */
+export interface CatalogAddPlan {
+  entry: CatalogEntry;
+  line: string;
+  /** The instructions file, inside the line's repository. */
+  path: string;
+  /** Its exact content. */
+  content: string;
+  /** True when the entry brings instructions, which are copied and credited in THIRD-PARTY-NOTICES.md. */
+  copied: boolean;
+}
+
+/** The instructions file of a catalog entry: a header naming where it came from, then its text (or zero's template when it brings none). */
+export function catalogInstructions(entry: CatalogEntry): string {
+  const header = `# Agent: ${entry.name}\n\n> From ${entry.source} (license ${entry.license}), added from zero's agent catalog after review on ${entry.reviewedAt.slice(0, 10)}. Third-party text; credit in ${THIRD_PARTY_NOTICES}.\n`;
+  const body = entry.instructions.trim() || (entry.type === "build" ? writerTemplate(entry.name) : agentTemplate(entry.name, true)).replace(/^# Agent: .*\n\n/, "");
+  return `${header}\n${body.trimEnd()}\n`;
+}
+
+/** Checks that a catalog entry can be added to a line and says what it would write; throws, in Spanish, when it cannot. Writes nothing. */
+export function catalogAddPlan(ctx: FactoryContext, input: { id: string; line: string }): CatalogAddPlan {
+  const entry = ctx.store.getCatalogEntry(input.id);
+  if (!entry) throw new Error(`No hay un agente ${input.id} en el catálogo.`);
+  if (entry.status === "rejected") throw new Error(`El agente ${entry.name} (${entry.id}) fue rechazado: no se suma desde el catálogo.`);
+  if (entry.status === "added") throw new Error(`El agente ${entry.name} (${entry.id}) ya se sumó a la línea ${entry.line ?? "que lo pidió"}.`);
+  const line = findLine(ctx.config, input.line);
+  if (line.package) throw new Error(`La línea ${line.name} es del paquete ${line.package}: no se le suman agentes del catálogo.`);
+  if (lineAgents(ctx.config, line).some((a) => a.name === entry.name)) throw new Error(`La línea ${line.name} ya tiene un agente "${entry.name}".`);
+  const path = join(line.repo, `.zero/agents/${entry.name}.md`);
+  if (existsSync(path)) throw new Error(`Ya existe ${path}: no lo piso. Borralo o quitá el agente antes de sumarlo desde el catálogo.`);
+  return { entry, line: line.name, path, content: catalogInstructions(entry), copied: entry.instructions.trim() !== "" };
+}
+
+/** Adds the credit block of a source to the line's THIRD-PARTY-NOTICES.md, once per source. */
+async function addNotice(repo: string, entry: CatalogEntry): Promise<void> {
+  const path = join(repo, THIRD_PARTY_NOTICES);
+  const current = existsSync(path) ? await readFile(path, "utf8") : "";
+  if (current.split(/\r?\n/).includes(`- Source: ${entry.source}`)) return;
+  const head = current ? (current.endsWith("\n") ? current : `${current}\n`) : "# Third-party notices\n\nText in this repository that comes from third parties, with its source and license.\n";
+  await writeFile(path, `${head}\n## ${entry.name}\n\n- Source: ${entry.source}\n- License: ${entry.license}\n- Copied into: .zero/agents/${entry.name}.md\n`);
+}
+
+/**
+ * Adds a catalog entry to a line through `addAgent`, only once the owner
+ * confirmed after reading what would be written; without a `confirm` (no
+ * terminal) the answer is no and nothing is written.
+ */
+export async function addFromCatalog(ctx: FactoryContext, input: { id: string; line: string; confirm?: Confirm; say?: (text: string) => void }): Promise<{ added: boolean; text: string }> {
+  const plan = catalogAddPlan(ctx, input);
+  const { entry } = plan;
+  input.say?.(
+    [
+      `${entry.name}: ${entry.description}`,
+      `Tipo: ${entry.type} · Fuente: ${entry.source} · Licencia: ${entry.license} · Motores: ${entry.engines.join(", ") || "sin dato"}`,
+      `Voy a escribir ${plan.path} con esto:`,
+      "",
+      plan.content,
+      plan.copied ? `y a dar crédito a la fuente en ${THIRD_PARTY_NOTICES}, en la raíz del repositorio de la línea ${plan.line}.` : "",
+    ].join("\n"),
+  );
+  if (!(input.confirm && (await input.confirm(`¿Sumo ${entry.name} a la línea ${plan.line}?`)))) return { added: false, text: "No sumé nada." };
+  const line = findLine(ctx.config, plan.line);
+  await addAgent(ctx, { name: entry.name, line: line.name, type: entry.type, instructions: plan.content });
+  if (plan.copied) await addNotice(line.repo, entry);
+  ctx.store.decideCatalogEntry(entry.id, { status: "added", line: line.name, from: ["listed", "proposed"] });
+  return { added: true, text: `Agente ${entry.name} sumado a la línea ${line.name} (${entry.type}). Sus instrucciones están en ${plan.path}${plan.copied ? `, con crédito en ${THIRD_PARTY_NOTICES}` : ""}.` };
+}
+
+/** Marks a listed or proposed catalog entry as rejected, with the owner's reason; it is never added nor found again. */
+export function rejectCatalogEntry(ctx: FactoryContext, input: { id: string; note?: string }): string {
+  const entry = ctx.store.getCatalogEntry(input.id);
+  if (!entry) throw new Error(`No hay un agente ${input.id} en el catálogo.`);
+  const note = input.note?.trim();
+  if (!ctx.store.decideCatalogEntry(entry.id, { status: "rejected", from: ["listed", "proposed"], ...(note && { note }) }))
+    throw new Error(`El agente ${entry.name} (${entry.id}) ya está ${entry.status === "added" ? "agregado" : "rechazado"}.`);
+  return `Agente ${entry.name} rechazado: no vuelve a proponerse.`;
 }
 
 /** Takes a custom agent out of a line's configuration; its instructions file stays. */

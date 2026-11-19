@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { agentCatalog } from "../src/app.js";
+import { addAgent, addFromCatalog, agentCatalog, agentList, rejectCatalogEntry } from "../src/app.js";
 import { acceptFindings, catalogKey, normalizeLicense, screenAgentText, type CatalogFinding, type NewCatalogEntry } from "../src/catalog.js";
 import { formatCatalog } from "../src/format.js";
 import { Store } from "../src/state/store.js";
@@ -168,5 +168,119 @@ describe("zero agent catalog", () => {
     const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
     expect(cli).toContain("zero agent catalog ");
     expect(cli).toContain("console.log(formatCatalog(agentCatalog(ctx)));");
+  });
+});
+
+describe("sumar y rechazar desde el catálogo", () => {
+  const setup = () => {
+    const repo = gitRepo();
+    const ctx = testFactory({ lines: [{ name: "demo", repo, verify: ["true"] }] });
+    return { ctx, repo };
+  };
+  const factoryFile = (ctx: ReturnType<typeof testFactory>) => readFileSync(ctx.home.config, "utf8");
+  const agentFile = (repo: string, name: string) => join(repo, ".zero", "agents", `${name}.md`);
+
+  it("con confirmación suma el agente con su encabezado, da crédito y lo marca agregado", async () => {
+    const { ctx, repo } = setup();
+    const e = ctx.store.createCatalogEntry(entry({ status: "proposed", line: "demo", gap: "accesibilidad" }));
+    const said: string[] = [];
+    const questions: string[] = [];
+    const r = await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async (q) => (questions.push(q), true), say: (t) => said.push(t) });
+    expect(r.added).toBe(true);
+    expect(questions).toHaveLength(1);
+    const content = readFileSync(agentFile(repo, "a11y-reviewer"), "utf8");
+    expect(said.join("\n")).toContain(content);
+    expect(said.join("\n")).toContain(agentFile(repo, "a11y-reviewer"));
+    expect(content).toContain("https://github.com/acme/agents");
+    expect(content).toContain("license MIT");
+    expect(content).toContain("Check accessibility.");
+    expect(agentList(ctx, "demo")[0]!.agents.map((a) => [a.name, a.type])).toEqual([["a11y-reviewer", "review"]]);
+    expect(factoryFile(ctx)).toContain("a11y-reviewer");
+    expect(ctx.store.getCatalogEntry(e.id)).toMatchObject({ status: "added", line: "demo" });
+    expect(readFileSync(join(repo, "THIRD-PARTY-NOTICES.md"), "utf8")).toContain("- License: MIT");
+  });
+
+  it("suma uno de tipo build como build", async () => {
+    const { ctx } = setup();
+    const e = ctx.store.createCatalogEntry(entry({ name: "translator", type: "build", source: "https://github.com/acme/translator" }));
+    await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true });
+    expect(agentList(ctx, "demo")[0]!.agents.map((a) => [a.name, a.type])).toEqual([["translator", "build"]]);
+  });
+
+  it("sin confirmación, o sin terminal, no escribe nada", async () => {
+    for (const confirm of [async () => false, undefined]) {
+      const { ctx, repo } = setup();
+      const e = ctx.store.createCatalogEntry(entry());
+      const before = factoryFile(ctx);
+      const r = await addFromCatalog(ctx, { id: e.id, line: "demo", ...(confirm && { confirm }) });
+      expect(r).toEqual({ added: false, text: "No sumé nada." });
+      expect(factoryFile(ctx)).toBe(before);
+      expect(existsSync(join(repo, ".zero"))).toBe(false);
+      expect(existsSync(join(repo, "THIRD-PARTY-NOTICES.md"))).toBe(false);
+      expect(ctx.store.getCatalogEntry(e.id)?.status).toBe("listed");
+    }
+  });
+
+  it("rechaza antes de escribir cuando el archivo de instrucciones ya existe", async () => {
+    const { ctx, repo } = setup();
+    mkdirSync(join(repo, ".zero", "agents"), { recursive: true });
+    writeFileSync(agentFile(repo, "a11y-reviewer"), "mine");
+    const e = ctx.store.createCatalogEntry(entry());
+    const before = factoryFile(ctx);
+    let asked = false;
+    await expect(addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => (asked = true) })).rejects.toThrow(/Ya existe .*no lo piso/);
+    expect(asked).toBe(false);
+    expect(readFileSync(agentFile(repo, "a11y-reviewer"), "utf8")).toBe("mine");
+    expect(factoryFile(ctx)).toBe(before);
+    expect(ctx.store.getCatalogEntry(e.id)?.status).toBe("listed");
+    await expect(addAgent(ctx, { name: "a11y-reviewer", line: "demo", instructions: "other" })).rejects.toThrow(/Ya existe/);
+    expect(factoryFile(ctx)).toBe(before);
+  });
+
+  it("un rechazado no se suma después, y queda con su motivo", async () => {
+    const { ctx, repo } = setup();
+    const e = ctx.store.createCatalogEntry(entry());
+    expect(rejectCatalogEntry(ctx, { id: e.id, note: "no lo necesito" })).toContain("rechazado");
+    expect(ctx.store.getCatalogEntry(e.id)).toMatchObject({ status: "rejected", note: "no lo necesito" });
+    const before = factoryFile(ctx);
+    await expect(addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true })).rejects.toThrow(/fue rechazado/);
+    expect(factoryFile(ctx)).toBe(before);
+    expect(existsSync(join(repo, ".zero"))).toBe(false);
+    expect(() => rejectCatalogEntry(ctx, { id: e.id })).toThrow(/ya está rechazado/);
+    expect(() => rejectCatalogEntry(ctx, { id: "nope" })).toThrow(/No hay un agente nope/);
+  });
+
+  it("un agregado no se vuelve a sumar", async () => {
+    const { ctx } = setup();
+    const e = ctx.store.createCatalogEntry(entry());
+    await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true });
+    await expect(addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true })).rejects.toThrow(/ya se sumó/);
+  });
+
+  it("da crédito una sola vez por fuente", async () => {
+    const { ctx, repo } = setup();
+    const a = ctx.store.createCatalogEntry(entry({ name: "first-agent" }));
+    const b = ctx.store.createCatalogEntry(entry({ name: "second-agent" }));
+    await addFromCatalog(ctx, { id: a.id, line: "demo", confirm: async () => true });
+    await addFromCatalog(ctx, { id: b.id, line: "demo", confirm: async () => true });
+    const notices = readFileSync(join(repo, "THIRD-PARTY-NOTICES.md"), "utf8");
+    expect(notices.split("- Source: https://github.com/acme/agents\n")).toHaveLength(2);
+    expect(notices).toContain("- License: MIT");
+  });
+
+  it("sin instrucciones propias usa la plantilla y no da crédito", async () => {
+    const { ctx, repo } = setup();
+    const e = ctx.store.createCatalogEntry(entry({ instructions: "" }));
+    await addFromCatalog(ctx, { id: e.id, line: "demo", confirm: async () => true });
+    const content = readFileSync(agentFile(repo, "a11y-reviewer"), "utf8");
+    expect(content).toContain("https://github.com/acme/agents");
+    expect(content).toContain("## What to check");
+    expect(existsSync(join(repo, "THIRD-PARTY-NOTICES.md"))).toBe(false);
+  });
+
+  it("figura en la ayuda con add y reject", () => {
+    const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
+    expect(cli).toContain("zero agent catalog add <id> --line <línea> [--yes]");
+    expect(cli).toContain("zero agent catalog reject <id>");
   });
 });

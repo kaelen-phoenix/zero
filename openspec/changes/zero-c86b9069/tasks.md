@@ -8,9 +8,9 @@
 
 ## 2. Etapa 2: Sumar y rechazar desde el catálogo
 
-- [ ] 2.1 addAgent `instructions` option (refuses an existing file); addFromCatalog with confirm, source/license header and THIRD-PARTY-NOTICES.md block once per source; rejectCatalogEntry
-- [ ] 2.2 `zero agent catalog add <id> --line <línea> [--yes]` and `reject <id> [--motivo]` in cli.ts and help
-- [ ] 2.3 Tests for confirmed, declined, no-terminal, existing-file, rejected and notices cases
+- [x] 2.1 addAgent `instructions` option (refuses an existing file); addFromCatalog with confirm, source/license header and THIRD-PARTY-NOTICES.md block once per source; rejectCatalogEntry
+- [x] 2.2 `zero agent catalog add <id> --line <línea> [--yes]` and `reject <id> [--motivo]` in cli.ts and help
+- [x] 2.3 Tests for confirmed, declined, no-terminal, existing-file, rejected and notices cases
 
 ## 3. Etapa 3: Catálogo en el panel
 

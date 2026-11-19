@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, agentCatalog, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -95,6 +95,10 @@ Fábrica:
                                  solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
                                  cuando el cambio toca --archivos
   zero agent catalog             Catálogo de agentes que se pueden sumar, los propuestos primero
+  zero agent catalog add <id> --line <línea> [--yes]
+                                 Muestra el agente y el archivo de instrucciones que escribiría, y lo suma solo si confirmás
+                                 (da crédito a la fuente en THIRD-PARTY-NOTICES.md)
+  zero agent catalog reject <id> [--motivo "<texto>"]   Lo rechaza: no se suma ni se vuelve a proponer
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero package list              Paquetes de agentes instalados: fuente, versión, qué traen, si hay novedades y qué problema tienen
   zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--yes]
@@ -145,6 +149,7 @@ async function main(argv: string[]): Promise<number> {
       archivos: { type: "string", multiple: true },
       "permitir-codigo": { type: "boolean" },
       note: { type: "string" },
+      motivo: { type: "string" },
       days: { type: "string" },
       mes: { type: "string" },
       html: { type: "boolean" },
@@ -534,6 +539,24 @@ Informe: ${r.report}`);
         }
         if (action === "catalog" && !name) {
           console.log(formatCatalog(agentCatalog(ctx)));
+          return 0;
+        }
+        if (action === "catalog" && name === "add") {
+          const id = rest[2];
+          if (!id || !values.line) throw new Error("Indicá el agente del catálogo y la línea: zero agent catalog add <id> --line <línea>");
+          const ask = interactiveConfirm();
+          try {
+            const r = await addFromCatalog(ctx, { id, line: values.line, confirm: values.yes ? async () => true : ask.confirm, say: (text) => console.log(text) });
+            console.log(r.text);
+            return r.added ? 0 : 1;
+          } finally {
+            ask.close();
+          }
+        }
+        if (action === "catalog" && name === "reject") {
+          const id = rest[2];
+          if (!id) throw new Error("Indicá el agente del catálogo: zero agent catalog reject <id> [--motivo <texto>]");
+          console.log(rejectCatalogEntry(ctx, { id, note: values.motivo }));
           return 0;
         }
         if (action !== "add" && action !== "remove") break;
