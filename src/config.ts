@@ -201,14 +201,15 @@ export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", 
  * and security, on the same change. `build`: it writes in the work copy, after
  * build and before verify, so all it touches goes through every check. It adds
  * to the line; it never replaces or skips a fixed station, and nothing lets one
- * that writes run after verify.
+ * that writes run after verify. `conflict`: it writes in the work copy when
+ * merging the base leaves conflicts, before build; zero checks its resolution.
  */
 export const CustomAgentSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "usá minúsculas, dígitos y guiones"),
     /** Its instructions, relative to the line's repository (line agents) or to the factory folder (global agents). */
     instructions: z.string().min(1).optional(),
-    type: z.enum(["review", "build"], { error: "el tipo de un agente a medida tiene que ser review o build" }).default("review"),
+    type: z.enum(["review", "build", "conflict"], { error: "el tipo de un agente a medida tiene que ser review o build, o conflict para resolver conflictos" }).default("review"),
     /** Where it runs in the line, derived from its type; a reviewer may still say `review`. */
     after: z.string({ error: "after tiene que ser un texto" }).optional(),
     /** Derived from its type: whatever a reviewer writes is discarded. */
@@ -230,6 +231,11 @@ export const CustomAgentSchema = z
       if (a.after !== undefined) issue("after", `el agente "${a.name}" escribe: un agente que escribe corre entre build y verify, sin after`);
       if (a.access !== undefined && a.access !== "write") issue("access", `el agente "${a.name}" escribe: su access solo puede ser write`);
       if (a.blocking === false) issue("blocking", `el agente "${a.name}" escribe: si falla, falla el intento, así que no puede ser blocking: false`);
+    } else if (a.type === "conflict") {
+      if (a.after !== undefined) issue("after", `el agente "${a.name}" resuelve conflictos: corre al traer la rama base, antes de build, sin after`);
+      if (a.access !== undefined && a.access !== "write") issue("access", `el agente "${a.name}" resuelve conflictos: su access solo puede ser write`);
+      if (a.blocking === false) issue("blocking", `el agente "${a.name}" resuelve conflictos: no puede ser blocking: false`);
+      if (a.files !== undefined) issue("files", `el agente "${a.name}" resuelve conflictos: files solo vale con type: build`);
     } else {
       if (a.after !== undefined && a.after !== "review") issue("after", `un agente de revisión solo puede correr después de review; para escribir antes de verify usá type: build`);
       if (a.access !== undefined && a.access !== "read") issue("access", `un agente de revisión solo puede ser de lectura (access: read); para escribir usá type: build`);
@@ -237,11 +243,11 @@ export const CustomAgentSchema = z
     }
   })
   .transform((a) => {
-    const writes = a.type === "build";
+    const writes = a.type !== "review";
     return {
       ...a,
       instructions: a.instructions ?? `.zero/agents/${a.name}.md`,
-      after: (writes ? "build" : "review") as "build" | "review",
+      after: (a.type === "conflict" ? "conflict" : writes ? "build" : "review") as "build" | "review" | "conflict",
       access: (writes ? "write" : "read") as "write" | "read",
       blocking: writes || (a.blocking ?? true),
       files: a.files ?? [],

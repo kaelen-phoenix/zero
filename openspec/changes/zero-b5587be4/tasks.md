@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Conflict agent type in configuration, packages, CLI and views
 
-- [ ] 1.1 CustomAgentSchema accepts `type: conflict` with write access and refuses after/files/blocking:false/non-write access
-- [ ] 1.2 packages.ts manifest accepts conflict; widening counts new conflict agents
-- [ ] 1.3 addAgent with conflictTemplate, agentList ordering, productionLine station mapping, CLI help
-- [ ] 1.4 format.ts and panel html labels for conflict agents
-- [ ] 1.5 Tests for schema, package loading and addAgent
+- [x] 1.1 CustomAgentSchema accepts `type: conflict` with write access and refuses after/files/blocking:false/non-write access
+- [x] 1.2 packages.ts manifest accepts conflict; widening counts new conflict agents
+- [x] 1.3 addAgent with conflictTemplate, agentList ordering, productionLine station mapping, CLI help
+- [x] 1.4 format.ts and panel html labels for conflict agents
+- [x] 1.5 Tests for schema, package loading and addAgent
 
 ## 2. Etapa 2: Runner hook, validation, fallback, spans and trace
 

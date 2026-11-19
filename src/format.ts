@@ -192,9 +192,16 @@ export function formatAgents(lists: LineAgentList[]): string {
   for (const l of lists) {
     const at = (type: string) => l.agents.filter((a) => a.type === type).map((a) => ` → ${a.name}`).join("");
     out.push(`Línea ${l.line}: spec → build${at("build")} → verify → review → security${at("review")} → integrate`);
+    const resolvers = l.agents.filter((a) => a.type === "conflict").map((a) => a.name);
+    if (resolvers.length) out.push(`Conflictos al traer la base: ${resolvers.join(" → ")} → build`);
     if (!l.agents.length) out.push(`- sin agentes a medida (agregá uno con \`zero agent add <nombre> --line ${l.line}\`)`);
     for (const a of l.agents) {
-      const kind = a.type === "build" ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}` : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
+      const kind =
+        a.type === "build"
+          ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}`
+          : a.type === "conflict"
+            ? "resuelve conflictos al traer la base, antes de build"
+            : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
       out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }

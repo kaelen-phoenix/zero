@@ -664,6 +664,10 @@ describe("updating from git: asking when it asks for more", () => {
     expect(widening(m({}), m({ agents: [build] })).buildAgents).toEqual(["r"]);
     expect(widening(m({ agents: [build] }), m({ agents: [build] })).buildAgents).toEqual([]);
     expect(widening(m({}), m({ agents: [review] })).buildAgents).toEqual([]);
+    const conflict = { ...review, type: "conflict" };
+    expect(widening(m({}), m({ agents: [conflict] })).buildAgents).toEqual(["r"]);
+    expect(widening(m({ agents: [review] }), m({ agents: [conflict] })).buildAgents).toEqual(["r"]);
+    expect(widening(m({ agents: [conflict] }), m({ agents: [conflict] })).buildAgents).toEqual([]);
     expect(widening(m({ stations: [station()] }), m({ stations: [limited(1)] })).requests).toEqual(["nota"]);
     expect(widening(m({ stations: [limited(1)] }), m({ stations: [limited(2)] })).requests).toEqual(["nota"]);
     expect(widening(m({ stations: [limited(2)] }), m({ stations: [limited(1)] })).requests).toEqual([]);
