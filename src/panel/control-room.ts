@@ -218,6 +218,94 @@ export function controlRoomFragment(v: ControlRoomView): string {
   return [topbar(v), ticker(v.events), series(v.series), graph(v), alerts(v), bus(v), engines(v), trace(v)].join("\n");
 }
 
+/**
+ * Keeps the room live without reloading: gets the fragment (pushed on `/control-room/events`, or polled), replaces the
+ * modules that changed, moves each job's dot in place by `data-job` so its CSS transition carries it to the next station,
+ * and ticks the clock every second from the time the server last gave.
+ */
+const CONTROL_REFRESH = `(() => {
+  const root = document.getElementById("control");
+  let last = "";
+  let base = 0;
+  let since = Date.now();
+  const two = (n) => String(n).padStart(2, "0");
+  const setClock = () => {
+    const el = root.querySelector("[data-clock]");
+    if (!el) return;
+    const m = /^(\\d+):(\\d+):(\\d+)$/.exec(el.dataset.shown || el.textContent || "");
+    if (!m) return;
+    if (!el.dataset.shown) {
+      el.dataset.shown = el.textContent;
+      base = (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000;
+      since = Date.now();
+    }
+    const t = Math.floor((base + Date.now() - since) / 1000) % 86400;
+    el.textContent = two(Math.floor(t / 3600)) + ":" + two(Math.floor(t / 60) % 60) + ":" + two(t % 60);
+  };
+  const modules = (el) => new Map([...el.querySelectorAll("[data-module]")].map((m) => [m.dataset.module, m]));
+  const moveDots = (cur, fresh) => {
+    const svg = cur.querySelector("svg");
+    const next = fresh.querySelector("svg");
+    if (!svg || !next) return false;
+    const kept = new Map([...svg.querySelectorAll("[data-job]")].map((d) => [d.dataset.job, d]));
+    for (const dot of [...next.querySelectorAll("[data-job]")]) {
+      const old = kept.get(dot.dataset.job);
+      if (!old) {
+        svg.appendChild(dot);
+        continue;
+      }
+      kept.delete(dot.dataset.job);
+      for (const name of ["data-at", "data-status", "style"]) old.setAttribute(name, dot.getAttribute(name) || "");
+      old.replaceChildren(...dot.childNodes);
+    }
+    kept.forEach((d) => d.remove());
+    const list = cur.querySelector(".cr-decisions");
+    const freshList = fresh.querySelector(".cr-decisions");
+    if (list && freshList && list.outerHTML !== freshList.outerHTML) list.replaceWith(freshList);
+    return true;
+  };
+  const update = (html) => {
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    const now = modules(root);
+    const next = modules(t.content);
+    const same = now.size === next.size && [...next.keys()].every((k) => now.has(k));
+    if (!same) {
+      root.replaceChildren(t.content);
+      return setClock();
+    }
+    for (const [name, fresh] of next) {
+      const cur = now.get(name);
+      if (cur.outerHTML === fresh.outerHTML) continue;
+      if (name === "graph" && moveDots(cur, fresh)) continue;
+      cur.replaceWith(fresh);
+    }
+    setClock();
+  };
+  const apply = (html) => {
+    if (html && html !== last) update(html);
+    if (html) last = html;
+  };
+  const poll = () =>
+    fetch("/control-room?fragment=1", { credentials: "same-origin", cache: "no-store" })
+      .then((r) => (r.ok ? r.text() : ""))
+      .then(apply)
+      .catch(() => {});
+  // The server pushes the fragment when something changes; polling is the fallback while the stream is not open.
+  const stream = window.EventSource ? new EventSource("/control-room/events") : null;
+  if (stream) stream.addEventListener("message", (e) => apply(e.data));
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (stream && stream.readyState === EventSource.OPEN) return;
+    poll();
+  }, 5000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") poll();
+  });
+  setClock();
+  setInterval(setClock, 1000);
+})();`;
+
 export function controlRoomPage(v: ControlRoomView, nonce: string): string {
-  return page("Sala de control", `<style>${CONTROL_STYLE}</style><div id="control">${controlRoomFragment(v)}</div>`, { nonce, active: "/control-room" });
+  return page("Sala de control", `<style>${CONTROL_STYLE}</style><div id="control">${controlRoomFragment(v)}</div><script nonce="${nonce}">${CONTROL_REFRESH}</script>`, { nonce, active: "/control-room" });
 }

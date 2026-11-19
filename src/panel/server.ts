@@ -139,10 +139,17 @@ export interface PanelOptions {
   merges?: MergeApiFactory;
 }
 
-/** One open `/line/events` stream: the session it was opened with and the last fragment it got. */
-interface LineStream {
+/** What a live page's stream sends: its fragment, and what of it counts as a change (all of it by default). */
+interface StreamFeed {
+  render: () => string;
+  changed?: (html: string) => string;
+}
+
+/** One open live stream (`/line/events`, `/control-room/events`): the session it was opened with, its feed and the last fragment it got. */
+interface LiveStream {
   res: ServerResponse;
   session: string;
+  feed: StreamFeed;
   last: string;
   wrote: number;
 }
@@ -215,17 +222,23 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return true;
   };
 
-  // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
+  // Live streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
   const watchMs = opts.watchMs ?? 1000;
   const heartbeatMs = opts.heartbeatMs ?? 25_000;
-  const streams = new Set<LineStream>();
+  const streams = new Set<LiveStream>();
   let watcher: NodeJS.Timeout | undefined;
-  const write = (s: LineStream, chunk: string) => {
+  const lineFeed: StreamFeed = { render: () => lineView(productionLine(ctx)) };
+  // The room's clock moves every second on its own in the page; only the rest of the fragment is a change.
+  const controlFeed: StreamFeed = {
+    render: () => controlRoomFragment(controlRoomView(ctx, ctx.now?.())),
+    changed: (html) => html.replace(/<span class="clock"[^>]*>[^<]*<\/span>/, ""),
+  };
+  const write = (s: LiveStream, chunk: string) => {
     if (s.res.destroyed || s.res.writableEnded) return void streams.delete(s);
     s.res.write(chunk);
     s.wrote = now();
   };
-  const drop = (s: LineStream) => {
+  const drop = (s: LiveStream) => {
     streams.delete(s);
     if (!s.res.writableEnded && !s.res.destroyed) s.res.end();
     if (!streams.size && watcher) {
@@ -238,21 +251,25 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const session = sessionFor(currentKey());
       for (const s of [...streams]) if (s.res.destroyed || s.res.writableEnded || !same(s.session, session)) drop(s);
       if (!streams.size) return;
-      const html = lineView(productionLine(ctx));
+      // Each feed is rendered once per tick, however many of its streams are open.
+      const rendered = new Map<StreamFeed, string>();
       for (const s of streams) {
-        if (html !== s.last) {
+        let html = rendered.get(s.feed);
+        if (html === undefined) rendered.set(s.feed, (html = s.feed.render()));
+        const changed = s.feed.changed ?? ((h: string) => h);
+        if (changed(html) !== changed(s.last)) {
           s.last = html;
           write(s, sse(html));
         } else if (now() - s.wrote >= heartbeatMs) write(s, ": ping\n\n");
       }
     } catch (err) {
-      log.warn("panel line stream", { error: err instanceof Error ? err.message : String(err) });
+      log.warn("panel live stream", { error: err instanceof Error ? err.message : String(err) });
     }
   };
-  const openStream = (req: IncomingMessage, res: ServerResponse, session: string) => {
+  const openStream = (req: IncomingMessage, res: ServerResponse, session: string, feed: StreamFeed) => {
     res.writeHead(200, { ...headers(randomBytes(16).toString("base64")), "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" });
-    const html = lineView(productionLine(ctx));
-    const s: LineStream = { res, session, last: html, wrote: now() };
+    const html = feed.render();
+    const s: LiveStream = { res, session, feed, last: html, wrote: now() };
     streams.add(s);
     req.on("close", () => drop(s));
     res.on("close", () => drop(s));
@@ -330,7 +347,8 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (!authed) return send(res, 401, loginPage(nonce), nonce);
 
     if (req.method === "GET") {
-      if (path === "/line/events") return openStream(req, res, sessionFor(key));
+      if (path === "/line/events") return openStream(req, res, sessionFor(key), lineFeed);
+      if (path === "/control-room/events") return openStream(req, res, sessionFor(key), controlFeed);
       if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), ctx.config.lines.map((l) => l.name), nonce, flash), nonce);
       if (path === "/line") {
         // The fragment is what the page's script fetches to update its rows in place.

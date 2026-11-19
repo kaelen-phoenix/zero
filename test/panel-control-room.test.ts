@@ -22,13 +22,13 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const ago = (ms: number) => new Date(NOON.getTime() - ms);
 
-async function panel(before?: (ctx: FactoryContext, clock: { at: Date }) => void) {
+async function panel(before?: (ctx: FactoryContext, clock: { at: Date }) => void, opts: { watchMs?: number } = {}) {
   const clock = { at: NOON };
   const ctx = testFactory({ level: "L2", isolation: "worktree", engine: "claude", lines: [{ name: "tienda", repo: gitRepo() }, { name: "blog", repo: gitRepo() }] }, () => clock.at);
   ctx.store.setKv(DAEMON_KEY, JSON.stringify({ pid: process.pid, beatAt: NOON.toISOString() }));
   before?.(ctx, clock);
   clock.at = NOON;
-  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets) });
+  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), ...opts });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -39,7 +39,40 @@ async function panel(before?: (ctx: FactoryContext, clock: { at: Date }) => void
     expect(r.status).toBe(200);
     return r.text();
   };
-  return { ctx, get, text };
+  return { ctx, clock, get, text };
+}
+
+/** Reads a live stream as it arrives: its data events, lines joined like EventSource does. */
+function events(res: Response) {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const data: string[] = [];
+  let buffer = "";
+  void (async () => {
+    try {
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        buffer += decoder.decode(r.value, { stream: true });
+        let end;
+        while ((end = buffer.indexOf("\n\n")) > -1) {
+          const payload = buffer.slice(0, end).split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
+          buffer = buffer.slice(end + 2);
+          if (payload.length) data.push(payload.join("\n"));
+        }
+      }
+    } catch {
+      // aborted by the test
+    }
+  })();
+  const until = async (ok: () => boolean, ms = 10_000) => {
+    const start = Date.now();
+    while (!ok()) {
+      if (Date.now() - start > ms) throw new Error("timed out waiting for the stream");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+  return { data, until, cancel: () => reader.cancel().catch(() => {}) };
 }
 
 function job(ctx: FactoryContext, clock: { at: Date }, at: Date, status?: "delivered" | "failed" | "stopped" | "running" | "waiting", line = "tienda") {
@@ -164,6 +197,63 @@ describe("control room tab", () => {
       expect(html).not.toContain(`method="post"`);
       expect(html).not.toContain("<button");
     }
+  });
+});
+
+describe("control room stream", () => {
+  it("sends the modules on opening and again when a job comes in", async () => {
+    const p = await panel(undefined, { watchMs: 20 });
+    const res = await p.get("/control-room/events");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-accel-buffering")).toBe("no");
+    const stream = events(res);
+    await stream.until(() => stream.data.length > 0);
+    expect(stream.data[0]).toContain(`data-module="topbar"`);
+    expect(stream.data[0]).toContain(`data-stat="queued" data-status="idle">0<`);
+    job(p.ctx, p.clock, ago(MIN));
+    await stream.until(() => stream.data.length > 1);
+    expect(stream.data[1]).toContain(`data-stat="queued" data-status="idle">1<`);
+    await stream.cancel();
+  });
+
+  it("asks for the key without a session", async () => {
+    const p = await panel();
+    const r = await p.get("/control-room/events", {});
+    expect(r.status).toBe(401);
+    expect(await r.text()).not.toContain("data-module");
+  });
+
+  it("leaves the line's stream with only the line", async () => {
+    const p = await panel(undefined, { watchMs: 20 });
+    const line = events(await p.get("/line/events"));
+    const room = events(await p.get("/control-room/events"));
+    await Promise.all([line.until(() => line.data.length > 0), room.until(() => room.data.length > 0)]);
+    job(p.ctx, p.clock, ago(MIN));
+    await Promise.all([line.until(() => line.data.length > 1), room.until(() => room.data.length > 1)]);
+    for (const d of line.data) expect(d).not.toContain("data-module");
+    for (const d of room.data) expect(d).toContain(`data-module="topbar"`);
+    await Promise.all([line.cancel(), room.cancel()]);
+  });
+
+  it("is what the page listens to, with the polling fallback and dots moved in place", async () => {
+    const p = await panel();
+    const r = await p.get("/control-room");
+    const html = await r.text();
+    const nonce = /'nonce-([^']+)'/.exec(r.headers.get("content-security-policy")!)![1];
+    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+    for (const [, attrs] of scripts) expect(attrs).toBe(` nonce="${nonce}"`);
+    const body = scripts.map((m) => m[2]).join("\n");
+    expect(body).toContain('new EventSource("/control-room/events")');
+    expect(body).toContain('fetch("/control-room?fragment=1"');
+    expect(body).toMatch(/setInterval\([\s\S]*readyState === EventSource\.OPEN[\s\S]*, 5000\)/);
+    expect(body).toContain('addEventListener("visibilitychange"');
+    expect(body).toContain("[data-job]");
+    expect(body).toContain("dataset.job");
+    expect(body).toContain("setInterval(setClock, 1000)");
+    expect(body).not.toMatch(/\beval\(|new Function/);
+    expect(CONTROL_STYLE).toMatch(/\.cr-dot \{ transition:transform/);
   });
 });
 

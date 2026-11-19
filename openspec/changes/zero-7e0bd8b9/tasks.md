@@ -14,7 +14,7 @@
 
 ## 3. Etapa 3: Stream en vivo y animación
 
-- [ ] 3.1 Generalise the panel's stream code so each stream carries its own render function, then add GET `/control-room/events` with the same watcher, heartbeat, session check and headers as `/line/events`.
-- [ ] 3.2 Add `CONTROL_REFRESH` to the page: `EventSource` with a 5 s polling fallback, dots moved in place by `data-job` with a CSS transition, other modules replaced when they change, and the clock ticking every second.
-- [ ] 3.3 Add stream tests (first fragment, update after a new queued job, 401 without a session, `/line/events` unaffected) and check that the page script references both the stream and the fragment URL.
-- [ ] 3.4 Update AGENTS.md and, if the READMEs list the panel tabs, both READMEs. Run typecheck, tests and the openspec validation.
+- [x] 3.1 Generalise the panel's stream code so each stream carries its own render function, then add GET `/control-room/events` with the same watcher, heartbeat, session check and headers as `/line/events`.
+- [x] 3.2 Add `CONTROL_REFRESH` to the page: `EventSource` with a 5 s polling fallback, dots moved in place by `data-job` with a CSS transition, other modules replaced when they change, and the clock ticking every second.
+- [x] 3.3 Add stream tests (first fragment, update after a new queued job, 401 without a session, `/line/events` unaffected) and check that the page script references both the stream and the fragment URL.
+- [x] 3.4 Update AGENTS.md and, if the READMEs list the panel tabs, both READMEs. Run typecheck, tests and the openspec validation.
