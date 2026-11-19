@@ -25,6 +25,6 @@
 
 ## 5. Etapa 5: Documentación
 
-- [ ] 5.1 AGENTS.md layout entry for the catalog and the recruiter
-- [ ] 5.2 README.md and README.es.md sections with the same structure and code blocks
-- [ ] 5.3 Run typecheck, tests and openspec validate
+- [x] 5.1 AGENTS.md layout entry for the catalog and the recruiter
+- [x] 5.2 README.md and README.es.md sections with the same structure and code blocks
+- [x] 5.3 Run typecheck, tests and openspec validate
