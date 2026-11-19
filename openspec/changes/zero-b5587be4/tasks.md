@@ -10,10 +10,10 @@
 
 ## 2. Etapa 2: Runner hook, validation, fallback, spans and trace
 
-- [ ] 2.1 ConflictSchema plus helpers for conflict blocks and base commits
-- [ ] 2.2 runJob: save the fallback state, run conflict agents in order, validate (all resolved, no markers, base and head contained), commit and resume at verify, or discard and fall back
-- [ ] 2.3 Spans `zero.station.<agent>` with zero.conflicts.* attributes and renderTrace description
-- [ ] 2.4 test/conflict-agents.test.ts covering acceptance, every fallback, ordering, missing instructions, no-agent behaviour and trace
+- [x] 2.1 ConflictSchema plus helpers for conflict blocks and base commits
+- [x] 2.2 runJob: save the fallback state, run conflict agents in order, validate (all resolved, no markers, base and head contained), commit and resume at verify, or discard and fall back
+- [x] 2.3 Spans `zero.station.<agent>` with zero.conflicts.* attributes and renderTrace description
+- [x] 2.4 test/conflict-agents.test.ts covering acceptance, every fallback, ordering, missing instructions, no-agent behaviour and trace
 
 ## 3. Etapa 3: Documentation and OpenSpec change
 
