@@ -348,6 +348,7 @@ With the factory running, the panel shows:
 - each line's night-shift proposals ("Propuestas" tab);
 - each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
 - the "Monitor" tab: factory totals (jobs per day, delivered, failed, queued and running, success rate, average time per job and per station, attempts per job), subscription use, the month's spend per engine and tokens, one card per agent (calls, tokens, cost, time, success rate, deliveries, engines, models and lines) and one per line (jobs, deliveries, last job, open pull requests), drawn in SVG inside the panel, filtered by today, 7 or 30 days, read-only and refreshed on its own;
+- the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
 From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
