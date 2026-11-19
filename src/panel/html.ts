@@ -165,6 +165,7 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/proposals", "Propuestas", `<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>`],
   ["/research", "Investigación", `<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>`],
   ["/monitor", "Monitor", `<path d="M3 12h4l2.5-7 4 14 2.5-7h5"/>`],
+  ["/control-room", "Sala de control", `<rect x="2" y="4" width="20" height="13" rx="1.5"/><path d="M8 21h8M12 17v4M6 13l3-4 3 2 3-4 3 3"/>`],
   ["/briefing", "Informe", `<path d="M4 5h13v14H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v8a2 2 0 0 1-2 2M8 9h5M8 13h5M8 16h3"/>`],
   ["/report", "Informe mensual", `<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>`],
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
@@ -1116,7 +1117,7 @@ ${agents}<h2>Líneas</h2>${lines}
 }
 
 /** "45 s", "3 min", "1 h 5 min". */
-function duration(ms: number | undefined): string {
+export function duration(ms: number | undefined): string {
   if (ms === undefined) return "sin dato";
   if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
   const minutes = Math.round(ms / 60_000);
