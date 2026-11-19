@@ -10,6 +10,7 @@ import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js"
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
 import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
+import { CATALOG_STATUSES, type CatalogEntry } from "./catalog.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
@@ -2041,6 +2042,12 @@ export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList
       return { name: a.name, origin: a.origin, type: a.type, files: a.files, blocking: a.blocking, path, missing: !existsSync(path) };
     }),
   }));
+}
+
+/** The agent catalog, proposed entries first, then listed, added and rejected, each oldest first. */
+export function agentCatalog(ctx: FactoryContext): CatalogEntry[] {
+  const order = (e: CatalogEntry) => CATALOG_STATUSES.indexOf(e.status);
+  return ctx.store.listCatalog().sort((a, b) => order(a) - order(b));
 }
 
 const agentTemplate = (name: string, blocking: boolean) => `# Agent: ${name}

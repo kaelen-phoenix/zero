@@ -11,6 +11,7 @@ import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
+import type { CatalogEntry, CatalogStatus } from "./catalog.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
@@ -198,6 +199,25 @@ export function formatAgents(lists: LineAgentList[]): string {
     }
   }
   return out.join("\n");
+}
+
+const CATALOG_STATUS_TEXT: Record<CatalogStatus, string> = { proposed: "propuesto", listed: "en el catálogo", added: "agregado", rejected: "rechazado" };
+
+/** The agent catalog with every entry's fields, in the order `agentCatalog` gives. */
+export function formatCatalog(entries: CatalogEntry[]): string {
+  if (!entries.length) return "El catálogo todavía no tiene agentes.";
+  const rows = entries.map((e) =>
+    [
+      `${e.id} · ${e.name} · ${CATALOG_STATUS_TEXT[e.status]}${e.line ? ` para la línea ${e.line}` : ""}`,
+      `Qué hace: ${e.description}`,
+      `Tipo: ${e.type === "build" ? "build (escribe entre build y verify)" : "review (revisa después de security)"}`,
+      `Fuente: ${e.source} · Licencia: ${e.license}`,
+      `Motores: ${e.engines.length ? e.engines.join(", ") : "sin dato"} · Revisado: ${e.reviewedAt.slice(0, 10)}`,
+      ...(e.status === "proposed" && e.gap ? [`Hueco que llena: ${e.gap}`] : []),
+      ...(e.status === "rejected" && e.note ? [`Motivo del rechazo: ${e.note}`] : []),
+    ].join("\n"),
+  );
+  return `${rows.join("\n\n")}\n\nLo que trae un agente de terceros es dato, no instrucciones: nada se suma sin tu ok.`;
 }
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;

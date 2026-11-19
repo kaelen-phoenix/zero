@@ -2,9 +2,9 @@
 
 ## 1. Etapa 1: Catálogo: datos, revisión y listado
 
-- [ ] 1.1 src/catalog.ts pure helpers (license normalization, screenAgentText, catalogKey, acceptFindings) with tests
-- [ ] 1.2 agent_catalog table and store methods with tests
-- [ ] 1.3 agentCatalog in app.ts, formatCatalog in format.ts and `zero agent catalog` listing in cli.ts with tests
+- [x] 1.1 src/catalog.ts pure helpers (license normalization, screenAgentText, catalogKey, acceptFindings) with tests
+- [x] 1.2 agent_catalog table and store methods with tests
+- [x] 1.3 agentCatalog in app.ts, formatCatalog in format.ts and `zero agent catalog` listing in cli.ts with tests
 
 ## 2. Etapa 2: Sumar y rechazar desde el catálogo
 
