@@ -192,6 +192,16 @@ describe("panel guide pages", () => {
     expect(plain(line)).not.toContain("No tiene agentes a medida");
   });
 
+  it("shows a conflict resolver first, as such", async () => {
+    const repo = gitRepo();
+    const html = await (await panel({ lines: [{ name: "tienda", repo, agents: [{ name: "a11y" }, { name: "resolver", type: "conflict" }] }] })).text("/agents");
+    const line = html.split("<h2>Líneas</h2>")[1]!;
+    expect(line.indexOf('data-agent="resolver"')).toBeGreaterThan(-1);
+    expect(line.indexOf('data-agent="resolver"')).toBeLessThan(line.indexOf('data-agent="a11y"'));
+    const resolver = line.split('data-agent="a11y"')[0]!;
+    expect(plain(resolver)).toContain("resuelve conflictos");
+  });
+
   it("says when a line has no agents of its own", async () => {
     expect(plain((await (await panel()).text("/agents")).split("<h2>Líneas</h2>")[1]!)).toContain("No tiene agentes a medida");
   });

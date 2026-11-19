@@ -23,7 +23,7 @@ const ManifestAgentSchema = z
   .object({
     name: z.string().regex(NAME, NAME_RULE),
     instructions: z.string().min(1),
-    type: z.enum(["review", "build"]).default("review"),
+    type: z.enum(["review", "build", "conflict"]).default("review"),
     blocking: z.boolean().optional(),
     files: z.array(z.string().min(1)).optional(),
     maxTurns: z.number().int().positive().optional(),

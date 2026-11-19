@@ -90,10 +90,11 @@ Panel en el navegador:
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero agent list [--line <nombre>]   Agentes a medida de cada línea, en el orden en que corren
-  zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build] [--archivos <patrón>]...
+  zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build|conflict] [--archivos <patrón>]...
                                  Suma un agente a la línea (crea .zero/agents/<nombre>.md con una plantilla): revisor de
                                  solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
-                                 cuando el cambio toca --archivos
+                                 cuando el cambio toca --archivos, o con --tipo conflict uno que resuelve los conflictos
+                                 al traer la rama base, antes de build
   zero agent catalog             Catálogo de agentes que se pueden sumar, los propuestos primero
   zero agent catalog add <id> --line <línea> [--yes]
                                  Muestra el agente y el archivo de instrucciones que escribiría, y lo suma solo si confirmás
