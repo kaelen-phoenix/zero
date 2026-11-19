@@ -19,9 +19,9 @@
 
 ## 4. Etapa 4: Estación reclutadora nocturna
 
-- [ ] 4.1 recruit fixed station wiring (agent.ts, config.ts, skills.ts, app.ts MONITOR_AGENTS, scout.ts IDLE_STATIONS) plus `recruit` config and agents/recruit.md
-- [ ] 4.2 src/line/recruit.ts recruitPrompt, RecruitOutput and recruitPass; daemon idlePasses after research with DaemonOptions.recruit
-- [ ] 4.3 Tests: gates, shared cap, prompt content, storing as proposed or listed, auto line never adds
+- [x] 4.1 recruit fixed station wiring (agent.ts, config.ts, skills.ts, app.ts MONITOR_AGENTS, scout.ts IDLE_STATIONS) plus `recruit` config and agents/recruit.md
+- [x] 4.2 src/line/recruit.ts recruitPrompt, RecruitOutput and recruitPass; daemon idlePasses after research with DaemonOptions.recruit
+- [x] 4.3 Tests: gates, shared cap, prompt content, storing as proposed or listed, auto line never adds
 
 ## 5. Etapa 5: Documentación
 

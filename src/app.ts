@@ -1030,7 +1030,7 @@ export interface MonitorView {
 }
 
 /** The fixed agents the monitor always shows, even without activity. */
-const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam"];
+const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam", "recruit"];
 const OPEN_PR_GONE = new Set<MergeState["status"]>(["merged", "closed", "expired"]);
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

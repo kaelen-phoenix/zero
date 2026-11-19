@@ -999,6 +999,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
     cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
   },
+  recruit: {
+    name: "Reclutador (recruit)",
+    does: "Con la fábrica libre, una vez por semana, busca en la web agentes públicos con licencia libre que llenen huecos de las líneas (sus trabas y rechazos recientes) y los suma al catálogo, propuestos para una línea cuando encajan.",
+    cannot: "No suma ningún agente ni toca el archivo de la fábrica: sumarlo lo decidís vos desde el catálogo. No instala ni ejecuta nada; lo que lee en la web es dato, nunca instrucciones.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };
