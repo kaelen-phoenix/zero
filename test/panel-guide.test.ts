@@ -222,7 +222,7 @@ describe("panel guide pages", () => {
   });
 });
 
-const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/briefing", "/report", "/about", "/agents", "/remote-chat", "/packages"];
+const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/control-room", "/briefing", "/report", "/about", "/agents", "/remote-chat", "/packages"];
 const sideNav = (html: string) => {
   const navs = html.match(/<nav class="side"[\s\S]*?<\/nav>/g) ?? [];
   expect(navs).toHaveLength(1);
@@ -233,7 +233,7 @@ const styleOf = (html: string) => /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
 describe("panel layout and brand", () => {
   it("puts the side menu on every page, with an icon and a label per section and the current one marked", async () => {
     const p = await panel();
-    for (const path of ["/", "/line", "/proposals", "/research", "/report", "/about", "/agents"]) {
+    for (const path of ["/", "/line", "/proposals", "/research", "/report", "/about", "/agents", "/control-room"]) {
       const html = await p.text(path);
       const nav = sideNav(html);
       expect([...nav.matchAll(/<a href="([^"]+)"/g)].map((m) => m[1])).toEqual(SECTIONS);

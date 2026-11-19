@@ -8,9 +8,9 @@
 
 ## 2. Etapa 2: Página, estética y menú
 
-- [ ] 2.1 Create `src/panel/control-room.ts` with `controlRoomFragment`, `CONTROL_STYLE` (dark console, monospace, neon colours by `data-status`, ticker animation with `prefers-reduced-motion`, single column up to 600 px) and `controlRoomPage` through `page()`.
-- [ ] 2.2 Add the `NAV` entry "Sala de control" to `src/panel/html.ts`. In `src/panel/server.ts`, serve GET `/control-room` and `/control-room?fragment=1` and add `/control-room` to the active-section mapping.
-- [ ] 2.3 Add page tests: the menu link and `aria-current`, 401 without a session, every module's `data-` hooks, no external resources, the CSS rules and no forms.
+- [x] 2.1 Create `src/panel/control-room.ts` with `controlRoomFragment`, `CONTROL_STYLE` (dark console, monospace, neon colours by `data-status`, ticker animation with `prefers-reduced-motion`, single column up to 600 px) and `controlRoomPage` through `page()`.
+- [x] 2.2 Add the `NAV` entry "Sala de control" to `src/panel/html.ts`. In `src/panel/server.ts`, serve GET `/control-room` and `/control-room?fragment=1` and add `/control-room` to the active-section mapping.
+- [x] 2.3 Add page tests: the menu link and `aria-current`, 401 without a session, every module's `data-` hooks, no external resources, the CSS rules and no forms.
 
 ## 3. Etapa 3: Stream en vivo y animación
 
