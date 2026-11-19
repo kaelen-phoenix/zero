@@ -77,3 +77,134 @@ The zerointheloop.com paragraph of README.md and of README.es.md MUST NOT mentio
 #### Scenario: Los dos README
 - **WHEN** the test reads the paragraph containing zerointheloop.com in README.md and README.es.md
 - **THEN** neither matches /training|capacitaci/i; both contain 'WhatsApp', 'Instagram', 'site/' and 'Vercel'; README.md contains 'contact' and README.es.md contains 'contacto' (case-insensitive); neither contains 'email' or 'correo'
+
+## MODIFIED Requirements
+
+### Requirement: Content sections in order
+site/index.html MUST present, in this order, sections for: title and tagline ('zero in the loop', with the tagline that «Lema del hero: zero se suma al circuito» asks for), synopsis, production line and stations, autonomy levels L0–L3 and per-line autonomy, night shift, guarantees, CI and quality tools, install and first steps, workflow, compatibility, contact and links. Each section MUST carry a stable id, and each section after the hero MUST carry a numbered marker (01, 02…).
+
+#### Scenario: Section order
+- **WHEN** the section ids are read from index.html in document order
+- **THEN** they appear in the order hero, synopsis, line, autonomy, night-shift, guarantees, ci, install, workflow, compatibility, contact, links
+
+#### Scenario: Numbered markers
+- **WHEN** the sections after the hero are read in the markup
+- **THEN** their markers read 01 to 11 in increasing order, with contact 10 and links 11
+
+### Requirement: Header and footer
+The header MUST be minimal, with links to Contacto (see «Menú enlaza el contacto»), Docs and GitHub (https://github.com/kaelen-phoenix/zero). The Docs link MUST follow the language: its href in the markup is https://github.com/kaelen-phoenix/zero/blob/main/README.es.md, and English replaces it with https://github.com/kaelen-phoenix/zero#readme through data-i18n-href="href.readme". The footer MUST show GitHub, the Instagram and WhatsApp links (see «Enlace de Instagram en el pie» and «Enlace de WhatsApp en el pie»), the version equal to package.json's version, the license (Apache-2.0), the line saying zero in the loop built the site, and a theme selector with auto, light and dark.
+
+#### Scenario: Version matches
+- **WHEN** the footer version is read from index.html and compared to package.json
+- **THEN** they are equal
+
+#### Scenario: Links and license
+- **WHEN** the header and footer are inspected
+- **THEN** the Docs and GitHub hrefs in the markup match those URLs and the footer contains Apache-2.0, the Instagram link and the WhatsApp link
+
+#### Scenario: Docs in English
+- **WHEN** applyLanguage switches the fake document to en and then back to es
+- **THEN** the elements with data-i18n-href="href.readme" (header, hero and links) point first to the #readme URL and then back to README.es.md
+
+### Requirement: Spanish and English
+The site MUST be available in Spanish (default) and English with a language selector. Every visible text element MUST have both versions, with no exception. The selector MUST update <html lang>, and the choice MUST be remembered only in localStorage.
+
+#### Scenario: Default Spanish
+- **WHEN** index.html is loaded without a stored choice
+- **THEN** <html lang="es"> and the visible texts are Spanish
+
+#### Scenario: Switch to English
+- **WHEN** the site script switches to en
+- **THEN** <html lang> becomes en and every translatable element shows its English text, with no translation key missing in either language, and no element is hidden
+
+### Requirement: Numeración correlativa en los dos idiomas
+The section markers (`<span class="marker" data-marker>`) of the sections after the hero MUST read 01, 02, … without gaps in document order, in the markup and after applyLanguage to either language (contact 10, links 11).
+
+#### Scenario: Español
+- **WHEN** the test reads the markup, and also after applyLanguage(doc, 'es', …) on the fake document
+- **THEN** the markers after hero read 01..11 in order, contact 10 and links 11
+
+#### Scenario: Inglés
+- **WHEN** the test calls applyLanguage(doc, 'en', …) on the fake document
+- **THEN** the markers after hero read 01..11 in order and the links marker reads 11
+
+#### Scenario: Ida y vuelta
+- **WHEN** the test switches es → en → es
+- **THEN** the links marker reads 11 and the contact marker reads 10
+
+### Requirement: Sin aviso de correo ni dirección en el sitio
+The contact section MUST NOT have a `<noscript>` notice, and no text file under site/ SHALL contain `mailto:` or an email address.
+
+#### Scenario: Sin noscript en la sección
+- **WHEN** the test reads section("contact")
+- **THEN** the section has no `<noscript>` element
+
+#### Scenario: Sin rastro de correo
+- **WHEN** the test reads every text file under site/
+- **THEN** none contains `mailto:` or matches /[\w.+-]+@[\w-]+\.[\w.-]+/
+
+#### Scenario: Las claves siguen coincidiendo
+- **WHEN** the existing translation-completeness test runs over the markup and the EN map
+- **THEN** it passes, with no EN key missing or left over
+
+## REMOVED Requirements
+
+### Requirement: Training section in order
+**Reason**: The site no longer offers training; the contact section takes its place.
+**Migration**: See «Sección de contacto».
+
+### Requirement: Menu link to the training section
+**Reason**: There is no training section to link.
+**Migration**: See «Menú enlaza el contacto».
+
+### Requirement: Topics beyond zero
+**Reason**: The training topics went with the training section.
+**Migration**: None.
+
+### Requirement: Capacitaciones solo en español
+**Reason**: Nothing on the site is shown in one language only.
+**Migration**: See «Todo el sitio en los dos idiomas».
+
+### Requirement: README aclara el idioma
+**Reason**: No section of the site is Spanish-only any more.
+**Migration**: See «README sin capacitaciones».
+
+### Requirement: Tres formatos de capacitación
+**Reason**: The training formats are gone.
+**Migration**: None.
+
+### Requirement: Dos enlaces por tarjeta
+**Reason**: There are no training cards.
+**Migration**: See «Solo WhatsApp e Instagram como medios de contacto».
+
+### Requirement: Íconos del pie
+**Reason**: It described the training cards' icons.
+**Migration**: See «Íconos de contacto iguales a los del pie».
+
+### Requirement: Enlaces sin JavaScript
+**Reason**: It described the training cards' links.
+**Migration**: The contact links work without JavaScript as plain links; see «Solo WhatsApp e Instagram como medios de contacto».
+
+### Requirement: Mensaje de WhatsApp según formato e idioma
+**Reason**: There are no formats; the contact link carries the generic message.
+**Migration**: See «Solo WhatsApp e Instagram como medios de contacto» and «Mensaje inicial según el idioma».
+
+### Requirement: Instagram copia el mensaje y avisa
+**Reason**: The per-format message no longer exists, so nothing is copied.
+**Migration**: None.
+
+### Requirement: Si el portapapeles falla
+**Reason**: Nothing is copied to the clipboard on the contact links.
+**Migration**: None.
+
+### Requirement: Pantallas angostas
+**Reason**: It described the training cards' layout.
+**Migration**: The contact buttons keep a narrow-screen rule in styles.css.
+
+### Requirement: Sin nota de WhatsApp
+**Reason**: It described the training section.
+**Migration**: None.
+
+### Requirement: README al día
+**Reason**: It described the training formats in the README.
+**Migration**: See «README sin capacitaciones».

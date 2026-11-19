@@ -1,5 +1,4 @@
 // zero in the loop: language, theme and copy buttons. Plain JS, no dependencies, no network, no cookies.
-// Elements marked data-lang-only show only in that language, and the section markers are renumbered to skip them.
 // The Spanish texts are the markup itself; EN holds the English version of every data-i18n, data-i18n-label and data-i18n-href key.
 (function (root) {
   "use strict";
@@ -125,18 +124,9 @@
     "compat.auto": "automatic registration",
     "compat.manual": "manual configuration",
     "compat.note": "A different engine per station if you want, and fallback engines when one runs out of quota.",
-    "nav.training": "Training",
-    "training.label": "Training",
-    "training.title": "Learn to work with a factory that works on its own.",
-    "training.topics": "The topics are not only zero: working seriously with AI agents (Claude Code, specifications with OpenSpec, review and security of the code AI writes, and where the person enters the loop), with zero as the tool.",
-    "training.talk.title": "Open talk",
-    "training.talk": "About 60 minutes: from asking AI for code to having a factory that works on its own.",
-    "training.workshop.title": "Group workshop",
-    "training.workshop": "2 to 4 hands-on sessions: each participant builds their own factory with zero on their projects.",
-    "training.mentoring.title": "One-on-one mentoring",
-    "training.mentoring": "For a person or a team, in their own repos.",
-    "training.onrequest": "on request",
-    "training.cta": "I want this",
+    "nav.contact": "Contact",
+    "contact.label": "Contact",
+    "contact.title": "Write to us.",
     "links.label": "Links",
     "links.title": "Keep reading.",
     "links.readme": "Documentation (README)",
@@ -162,28 +152,13 @@
     es: {
       copied: "Comando copiado.",
       failed: "No se pudo copiar; seleccioná el texto.",
-      training: {
-        talk: "Hola, quiero la Charla abierta de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
-        workshop: "Hola, quiero el Taller grupal de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
-        mentoring: "Hola, quiero la Mentoría individual de zero in the loop. Somos [cantidad] personas, nos interesa [fecha aproximada].",
-      },
-      trainingCopied: "Copiamos el mensaje: pegalo en el chat",
-      trainingFailed: "No pudimos copiar. Copiá este mensaje y pegalo en el chat:",
     },
     en: {
       copied: "Command copied.",
       failed: "Could not copy; select the text.",
-      training: {
-        talk: "Hi, I want the Open talk from zero in the loop. We are [number] people, we are interested in [approximate date].",
-        workshop: "Hi, I want the Group workshop from zero in the loop. We are [number] people, we are interested in [approximate date].",
-        mentoring: "Hi, I want the One-on-one mentoring from zero in the loop. We are [number] people, we are interested in [approximate date].",
-      },
-      trainingCopied: "We copied the message: paste it in the chat",
-      trainingFailed: "We could not copy it. Copy this message and paste it in the chat:",
     },
   };
 
-  const WHATSAPP_CHAT = "https://wa.me/5491159813335";
   const LANGS = ["es", "en"];
   const THEMES = ["auto", "light", "dark"];
   const LANG_KEY = "zero-site-lang";
@@ -234,19 +209,6 @@
     doc.title = text("meta.title");
     doc.documentElement.setAttribute("lang", lang);
     for (const button of doc.querySelectorAll("[data-lang]")) button.setAttribute("aria-pressed", String(button.getAttribute("data-lang") === lang));
-    for (const el of doc.querySelectorAll("[data-lang-only]")) {
-      if (el.getAttribute("data-lang-only") === lang) el.removeAttribute("hidden");
-      else el.setAttribute("hidden", "");
-    }
-    // Visible sections stay numbered 01, 02, … in both languages.
-    let n = 0;
-    for (const marker of doc.querySelectorAll("[data-marker]")) {
-      const only = marker.closest("[data-lang-only]");
-      if (only && only.getAttribute("data-lang-only") !== lang) continue;
-      marker.textContent = String(++n).padStart(2, "0");
-    }
-    setTrainingLinks(doc);
-    for (const notice of doc.querySelectorAll("[data-training-notice]")) notice.textContent = "";
     write(storage, LANG_KEY, lang);
     return lang;
   }
@@ -263,35 +225,6 @@
 
   function pageMessages(doc) {
     return MESSAGES[doc.documentElement.getAttribute("lang")] || MESSAGES.es;
-  }
-
-  /** Loads each training card's WhatsApp link with its format's message; the markup only has the generic one. */
-  function setTrainingLinks(doc) {
-    const messages = pageMessages(doc);
-    for (const link of doc.querySelectorAll("[data-training-channel]")) {
-      if (link.getAttribute("data-training-channel") !== "whatsapp") continue;
-      const format = link.closest("[data-training]").getAttribute("data-training");
-      link.setAttribute("href", `${WHATSAPP_CHAT}?text=${encodeURIComponent(messages.training[format])}`);
-    }
-  }
-
-  /** Copies the card's message during the click, since Instagram cannot preload it, and tells the card's notice. The link opens either way. */
-  function copyTrainingMessage(doc, link, nav) {
-    const card = link.closest("[data-training]");
-    const notice = card.querySelector("[data-training-notice]");
-    const messages = pageMessages(doc);
-    const message = messages.training[card.getAttribute("data-training")];
-    const lang = doc.documentElement.getAttribute("lang");
-    // A copy that ends after a language switch stays silent: the switch emptied the notice.
-    const show = (text) => { if (doc.documentElement.getAttribute("lang") === lang) notice.textContent = text; };
-    const copied = () => { show(messages.trainingCopied); return true; };
-    const failed = () => { show(`${messages.trainingFailed} ${message}`); return false; };
-    notice.textContent = "";
-    try {
-      return nav.clipboard.writeText(message).then(copied, failed);
-    } catch {
-      return Promise.resolve(failed());
-    }
   }
 
   function announce(doc, message) {
@@ -321,11 +254,6 @@
     setTheme(doc, read(storage, THEME_KEY) || "auto", storage);
     const lang = read(storage, LANG_KEY);
     if (lang && lang !== "es") applyLanguage(doc, lang, storage);
-    else setTrainingLinks(doc);
-    for (const link of doc.querySelectorAll("[data-training-channel]")) {
-      if (link.getAttribute("data-training-channel") !== "instagram") continue;
-      link.addEventListener("click", () => { copyTrainingMessage(doc, link, win.navigator); });
-    }
     for (const button of doc.querySelectorAll("[data-lang]")) {
       button.addEventListener("click", () => applyLanguage(doc, button.getAttribute("data-lang"), storage));
     }
@@ -337,7 +265,7 @@
     }
   }
 
-  root.zeroSite = { EN, applyLanguage, setTheme, copyCode, setTrainingLinks, copyTrainingMessage };
+  root.zeroSite = { EN, applyLanguage, setTheme, copyCode };
 
   if (root.document) {
     const doc = root.document;
