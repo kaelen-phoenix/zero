@@ -92,7 +92,26 @@ zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
 ```
 
-The chat does the same with `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` and `zero_lines`; it also has `zero_proposals` and `zero_proposal_decide` (night shift), `zero_research` and `zero_research_request` (research), `zero_package_run` (a package station on demand, with an optional `request`), `zero_package_upload` (a file for a package station that takes uploads), `zero_merge` (merges a pull request the factory delivered, once GitHub says it is ready), and `zero_egress` and `zero_egress_block` (internet egress).
+The chat does the same with these tools:
+
+- `zero_request`: asks for work
+- `zero_status`: the factory's status, or a job's
+- `zero_answer`: answers a job's question
+- `zero_stop`: andon, stops a job or the whole factory
+- `zero_resume`: resumes after the andon
+- `zero_briefing`: the briefing
+- `zero_monthly_report`: the monthly report
+- `zero_trace`: a job's trace
+- `zero_lines`: the production lines
+- `zero_proposals`: the night shift's proposals
+- `zero_proposal_decide`: approves or rejects a proposal (night shift)
+- `zero_research`: the research notes
+- `zero_research_request`: turns a research note into a job
+- `zero_package_run`: a package station on demand, with an optional `request`
+- `zero_package_upload`: a file for a package station that takes uploads
+- `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
+- `zero_egress`: internet egress
+- `zero_egress_block`: blocks a site (internet egress)
 
 ### Start at login (`autostart`)
 
@@ -1057,7 +1076,7 @@ npm run typecheck && npm test && npm run build
 npx openspec validate --all
 ```
 
-zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with a specification, design and tasks. Decisions are in `docs/adr/` and the conventions for agents in `AGENTS.md`. The README is kept in English (`README.md`) and Spanish (`README.es.md`); every change goes into both.
+zero is designed with **OpenSpec** (`openspec/`): each change is a proposal with a specification, design and tasks. Decisions are in `docs/adr/` and the guide for agents in `AGENTS.md`, a short index of commands and conventions that links one file per area under `docs/agents/`: each change documents its behaviour in its area's file, and `AGENTS.md` only changes to link a new area. The README is kept in English (`README.md`) and Spanish (`README.es.md`); every change goes into both.
 
 ## Where it is going: intent is the product
 
@@ -1069,4 +1088,9 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 
 ## Next steps
 
-Private network for the panel (Tailscale/Headscale) · cutting large uploads to unusual sites · system service · plugin and specialist API · ccusage · governed MCP for the station agents.
+- Private network for the panel (Tailscale/Headscale)
+- Cutting large uploads to unusual sites
+- System service
+- Plugin and specialist API
+- ccusage
+- Governed MCP for the station agents

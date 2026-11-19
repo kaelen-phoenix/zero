@@ -92,7 +92,26 @@ zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda, con un `request` opcional), `zero_package_upload` (un archivo para una estación de un paquete que acepta archivos), `zero_merge` (funde un pull request que entregó la fábrica, cuando GitHub dice que está listo), y `zero_egress` y `zero_egress_block` (salidas a internet).
+Desde el chat se hace lo mismo con estas herramientas:
+
+- `zero_request`: pide un trabajo
+- `zero_status`: el estado de la fábrica o de un trabajo
+- `zero_answer`: responde la pregunta de un trabajo
+- `zero_stop`: andon, para un trabajo o toda la fábrica
+- `zero_resume`: reanuda después del andon
+- `zero_briefing`: el informe diario
+- `zero_monthly_report`: el informe mensual
+- `zero_trace`: la traza de un trabajo
+- `zero_lines`: las líneas de producción
+- `zero_proposals`: las propuestas del turno nocturno
+- `zero_proposal_decide`: aprueba o rechaza una propuesta (turno nocturno)
+- `zero_research`: las notas de investigación
+- `zero_research_request`: convierte una nota de investigación en un trabajo
+- `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
+- `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
+- `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
+- `zero_egress`: salidas a internet
+- `zero_egress_block`: bloquea un sitio (salidas a internet)
 
 ### Encender al iniciar sesión (`autostart`)
 
@@ -1056,7 +1075,7 @@ npm run typecheck && npm test && npm run build
 npx openspec validate --all
 ```
 
-zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y las convenciones para agentes en `AGENTS.md`. El README se mantiene en inglés (`README.md`) y en español (`README.es.md`); todo cambio va en los dos.
+zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y la guía para agentes en `AGENTS.md`, un índice corto de comandos y convenciones que enlaza un archivo por área bajo `docs/agents/`: cada cambio documenta su comportamiento en el archivo de su área, y `AGENTS.md` solo cambia para enlazar un área nueva. El README se mantiene en inglés (`README.md`) y en español (`README.es.md`); todo cambio va en los dos.
 
 ## Hacia dónde va: la intención es el producto
 
@@ -1068,4 +1087,9 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.
+- Red privada para el panel (Tailscale/Headscale)
+- Cortar envíos grandes a sitios no habituales
+- Servicio del sistema
+- API de plugins y especialistas
+- ccusage
+- MCP gobernado para los agentes de las estaciones

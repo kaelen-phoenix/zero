@@ -9,5 +9,5 @@
 
 ## 2. Etapa 2: Listas de los README
 
-- [ ] 2.1 Convertir la lista de herramientas del chat y la de próximas etapas en viñetas de un renglón en README.md y README.es.md, con la misma estructura, y nombrar docs/agents/ en Development / Desarrollo.
-- [ ] 2.2 Agregar las pruebas de esas listas en test/docs.test.ts y correr typecheck, test y openspec validate.
+- [x] 2.1 Convertir la lista de herramientas del chat y la de próximas etapas en viñetas de un renglón en README.md y README.es.md, con la misma estructura, y nombrar docs/agents/ en Development / Desarrollo.
+- [x] 2.2 Agregar las pruebas de esas listas en test/docs.test.ts y correr typecheck, test y openspec validate.

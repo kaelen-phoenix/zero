@@ -186,6 +186,38 @@ describe("documentation up to date", () => {
     }
   });
 
+  it("lists the chat tools one per bullet, exactly those of the MCP server", () => {
+    const tools = new Set([...read("src/mcp/server.ts").matchAll(/"(zero_[a-z_]+)"/g)].map((m) => m[1]!));
+    for (const [text, heading] of [[en, "## Getting started"], [es, "## Empezar"]] as const) {
+      const start = section(text, heading);
+      const bullets = start.split("\n").filter((l) => l.startsWith("- `zero_"));
+      const named = bullets.map((l) => l.match(/^- `([^`]+)`/)![1]!);
+      expect(new Set(named)).toEqual(tools);
+      expect(named.length, heading).toBe(tools.size);
+      // Outside that list, no line enumerates the tools again.
+      for (const line of text.split("\n").filter((l) => !bullets.includes(l))) {
+        expect((line.match(/`zero_[a-z_]+`/g) ?? []).length, line).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("writes the next steps as a list, one item per line, the same in both", () => {
+    const items = (text: string, heading: string) => section(text, heading).split("\n").filter((l) => l.trim() !== "");
+    const enItems = items(en, "## Next steps");
+    const esItems = items(es, "## Próximas etapas");
+    expect(enItems.length).toBeGreaterThan(0);
+    expect(enItems.length).toBe(esItems.length);
+    for (const line of [...enItems, ...esItems]) {
+      expect(line.startsWith("- "), line).toBe(true);
+      expect(line).not.toContain(" · ");
+    }
+  });
+
+  it("points to docs/agents/ in Development", () => {
+    expect(section(en, "## Development")).toContain("docs/agents/");
+    expect(section(es, "## Desarrollo")).toContain("docs/agents/");
+  });
+
   it("lists nothing as upcoming that already exists", () => {
     const upcoming = [
       section(es, "## Próximas etapas"), section(es, "## Hacia dónde va"),
