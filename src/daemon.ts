@@ -38,6 +38,7 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
+import { recruitPass } from "./line/recruit.js";
 import { resendAfterCapability, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
@@ -82,6 +83,8 @@ export interface DaemonOptions {
   urgentUnjam?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
+  /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
+  recruit?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
@@ -443,7 +446,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     store.setKv(SHUTDOWN_KEY, now().toISOString());
   };
 
-  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line) and the
+  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line), the recruiter looks for public agents for the catalog and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
   let idle: Promise<void> | undefined;
@@ -455,9 +458,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
+    const recruits = (opts.recruit ?? !opts.once) && ctx.config.recruit !== "off" && ctx.config.nightShift !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
     const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
-    if (!scouts && !unjams && !researches && !stations) return;
+    if (!scouts && !unjams && !researches && !recruits && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
       if (scouts) {
@@ -472,6 +476,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+      if (recruits && !researchStop.signal.aborted)
+        await recruitPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("recruiter failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)
         await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));

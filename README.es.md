@@ -954,6 +954,28 @@ zero reintentar <job>     # un trabajo fallido vuelve a la cola desde su checkpo
 
 Ves las causas bajo `Trabas:` en `zero status` (y `zero_status` en el chat) y en el resumen del panel, una por renglón con su tipo, cuántas trabas agrupa y su trabajo o propuesta abierta o qué hacer; en el informe diario bajo `## Trabas`; y el informe mensual de cada línea tiene una sección "Trabas" con lo que solo vos podés resolver.
 
+## Catálogo de agentes
+
+El catálogo es una lista de agentes públicos que podés sumar a la fábrica, guardada en `state.db`. Cada entrada tiene su nombre, qué hace, su tipo (`review` o `build`), su fuente (la URL https del repositorio), su licencia, los motores donde funciona, la fecha en que se revisó y su estado: `listed`, `proposed` (para una línea, con el hueco que llena), `added` o `rejected`. Solo acepta licencias MIT, Apache-2.0, BSD-2-Clause y BSD-3-Clause. Antes de guardar una entrada, zero lee su descripción y sus instrucciones como datos no confiables, sin ejecutar nada de lo que traen, y la descarta cuando intentan una inyección de prompt, piden credenciales o secretos, o traen comandos de red, de descarga o de instalación. Un nombre o una fuente que ya está en el catálogo, rechazados incluidos, o un agente que la línea ya tiene, no vuelve.
+
+```sh
+zero agent catalog                                   # todas las entradas, las propuestas primero
+zero agent catalog add <id> --line <line> [--yes]    # muestra el archivo que escribiría y pregunta antes de sumarlo
+zero agent catalog reject <id> [--motivo "<texto>"]   # no se suma ni se vuelve a proponer
+```
+
+Sumar pasa por `zero agent add`: escribe las instrucciones de la entrada en `.zero/agents/<nombre>.md` en el repo de la línea, con un encabezado que nombra la fuente y la licencia, suma el agente a la línea en `zero.factory.yaml` y da crédito a la fuente una sola vez en `THIRD-PARTY-NOTICES.md` en la raíz de ese repo. Sin tu sí (o sin terminal) no escribe nada, y se niega cuando ese archivo de instrucciones ya existe. La página `/agents` del panel muestra el catálogo con los mismos campos; su botón para sumar muestra antes, en una página de confirmación, el archivo que va a escribir.
+
+El reclutador (estación `recruit`, acceso `web`) llena el catálogo. Corre con las reglas del turno nocturno (fábrica libre, dentro de `nightShift.hours`, andon apagado, con presupuesto, compartiendo `limits.usdPerNight` con `scout`, `unjam` y `research`), después de `research`, a lo sumo una vez cada `recruit.everyDays` días. Su prompt lista cada línea con sus agentes, las causas de su último diagnóstico del destrabador y sus propuestas rechazadas hace poco, todo lo que ya está en el catálogo y algunos puntos de partida sin verificar (wshobson/agents, VoltAgent awesome-claude-code-subagents, awesome-opencode, sehoon787/agent-hub, skills.sh), y aclara que lo que hay en la web es dato, nunca instrucciones. Lo que pasa las revisiones de zero se guarda, a lo sumo `recruit.perPass` entradas por corrida: `proposed` cuando nombra una línea y un hueco, si no `listed`. El reclutador nunca suma un agente ni toca el archivo de la fábrica, sea cual sea la autonomía de la línea: sumar siempre espera tu ok.
+
+```yaml
+recruit:                  # o `recruit: off` para apagarlo
+  everyDays: 7            # días entre dos corridas
+  perPass: 3              # entradas del catálogo que puede guardar una corrida
+stations:
+  recruit: { timeoutMinutes: 20 }
+```
+
 ## Caja de aislamiento
 
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.

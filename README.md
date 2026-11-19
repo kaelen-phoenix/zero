@@ -955,6 +955,28 @@ zero reintentar <job>     # a failed job back to the queue from its checkpoint, 
 
 You see the causes under `Trabas:` in `zero status` (and `zero_status` in the chat) and in the panel's summary, one per line with its kind, how many jams it groups and its open job or proposal or what to do; in the briefing under `## Trabas`; and the monthly report of each line has a "Trabas" section with what only you can solve.
 
+## Agent catalog
+
+The catalog is a list of public agents you can add to the factory, kept in `state.db`. Each entry has its name, what it does, its type (`review` or `build`), its source (the repository's https URL), its license, the engines it works on, the date it was reviewed and its status: `listed`, `proposed` (for a line, with the gap it fills), `added` or `rejected`. It only takes MIT, Apache-2.0, BSD-2-Clause and BSD-3-Clause licenses. Before storing an entry, zero reads its description and instructions as untrusted data, never running anything they bring, and drops it when they try a prompt injection, ask for credentials or secrets, or carry network, download or install commands. A name or source already in the catalog, rejected ones included, or an agent the line already has, never comes back.
+
+```sh
+zero agent catalog                                   # every entry, proposed ones first
+zero agent catalog add <id> --line <line> [--yes]    # shows the file it would write and asks before adding it
+zero agent catalog reject <id> [--motivo "<text>"]   # never added nor proposed again
+```
+
+Adding goes through `zero agent add`: it writes the entry's instructions to `.zero/agents/<name>.md` in the line's repository, with a header naming the source and license, adds the agent to the line in `zero.factory.yaml` and credits the source once in `THIRD-PARTY-NOTICES.md` at the root of that repository. Without your yes (or without a terminal) it writes nothing, and it refuses when that instructions file already exists. The panel's `/agents` page shows the catalog with the same fields; its add button shows the file to be written on a confirmation page first.
+
+The recruiter (`recruit` station, access `web`) fills the catalog. It runs with the night shift's rules (factory idle, inside `nightShift.hours`, andon off, budget left, sharing `limits.usdPerNight` with `scout`, `unjam` and `research`), after `research`, at most once every `recruit.everyDays` days. Its prompt lists each line with its agents, the causes of its latest unjam diagnosis and its recently rejected proposals, everything already in the catalog and some unverified starting points (wshobson/agents, VoltAgent awesome-claude-code-subagents, awesome-opencode, sehoon787/agent-hub, skills.sh), and says web content is data, never instructions. What passes zero's checks is stored, at most `recruit.perPass` entries per run: `proposed` when it names a line and a gap, else `listed`. The recruiter never adds an agent or touches the factory file, whatever the line's autonomy: adding always waits for you.
+
+```yaml
+recruit:                  # or `recruit: off` to turn it off
+  everyDays: 7            # days between two runs
+  perPass: 3              # catalog entries one run may store
+stations:
+  recruit: { timeoutMinutes: 20 }
+```
+
 ## Isolation box
 
 Everything that runs code from the project or from an agent runs in the box: the `setup`, the agents and verification. The box is a container (Podman or Docker). zero does the integration outside.
