@@ -40,7 +40,7 @@ import { jobStage, type Spec } from "./line/spec.js";
 import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, formatEgressSites, formatJob, formatMerge, formatRequest, jobName, jobOrigin } from "./format.js";
+import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -646,7 +646,11 @@ export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefi
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
-  const now = (ctx.now ?? (() => new Date()))();
+  return storedStatus(ctx, (ctx.now ?? (() => new Date()))());
+}
+
+/** `factoryStatus` from the stored state alone: it does not move the gate's records into the store first. */
+function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
@@ -1151,6 +1155,268 @@ export function monitorView(ctx: FactoryContext, period: MonitorPeriod, now = ne
         }).length,
       };
     }),
+  };
+}
+
+/** The stations a job's dot travels in the control room, in order. */
+export const CONTROL_STATIONS = ["spec", "build", "verify", "review", "security", "integrate"] as const;
+export type ControlStation = (typeof CONTROL_STATIONS)[number];
+/** The control room's colours: ok green, warn yellow, bad red, run cyan; idle has no neon. */
+export type ControlTone = "ok" | "warn" | "bad" | "run" | "idle";
+
+export const DAEMON_TEXT: Record<DaemonState, string> = { running: "en marcha", unresponsive: "no responde", stopped: "apagado", crashed: "se cayó" };
+const DAEMON_TONE: Record<DaemonState, ControlTone> = { running: "ok", unresponsive: "warn", stopped: "warn", crashed: "bad" };
+const FINAL_TONE: Partial<Record<JobStatus, ControlTone>> = { delivered: "ok", failed: "bad", stopped: "warn" };
+
+export interface ControlEvent {
+  at: string;
+  kind: "created" | "station" | "delivered" | "failed" | "merged";
+  job?: string;
+  line?: string;
+  /** The station it entered, for `station` events. */
+  station?: ControlStation;
+  /** The merged pull request, for `merged` events. */
+  url?: string;
+}
+
+export interface ControlDot {
+  job: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  /** Its station, or `queued` at the entrance while it has none. */
+  at: ControlStation | "queued";
+  tone: ControlTone;
+}
+
+export interface ControlDecision {
+  job: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  at: string;
+  tone: ControlTone;
+}
+
+/** A line's last 24 hours in hourly buckets, oldest first; the last one ends now. */
+export interface ControlSeries {
+  line: string;
+  jobs: number[];
+  attempts: number[];
+  costUsd: number[];
+  /** Average verify time of the bucket, 0 without one. */
+  verifyMs: number[];
+}
+
+export interface ControlBusRow {
+  row: string;
+  kind: "engine" | "agent";
+  /** Each call placed in the window: `left` and `width` as fractions of it. */
+  segments: { start: string; end?: string; left: number; width: number; tone: ControlTone }[];
+}
+
+export interface ControlTraceRow {
+  end: string;
+  name: string;
+  job?: string;
+  status?: SpanRow["status"];
+  ms: number;
+  costUsd?: number;
+}
+
+export interface ControlEngine {
+  engine: string;
+  billing: BudgetState["engines"][number]["billing"];
+  windows: { label: string; percent: number }[];
+  paused: boolean;
+  until?: string;
+  reason?: string;
+  tone: ControlTone;
+}
+
+export interface ControlAlert {
+  kind: "jam" | "outage" | "billing" | "merge" | "security" | "andon" | "budget" | "daemon";
+  text: string;
+  tone: "bad";
+}
+
+/** The panel's "Sala de control": the whole factory at a glance, from the stored state. */
+export interface ControlRoomView {
+  now: string;
+  /** Local `HH:MM:SS` of `now`. */
+  clock: string;
+  topbar: {
+    queued: number;
+    running: number;
+    waiting: number;
+    delivered: number;
+    failed: number;
+    spentUsd: number;
+    estimatedUsd: number;
+    daemon: DaemonState;
+    daemonText: string;
+    daemonTone: ControlTone;
+  };
+  /** The last 24 hours, newest first, at most `CONTROL_EVENTS`. */
+  events: ControlEvent[];
+  dots: ControlDot[];
+  decisions: ControlDecision[];
+  series: ControlSeries[];
+  bus: { from: string; to: string; rows: ControlBusRow[] };
+  trace: ControlTraceRow[];
+  engines: ControlEngine[];
+  alerts: ControlAlert[];
+}
+
+const HOUR_MS = 3_600_000;
+export const CONTROL_EVENTS = 40;
+const CONTROL_DECISIONS = 20;
+const CONTROL_TRACE = 20;
+const BUS_MS = 6 * HOUR_MS;
+
+const clockText = (d: Date) => [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+const spanCost = (s: SpanRow) => (typeof s.attrs["zero.cost.usd"] === "number" ? (s.attrs["zero.cost.usd"] as number) : undefined);
+
+/**
+ * The panel's "Sala de control" tab. Read-only: built from jobs, spans and kv
+ * as they are, without asking GitHub, reading the gate or writing anything.
+ */
+export function controlRoomView(ctx: FactoryContext, now = new Date()): ControlRoomView {
+  const s = storedStatus(ctx, now);
+  const t = now.getTime();
+  const dayAgo = t - 24 * HOUR_MS;
+  const within = (iso: string | undefined, from = dayAgo) => iso !== undefined && Date.parse(iso) >= from && Date.parse(iso) <= t;
+  const jobs = ctx.store.listJobs({ limit: -1 });
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  // Spans that started a day before the window still end inside it.
+  const spans = ctx.store.spansSinceAny(new Date(dayAgo - 24 * HOUR_MS)).filter((sp) => Date.parse(sp.start) <= t);
+
+  const events: ControlEvent[] = [];
+  for (const j of jobs) {
+    if (within(j.createdAt)) events.push({ at: j.createdAt, kind: "created", job: j.id, line: j.line });
+    if ((j.status === "delivered" || j.status === "failed") && within(j.finishedAt)) events.push({ at: j.finishedAt!, kind: j.status, job: j.id, line: j.line });
+  }
+  for (const sp of spans) {
+    const station = sp.name.startsWith("zero.station.") ? sp.name.slice("zero.station.".length) : undefined;
+    if (station && sp.jobId && (CONTROL_STATIONS as readonly string[]).includes(station) && within(sp.start))
+      events.push({ at: sp.start, kind: "station", job: sp.jobId, line: byId.get(sp.jobId)?.line, station: station as ControlStation });
+    if (sp.name === "zero.merge" && sp.end && within(sp.end)) {
+      const url = sp.attrs["zero.merge.url"];
+      events.push({ at: sp.end, kind: "merged", ...(sp.jobId && { job: sp.jobId, line: byId.get(sp.jobId)?.line }), ...(typeof url === "string" && { url }) });
+    }
+  }
+  events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+
+  const dots = [...s.running, ...s.waiting, ...s.queued].map((job): ControlDot => {
+    const at = lineRow(ctx, job).at;
+    return {
+      job: job.id,
+      line: job.line,
+      title: jobName(job),
+      status: job.status,
+      at: at && (CONTROL_STATIONS as readonly string[]).includes(at) ? (at as ControlStation) : "queued",
+      tone: job.status === "running" ? "run" : job.status === "waiting" ? "warn" : "idle",
+    };
+  });
+  const decisions = jobs
+    .filter((j) => FINAL_STATUSES.includes(j.status) && within(j.finishedAt))
+    .sort((a, b) => Date.parse(b.finishedAt!) - Date.parse(a.finishedAt!))
+    .slice(0, CONTROL_DECISIONS)
+    .map((j): ControlDecision => ({ job: j.id, line: j.line, title: jobName(j), status: j.status, at: j.finishedAt!, tone: FINAL_TONE[j.status] ?? "idle" }));
+
+  // Bucket 23 holds the last hour, ending now.
+  const bucket = (iso: string) => 23 - Math.floor((t - Date.parse(iso)) / HOUR_MS);
+  const series = ctx.config.lines.map((l): ControlSeries => {
+    const own = (id: string | undefined) => id !== undefined && byId.get(id)?.line === l.name;
+    const zeros = () => Array.from({ length: 24 }, () => 0);
+    const out = { line: l.name, jobs: zeros(), attempts: zeros(), costUsd: zeros(), verifyMs: zeros() };
+    for (const j of jobs) if (j.line === l.name && within(j.createdAt)) out.jobs[bucket(j.createdAt)]!++;
+    const verify: number[][] = Array.from({ length: 24 }, () => []);
+    for (const sp of spans) {
+      if (!own(sp.jobId)) continue;
+      if (sp.name === "zero.attempt" && within(sp.start)) out.attempts[bucket(sp.start)]!++;
+      if (sp.name === AGENT_SPAN && within(sp.start)) out.costUsd[bucket(sp.start)]! += spanCost(sp) ?? 0;
+      if (sp.name === "zero.station.verify" && sp.end && !sp.attrs["zero.skipped"] && within(sp.end)) verify[bucket(sp.end)]!.push(spanMs(sp));
+    }
+    out.verifyMs = verify.map((ms) => average(ms) ?? 0);
+    return out;
+  });
+
+  const busFrom = t - BUS_MS;
+  const rows = new Map<string, ControlBusRow>();
+  const place = (row: string, kind: ControlBusRow["kind"], sp: SpanRow) => {
+    const r = rows.get(`${kind}:${row}`) ?? { row, kind, segments: [] };
+    const start = Math.max(busFrom, Date.parse(sp.start));
+    const end = sp.end ? Math.min(t, Date.parse(sp.end)) : t;
+    r.segments.push({ start: sp.start, ...(sp.end && { end: sp.end }), left: (start - busFrom) / BUS_MS, width: Math.max(0, end - start) / BUS_MS, tone: !sp.end ? "run" : sp.status === "error" ? "bad" : "ok" });
+    rows.set(`${kind}:${row}`, r);
+  };
+  for (const sp of spans) {
+    if (sp.name !== AGENT_SPAN || (sp.end && Date.parse(sp.end) < busFrom)) continue;
+    const engine = String(sp.attrs["zero.engine"] ?? "");
+    const agent = String(sp.attrs["gen_ai.agent.name"] ?? "");
+    if (engine) place(engine, "engine", sp);
+    if (agent) place(agent, "agent", sp);
+  }
+  const busRows = [...rows.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "engine" ? -1 : 1));
+
+  const trace = spans
+    .filter((sp) => sp.end && within(sp.end))
+    .sort((a, b) => Date.parse(b.end!) - Date.parse(a.end!))
+    .slice(0, CONTROL_TRACE)
+    .map((sp): ControlTraceRow => {
+      const cost = spanCost(sp);
+      return { end: sp.end!, name: sp.name, ...(sp.jobId && { job: sp.jobId }), ...(sp.status && { status: sp.status }), ms: spanMs(sp), ...(cost !== undefined && { costUsd: cost }) };
+    });
+
+  const engines = s.budget.engines.map((e): ControlEngine => ({
+    engine: e.engine,
+    billing: e.billing,
+    windows: s.budget.windows.filter((w) => w.engine === e.engine).map((w) => ({ label: w.label, percent: Math.round((w.utilization ?? 0) * 100) })),
+    paused: e.paused,
+    ...(e.until && { until: e.until }),
+    ...(e.reason && { reason: e.reason }),
+    tone: e.paused ? "bad" : "ok",
+  }));
+
+  const daemon = s.daemon.state ?? "stopped";
+  const alert = (kind: ControlAlert["kind"], text: string): ControlAlert => ({ kind, text, tone: "bad" });
+  const alerts = [
+    ...(s.andon ? [alert("andon", "Andon encendido: la fábrica no empieza trabajo nuevo")] : []),
+    ...(daemon !== "running" ? [alert("daemon", `Daemon ${DAEMON_TEXT[daemon]}`)] : []),
+    ...(s.budget.reached ? [alert("budget", `Presupuesto alcanzado${s.budget.reason ? `: ${s.budget.reason}` : ""}`)] : []),
+    ...s.jams.map((j) => alert("jam", jamLine(j))),
+    ...s.outages.map((o) => alert("outage", outageLine(o))),
+    ...s.billing.map((b) => alert("billing", billingLine(b))),
+    ...s.merges.filter((m) => m.status === "blocked").map((m) => alert("merge", `Pull request bloqueado: ${m.url}${m.why ? ` · ${m.why}` : ""}`)),
+    ...s.securityAlerts.map((a) =>
+      alert("security", `${a.line}: ${a.alerts.length} ${a.alerts.length === 1 ? "alerta de seguridad abierta" : "alertas de seguridad abiertas"}${a.problem ? ` · ${a.problem}` : ""}`),
+    ),
+  ];
+
+  return {
+    now: now.toISOString(),
+    clock: clockText(now),
+    topbar: {
+      queued: s.queued.length,
+      running: s.running.length,
+      waiting: s.waiting.length,
+      delivered: s.today.delivered,
+      failed: s.today.failed,
+      spentUsd: s.budget.spentUsd,
+      estimatedUsd: s.budget.estimatedUsd,
+      daemon,
+      daemonText: DAEMON_TEXT[daemon],
+      daemonTone: DAEMON_TONE[daemon],
+    },
+    events: events.slice(0, CONTROL_EVENTS),
+    dots,
+    decisions,
+    series,
+    bus: { from: new Date(busFrom).toISOString(), to: now.toISOString(), rows: busRows },
+    trace,
+    engines,
+    alerts,
   };
 }
 

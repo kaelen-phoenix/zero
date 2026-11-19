@@ -2,9 +2,9 @@
 
 ## 1. Etapa 1: Vista de datos de la sala de control
 
-- [ ] 1.1 Write the OpenSpec change `openspec/changes/zero-7e0bd8b9/` (proposal, tasks, ADDED requirements under `specs/control-panel/spec.md`) and validate it.
-- [ ] 1.2 Add `ControlRoomView` and the read-only `controlRoomView(ctx, now)` to `src/app.ts`: topbar, events, graph and decisions, series per line, bus, trace, engines and alerts, all from the stored state.
-- [ ] 1.3 Add `test/control-room.test.ts` with the view's scenarios, including the no-writes check.
+- [x] 1.1 Write the OpenSpec change `openspec/changes/zero-7e0bd8b9/` (proposal, tasks, ADDED requirements under `specs/control-panel/spec.md`) and validate it.
+- [x] 1.2 Add `ControlRoomView` and the read-only `controlRoomView(ctx, now)` to `src/app.ts`: topbar, events, graph and decisions, series per line, bus, trace, engines and alerts, all from the stored state.
+- [x] 1.3 Add `test/control-room.test.ts` with the view's scenarios, including the no-writes check.
 
 ## 2. Etapa 2: Página, estética y menú
 
