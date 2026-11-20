@@ -5,7 +5,7 @@
 
 ## Contexto
 
-El chat remoto (ADR 0007) se conecta a `https://<túnel>/mcp`. Hoy el túnel es el rápido de cloudflared (`tunnel --url`, dirección `https://<algo>.trycloudflare.com`), que cambia cada vez que el túnel o la fábrica se reinician. Cada cambio deja sin servicio al conector del chat (ChatGPT, Claude u otro cliente MCP) hasta volver a agregarlo con la dirección nueva.
+El chat remoto (ADR 0009) se conecta a `https://<túnel>/mcp`. Hoy el túnel es el rápido de cloudflared (`tunnel --url`, dirección `https://<algo>.trycloudflare.com`), que cambia cada vez que el túnel o la fábrica se reinician. Cada cambio deja sin servicio al conector del chat (ChatGPT, Claude u otro cliente MCP) hasta volver a agregarlo con la dirección nueva.
 
 El emisor y el recurso de OAuth, y el Host que acepta `/mcp`, salen de kv `panel.remoteUrl` (`createRemoteMcp` en `src/mcp/http.ts`). Un túnel que escriba ahí un origen https fijo vuelve estable todo el chat remoto sin tocar el código de OAuth.
 
@@ -59,7 +59,7 @@ zero no crea nada en Cloudflare ni toca el DNS: estos pasos los hace quien está
 
 ## Seguridad
 
-- **OAuth:** el endpoint `/mcp` sigue exigiendo un token Bearer de zero (OAuth 2.1 con PKCE S256, ADR 0007); cada conexión la aprueba quien está a cargo con la clave del panel, y las acciones delicadas esperan confirmación aparte. Nunca se publica un MCP sin protección: la dirección fija no cambia nada de esto.
+- **OAuth:** el endpoint `/mcp` sigue exigiendo un token Bearer de zero (OAuth 2.1 con PKCE S256, ADR 0009); cada conexión la aprueba quien está a cargo con la clave del panel, y las acciones delicadas esperan confirmación aparte. Nunca se publica un MCP sin protección: la dirección fija no cambia nada de esto.
 - **TLS a través de Cloudflare:** el chat habla https con Cloudflare, que termina TLS con su certificado para el subdominio (**no verificado** en los detalles del certificado); de Cloudflare a la máquina viaja por la conexión saliente cifrada de cloudflared, y cloudflared entrega en `http://127.0.0.1`, sin abrir puertos de la red de la casa. Cloudflare puede ver el tráfico descifrado (**no verificado** en cuanto a lo que registra).
 - **Chequeo de Host:** `/mcp` acepta solo el Host de `panel.remoteUrl` o 127.0.0.1, así que un nombre que apunte por error al túnel no sirve.
 - **Token fuera del repositorio:** `CLOUDFLARE_TUNNEL_TOKEN` vive en el almacén de secretos (llavero del sistema o, en Docker, `secrets.enc`); el archivo de la fábrica es estricto en `panel.tunnel` y no admite un campo `token`. zero nunca lo escribe en argv, kv, logs ni archivos.

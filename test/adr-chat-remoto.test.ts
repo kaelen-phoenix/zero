@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const path = fileURLToPath(new URL("../docs/adr/0007-chat-remoto.md", import.meta.url));
+const path = fileURLToPath(new URL("../docs/adr/0009-chat-remoto.md", import.meta.url));
 const read = () => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
 
 /** The lines under the first heading matching `title`, up to the next heading of the same or a higher level. */
@@ -16,11 +16,11 @@ function section(title: RegExp): string {
   return (end === -1 ? rest : rest.slice(0, end)).join("\n");
 }
 
-describe("docs/adr/0007-chat-remoto.md", () => {
+describe("docs/adr/0009-chat-remoto.md", () => {
   it("exists with the ADR header and sections", () => {
     expect(existsSync(path)).toBe(true);
     const file = read();
-    expect(file.split("\n")[0]).toMatch(/^# ADR 0007 — /);
+    expect(file.split("\n")[0]).toMatch(/^# ADR 0009 — /);
     for (const piece of ["**Estado:**", "**Fecha:**", "## Contexto", "## Decisión", "## Consecuencias"]) expect(file).toContain(piece);
   });
 

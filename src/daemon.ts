@@ -7,6 +7,9 @@ import { budgetState } from "./budget.js";
 import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { checkInstall } from "./install-freshness.js";
+import { githubCoord } from "./coord/github.js";
+import { coordPass } from "./coord/pass.js";
+import type { CoordApi } from "./coord/protocol.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -99,6 +102,8 @@ export interface DaemonOptions {
   selfUpdate?: SelfUpdateDeps;
   /** Starts the switch to a prepared version; tests inject a fake. Without it, `once` runs never switch. */
   launchSwitch?: SwitchLauncher;
+  /** The coordination repository of a distributed factory; tests inject a memory one. Without it, `once` runs do not beat. */
+  coord?: (repository: string) => CoordApi | undefined;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -119,6 +124,11 @@ const realMerges = (ctx: FactoryContext, meter: GithubMeter, pass: GithubPass) =
 const realAlerts = (meter: GithubMeter) => (repository: string) => {
   const token = githubToken();
   return token ? githubAlerts(token, repository, meter.client(token, "alerts")) : undefined;
+};
+
+const realCoord = (meter: GithubMeter) => (repository: string) => {
+  const token = githubToken();
+  return token ? githubCoord(meter.client(token, "coord"), repository) : undefined;
 };
 
 /** The real billing readers, straight from zero's process: read-only calls with each service's token from the secret store. */
@@ -349,6 +359,23 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // A distributed factory's heartbeat and machine list, through the meter, at most every heartbeatSeconds; a single-machine factory sends nothing.
+  let coordAt = 0;
+  let coordinating: Promise<unknown> | undefined;
+  const coordinate = () => {
+    const distributed = ctx.config.distributed;
+    if (coordinating || !distributed || (opts.once && !opts.coord) || Date.now() - coordAt < (opts.once ? 0 : distributed.heartbeatSeconds * 1000)) return;
+    const api = (opts.coord ?? realCoord(meter))(distributed.repository);
+    if (!api) return;
+    coordAt = Date.now();
+    coordinating = coordPass(ctx, api, { ready: currentBox(ctx).availability.ready }, now())
+      .catch((err) => log.warn("coordination pass failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("coord");
+        coordinating = undefined;
+      });
+  };
+
   // What the lines' external services cost this month; the pass itself keeps each service to once a local day.
   let billingAt = 0;
   let readingBilling: Promise<void> | undefined;
@@ -562,6 +589,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         mergeReady();
         findReverts();
         readAlerts();
+        coordinate();
       }
       takeLinear();
       takeJira();
@@ -664,6 +692,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await merging;
     await checkingReverts;
     await readingAlerts;
+    await coordinating;
     await cleaning;
     await readingBilling;
     await checkingInstall;

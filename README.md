@@ -124,6 +124,14 @@ With `autostart: true` in the factory file, zero registers its own start when yo
 
 If the factory goes down without a `zero shutdown` (the machine restarted, the process died) while jobs were in progress or queued, whatever runs next brings it back: the start at login, the MCP server when your chat opens it, or any `zero` command, which says `La fábrica se había caído con trabajo pendiente: la volví a encender.` The jobs resume from their checkpoint. A factory you turned off on purpose stays off. `zero status` tells both cases apart: `apagada a propósito desde HH:MM`, or `se cayó` with its last heartbeat and how many jobs were left in progress.
 
+### Several machines (`zero unirse`)
+
+```sh
+zero unirse me/zero-coord
+```
+
+A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
+
 ## Install with Docker
 
 The image is built from this repository, with zero, Node 22, git, `gh`, the Docker client and only the AI CLIs you name. Nothing gets installed later: to add a CLI you rebuild.
@@ -368,7 +376,7 @@ zero panel rotate              # new key: previous links stop working
 
 ### Remote chat (phone)
 
-You can run the factory from the chat on your phone (ChatGPT, the Claude app or another MCP client) with no PC in front of you. zero serves MCP over HTTP (streamable HTTP) at `/mcp`, through the same tunnel as the panel, with the same tools as `zero mcp`. The reasons, the official sources and why it is not published in the ChatGPT or Claude directories are in [`docs/adr/0007-chat-remoto.md`](docs/adr/0007-chat-remoto.md).
+You can run the factory from the chat on your phone (ChatGPT, the Claude app or another MCP client) with no PC in front of you. zero serves MCP over HTTP (streamable HTTP) at `/mcp`, through the same tunnel as the panel, with the same tools as `zero mcp`. The reasons, the official sources and why it is not published in the ChatGPT or Claude directories are in [`docs/adr/0009-chat-remoto.md`](docs/adr/0009-chat-remoto.md).
 
 ```sh
 zero panel remote on           # the tunnel the chat goes through

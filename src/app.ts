@@ -16,6 +16,7 @@ import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWind
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
+import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
@@ -53,6 +54,8 @@ import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSum
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
+import { readMachines } from "./coord/pass.js";
+import type { MachineView } from "./coord/protocol.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -432,6 +435,8 @@ export interface FactoryStatus {
   install?: InstallFreshness;
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
   github?: GithubStatus;
+  /** Every machine of a distributed factory as the last coordination pass saw them; absent without `distributed`. */
+  machines?: MachineView[];
   box: { status?: BoxStatus; availability: BoxAvailability };
   /** Jobs wait for the box instead of running in local copies (see waitsForBox). */
   boxWait?: boolean;
@@ -672,6 +677,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     trains: trainViews(ctx),
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
+    ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [] }),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
@@ -1977,6 +1983,41 @@ export async function setEgressMode(ctx: FactoryContext, mode: string): Promise<
 export async function setAutostart(ctx: FactoryContext, enabled: boolean, deps?: AutostartDeps): Promise<AutostartResult> {
   ctx.config = await editConfig(ctx, (doc) => doc.set("autostart", enabled));
   return syncAutostart(ctx.home, enabled, deps);
+}
+
+/** Whether the coordination repository is private; throws when it cannot be read. Tests inject a fake. */
+export type CoordRepoCheck = (repository: string) => Promise<{ private: boolean }>;
+
+/** The real check, with the factory's GitHub token from zero's own process. */
+export const githubRepoCheck =
+  (secrets?: SecretStore): CoordRepoCheck =>
+  async (repository) => {
+    const token = githubToken(process.env, secrets);
+    if (!token) throw new Error("no hay token de GitHub");
+    const [owner, repo] = repository.split("/");
+    const { data } = await new Octokit({ auth: token }).repos.get({ owner: owner!, repo: repo! });
+    return { private: data.private };
+  };
+
+const COORD_REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Joins this machine to a distributed factory: only the coordination repository's
+ * name goes in the factory file, and only once GitHub says it is private.
+ * Secrets stay in each machine's own store; nothing here writes one.
+ */
+export async function joinFactory(ctx: FactoryContext, repository: string, check: CoordRepoCheck = githubRepoCheck(ctx.secrets)): Promise<{ joined: boolean; text: string }> {
+  const name = repository.trim();
+  if (!COORD_REPOSITORY.test(name)) return { joined: false, text: "El repositorio de coordinación tiene que tener la forma cuenta/nombre." };
+  let visibility: { private: boolean };
+  try {
+    visibility = await check(name);
+  } catch {
+    return { joined: false, text: `No pude leer ${name} en GitHub: revisá que exista, que sea privado y que tu sesión de GitHub tenga acceso (zero setup).` };
+  }
+  if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.` };
+  ctx.config = await editConfig(ctx, (doc) => doc.setIn(["distributed", "repository"], name));
+  return { joined: true, text: `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.` };
 }
 
 export function lines(config: FactoryConfig) {

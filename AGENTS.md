@@ -21,6 +21,7 @@ Where each part of the code lives and how it behaves, one file per area:
 - [Reports](docs/agents/reports.md): the townhall, the monthly report and the billing of external services.
 - [Box and egress](docs/agents/box-and-egress.md): Docker, the isolation box and the egress gate.
 - [Intake](docs/agents/intake.md): where requests come from: GitHub issues and comments, proposals and research as issues, Linear, Jira and Dependabot alerts.
+- [Distributed factory](docs/agents/distributed.md): several machines working as one factory: machine identity and capabilities, the coordination protocol, the heartbeat pass and joining.
 - [Self-update](docs/agents/self-update.md): how far the installed copy is from what was merged, and the factory updating itself.
 - [Site](docs/agents/site.md): the one-step installer and the brand files served by the site.
 
