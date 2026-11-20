@@ -883,14 +883,38 @@ export function onDemandPending(ctx: FactoryContext): boolean {
 /**
  * The installed packages' stations, one at a time and each at most once per its
  * `everyMinutes`, only while the factory has nothing else to do. A station with an on-demand
- * run pending waits for `onDemandPass` instead of also running its regular turn. A failure or a
- * hang stays in the log and the next station still runs.
+ * run pending waits for `onDemandPass` instead of also running its regular turn; one that declares
+ * `whenBusy` also has it in `busyPass`. A failure or a hang stays in the log and the next station still runs.
  */
 export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
   for (const station of ctx.config.loadedPackages?.stations ?? []) {
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.listJobs({ status: ["queued", "running"], limit: 1 }).length) return;
+    if (budgetState(ctx.store, ctx.config, now).reached) return;
+    if (pendingOnDemand(ctx, station)) continue;
+    await runStation(ctx, runAgent, station, now, opts.signal);
+  }
+}
+
+/** Whether some loaded station declares `whenBusy`. */
+export function whenBusyStations(ctx: FactoryContext): boolean {
+  return (ctx.config.loadedPackages?.stations ?? []).some((s) => s.whenBusy);
+}
+
+/**
+ * The regular turn of the stations that declare `whenBusy`, whatever the line is doing: with jobs
+ * queued or running, or a self-update waiting to switch. It takes no job slot and waits neither for
+ * the box nor for a line's repository; the andon, the budget, a missing secret and a turn under way
+ * still hold a station back, and its `ctx.runAgent` keeps the night's cap. A station with an
+ * on-demand run pending is left to `onDemandPass`. Shares `stationLastKey` and `busyStations` with
+ * `packagesPass`, so a station runs at most once per `everyMinutes` across both.
+ */
+export async function busyPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
+  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+    if (!station.whenBusy) continue;
+    if (opts.signal?.aborted) return;
+    if (ctx.store.getKv(ANDON_KEY) === "on") return;
     if (budgetState(ctx.store, ctx.config, now).reached) return;
     if (pendingOnDemand(ctx, station)) continue;
     await runStation(ctx, runAgent, station, now, opts.signal);

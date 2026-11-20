@@ -566,6 +566,8 @@ export interface PackageStation {
   requests?: { perLinePerDay: number };
   /** Whether the person in charge may ask for a run of its `pass` outside its period (`zero package run`). */
   onDemand: boolean;
+  /** Whether its regular `pass` also runs, in its period, while jobs are queued or running (`busyPass`); false: only in the idle pass. */
+  whenBusy: boolean;
   /** Absent: nothing can be uploaded to it. Extensions in lower case, with the dot. */
   uploads?: { maxMb: number; extensions: string[] };
   /** Permission to create local git repositories with lines of their own (`ctx.repos`); absent: it cannot. */
