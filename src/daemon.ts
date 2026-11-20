@@ -34,7 +34,7 @@ import { killLeftovers } from "./leftovers.js";
 import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
-import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./line/packages.js";
+import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -506,6 +506,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (demanding = undefined));
   };
 
+  // The stations that declare whenBusy run their regular turn in their period with jobs queued or running, or a self-update waiting to switch:
+  // their own background pass, which takes no job slot and waits neither for the box nor for a line. busyPass itself respects the andon, the budget and missing secrets.
+  let busyAt = 0;
+  let busyRunning: Promise<void> | undefined;
+  const runBusyStations = () => {
+    if (busyRunning || !(opts.packages ?? !opts.once) || !whenBusyStations(ctx) || Date.now() - busyAt < (opts.once ? 0 : INTAKE_MS)) return;
+    busyAt = Date.now();
+    busyRunning = busyPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal })
+      .catch((err) => log.warn("busy-time stations failed", { error: String(err) }))
+      .finally(() => (busyRunning = undefined));
+  };
+
   // A pull request blocked for hours cannot wait for an idle factory: the unjam station looks at its line during the day, in the background
   // and one pass at a time. urgentUnjamPass itself keeps it off the owner's way (andon, budget, a free slot, nothing of the owner queued).
   let urgentAt = 0;
@@ -560,6 +572,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       exportTraces();
       runSchedules();
       runOnDemand();
+      runBusyStations();
       runUrgentUnjam();
       lookForPackageUpdates();
       checkSelfUpdate();
@@ -658,6 +671,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await exporting;
     await scheduling;
     await demanding;
+    await busyRunning;
     await urgent;
     await looking;
     await selfChecking;

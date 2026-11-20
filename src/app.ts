@@ -445,6 +445,8 @@ export interface FactoryStatus {
   onDemandRuns: OnDemandRun[];
   /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
   stationRuns: ({ station: string } & StationRunRecord)[];
+  /** Loaded stations that declare `whenBusy`, as `<package>/<station>`: their regular pass also runs with the factory busy. */
+  whenBusy: string[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
   /** The panel's tunnel health, only while kv `panel.remote` is on; `hostname` with a fixed subdomain configured. */
@@ -680,6 +682,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
       const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
+    whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
     selfUpdate: selfUpdateStatus(ctx),
@@ -2519,6 +2522,8 @@ export interface PackageStationView {
   onDemandRequest?: string;
   /** The station's last on-demand run: running, or how it ended. */
   lastOnDemand?: StationRunRecord;
+  /** Whether its manifest declares `whenBusy`: its regular pass also runs with the factory busy. */
+  whenBusy?: true;
 }
 
 /** A package's tab as the panel's menu links it. */
@@ -2629,6 +2634,7 @@ export function packageList(ctx: FactoryContext): PackageList {
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
             ...(pendingRequest && { onDemandRequest: pendingRequest }),
             ...(lastOnDemand && { lastOnDemand }),
+            ...(station?.whenBusy && { whenBusy: true as const }),
           };
         }),
       };

@@ -53,6 +53,8 @@ const ManifestStationSchema = z
     requests: z.object({ perLinePerDay: z.number().int().positive() }).strict().optional(),
     /** Permission for the person in charge to ask for a run of `pass` outside its period. */
     onDemand: z.boolean().default(false),
+    /** Its regular `pass` also runs with jobs queued or running, or a self-update waiting to switch. */
+    whenBusy: z.boolean().default(false),
     /** Permission for the person in charge to upload a file to it, which asks for an on-demand run. */
     uploads: z
       .object({
@@ -237,6 +239,7 @@ function packageStations(manifest: PackageManifest, root: string, entry: Package
       maxTurns: s.maxTurns,
       ...(s.requests && { requests: s.requests }),
       onDemand: s.onDemand,
+      whenBusy: s.whenBusy,
       ...(s.uploads && { uploads: { maxMb: s.uploads.maxMb, extensions: s.uploads.extensions.map((e) => e.toLowerCase()) } }),
       ...(s.repositories && { repositories: s.repositories }),
       entry,
