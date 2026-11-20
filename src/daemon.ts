@@ -41,15 +41,17 @@ import { onDemandPass, onDemandPending, packagesPass, scheduledPass } from "./li
 import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
-import { resendAfterCapability, unjamPass } from "./line/unjam.js";
-import { HISTORY_LIMIT, importSwitchResult, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
+import { recruitPass } from "./line/recruit.js";
+import { resendAfterCapability, unjamPass, urgentUnjamPass } from "./line/unjam.js";
+import { switchLockHeldAt } from "./self-update-switch.js";
+import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
 import type { Job } from "./state/store.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
-import { tunnelKeeper } from "./panel/tunnel.js";
+import { TUNNEL_TOKEN_SECRET, tunnelKeeper } from "./panel/tunnel.js";
 
 export interface DaemonOptions {
   /** How often the loop wakes up to beat, apply andon and start work. */
@@ -80,8 +82,12 @@ export interface DaemonOptions {
   scout?: boolean;
   /** Run the unjam station (diagnosis of what holds the lines up) while the factory is idle. Defaults to on, except in `once` runs. */
   unjam?: boolean;
+  /** Run the unjam station during the day for a line with a pull request blocked too long (`unjam.urgentAfterHours`), busy factory or not. Defaults to on, except in `once` runs. */
+  urgentUnjam?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
+  /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
+  recruit?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
   packages?: boolean;
   /** Look once a day at what the remotes of the git and npm packages have. Defaults to on, except in `once` runs. */
@@ -254,7 +260,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   panel?.on("error", (err) => log.warn("control panel unavailable", { port, error: String(err) }));
   const host = ctx.config.panel.host;
   panel?.listen(port, host, () => log.info("control panel listening", { url: `http://${host}:${port}` }));
-  const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0 });
+  const tunnel = tunnelKeeper({ home: ctx.home, store, port: panel ? port : 0, hostname: ctx.config.panel.tunnel?.hostname, token: () => ctx.secrets.get(TUNNEL_TOKEN_SECRET) });
   // Every pass that talks to GitHub does it through this meter; while it holds a pause, none of them starts.
   const meter = githubMeter(store, now);
   let githubPauseLogged = false;
@@ -447,6 +453,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   // A prepared version of zero switches in once nothing runs: the switch process outlives this daemon, which stops as usual.
   let selfReadyLogged = false;
+  let switchBusyLogged = false;
   const switchVersion = async () => {
     const { state } = readSelfUpdate(store);
     recordSelfUpdate(store, { state: { ...state, status: "switching", switchingAt: now().toISOString() } });
@@ -454,9 +461,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       await (opts.launchSwitch ?? launchSwitch)(ctx, state);
     } catch (err) {
       const why = `no pude iniciar el cambio a ${(state.to ?? "").slice(0, 12)}: ${String(err).slice(0, 300)}`;
-      log.warn("self-update switch not started; staying on the current version", { error: why });
+      const machine = isMachineFailure(err);
+      log.warn("self-update switch not started; staying on the current version", { error: why, machine });
       recordSelfUpdate(store, {
-        state: { ...state, status: "idle", problem: why, failed: [...(state.failed ?? []), state.to ?? ""].filter(Boolean).slice(-HISTORY_LIMIT) },
+        state: { ...state, status: "idle", problem: why, ...afterFailure(state, state.to ?? "", machine, now()) },
         entry: { from: state.from ?? "", to: state.to ?? "", at: now().toISOString(), outcome: "failed", reason: why },
       });
       return;
@@ -465,20 +473,22 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     store.setKv(SHUTDOWN_KEY, now().toISOString());
   };
 
-  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line) and the
+  // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line), the recruiter looks for public agents for the catalog and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
   let idle: Promise<void> | undefined;
   let packagesAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
-    if (idle || running.size) return;
+    // Never two diagnoses at once: the daytime one may still be at work.
+    if (idle || urgent || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
+    const recruits = (opts.recruit ?? !opts.once) && ctx.config.recruit !== "off" && ctx.config.nightShift !== "off";
     // Each station decides on its own whether its period is over, so this only keeps the loop from asking on every wake-up.
     const stations = (opts.packages ?? !opts.once) && Boolean(ctx.config.loadedPackages?.stations.length) && Date.now() - packagesAt >= (opts.once ? 0 : INTAKE_MS);
-    if (!scouts && !unjams && !researches && !stations) return;
+    if (!scouts && !unjams && !researches && !recruits && !stations) return;
     if (stations) packagesAt = Date.now();
     idle = (async () => {
       if (scouts) {
@@ -493,6 +503,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       }
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+      if (recruits && !researchStop.signal.aborted)
+        await recruitPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("recruiter failed", { error: String(err) }));
       if (stations && !researchStop.signal.aborted)
         await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
@@ -519,6 +531,22 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     demanding = onDemandPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal })
       .catch((err) => log.warn("on-demand stations failed", { error: String(err) }))
       .finally(() => (demanding = undefined));
+  };
+
+  // A pull request blocked for hours cannot wait for an idle factory: the unjam station looks at its line during the day, in the background
+  // and one pass at a time. urgentUnjamPass itself keeps it off the owner's way (andon, budget, a free slot, nothing of the owner queued).
+  let urgentAt = 0;
+  let urgent: Promise<unknown> | undefined;
+  const runUrgentUnjam = () => {
+    if (urgent || idle || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
+    urgentAt = Date.now();
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+    urgent = urgentUnjamPass(ctx, passRunner(ctx.config), now(), { running: running.size, signal: researchStop.signal, merges })
+      .catch((err) => log.warn("daytime unjam failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("unjam");
+        urgent = undefined;
+      });
   };
 
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
@@ -560,6 +588,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       exportTraces();
       runSchedules();
       runOnDemand();
+      runUrgentUnjam();
       lookForPackageUpdates();
       checkSelfUpdate();
       await importSwitchResult(ctx);
@@ -579,7 +608,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && readSelfUpdate(store).state.status === "ready";
       if (selfReady && !selfReadyLogged) log.info("self-update ready: not starting new jobs until the switch", { running: running.size });
       selfReadyLogged = selfReady;
-      if (selfReady && !running.size) {
+      // A switch still at work (an earlier one taken for dead) is never doubled: the ready version waits for it to end.
+      const switchBusy = selfReady && !running.size && switchLockHeldAt(ctx.home.root);
+      if (switchBusy && !switchBusyLogged) log.warn("self-update ready but another switch is still at work; waiting for it");
+      switchBusyLogged = switchBusy;
+      if (selfReady && !running.size && !switchBusy) {
         await switchVersion();
         continue;
       }
@@ -654,6 +687,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await exporting;
     await scheduling;
     await demanding;
+    await urgent;
     await looking;
     await selfChecking;
     await idle;

@@ -257,6 +257,8 @@ export function codexInvocation(req: EngineRequest, files: { lastMessage: string
       "--skip-git-repo-check",
       "--ephemeral",
       ...(sandbox === "off" ? ["--sandbox", "danger-full-access", "-c", "approval_policy=\"never\""] : ["--sandbox", req.access === "write" ? "workspace-write" : "read-only"]),
+      // None of the user's MCP servers (zero's own chat server included) reaches a factory agent.
+      "-c", "mcp_servers={}",
       "--output-last-message", files.lastMessage,
       ...(files.schema ? ["--output-schema", files.schema] : []),
       ...(req.model ? ["--model", req.model] : []),

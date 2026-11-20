@@ -104,6 +104,10 @@ function describe(s: SpanRow): string {
   if (a["zero.skills.missing"]) parts.push(`skills faltantes: ${a["zero.skills.missing"]}`);
   if (a["process.command_line"]) parts.push(`\`${a["process.command_line"]}\` → ${a["process.exit.code"]}`);
   if (a["zero.merge.via"]) parts.push(`fundido a pedido (${a["zero.merge.via"]})${a["zero.merge.commit"] ? ` en ${String(a["zero.merge.commit"]).slice(0, 12)}` : ""}`);
+  if (a["zero.conflicts.outcome"]) {
+    const counts = [a["zero.conflicts.resolved"] !== undefined && `${a["zero.conflicts.resolved"]} resueltos`, a["zero.conflicts.returned"] && `${a["zero.conflicts.returned"]} devueltos`].filter(Boolean).join(", ");
+    parts.push(`conflictos: ${a["zero.conflicts.outcome"]} (${a["zero.conflicts.files"] ?? "?"} archivos${counts ? `, ${counts}` : ""})${a["zero.conflicts.reason"] ? ` · ${a["zero.conflicts.reason"]}` : ""}`);
+  }
   if (a["zero.outcome"]) parts.push(String(a["zero.outcome"]));
   if (a["error.message"]) parts.push(`error: ${a["error.message"]}`);
   return parts.join(" · ");

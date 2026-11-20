@@ -6,3 +6,4 @@ coverage/
 *.log
 .claude/settings.local.json
 secrets/
+.zero-switch/

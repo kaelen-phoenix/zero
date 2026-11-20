@@ -7,14 +7,14 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatAgents, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -47,6 +47,14 @@ Uso diario (también desde el chat):
                                  fábrica vuelva a actualizar un pull request en conflicto
   zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
                                  solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
+  zero actualizar-pr <línea> <número>...
+                                 Toma pull requests abiertos de la línea (de quien sea, no de un fork), en ese orden: deja
+                                 un respaldo local respaldo/pr<N>, mezcla la rama base, resuelve los conflictos y sube a la
+                                 misma rama, sin abrir otro pull request
+  zero tren <línea> [<número>...]
+                                 Arma el tren de integración de la línea con sus pull requests entregados sin fundir (o
+                                 esos, en ese orden): los funde de a uno, aunque la línea no tenga autoMerge, actualizando
+                                 y resolviendo el siguiente recién después, y nunca funde uno en rojo
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -82,10 +90,16 @@ Panel en el navegador:
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
   zero agent list [--line <nombre>]   Agentes a medida de cada línea, en el orden en que corren
-  zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build] [--archivos <patrón>]...
+  zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build|conflict] [--archivos <patrón>]...
                                  Suma un agente a la línea (crea .zero/agents/<nombre>.md con una plantilla): revisor de
                                  solo lectura, o con --tipo build uno que escribe entre build y verify, si querés solo
-                                 cuando el cambio toca --archivos
+                                 cuando el cambio toca --archivos, o con --tipo conflict uno que resuelve los conflictos
+                                 al traer la rama base, antes de build
+  zero agent catalog             Catálogo de agentes que se pueden sumar, los propuestos primero
+  zero agent catalog add <id> --line <línea> [--yes]
+                                 Muestra el agente y el archivo de instrucciones que escribiría, y lo suma solo si confirmás
+                                 (da crédito a la fuente en THIRD-PARTY-NOTICES.md)
+  zero agent catalog reject <id> [--motivo "<texto>"]   Lo rechaza: no se suma ni se vuelve a proponer
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero package list              Paquetes de agentes instalados: fuente, versión, qué traen, si hay novedades y qué problema tienen
   zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--yes]
@@ -110,6 +124,12 @@ Fábrica:
   zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado)
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
+  zero mcp remote on|off         Deja manejar la fábrica desde el chat del celular (ChatGPT, Claude u otro cliente MCP) por
+                                 el túnel del panel; cada conexión nueva la aprobás vos en el panel
+  zero mcp clients               Chats remotos conectados: nombre, permisos, cuándo los aprobaste y su último uso
+  zero mcp revoke <cliente>      Desconecta un chat remoto: sus tokens dejan de servir en el momento
+  zero mcp pendientes            Acciones delicadas que pidió un chat remoto (fundir, detener, aprobar…) y esperan tu confirmación
+  zero mcp confirmar <id>        Hace una de esas acciones (vencen a los 15 minutos)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
@@ -131,6 +151,7 @@ async function main(argv: string[]): Promise<number> {
       archivos: { type: "string", multiple: true },
       "permitir-codigo": { type: "boolean" },
       note: { type: "string" },
+      motivo: { type: "string" },
       days: { type: "string" },
       mes: { type: "string" },
       html: { type: "boolean" },
@@ -223,6 +244,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "mcp":
+      if (rest.length) break;
       await serveStdio(home);
       return -1; // keep running until the client closes stdin
     case "self-update": {
@@ -315,6 +337,22 @@ async function main(argv: string[]): Promise<number> {
         console.log(formatMerge(r));
         return r.merged ? 0 : 1;
       }
+      case "actualizar-pr": {
+        const [line, ...numbers] = rest;
+        if (!line || !numbers.length) throw new Error("Indicá la línea y los pull requests: zero actualizar-pr <línea> <número>...");
+        const adopted = await adoptPullRequests(ctx, { line, numbers });
+        console.log(formatAdoptions(adopted));
+        if (adopted.some((a) => a.job) && (await ensureDaemon(ctx))) console.log("La fábrica estaba apagada: la encendí.");
+        return adopted.every((a) => a.job) ? 0 : 1;
+      }
+      case "tren": {
+        const [line, ...numbers] = rest;
+        if (!line) throw new Error("Indicá la línea: zero tren <línea> [<número>...]");
+        const train = await startTrain(ctx, { line, numbers });
+        console.log(formatTrain(train));
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        return 0;
+      }
       case "resume":
         resume(ctx);
         console.log("Fábrica reanudada.");
@@ -382,6 +420,45 @@ Informe: ${r.report}`);
           `La línea ${r.line} toma los issues${repository ? ` de ${repository}` : ""} con la etiqueta "${r.label}". La fábrica los revisa cada minuto mientras está en marcha.\nSolo toma issues escritos y etiquetados por personas con permiso de escritura, comenta en cada uno cómo va su trabajo, y el pull request lo cierra al aceptarlo.`,
         );
         return 0;
+      }
+      case "mcp": {
+        const [action, arg] = rest;
+        if (action === "remote" && (arg === "on" || arg === "off")) {
+          setRemoteMcp(ctx, arg === "on");
+          if (arg === "off") {
+            console.log("Chat remoto apagado: los chats conectados dejan de poder usar la fábrica (sus conexiones quedan; revocalas con `zero mcp revoke`).");
+            return 0;
+          }
+          const view = remoteChatView(ctx);
+          console.log(
+            view.url
+              ? `Chat remoto encendido. En tu chat agregá un conector MCP con esta dirección: ${view.url}\nCada conexión nueva la aprobás en el panel; ${view.stable ? "esta dirección es fija: sigue igual después de reiniciar la fábrica." : "esta dirección cambia si el túnel se reinicia (para una fija, mirá docs/adr/0008-tunel-con-nombre.md)."}`
+              : "Chat remoto encendido, pero hace falta el túnel del panel: abrilo con `zero panel remote on` y volvé a mirar la dirección con `zero mcp clients`.",
+          );
+          return 0;
+        }
+        if (action === "clients" && !arg) {
+          console.log(formatRemoteChat(remoteChatView(ctx)));
+          return 0;
+        }
+        if (action === "revoke" && arg) {
+          if (!revokeRemoteChatClient(ctx, arg)) {
+            console.log(`No hay ningún chat conectado ${arg}: mirá la lista con \`zero mcp clients\`.`);
+            return 1;
+          }
+          console.log(`Chat ${arg} revocado: sus tokens dejaron de servir.`);
+          return 0;
+        }
+        if (action === "pendientes" && !arg) {
+          console.log(formatPendingActions(pendingRemoteActions(ctx)));
+          return 0;
+        }
+        if (action === "confirmar" && arg) {
+          const r = await confirmRemoteAction(ctx, arg);
+          console.log(r.text);
+          return r.ok ? 0 : 1;
+        }
+        break;
       }
       case "panel": {
         const [action, arg] = rest;
@@ -460,6 +537,28 @@ Informe: ${r.report}`);
         const [action, name] = rest;
         if (action === "list" || !action) {
           console.log(formatAgents(agentList(ctx, values.line)));
+          return 0;
+        }
+        if (action === "catalog" && !name) {
+          console.log(formatCatalog(agentCatalog(ctx)));
+          return 0;
+        }
+        if (action === "catalog" && name === "add") {
+          const id = rest[2];
+          if (!id || !values.line) throw new Error("Indicá el agente del catálogo y la línea: zero agent catalog add <id> --line <línea>");
+          const ask = interactiveConfirm();
+          try {
+            const r = await addFromCatalog(ctx, { id, line: values.line, confirm: values.yes ? async () => true : ask.confirm, say: (text) => console.log(text) });
+            console.log(r.text);
+            return r.added ? 0 : 1;
+          } finally {
+            ask.close();
+          }
+        }
+        if (action === "catalog" && name === "reject") {
+          const id = rest[2];
+          if (!id) throw new Error("Indicá el agente del catálogo: zero agent catalog reject <id> [--motivo <texto>]");
+          console.log(rejectCatalogEntry(ctx, { id, note: values.motivo }));
           return 0;
         }
         if (action !== "add" && action !== "remove") break;

@@ -1,11 +1,14 @@
+import { createReadStream, statSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, uploadToStation, type UploadContent, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
+import type { Scope } from "./oauth.js";
 import { monthlyMarkdown } from "../report.js";
 
 const INSTRUCTIONS = `zero is the owner's own software factory, running in the background on this machine.
@@ -50,7 +53,50 @@ export interface ZeroMcpOptions {
   merges?: MergeApiFactory;
   /** How the daemon is started; tests inject one. */
   start?: Starter;
+  /**
+   * Served over HTTP to a remote chat: only the tools its token's scope allows, and delicate actions are held for
+   * the person in charge to confirm (`holdRemoteAction`) instead of running.
+   */
+  remote?: { scope: Scope[]; client?: string };
 }
+
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** The file zero_package_upload passes on, or why it refuses; it reads a local path only for a chat on this machine. */
+function uploadInput(input: { path?: string; content?: string; name?: string }, remote: boolean): { name: string; content: UploadContent } | { reason: string } {
+  const { path, content, name } = input;
+  if (path !== undefined && content !== undefined) return { reason: "Mandá path o content, no los dos." };
+  if (path === undefined && content === undefined) return { reason: "Falta el archivo: mandá path (ruta absoluta) o content (base64) con name." };
+  if (content !== undefined) {
+    if (!name?.trim()) return { reason: "Con content hace falta name, el nombre del archivo con su extensión." };
+    const compact = content.replace(/\s+/g, "");
+    if (!compact || !BASE64.test(compact)) return { reason: "content no es base64 válido." };
+    const bytes = Buffer.from(compact, "base64");
+    if (bytes.toString("base64") !== compact) return { reason: "content no es base64 válido." };
+    return { name, content: bytes };
+  }
+  if (remote) return { reason: "El chat remoto no lee archivos de esta máquina: mandá el archivo en content (base64) con name." };
+  if (!isAbsolute(path!)) return { reason: "path tiene que ser una ruta absoluta." };
+  let isFile = false;
+  try {
+    isFile = statSync(path!).isFile();
+  } catch {
+    return { reason: "No encontré el archivo de path." };
+  }
+  if (!isFile) return { reason: "path no es un archivo común." };
+  return { name: basename(path!), content: readLazily(path!) };
+}
+
+/** Opens the file only once the upload starts reading, so a refused upload leaves no open handle behind. */
+async function* readLazily(path: string): AsyncIterable<Uint8Array> {
+  yield* createReadStream(path) as AsyncIterable<Uint8Array>;
+}
+
+/** What a remote token with only `zero:read` sees. */
+export const READ_TOOLS = new Set(["zero_status", "zero_proposals", "zero_research", "zero_briefing", "zero_monthly_report", "zero_trace", "zero_egress", "zero_lines"]);
+
+const heldText = (id: string, what: string) =>
+  `No lo hice todavía: ${what} necesita que la persona a cargo lo confirme en el panel (Chat remoto) o con \`zero mcp confirmar ${id}\` en la terminal. Acción pendiente ${id}; vence en 15 minutos.`;
 
 /**
  * The chat is the front door and the control room: every tool returns at
@@ -63,8 +109,19 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
   // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
+  const remote = opts.remote;
+  const canAct = !remote || remote.scope.includes("zero:act");
+  // A remote token without zero:act never gets the other tools registered, so it cannot even list them.
+  const tool = ((name: string, ...rest: unknown[]) =>
+    canAct || READ_TOOLS.has(name) ? (server.registerTool as (...a: unknown[]) => unknown).call(server, name, ...rest) : undefined) as typeof server.registerTool;
+  /** Over the remote server, holds a delicate action for the person in charge; elsewhere runs it. */
+  const delicate = (ctx: FactoryContext, action: RemoteAction, run: () => Promise<string> | string): Promise<string> | string => {
+    if (!remote) return run();
+    const held = holdRemoteAction(ctx, action, remote.client);
+    return heldText(held.id, held.text);
+  };
 
-  server.registerTool(
+  tool(
     "zero_request",
     {
       title: "Pedir un trabajo a la fábrica",
@@ -87,7 +144,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       }),
   );
 
-  server.registerTool(
+  tool(
     "zero_status",
     {
       title: "Estado de la fábrica o de un trabajo",
@@ -98,7 +155,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)))),
   );
 
-  server.registerTool(
+  tool(
     "zero_answer",
     {
       title: "Responder una consulta de la fábrica",
@@ -109,20 +166,26 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
         note: z.string().optional().describe("The owner's reason or instructions, if they gave any."),
       },
     },
-    ({ job, decision, note }) => withFactory(home, async (ctx) => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) })),
+    ({ job, decision, note }) =>
+      withFactory(home, async (ctx) => {
+        const run = async () => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) });
+        // Approving changes to protected paths is the delicate answer; the others go through as on the terminal.
+        if (decision !== "approve" || getJob(ctx, job).question?.kind !== "protected-path") return run();
+        return delicate(ctx, { tool: "zero_answer", args: { job, decision, ...(note && { note }) } }, run);
+      }),
   );
 
-  server.registerTool(
+  tool(
     "zero_merge",
     {
       title: "Fundir un pull request entregado",
       description: "Merge a pull request the factory delivered, even on lines without autoMerge, only if GitHub says it is ready (checks green, no conflicts); otherwise it says why and forces nothing. Only when the owner asks for it.",
       inputSchema: { target: z.string().describe("The job id or the GitHub pull request URL.") },
     },
-    ({ target }) => withFactory(home, async (ctx) => formatMerge(await mergePullRequest(ctx, target, { via: "chat", api: opts.merges }))),
+    ({ target }) => withFactory(home, (ctx) => delicate(ctx, { tool: "zero_merge", args: { target } }, async () => formatMerge(await mergePullRequest(ctx, target, { via: "chat", api: opts.merges })))),
   );
 
-  server.registerTool(
+  tool(
     "zero_proposals",
     {
       title: "Propuestas del turno nocturno",
@@ -133,7 +196,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true)),
   );
 
-  server.registerTool(
+  tool(
     "zero_proposal_decide",
     {
       title: "Aprobar o rechazar una propuesta",
@@ -145,15 +208,17 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       },
     },
     ({ id, decision, note }) =>
-      withFactory(home, async (ctx) => {
-        if (decision === "reject") return `Propuesta ${(await rejectProposal(ctx, id, note)).id} rechazada y archivada.`;
-        const r = approveProposal(ctx, id);
-        const started = await ensureDaemon(ctx);
-        return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
-      }),
+      withFactory(home, (ctx) =>
+        delicate(ctx, { tool: "zero_proposal_decide", args: { id, decision, ...(note && { note }) } }, async () => {
+          if (decision === "reject") return `Propuesta ${(await rejectProposal(ctx, id, note)).id} rechazada y archivada.`;
+          const r = approveProposal(ctx, id);
+          const started = await ensureDaemon(ctx);
+          return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+        }),
+      ),
   );
 
-  server.registerTool(
+  tool(
     "zero_research",
     {
       title: "Investigación",
@@ -167,7 +232,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ line, days }) => withFactory(home, (ctx) => formatResearchNotes(listResearchNotes(ctx, { line, days }))),
   );
 
-  server.registerTool(
+  tool(
     "zero_research_request",
     {
       title: "Pedir un trabajo a partir de una nota",
@@ -182,7 +247,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       }),
   );
 
-  server.registerTool(
+  tool(
     "zero_package_run",
     {
       title: "Correr una estación de un paquete",
@@ -202,7 +267,32 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       }),
   );
 
-  server.registerTool(
+  tool(
+    "zero_package_upload",
+    {
+      title: "Mandar un archivo a una estación de un paquete",
+      description: "Send a file (for example a zip) to a package station that accepts uploads and ask for one run of it, as zero_package_run does. Give either `path`, an absolute path to a regular file on this machine, or `content` in base64 plus its `name`. Over the remote chat only `content` works, and the request body is limited to about 1 MiB. Only when the owner asks for it.",
+      inputSchema: {
+        station: z.string().describe("The station, as <package>/<station>."),
+        path: z.string().optional().describe("Absolute path of the file on this machine; not over the remote chat."),
+        content: z.string().optional().describe("The file's bytes in base64, instead of path."),
+        name: z.string().optional().describe("The file's name, with its extension; required with content."),
+        request: z.string().optional().describe("Optional request text from the owner for this run; the station receives it cleaned of secrets and local paths."),
+      },
+    },
+    ({ station, path, content, name, request }) =>
+      withFactory(home, async (ctx) => {
+        const file = uploadInput({ path, content, name }, Boolean(remote));
+        if ("reason" in file) return file.reason;
+        const r = await uploadToStation(ctx, station, { ...file, ...(request !== undefined && { request }) });
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
     "zero_stop",
     {
       title: "Detener (andon)",
@@ -211,14 +301,16 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       annotations: { destructiveHint: true },
     },
     ({ job }) =>
-      withFactory(home, async (ctx) => {
-        const r = await stop(ctx, job);
-        if (r.factory) return "Fábrica detenida. Los trabajos en curso se pausan y vuelven a la cola; nada nuevo empieza hasta que la reanudes.";
-        return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) });
-      }),
+      withFactory(home, (ctx) =>
+        delicate(ctx, { tool: "zero_stop", args: { ...(job && { job }) } }, async () => {
+          const r = await stop(ctx, job);
+          if (r.factory) return "Fábrica detenida. Los trabajos en curso se pausan y vuelven a la cola; nada nuevo empieza hasta que la reanudes.";
+          return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) });
+        }),
+      ),
   );
 
-  server.registerTool(
+  tool(
     "zero_resume",
     { title: "Reanudar la fábrica", description: "Lift a factory-wide stop so pending jobs continue.", inputSchema: {} },
     () =>
@@ -229,7 +321,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       }),
   );
 
-  server.registerTool(
+  tool(
     "zero_briefing",
     {
       title: "Informe de la fábrica",
@@ -244,7 +336,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       }),
   );
 
-  server.registerTool(
+  tool(
     "zero_monthly_report",
     {
       title: "Informe mensual por línea",
@@ -258,7 +350,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ line, month }) => withFactory(home, (ctx) => monthlyMarkdown(monthlyReport(ctx, { line, month }))),
   );
 
-  server.registerTool(
+  tool(
     "zero_trace",
     {
       title: "Traza de un trabajo",
@@ -269,7 +361,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ job }) => withFactory(home, (ctx) => trace(ctx, job)),
   );
 
-  server.registerTool(
+  tool(
     "zero_egress",
     {
       title: "Salidas a internet de la caja",
@@ -285,17 +377,17 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
 
   // Only blocking is offered here: a chat can be manipulated by what it reads, and blocking too much is safe.
   // Allowing a site or changing the mode is for the owner, on the terminal or in zero.factory.yaml.
-  server.registerTool(
+  tool(
     "zero_egress_block",
     {
       title: "Bloquear un sitio para la caja",
       description: "Block a site (and its subdomains) for the isolation box, when the owner asks for it. Takes effect on the next run in the box. To allow a site the owner runs `zero egress allow <site>` themselves.",
       inputSchema: { site: z.string().describe("Site name, e.g. example.com or example.com:8443.") },
     },
-    ({ site }) => withFactory(home, (ctx) => setEgressRule(ctx, site, "block")),
+    ({ site }) => withFactory(home, (ctx) => delicate(ctx, { tool: "zero_egress_block", args: { site } }, () => setEgressRule(ctx, site, "block"))),
   );
 
-  server.registerTool(
+  tool(
     "zero_lines",
     { title: "Proyectos de la fábrica", description: "The projects (lines) this factory works on, and what each agent is given in general and per line.", inputSchema: {}, annotations: { readOnlyHint: true } },
     () => withFactory(home, (ctx) => JSON.stringify(linesWithSkills(ctx.config), null, 2)),

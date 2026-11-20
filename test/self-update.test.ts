@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseFactory } from "../src/config.js";
@@ -7,7 +7,23 @@ import { runDaemon } from "../src/daemon.js";
 import { mergeKey } from "../src/line/automerge.js";
 import { log } from "../src/log.js";
 import type { GitRunner } from "../src/package-install.js";
-import { CHECK_EVERY_MS, HISTORY_LIMIT, installFolder, readSelfUpdate, recordSelfUpdate, SELF_UPDATE_HISTORY_KEY, SELF_UPDATE_STATE_KEY, selfUpdateCheck, versionText, type SelfUpdateDeps } from "../src/self-update.js";
+import { acquireSwitchLock } from "../src/self-update-switch.js";
+import {
+  CHECK_EVERY_MS,
+  HISTORY_LIMIT,
+  installFolder,
+  isMachineFailure,
+  machineRetry,
+  readSelfUpdate,
+  recordSelfUpdate,
+  RETRY_FIRST_MS,
+  RETRY_MAX_MS,
+  SELF_UPDATE_HISTORY_KEY,
+  SELF_UPDATE_STATE_KEY,
+  selfUpdateCheck,
+  versionText,
+  type SelfUpdateDeps,
+} from "../src/self-update.js";
 import { cleanup, gitIn, gitRepo, tempDir, testFactory, testStore } from "./helpers.js";
 
 afterEach(cleanup);
@@ -90,6 +106,9 @@ describe("self-update check and side preparation", () => {
     diverged?: boolean;
     lock?: string;
     failNpm?: string;
+    /** What the failing npm says; absent: a plain failure. */
+    npmError?: string;
+    head?: string;
   }
   type Call = { tool: string; args: string[]; cwd?: string };
 
@@ -105,7 +124,7 @@ describe("self-update check and side preparation", () => {
       if (cmd === "rev-parse" && a1 === "--abbrev-ref") return "main";
       if (cmd === "status") return world.status ?? "";
       if (cmd === "rev-parse" && a1 === "FETCH_HEAD") return world.tip ?? TIP;
-      if (cmd === "rev-parse" && a1 === "HEAD") return HEAD;
+      if (cmd === "rev-parse" && a1 === "HEAD") return world.head ?? HEAD;
       if (cmd === "merge-base" && world.diverged) throw new Error("git merge-base: terminó con código 1");
       if (cmd === "ls-tree" && args[3] === "package-lock.json") return `100644 blob ${"d".repeat(40)}\tpackage-lock.json`;
       if (cmd === "ls-tree" && args[3] === "package.json") return `100644 blob ${"e".repeat(40)}\tpackage.json`;
@@ -116,7 +135,7 @@ describe("self-update check and side preparation", () => {
     };
     const npm = async (args: string[], cwd: string) => {
       calls.push({ tool: "npm", args, cwd });
-      if (world.failNpm && args.includes(world.failNpm)) throw new Error(`npm ${args[0]}: falló`);
+      if (world.failNpm && args.includes(world.failNpm)) throw new Error(world.npmError ?? `npm ${args[0]}: falló`);
       return "";
     };
     const node = async (args: string[], cwd: string) => {
@@ -179,7 +198,7 @@ describe("self-update check and side preparation", () => {
     const f = fakes({ tip: HEAD }, clock);
     const ctx = factory({ enabled: true }, f.install, clock);
     await selfUpdateCheck(ctx, f.deps);
-    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "idle", checkedAt: clock.at.toISOString() });
+    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "idle", checkedAt: clock.at.toISOString(), head: HEAD });
     later(clock, CHECK_EVERY_MS - 60_000);
     await selfUpdateCheck(ctx, f.deps);
     expect(fetches(f.calls, f.install)).toBe(1);
@@ -205,6 +224,22 @@ describe("self-update check and side preparation", () => {
     later(clock, 60_000);
     await selfUpdateCheck(ctx, f.deps);
     expect(fetches(f.calls, f.install)).toBe(2);
+    later(clock, 60_000);
+    await selfUpdateCheck(ctx, f.deps);
+    expect(fetches(f.calls, f.install)).toBe(2);
+  });
+
+  it("sees a merge of its own line past 1000 delivered jobs", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({ tip: HEAD }, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    await selfUpdateCheck(ctx, f.deps);
+    later(clock, 60 * 60_000);
+    const jobs = ctx.store.transaction(() =>
+      Array.from({ length: 1001 }, () => ctx.store.finishJob(ctx.store.createJob({ line: "zero", kind: "request", request: "x", budgetUsd: 3 }).id, "delivered")),
+    );
+    later(clock, 60_000);
+    ctx.store.setKv(mergeKey(jobs.at(-1)!.id), JSON.stringify({ status: "merged" }));
     later(clock, 60_000);
     await selfUpdateCheck(ctx, f.deps);
     expect(fetches(f.calls, f.install)).toBe(2);
@@ -241,10 +276,112 @@ describe("self-update check and side preparation", () => {
     const { state, history } = readSelfUpdate(ctx.store);
     expect(state.status).toBe("idle");
     expect(state.failed).toEqual([TIP]);
+    expect(state.retry).toBeUndefined();
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ from: HEAD, to: TIP, outcome: "failed" });
     expect(existsSync(join(ctx.home.root, "self-update", TIP.slice(0, 12)))).toBe(false);
     expect(f.untouched()).toBe(true);
+  });
+
+  it("waits to try again a preparation that failed on a locked file", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({ failNpm: "ci", npmError: "npm ci: EPERM: operation not permitted, unlink 'keyring.node'" }, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    await selfUpdateCheck(ctx, f.deps);
+    let { state, history } = readSelfUpdate(ctx.store);
+    expect(state.failed).toBeUndefined();
+    expect(state.retry).toEqual({ commit: TIP, at: new Date(clock.at.getTime() + RETRY_FIRST_MS).toISOString(), tries: 1 });
+    expect(history).toEqual([expect.objectContaining({ to: TIP, outcome: "failed" })]);
+    // Again on the next failure in a row, with twice the wait.
+    later(clock, RETRY_FIRST_MS);
+    await selfUpdateCheck(ctx, f.deps);
+    ({ state } = readSelfUpdate(ctx.store));
+    expect(state.retry).toEqual({ commit: TIP, at: new Date(clock.at.getTime() + 2 * RETRY_FIRST_MS).toISOString(), tries: 2 });
+    expect(state.failed).toBeUndefined();
+  });
+
+  it("caps the machine retry's wait at a day", () => {
+    const at = new Date("2026-11-11T10:00:00Z");
+    expect(machineRetry({ status: "idle", retry: { commit: TIP, at: at.toISOString(), tries: 9 } }, TIP, at).at).toBe(new Date(at.getTime() + RETRY_MAX_MS).toISOString());
+    expect(machineRetry({ status: "idle", retry: { commit: HEAD, at: at.toISOString(), tries: 3 } }, TIP, at).tries).toBe(1);
+    expect(isMachineFailure(Object.assign(new Error("x"), { code: "EBUSY" }))).toBe(true);
+    expect(isMachineFailure(new Error("y", { cause: new Error("ENOTEMPTY: directory not empty") }))).toBe(true);
+    expect(isMachineFailure(new Error("npm run build: falló"))).toBe(false);
+  });
+
+  it("prepares a machine retry only once its time came, even before the daily check", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({}, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    const retryAt = new Date(clock.at.getTime() + 30 * 60_000);
+    recordSelfUpdate(ctx.store, { state: { status: "idle", checkedAt: new Date(clock.at.getTime() - 10 * 60_000).toISOString(), head: HEAD, retry: { commit: TIP, at: retryAt.toISOString(), tries: 1 } } });
+    await selfUpdateCheck(ctx, f.deps);
+    expect(f.calls.some((c) => c.tool === "npm")).toBe(false);
+    later(clock, 31 * 60_000);
+    await selfUpdateCheck(ctx, f.deps);
+    const dir = join(ctx.home.root, "self-update", TIP.slice(0, 12));
+    expect(f.calls.filter((c) => c.tool === "npm").map((c) => [c.args[0], c.cwd])).toEqual([
+      ["ci", dir],
+      ["run", dir],
+    ]);
+    const { state } = readSelfUpdate(ctx.store);
+    expect(state).toMatchObject({ status: "ready", to: TIP });
+    expect(state.retry).toBeUndefined();
+  });
+
+  it("skips a commit whose retry is not due when the daily check comes first", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({}, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    recordSelfUpdate(ctx.store, { state: { status: "idle", checkedAt: new Date(clock.at.getTime() - CHECK_EVERY_MS).toISOString(), head: HEAD, retry: { commit: TIP, at: new Date(clock.at.getTime() + 60_000).toISOString(), tries: 1 } } });
+    await selfUpdateCheck(ctx, f.deps);
+    expect(fetches(f.calls, f.install)).toBe(1);
+    expect(f.calls.some((c) => c.tool === "npm")).toBe(false);
+  });
+
+  it("leaves the state clean once the tip was installed by hand", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({ head: TIP, tip: TIP }, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    recordSelfUpdate(ctx.store, { state: { status: "idle", checkedAt: new Date(clock.at.getTime() - 60 * 60_000).toISOString(), head: HEAD, failed: [HEAD, TIP], problem: "no pude poner algo" } });
+    await selfUpdateCheck(ctx, f.deps);
+    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "idle", checkedAt: clock.at.toISOString(), head: TIP });
+  });
+
+  it("is not due before a day while HEAD stays the same", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({}, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    recordSelfUpdate(ctx.store, { state: { status: "idle", checkedAt: new Date(clock.at.getTime() - 60 * 60_000).toISOString(), head: HEAD } });
+    await selfUpdateCheck(ctx, f.deps);
+    expect(fetches(f.calls, f.install)).toBe(0);
+  });
+
+  it("drops a prepared version that was already installed by hand", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({ head: TIP }, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    const dir = join(ctx.home.root, "self-update", TIP.slice(0, 12));
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    recordSelfUpdate(ctx.store, { state: { status: "ready", from: HEAD, to: TIP, dir, checkedAt: "2026-11-11T09:00:00Z", failed: [HEAD] } });
+    await selfUpdateCheck(ctx, f.deps);
+    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "idle", checkedAt: clock.at.toISOString(), head: TIP });
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("prepares nothing while a switch holds its lock", async () => {
+    const clock = { at: new Date("2026-11-11T10:00:00Z") };
+    const f = fakes({}, clock);
+    const ctx = factory({ enabled: true }, f.install, clock);
+    const lock = acquireSwitchLock(ctx.home.root)!;
+    try {
+      await selfUpdateCheck(ctx, f.deps);
+    } finally {
+      lock.release();
+    }
+    expect(f.calls.some((c) => c.tool === "npm")).toBe(false);
+    expect(existsSync(join(ctx.home.root, "self-update", TIP.slice(0, 12)))).toBe(false);
+    expect(readSelfUpdate(ctx.store).state.status).toBe("idle");
   });
 
   it("prepares the new version in its own folder and becomes ready", async () => {
@@ -253,7 +390,7 @@ describe("self-update check and side preparation", () => {
     const ctx = factory({ enabled: true }, f.install, clock);
     await selfUpdateCheck(ctx, f.deps);
     const dir = join(ctx.home.root, "self-update", TIP.slice(0, 12));
-    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "ready", from: HEAD, to: TIP, dir, checkedAt: clock.at.toISOString() });
+    expect(readSelfUpdate(ctx.store).state).toEqual({ status: "ready", from: HEAD, to: TIP, dir, checkedAt: clock.at.toISOString(), head: HEAD });
     const steps = f.calls.filter((c) => c.cwd === dir || c.args.includes(dir)).map((c) => [c.tool, ...c.args].join(" "));
     expect(steps).toEqual([
       `git clone --quiet --no-hardlinks --no-local --no-checkout ${f.install} ${dir}`,

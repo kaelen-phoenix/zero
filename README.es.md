@@ -8,7 +8,7 @@ zero es una **fábrica de software que corre en tu máquina**. Le pedís trabajo
 
 Es open source (Apache-2.0) y gratuito. Cada uno tiene su propia fábrica: nadie se conecta a la tuya.
 
-El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección Capacitaciones, solo en la versión en español del sitio, lista los formatos que se ofrecen, y cada formato ofrece WhatsApp e Instagram para escribirle a zero in the loop.
+El sitio del proyecto es [zerointheloop.com](https://zerointheloop.com): vive en `site/` como sitio estático (HTML, CSS y JS sin dependencias ni paso de build) y Vercel lo publica con `site/` como carpeta raíz. Su sección de contacto ofrece WhatsApp e Instagram para escribirle a zero in the loop.
 
 ## Cómo funciona
 
@@ -85,12 +85,33 @@ zero trace <id>                # paso a paso: estaciones, intentos, agentes, com
 zero briefing                  # informe: producción, costo, aprendizajes, lo que te necesita
 zero informe [line] [--mes AAAA-MM] [--html]   # informe mensual por línea, para compartir con su cliente
 zero fusionar <job | url>      # funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
+zero actualizar-pr <line> <number>...   # actualiza con su base pull requests abiertos de la línea, en ese orden
+zero tren <line> [<number>...]   # funde de a uno los pull requests trabados de la línea, el más viejo primero
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
 ```
 
-Desde el chat se hace lo mismo con `zero_request`, `zero_status`, `zero_answer`, `zero_stop`, `zero_resume`, `zero_briefing`, `zero_monthly_report`, `zero_trace` y `zero_lines`; además están `zero_proposals` y `zero_proposal_decide` (turno nocturno), `zero_research` y `zero_research_request` (investigación), `zero_package_run` (una estación de un paquete a demanda, con un `request` opcional), `zero_merge` (funde un pull request que entregó la fábrica, cuando GitHub dice que está listo), y `zero_egress` y `zero_egress_block` (salidas a internet).
+Desde el chat se hace lo mismo con estas herramientas:
+
+- `zero_request`: pide un trabajo
+- `zero_status`: el estado de la fábrica o de un trabajo
+- `zero_answer`: responde la pregunta de un trabajo
+- `zero_stop`: andon, para un trabajo o toda la fábrica
+- `zero_resume`: reanuda después del andon
+- `zero_briefing`: el informe diario
+- `zero_monthly_report`: el informe mensual
+- `zero_trace`: la traza de un trabajo
+- `zero_lines`: las líneas de producción
+- `zero_proposals`: las propuestas del turno nocturno
+- `zero_proposal_decide`: aprueba o rechaza una propuesta (turno nocturno)
+- `zero_research`: las notas de investigación
+- `zero_research_request`: convierte una nota de investigación en un trabajo
+- `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
+- `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
+- `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
+- `zero_egress`: salidas a internet
+- `zero_egress_block`: bloquea un sitio (salidas a internet)
 
 ### Encender al iniciar sesión (`autostart`)
 
@@ -304,8 +325,10 @@ pedido
 
 - **Primero, la verificación local.** zero corre la verificación de la línea en local antes de entregar. Cada comando tiene un tiempo límite: `verifyTimeoutMinutes` de la línea (20 por defecto), y nunca menos que el doble de lo que tardó la más lenta de sus últimas 5 corridas aprobadas en esa línea, así una suite que crece o una máquina lenta no hacen fallar trabajos cuyos tests pasan. Los comandos de setup y verify de distintos trabajos se turnan en tu máquina (`commandConcurrency`), un setup que falla se prueba una vez más en una copia nueva, un comando de verify cuya falla parece de la máquina y no del cambio (un test que superó su propio tiempo, falta de memoria, un archivo trabado, un corte de red) se corre una vez más antes de gastar un intento, y un comando cortado por su límite se mata con todo lo que había arrancado.
 - **Solo funde cuando GitHub lo dice.** Con integrate `pull-request` y `autoMerge`, zero funde solo cuando todos los checks de GitHub del pull request terminaron bien, incluidos los de Sonar, CodeQL y cualquier otra herramienta configurada como check. Si un check falla, el pull request queda abierto.
-- **Fundir a pedido.** En cualquier línea, con o sin `autoMerge`, podés pedirle a la fábrica que funda un pull request que entregó: `zero fusionar <job | url>` en la terminal, `zero_merge` en el chat o el botón **Fundir** en la página del trabajo en el panel (que primero pide confirmación). Funde solo cuando GitHub dice que el pull request está listo (todos los checks bien, sin conflictos); si no, te dice por qué y no fuerza nada. Cada fusión queda en la traza del trabajo y en el townhall de la línea.
+- **Fundir a pedido.** En cualquier línea, con o sin `autoMerge`, podés pedirle a la fábrica que funda un pull request que entregó: `zero fusionar <job | url>` en la terminal, `zero_merge` en el chat o el botón **Fundir** en la página del trabajo en el panel (que primero pide confirmación). Funde solo cuando GitHub dice que el pull request está listo (todos los checks bien, sin conflictos); si no, te dice por qué y no fuerza nada. `zero fusionar <url>` también toma un pull request abierto del repositorio de GitHub de una línea que la fábrica no entregó, y lo funde en el commit que leyó, con la misma regla. Cada fusión queda en la traza del trabajo y en el townhall de la línea.
 - **Checks que GitHub no arrancó por facturación.** Cuando GitHub no arranca los jobs de un pull request porque fallaron los pagos de la cuenta o se llegó a su límite de gasto, zero no comenta, no actualiza ni lo cuenta como un entorno caído: te avisa una vez por repositorio (en `zero status`, el panel y el briefing) y, apenas GitHub vuelve a arrancar corridas en ese repositorio, vuelve a correr solo los jobs fallidos de esas corridas (`rerun --failed`), de a un pull request y como mucho una vez por corrida.
+- **Actualizar pull requests de otros.** `zero actualizar-pr <line> <number>...` toma pull requests abiertos del repositorio de GitHub de la línea, los haya abierto quien sea (no de un fork, hacia la rama base de la línea), un trabajo por número en el orden dado. Antes de tocar nada deja una rama local de respaldo `respaldo/pr<N>` en la cabeza del pull request (o `respaldo/pr<N>-<job>` si ya hay una en otro commit; nunca se sube). El trabajo mezcla la base en la rama del pull request, resuelve los conflictos guiándose por los cambios OpenSpec de esa rama, corre la verificación de la línea y sube a la misma rama sin forzar, sin abrir otro pull request; si alguien subió a la rama mientras tanto, no sube nada. Muestra una línea por pull request y sale con 1 si alguno no se tomó, diciendo por qué.
+- **Tren de integración.** Cuando varios pull requests de una línea se traban entre sí (cada fusión deja al siguiente en conflicto o atrasado), `zero tren <line> [<number>...]` los pone en fila: los que entregó la fábrica y todavía no se fundieron, el más viejo primero, o los números que le des en ese orden, tomando los que no abrió como con `zero actualizar-pr`. La fábrica trabaja solo con el primero: le trae la base, resuelve los conflictos en la rama de ese mismo pull request, corre la verificación, espera los checks y lo funde solo cuando GitHub dice que está listo, aunque la línea no tenga `autoMerge`; después sigue con el siguiente. Nunca funde nada en rojo, y un pull request que no abrió lo funde solo en el commit que verificó: si alguien sube a esa rama después, el tren se detiene ahí y lo dice. Los conflictos simples (líneas de import que agregaron o cambiaron los dos lados, o los dos lados agregando líneas distintas en el mismo lugar) se resuelven sin modelo y sin gastar un intento. Una corrida de checks cancelada por el grupo de concurrencia de su workflow no es un fallo: la fábrica las vuelve a correr de a un pull request, y no funde mientras otro pull request del repositorio tiene checks esperando su turno. La estación de destrabe también arranca un tren sola en líneas en `build` o `auto`, y corre también de día cuando un pull request lleva horas bloqueado (`unjam.urgentAfterHours`, 2 por defecto), sin competir con tu trabajo. Cuando no puede destrabar algo, `zero status`, el panel y el briefing dicen qué falta y quién lo tiene que hacer: vos, quien abrió el pull request, GitHub o la fábrica.
 - **Si el repositorio no tiene ningún check**, la fusión automática espera unos minutos a que aparezcan y después funde solo con la verificación y las revisiones de zero.
 - **Una segunda mirada.** Los hallazgos de esas herramientas son una segunda mirada, independiente de la revisión de los agentes de zero.
 - **Los despliegues los sigue haciendo la plataforma** (por ejemplo Vercel o los workflows de GitHub), no zero.
@@ -332,6 +355,7 @@ Con la fábrica en marcha, el panel muestra:
 - las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
 - las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes);
 - la pestaña "Monitor": totales de la fábrica (trabajos por día, entregados, fallidos, en cola y en curso, tasa de éxito, tiempo promedio por trabajo y por estación, intentos por trabajo), uso de la suscripción, gasto del mes por motor y tokens, una tarjeta por agente (llamadas, tokens, costo, tiempo, tasa de éxito, entregas, motores, modelos y líneas) y una por línea (trabajos, entregas, último trabajo, pull requests abiertos), dibujados en SVG dentro del panel, con filtro por hoy, 7 o 30 días, solo lectura y con actualización automática;
+- la pestaña "Sala de control": una consola de operaciones en tonos oscuros y letra monoespaciada chica, en vivo y solo lectura, con el reloj, los contadores del día, el costo y el estado del daemon, una cinta que se desplaza con los eventos de las últimas 24 horas, cada trabajo como un punto que viaja por las estaciones hasta una columna de decisiones, series de 24 horas por línea, el bus de agentes, los últimos spans, el uso del plan y las pausas de los motores, y las trabas y alertas en rojo, todo con datos reales de la fábrica y en una sola columna en el celular;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
 Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
@@ -348,6 +372,28 @@ zero panel rotate              # clave nueva: los links anteriores dejan de serv
 - La clave vive en el llavero del sistema (en Docker, en `secrets.enc`).
 - El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
 - Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
+
+### Chat remoto (celular)
+
+Podés manejar la fábrica desde el chat del celular (ChatGPT, la app de Claude u otro cliente MCP) sin la PC delante. zero sirve MCP por HTTP (streamable HTTP) en `/mcp`, por el mismo túnel del panel, con las mismas herramientas que `zero mcp`. Los motivos, las fuentes oficiales y por qué no se publica en los directorios de ChatGPT ni de Claude están en [`docs/adr/0009-chat-remoto.md`](docs/adr/0009-chat-remoto.md).
+
+```sh
+zero panel remote on           # el túnel por el que entra el chat
+zero mcp remote on             # enciende el chat remoto y muestra la dirección para el conector de tu chat
+zero mcp clients               # chats conectados: nombre, permisos, fecha de aprobación y último uso
+zero mcp revoke <client>       # desconecta un chat: sus tokens dejan de servir en el momento
+zero mcp pendientes            # acciones delicadas que pidió un chat y te esperan
+zero mcp confirmar <id>        # hace una de ellas (vencen a los 15 minutos)
+zero mcp remote off            # lo apaga
+```
+
+- Viene apagado y solo se enciende desde la terminal: ninguna herramienta del chat puede.
+- zero es su propio servidor de autorización OAuth 2.1, con PKCE (S256) y registro dinámico de clientes. Cada conexión nueva la aprobás vos en la página del panel, con tu clave; el chat nunca recibe una contraseña.
+- Los tokens de acceso duran 1 hora y los de renovación 7 días, y rotan en cada uso. zero guarda solo su hash SHA-256.
+- Dos permisos: leer (estado, trazas, propuestas, investigación, informes) y actuar (pedir trabajos, responder).
+- Fundir, detener, aprobar propuestas o archivos protegidos y bloquear sitios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
+- La pestaña "Chat remoto" lista los chats conectados, los revoca (pide confirmación antes) y confirma las acciones retenidas.
+- La dirección del túnel rápido cambia cada vez que se reinicia, así que entonces hay que actualizar el conector del chat.
 
 ## Informe mensual
 
@@ -547,7 +593,7 @@ El daemon mira la rama de la carpeta de instalación en su remoto una vez por d�
 
 ## Agentes a medida
 
-Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay dos tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.
+Cada línea puede sumar agentes propios a las estaciones fijas: un revisor de accesibilidad, uno que revise que cada texto esté en todos los idiomas, uno de SEO, uno de documentación. Van en `zero.factory.yaml`, en `lines[].agents` (solo esa línea) o en `agents` de primer nivel (todas las líneas). Hay tres tipos. `type: review` (el predeterminado) es un revisor de solo lectura que corre después de `review` y `security`, sobre el mismo cambio. `type: build` escribe en la copia de trabajo, después de `build` y antes de `verify`, y nunca puede correr después de `verify`. `type: conflict` resuelve los conflictos que deja traer la rama base a la rama de un trabajo (ver más abajo). Dentro de cada tipo van primero los globales y después los de la línea, cada grupo en el orden del archivo.
 
 ```yaml
 lines:
@@ -606,6 +652,24 @@ lines:
 La línea queda `spec → build → docs → verify → review → security → integrate`. Corre en cada intento después de build, con sus propios `engine`, `model`, `maxTurns`, `timeoutMinutes` y `skills`. Sin `files` corre en cada trabajo; con `files`, zero compara los patrones (distingue mayúsculas) con lo que el cambio toca hasta ese momento, sin contar los archivos de la especificación del trabajo, y si nada coincide lo saltea sin llamarlo. Cuando termina bien, zero commitea lo que escribió, con el nombre del agente, antes del agente siguiente o de `verify`; terminar sin cambios está bien. Si termina de forma anormal, zero descarta lo que dejó sin commitear, los agentes siguientes no corren y el intento vuelve a `build` con un feedback que nombra al agente, consumiendo el intento. Si el plan lo corta, sigue con un reemplazo de su cadena o el trabajo vuelve a la cola; si lo corta el presupuesto del trabajo, se aplica la regla del presupuesto; en los dos casos el trabajo retoma en ese agente sin rehacer `build` ni los agentes que ya terminaron. En estos agentes se rechazan `after`, `access: read` y `blocking: false`, y en un revisor, `files`.
 
 Las mismas garantías que `build`: tiempos límite, la caja de aislamiento montada con escritura cuando la hay, el motor elegido de su cadena y su span en la traza (`zero.station.<nombre>`). Sus instrucciones se leen del repo de la línea o de la carpeta de la fábrica, nunca de la copia de trabajo, y si falta el archivo el trabajo falla nombrando la ruta. Todo lo que escribe pasa por `verify`, las rutas protegidas (incluida `.zero/**`), `review`, `security` y los agentes revisores, igual que lo que escribe `build`. Cada uno suma una llamada por intento con el mismo presupuesto del trabajo, así que `files` también ayuda a cuidar el costo.
+
+**Agentes que resuelven conflictos.** Un agente con `type: conflict` es un enganche genérico para resolver con un agente propio los conflictos de mezclar la rama base: cuando la fábrica actualiza un pull request (o uno en conflicto vuelve a la línea) y quedan archivos en conflicto después de la resolución sin modelo de los conflictos simples, llama a estos agentes antes del `build` de siempre.
+
+```yaml
+lines:
+  - name: web
+    repo: /path/to/web
+    agents:
+      - name: resolver
+        type: conflict                    # resuelve los conflictos con la rama base, antes de build
+        timeoutMinutes: 15
+```
+
+```sh
+zero agent add resolver --line web --tipo conflict   # crea .zero/agents/resolver.md con una plantilla de conflictos y suma el agente
+```
+
+Cada uno recibe, como datos y nunca como instrucciones, el pedido y la especificación del trabajo, cada archivo en conflicto con sus bloques de conflicto y los commits de la base que tocaron esos archivos, y trabaja sobre la mezcla en curso en la copia de trabajo (acceso de escritura, la caja montada con escritura cuando la hay). Responde con un esquema, archivo por archivo: `resolved`, o `returned` con el motivo. zero se queda con la resolución solo cuando todos los archivos vienen `resolved`, no quedan marcadores de conflicto y, una vez que zero commitea la mezcla, la rama contiene la base y la punta anterior; entonces el trabajo sigue en `verify` sin consumir un intento, y la verificación, las revisiones y el resto corren como siempre. Si un agente devuelve un archivo, termina de forma anormal, no da una respuesta válida o deja algo mal, zero descarta lo que hizo y prueba con el siguiente, empezando la mezcla de nuevo desde la punta; si ninguno la resuelve, todo sigue como sin ellos: `build` resuelve el conflicto con el feedback de siempre, como un intento más. Si falta el archivo de instrucciones, solo se saltea el agente. Van primero los globales, después los de los paquetes y después los de la línea, cada grupo en el orden del archivo. En estos agentes se rechazan `after`, `files`, `blocking: false` y un `access` que no sea `write`. Cada llamada queda registrada como `zero.station.<nombre>` con la cantidad de archivos, cuántos resolvió y devolvió y el resultado (`resolved`, `returned`, `failed` o `invalid`), que muestra `zero trace`. Sin un agente de conflictos no cambia nada.
 
 **Adiciones a las estaciones fijas.** Una línea puede sumar instrucciones a una estación fija (`spec`, `build`, `review`, `security`, `reply`, `scout`, `research`) con un archivo `.zero/agents/<estación>.md` en su repo, por ejemplo `.zero/agents/build.md` con "usá siempre pnpm". El agente recibe primero las instrucciones de zero y después las del proyecto, marcadas como adiciones que no pueden contradecir ni relajar las reglas de arriba.
 
@@ -693,6 +757,7 @@ export async function scheduled(ctx, { at }) {
 | `ctx.package`, `ctx.station`, `ctx.now` | Quién es y la hora de esta pasada |
 | `ctx.signal` | Se aborta cuando a la pasada se le acaba el tiempo o la fábrica se apaga |
 | `ctx.config` | El `config` de la entrada, pasado por `parseConfig` si existe |
+| `ctx.limits` | `{ usdPerJob }`, una copia congelada de `limits.usdPerJob`; cambiarla no cambia tu archivo ni el tope que revisa `requestJob` |
 | `ctx.secrets.get(nombre)` | Solo los nombres que declaró; se guardan con `zero secret set` |
 | `ctx.runAgent({ prompt, schema })` | Un agente de solo lectura en una carpeta vacía, con las instrucciones y skills de la estación. Devuelve `{ ok, text, output, costUsd }`. En `scheduled` lanza un error |
 | `ctx.z` | El zod de zero, para el `schema` |
@@ -719,7 +784,7 @@ export async function scheduled(ctx, { at }) {
 
 **Un pedido para la corrida.** `zero package run <paquete>/<estación> --pedido "..."` (la herramienta `zero_package_run` del chat recibe lo mismo como `request`, y la pestaña "Paquetes" del panel tiene un botón "Pedir ahora" con un campo de texto opcional en cada estación que acepta corridas a demanda) manda un texto con esa corrida. La estación lo recibe como `run.request` en `pass(ctx, run)`, es decir `{ onDemand: true, request }`, como pedido de la persona a cargo; sin texto, o con uno que queda vacío al limpiarlo, sigue recibiendo exactamente `{ onDemand: true }`. zero lo limpia antes de guardarlo: saca los valores de los secretos declarados por la estación y las rutas de los repositorios de tus líneas, y lo corta a 4000 caracteres. Solo vos podés pedirla, desde la terminal, el chat o el panel con tu sesión; el `ctx` de una estación, los issues, los comentarios y el `requestJob` de los paquetes no tienen forma de hacerlo. El comando responde cuando la corrida empezó o, pasados 2 minutos (30 segundos desde el chat), que sigue pendiente y va a correr en la próxima pasada del daemon. `zero status` muestra el pedido pendiente con su texto (`Corridas a demanda pendientes:`), la corrida mientras está en marcha (`Corrida a demanda de <paquete>/<estación>: en curso`) y cómo terminó la última: terminó bien, falló (con su error, sin secretos ni rutas locales, hasta 600 caracteres), superó su `timeoutMinutes` o se cortó porque la fábrica se apagó. `zero package list` y la pestaña "Paquetes" del panel muestran lo mismo.
 
-**Mandarle un archivo a una estación.** Una estación con `onDemand: true` también puede declarar `uploads`: `maxMb` (mayor que cero y hasta 100, 20 por defecto) y `extensions` (`[".zip"]` por defecto); un manifiesto con `uploads` y sin `onDemand: true` queda afuera. Mandás el archivo con `zero package upload <paquete>/<estación> <archivo>` (acepta `--pedido` como `zero package run`) o desde la pestaña "Paquetes" del panel, que muestra un formulario para subirlo en esas estaciones. zero lo guarda en `~/.zero/package-data/<paquete>/uploads/<estación>/`, con la hora y un nombre base limpio, y pide una corrida a demanda de esa estación, que lo recibe como `ctx.upload` (`{ name, path, sizeBytes, at }`, con `path` dentro de su carpeta de datos); ningún otro turno tiene `ctx.upload`. Es contenido de terceros, así que zero revisa todo antes de guardarlo y no deja nada cuando lo rechaza: la estación no declara `uploads`, la extensión no es una de las suyas, el archivo pasa de `maxMb` (el panel también deja de leer ahí), un `.zip` no empieza como un zip, o la corrida se rechazaría (ya hay otra pendiente, el andon está activo, se agotó el presupuesto). El formulario del panel pide tu sesión y rechaza un pedido que viene de otro sitio.
+**Mandarle un archivo a una estación.** Una estación con `onDemand: true` también puede declarar `uploads`: `maxMb` (mayor que cero y hasta 100, 20 por defecto) y `extensions` (`[".zip"]` por defecto); un manifiesto con `uploads` y sin `onDemand: true` queda afuera. Mandás el archivo con `zero package upload <paquete>/<estación> <archivo>` (acepta `--pedido` como `zero package run`) o desde la pestaña "Paquetes" del panel, que muestra un formulario para subirlo en esas estaciones. Desde el chat, `zero_package_upload` recibe la estación, una ruta absoluta `path` a un archivo de esta máquina, o `content` en base64 más `name`, y un `request` opcional; el chat remoto solo acepta `content`, nunca una ruta de esta máquina, con un cuerpo de pedido de alrededor de 1 MiB. zero lo guarda en `~/.zero/package-data/<paquete>/uploads/<estación>/`, con la hora y un nombre base limpio, y pide una corrida a demanda de esa estación, que lo recibe como `ctx.upload` (`{ name, path, sizeBytes, at }`, con `path` dentro de su carpeta de datos); ningún otro turno tiene `ctx.upload`. Es contenido de terceros, así que zero revisa todo antes de guardarlo y no deja nada cuando lo rechaza: la estación no declara `uploads`, la extensión no es una de las suyas, el archivo pasa de `maxMb` (el panel también deja de leer ahí), un `.zip` no empieza como un zip, o la corrida se rechazaría (ya hay otra pendiente, el andon está activo, se agotó el presupuesto). El formulario del panel pide tu sesión y rechaza un pedido que viene de otro sitio.
 
 **Descomprimir un zip.** `ctx.unzip(zip, destino)` descomprime un zip de la carpeta de datos en una carpeta suya (las rutas relativas se toman desde `ctx.dataDir`) o en uno de los repositorios del paquete, nunca en su `.git`. zero lee el archivo entero antes de escribir nada y lo rechaza todo, con `{ reason }`, cuando una entrada es un enlace simbólico, tiene una ruta absoluta, una unidad, `..` o `:`, está cifrada o es zip64, cuando hay un enlace en el camino al destino, o cuando tiene más de 10.000 entradas o descomprimido pasa de 1 GiB. Solo conoce entradas guardadas y comprimidas con deflate.
 
@@ -935,6 +1000,28 @@ zero reintentar <job>     # un trabajo fallido vuelve a la cola desde su checkpo
 
 Ves las causas bajo `Trabas:` en `zero status` (y `zero_status` en el chat) y en el resumen del panel, una por renglón con su tipo, cuántas trabas agrupa y su trabajo o propuesta abierta o qué hacer; en el informe diario bajo `## Trabas`; y el informe mensual de cada línea tiene una sección "Trabas" con lo que solo vos podés resolver.
 
+## Catálogo de agentes
+
+El catálogo es una lista de agentes públicos que podés sumar a la fábrica, guardada en `state.db`. Cada entrada tiene su nombre, qué hace, su tipo (`review`, `build` o `conflict`, que resuelve conflictos al traer la rama base, antes de build), su fuente (la URL https del repositorio), su licencia, los motores donde funciona, la fecha en que se revisó y su estado: `listed`, `proposed` (para una línea, con el hueco que llena), `added` o `rejected`. Solo acepta licencias MIT, Apache-2.0, BSD-2-Clause y BSD-3-Clause. Antes de guardar una entrada, zero lee su descripción y sus instrucciones como datos no confiables, sin ejecutar nada de lo que traen, y la descarta cuando intentan una inyección de prompt, piden credenciales o secretos, o traen comandos de red, de descarga o de instalación. Un nombre o una fuente que ya está en el catálogo, rechazados incluidos, o un agente que la línea ya tiene, no vuelve.
+
+```sh
+zero agent catalog                                   # todas las entradas, las propuestas primero
+zero agent catalog add <id> --line <line> [--yes]    # muestra el archivo que escribiría y pregunta antes de sumarlo
+zero agent catalog reject <id> [--motivo "<texto>"]   # no se suma ni se vuelve a proponer
+```
+
+Sumar pasa por `zero agent add`: escribe las instrucciones de la entrada en `.zero/agents/<nombre>.md` en el repo de la línea, con un encabezado que nombra la fuente y la licencia, suma el agente a la línea en `zero.factory.yaml` y da crédito a la fuente una sola vez en `THIRD-PARTY-NOTICES.md` en la raíz de ese repo. Sin tu sí (o sin terminal) no escribe nada, y se niega cuando ese archivo de instrucciones ya existe. La página `/agents` del panel muestra el catálogo con los mismos campos; su botón para sumar muestra antes, en una página de confirmación, el archivo que va a escribir.
+
+El reclutador (estación `recruit`, acceso `web`) llena el catálogo. Corre con las reglas del turno nocturno (fábrica libre, dentro de `nightShift.hours`, andon apagado, con presupuesto, compartiendo `limits.usdPerNight` con `scout`, `unjam` y `research`), después de `research`, a lo sumo una vez cada `recruit.everyDays` días. Su prompt lista cada línea con sus agentes, las causas de su último diagnóstico del destrabador y sus propuestas rechazadas hace poco, todo lo que ya está en el catálogo y algunos puntos de partida sin verificar (wshobson/agents, VoltAgent awesome-claude-code-subagents, awesome-opencode, sehoon787/agent-hub, skills.sh), y aclara que lo que hay en la web es dato, nunca instrucciones. Lo que pasa las revisiones de zero se guarda, a lo sumo `recruit.perPass` entradas por corrida: `proposed` cuando nombra una línea y un hueco, si no `listed`. El reclutador nunca suma un agente ni toca el archivo de la fábrica, sea cual sea la autonomía de la línea: sumar siempre espera tu ok.
+
+```yaml
+recruit:                  # o `recruit: off` para apagarlo
+  everyDays: 7            # días entre dos corridas
+  perPass: 3              # entradas del catálogo que puede guardar una corrida
+stations:
+  recruit: { timeoutMinutes: 20 }
+```
+
 ## Caja de aislamiento
 
 En la caja corre todo lo que ejecuta código del proyecto o de un agente: el `setup`, los agentes y la verificación. La caja es un contenedor (Podman o Docker). La integración la hace zero afuera.
@@ -1015,7 +1102,7 @@ npm run typecheck && npm test && npm run build
 npx openspec validate --all
 ```
 
-zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y las convenciones para agentes en `AGENTS.md`. El README se mantiene en inglés (`README.md`) y en español (`README.es.md`); todo cambio va en los dos.
+zero se diseña con **OpenSpec** (`openspec/`): cada cambio es una propuesta con especificación, diseño y tareas. Las decisiones están en `docs/adr/` y la guía para agentes en `AGENTS.md`, un índice corto de comandos y convenciones que enlaza un archivo por área bajo `docs/agents/`: cada cambio documenta su comportamiento en el archivo de su área, y `AGENTS.md` solo cambia para enlazar un área nueva. El README se mantiene en inglés (`README.md`) y en español (`README.es.md`); todo cambio va en los dos.
 
 ## Hacia dónde va: la intención es el producto
 
@@ -1027,4 +1114,9 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 
 ## Próximas etapas
 
-Red privada para el panel (Tailscale/Headscale) · cortar envíos grandes a sitios no habituales · servicio del sistema · API de plugins y especialistas · ccusage · MCP gobernado para los agentes de las estaciones.
+- Red privada para el panel (Tailscale/Headscale)
+- Cortar envíos grandes a sitios no habituales
+- Servicio del sistema
+- API de plugins y especialistas
+- ccusage
+- MCP gobernado para los agentes de las estaciones

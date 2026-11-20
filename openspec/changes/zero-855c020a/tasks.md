@@ -1,0 +1,13 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 Create the OpenSpec change `openspec/changes/zero-855c020a/` with `proposal.md`, `tasks.md` and `specs/production-line/spec.md`. Use ADDED requirements, because the conflict-agent requirements exist only in the unarchived change zero-b5587be4 and not in openspec/specs/production-line. `npx openspec validate --all` must pass.
+- [x] 1.2 In `src/line/conflicts.ts`, add and export a helper (for example `diff3Markers(cwd: string, path: string): boolean`). It returns `threeStages(cwd, path)` and also checks that `spawnGit(["checkout", "--conflict=diff3", "--", path], cwd).status === 0`. Use it in `resolveSimply` in place of the two inline checks, keeping the same behaviour.
+- [x] 1.3 In `resolveWithAgents` (`src/line/runner.ts`), after the `redone.outcome !== "conflict"` check and before building `blocks`, call the helper for each path in `merge.paths` and ignore failures. Import it from `./conflicts.js`.
+- [x] 1.4 Add one sentence to the conflict-agent prompt in `resolveWithAgents`: each block shows this branch's side, then the common base between `|||||||` and `=======`, then the base branch's side, and the base is the version before either side changed it. Keep the existing wording otherwise. Leave `conflictBlocks` unchanged unless a test shows it drops `|||||||` lines; it already keeps every line from OPEN to CLOSE. Update its doc comment to mention the diff3 base section.
+- [x] 1.5 In test/conflict-agents.test.ts, update the first test's regex at line 133 so it expects the base section (`job`, a `|||||||` line, `base`, `=======`, `theirs`). Also assert that the prompt contains the explanation of the base section.
+- [x] 1.6 In test/conflict-agents.test.ts, add a test: the agent answers `resolved` but leaves a `||||||| base` line in `shared.txt`. The span outcome must be `invalid` and build must be called with `conflictFeedback`.
+- [x] 1.7 In test/conflicts.test.ts, add tests using the existing `conflicted` helper (real git in a temp directory). The diff3 helper returns true and writes a `|||||||` line for a regular conflict. It returns false and leaves the file untouched for a file added on both sides. `conflictBlocks` keeps the `|||||||` line and the base lines of a block.
+- [x] 1.8 In docs/agents/engines.md, extend the `conflict` sentence. After the merge is redone, the conflicted files are rewritten with diff3 markers using the helper shared with `resolveSimply`, files without three stages are left as they are, and the prompt explains the base section.
+- [x] 1.9 Run `npm run typecheck`, `npm test` and `npx openspec validate --all`.

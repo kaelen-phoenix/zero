@@ -61,6 +61,8 @@ export interface StationContext {
   signal: AbortSignal;
   /** The entry's `config`, through the module's `parseConfig` if it exports one. */
   config: unknown;
+  /** A frozen copy of the factory's per-job cap; `requestJob` checks the factory's own, whatever happens to this one. */
+  limits: Readonly<{ usdPerJob: number }>;
   /** Only the names the station declared in its manifest. */
   secrets: { get(name: string): string | undefined };
   /** A read-only agent, in an empty folder, with the station's instructions and skills. In a scheduled pass it throws. */
@@ -581,6 +583,7 @@ function stationContext(ctx: FactoryContext, runAgent: StationContext["runAgent"
     now,
     signal,
     config,
+    limits: Object.freeze({ usdPerJob: ctx.config.limits.usdPerJob }),
     secrets: { get: (name) => (station.secrets.includes(name) ? ctx.secrets.get(name) : undefined) },
     runAgent,
     z,

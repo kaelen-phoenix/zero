@@ -135,7 +135,7 @@ describe("panel guide pages", () => {
     const p = await panel({ stations: { security: { engine: "codex", model: "gpt-x", timeoutMinutes: 20, maxTurns: 30 } } });
     const html = await p.text("/agents");
     const order = [...html.matchAll(/class="card agent" data-station="([a-z]+)"/g)].map((m) => m[1]);
-    expect(order).toEqual(["spec", "build", "review", "security", "reply", "scout", "research", "unjam"]);
+    expect(order).toEqual(["spec", "build", "review", "security", "reply", "scout", "research", "unjam", "recruit"]);
     expect(html).not.toContain("community");
     const security = plain(card(html, "security"));
     expect(security).toContain("Motor: codex");
@@ -192,6 +192,16 @@ describe("panel guide pages", () => {
     expect(plain(line)).not.toContain("No tiene agentes a medida");
   });
 
+  it("shows a conflict resolver first, as such", async () => {
+    const repo = gitRepo();
+    const html = await (await panel({ lines: [{ name: "tienda", repo, agents: [{ name: "a11y" }, { name: "resolver", type: "conflict" }] }] })).text("/agents");
+    const line = html.split("<h2>Líneas</h2>")[1]!;
+    expect(line.indexOf('data-agent="resolver"')).toBeGreaterThan(-1);
+    expect(line.indexOf('data-agent="resolver"')).toBeLessThan(line.indexOf('data-agent="a11y"'));
+    const resolver = line.split('data-agent="a11y"')[0]!;
+    expect(plain(resolver)).toContain("resuelve conflictos");
+  });
+
   it("says when a line has no agents of its own", async () => {
     expect(plain((await (await panel()).text("/agents")).split("<h2>Líneas</h2>")[1]!)).toContain("No tiene agentes a medida");
   });
@@ -222,7 +232,7 @@ describe("panel guide pages", () => {
   });
 });
 
-const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/briefing", "/report", "/about", "/agents", "/packages"];
+const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/control-room", "/briefing", "/report", "/about", "/agents", "/remote-chat", "/packages"];
 const sideNav = (html: string) => {
   const navs = html.match(/<nav class="side"[\s\S]*?<\/nav>/g) ?? [];
   expect(navs).toHaveLength(1);
@@ -233,7 +243,7 @@ const styleOf = (html: string) => /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
 describe("panel layout and brand", () => {
   it("puts the side menu on every page, with an icon and a label per section and the current one marked", async () => {
     const p = await panel();
-    for (const path of ["/", "/line", "/proposals", "/research", "/report", "/about", "/agents"]) {
+    for (const path of ["/", "/line", "/proposals", "/research", "/report", "/about", "/agents", "/control-room"]) {
       const html = await p.text(path);
       const nav = sideNav(html);
       expect([...nav.matchAll(/<a href="([^"]+)"/g)].map((m) => m[1])).toEqual(SECTIONS);

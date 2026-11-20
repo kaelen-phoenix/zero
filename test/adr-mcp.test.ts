@@ -32,6 +32,7 @@ describe("docs/adr/0004-servidores-mcp.md", () => {
     const file = read();
     expect(file).toContain("strictMcpConfig");
     expect(file).toContain("mcpServers");
+    expect(file).toContain("mcp_servers={}");
     expect(file).toMatch(/no verificado/i);
   });
 

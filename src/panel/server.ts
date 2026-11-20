@@ -1,14 +1,16 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { answer, approveProposal, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { log } from "../log.js";
+import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
-import { aboutPage, agentsPage, briefingPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, overviewPage, packagesPage, packageTabPage, page, proposalsPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
+import { controlRoomFragment, controlRoomPage } from "./control-room.js";
+import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -119,6 +121,9 @@ function returnTo(path: string): string {
   if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
   if (path.startsWith("/packages")) return "/packages";
+  if (path.startsWith("/remote-chat")) return "/remote-chat";
+  if (path.startsWith("/agents")) return "/agents";
+  if (path.startsWith("/control-room")) return "/control-room";
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
@@ -134,10 +139,17 @@ export interface PanelOptions {
   merges?: MergeApiFactory;
 }
 
-/** One open `/line/events` stream: the session it was opened with and the last fragment it got. */
-interface LineStream {
+/** What a live page's stream sends: its fragment, and what of it counts as a change (all of it by default). */
+interface StreamFeed {
+  render: () => string;
+  changed?: (html: string) => string;
+}
+
+/** One open live stream (`/line/events`, `/control-room/events`): the session it was opened with, its feed and the last fragment it got. */
+interface LiveStream {
   res: ServerResponse;
   session: string;
+  feed: StreamFeed;
   last: string;
   wrote: number;
 }
@@ -157,15 +169,16 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return cached.key;
   };
 
-  const headers = (nonce: string) => ({
-    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+  // formTargets: other origins a page's forms may end up at, as the remote chat's approval redirects to the chat.
+  const headers = (nonce: string, formTargets: string[] = []) => ({
+    "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action ${["'self'", ...formTargets].join(" ")}; frame-ancestors 'none'; base-uri 'none'`,
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
   });
-  const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}) => {
-    res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers(nonce), ...extra });
+  const send = (res: ServerResponse, status: number, html: string, nonce: string, extra: Record<string, string | string[]> = {}, formTargets?: string[]) => {
+    res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", ...headers(nonce, formTargets), ...extra });
     // The tab being shown is marked in the menu by its address, which only the request knows.
     const shown = (res.req.url ?? "").split(/[?#]/)[0];
     res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx), shown)) : html);
@@ -209,17 +222,23 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return true;
   };
 
-  // Line streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
+  // Live streams share one watcher that reads the store, so changes made by other processes (the CLI) count too.
   const watchMs = opts.watchMs ?? 1000;
   const heartbeatMs = opts.heartbeatMs ?? 25_000;
-  const streams = new Set<LineStream>();
+  const streams = new Set<LiveStream>();
   let watcher: NodeJS.Timeout | undefined;
-  const write = (s: LineStream, chunk: string) => {
+  const lineFeed: StreamFeed = { render: () => lineView(productionLine(ctx)) };
+  // The room's clock moves every second on its own in the page; only the rest of the fragment is a change.
+  const controlFeed: StreamFeed = {
+    render: () => controlRoomFragment(controlRoomView(ctx, ctx.now?.())),
+    changed: (html) => html.replace(/<span class="clock"[^>]*>[^<]*<\/span>/, ""),
+  };
+  const write = (s: LiveStream, chunk: string) => {
     if (s.res.destroyed || s.res.writableEnded) return void streams.delete(s);
     s.res.write(chunk);
     s.wrote = now();
   };
-  const drop = (s: LineStream) => {
+  const drop = (s: LiveStream) => {
     streams.delete(s);
     if (!s.res.writableEnded && !s.res.destroyed) s.res.end();
     if (!streams.size && watcher) {
@@ -232,21 +251,25 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const session = sessionFor(currentKey());
       for (const s of [...streams]) if (s.res.destroyed || s.res.writableEnded || !same(s.session, session)) drop(s);
       if (!streams.size) return;
-      const html = lineView(productionLine(ctx));
+      // Each feed is rendered once per tick, however many of its streams are open.
+      const rendered = new Map<StreamFeed, string>();
       for (const s of streams) {
-        if (html !== s.last) {
+        let html = rendered.get(s.feed);
+        if (html === undefined) rendered.set(s.feed, (html = s.feed.render()));
+        const changed = s.feed.changed ?? ((h: string) => h);
+        if (changed(html) !== changed(s.last)) {
           s.last = html;
           write(s, sse(html));
         } else if (now() - s.wrote >= heartbeatMs) write(s, ": ping\n\n");
       }
     } catch (err) {
-      log.warn("panel line stream", { error: err instanceof Error ? err.message : String(err) });
+      log.warn("panel live stream", { error: err instanceof Error ? err.message : String(err) });
     }
   };
-  const openStream = (req: IncomingMessage, res: ServerResponse, session: string) => {
+  const openStream = (req: IncomingMessage, res: ServerResponse, session: string, feed: StreamFeed) => {
     res.writeHead(200, { ...headers(randomBytes(16).toString("base64")), "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" });
-    const html = lineView(productionLine(ctx));
-    const s: LineStream = { res, session, last: html, wrote: now() };
+    const html = feed.render();
+    const s: LiveStream = { res, session, feed, last: html, wrote: now() };
     streams.add(s);
     req.on("close", () => drop(s));
     res.on("close", () => drop(s));
@@ -257,6 +280,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       watcher.unref();
     }
   };
+  const remoteMcp = createRemoteMcp(ctx, { merges: opts.merges });
   const back = (res: ServerResponse, to: string, msg?: string) => {
     res.writeHead(303, { Location: msg ? `${to}${to.includes("?") ? "&" : "?"}msg=${encodeURIComponent(msg)}` : to, "Cache-Control": "no-store" });
     res.end();
@@ -305,20 +329,26 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     const key = currentKey();
     const authed = same(cookies(req)[COOKIE] ?? "", sessionFor(key));
 
+    // The remote chat's routes answer machines with their own tokens; only its approval page looks at the session.
+    if (isRemoteMcpPath(path)) return remoteMcp(req, res, url, { authed, sameOrigin: sameOrigin(req), nonce, page: (status, html, targets) => send(res, status, html, nonce, {}, targets) });
+
     if (req.method === "POST" && path === "/login") {
-      const given = (await readForm(req)).get("k") ?? "";
+      const form = await readForm(req);
+      const given = form.get("k") ?? "";
+      const to = safeBack(form.get("back"));
       if (!same(given, key)) {
         await new Promise((r) => setTimeout(r, 500));
-        return send(res, 401, loginPage(nonce, true), nonce);
+        return send(res, 401, loginPage(nonce, true, to), nonce);
       }
       const cookie = `${COOKIE}=${sessionFor(key)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86_400}${viaHttps(req) ? "; Secure" : ""}`;
-      res.writeHead(303, { Location: "/", "Set-Cookie": cookie, "Cache-Control": "no-store" });
+      res.writeHead(303, { Location: to ?? "/", "Set-Cookie": cookie, "Cache-Control": "no-store" });
       return void res.end();
     }
     if (!authed) return send(res, 401, loginPage(nonce), nonce);
 
     if (req.method === "GET") {
-      if (path === "/line/events") return openStream(req, res, sessionFor(key));
+      if (path === "/line/events") return openStream(req, res, sessionFor(key), lineFeed);
+      if (path === "/control-room/events") return openStream(req, res, sessionFor(key), controlFeed);
       if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), ctx.config.lines.map((l) => l.name), nonce, flash), nonce);
       if (path === "/line") {
         // The fragment is what the page's script fetches to update its rows in place.
@@ -339,7 +369,14 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
+      if (path === "/remote-chat") return send(res, 200, remoteChatPage(remoteChatView(ctx, ctx.now?.()), nonce, flash), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/control-room") {
+        // Read-only: the fragment is what the page refreshes its modules with.
+        const view = controlRoomView(ctx, ctx.now?.());
+        if (url.searchParams.get("fragment") === "1") return send(res, 200, controlRoomFragment(view), nonce);
+        return send(res, 200, controlRoomPage(view, nonce), nonce);
+      }
       if (path === "/monitor") return send(res, 200, monitorPage(monitorView(ctx, parsePeriod(url.searchParams.get("periodo")), ctx.now?.()), nonce), nonce);
       if (path === "/report") {
         const line = url.searchParams.get("line") || undefined;
@@ -371,7 +408,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       // Read-only pages: they have no POST route, so a POST to them falls through to the 404 below.
       if (path === "/about") return send(res, 200, aboutPage(await factoryGuide(ctx), nonce), nonce);
-      if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce), nonce);
+      if (path === "/agents") return send(res, 200, agentsPage(await factoryGuide(ctx), nonce, agentCatalog(ctx), flash), nonce);
       if (path === "/packages") {
         const onDemand = (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.onDemand).map((s) => `${s.package}/${s.name}`);
         return send(res, 200, packagesPage(packageList(ctx), onDemand, nonce, flash, stationUploads(ctx)), nonce);
@@ -455,6 +492,23 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const r = approveProposal(ctx, id);
       return back(res, "/proposals", `Propuesta aprobada: trabajo ${r.job.id}. ${r.next}`);
     }
+    const revokeAction = /^\/remote-chat\/clients\/([0-9a-f-]{36})\/revoke$/.exec(path);
+    if (revokeAction) {
+      const id = revokeAction[1]!;
+      // Revoking cuts the chat off at once, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") {
+        const client = remoteChatView(ctx, ctx.now?.()).clients.find((c) => c.id === id);
+        if (!client) throw new Error(`No hay ningún chat conectado ${id}.`);
+        return send(res, 200, confirmRevokePage(client, nonce), nonce);
+      }
+      return back(res, "/remote-chat", revokeRemoteChatClient(ctx, id) ? "Chat revocado: sus tokens dejaron de servir." : `No hay ningún chat conectado ${id}.`);
+    }
+    const pendingAction = /^\/remote-chat\/pending\/([0-9a-f]{8})\/confirm$/.exec(path);
+    if (pendingAction) {
+      if (form.get("confirm") !== "1") return back(res, "/remote-chat");
+      const r = await confirmRemoteAction(ctx, pendingAction[1]!, { ...(ctx.now && { now: ctx.now() }), ...(opts.merges && { merges: opts.merges }) });
+      return back(res, "/remote-chat", r.text);
+    }
     const researchAction = /^\/research\/([0-9a-f]{8})\/request$/.exec(path);
     if (researchAction) {
       const id = researchAction[1]!;
@@ -467,6 +521,14 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       const r = requestFromResearchNote(ctx, id);
       return back(res, "/research", `Trabajo pedido: ${r.job.id}. ${r.next}`);
     }
+    if (path === "/agents/catalog/add") {
+      const input = { id: form.get("id") ?? "", line: form.get("line") ?? "" };
+      // Adding writes the factory file and the line's repository, so the first press only shows what would be written.
+      if (form.get("confirm") !== "1") return send(res, 200, confirmCatalogPage(catalogAddPlan(ctx, input), nonce), nonce);
+      const r = await addFromCatalog(ctx, { ...input, confirm: async () => true });
+      return back(res, "/agents", r.text);
+    }
+    if (path === "/agents/catalog/reject") return back(res, "/agents", rejectCatalogEntry(ctx, { id: form.get("id") ?? "", note: form.get("note") || undefined }));
     if (path === "/packages/run") {
       // Only the person in charge gets here: the session was checked above.
       const r = requestStationRun(ctx, form.get("station") ?? "", new Date(), form.get("pedido") ?? undefined);

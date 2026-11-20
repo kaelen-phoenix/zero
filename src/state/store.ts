@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { EgressEvent, EgressRule } from "../box/egress.js";
 import { defaultPriority, type JobPriority } from "../priority.js";
+import type { CatalogEntry, CatalogStatus, NewCatalogEntry } from "../catalog.js";
 
 export type { JobPriority };
 
@@ -80,7 +81,9 @@ export type JobSource =
   /** A package's station asked for it with `ctx.requestJob`. */
   | { kind: "package"; package: string; station: string }
   /** Open Dependabot alerts of one package (ecosystem plus name) on the line's GitHub repository; `severity` is the highest of them. */
-  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity };
+  | { kind: "security-alert"; repository: string; ecosystem: string; package: string; alerts: number[]; severity: AlertSeverity }
+  /** An open pull request of the line's GitHub repository that zero took to update with its base (`adoptPullRequest`). */
+  | { kind: "pull-request"; repository: string; number: number; url: string };
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
@@ -313,6 +316,23 @@ CREATE TABLE IF NOT EXISTS research_notes (
   business INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS research_notes_line ON research_notes(line, created_at);
+CREATE TABLE IF NOT EXISTS agent_catalog (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  license TEXT NOT NULL,
+  engines TEXT NOT NULL DEFAULT '[]',
+  instructions TEXT NOT NULL DEFAULT '',
+  reviewed_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  line TEXT,
+  gap TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -416,6 +436,26 @@ function toResearchNote(r: Row): ResearchNote {
   };
 }
 
+function toCatalogEntry(r: Row): CatalogEntry {
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    description: String(r.description),
+    type: r.type as CatalogEntry["type"],
+    source: String(r.source),
+    license: r.license as CatalogEntry["license"],
+    engines: json<string[]>(r.engines) ?? [],
+    instructions: String(r.instructions),
+    reviewedAt: String(r.reviewed_at),
+    status: r.status as CatalogStatus,
+    ...(r.line != null && { line: String(r.line) }),
+    ...(r.gap != null && { gap: String(r.gap) }),
+    ...(r.note != null && { note: String(r.note) }),
+    createdAt: String(r.created_at),
+    ...(r.decided_at != null && { decidedAt: String(r.decided_at) }),
+  };
+}
+
 function toEgress(r: Row): EgressRow {
   return {
     seq: Number(r.seq),
@@ -506,7 +546,9 @@ export class Store {
 
   createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority }): Job {
     const at = this.stamp();
-    const id = newId();
+    // Ids are 32 random bits: with thousands of jobs a repeat is rare but possible, so draw again.
+    let id = newId();
+    while (this.getJob(id)) id = newId();
     this.db
       .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, priority, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
       .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), at, at);
@@ -544,6 +586,7 @@ export class Store {
     return this.updateJob(id, { ...patch, status, question: null, finishedAt: this.stamp() });
   }
 
+  /** Jobs oldest first, at most 1000 rows unless `limit` says otherwise; a cap drops the newest, so readers of live or recent jobs pass `-1` (no cap). */
   listJobs(filter: { status?: JobStatus[]; line?: string; limit?: number } = {}): Job[] {
     const where: string[] = [];
     const values: (string | number)[] = [];
@@ -770,6 +813,34 @@ export class Store {
     }
     const sql = `SELECT * FROM research_notes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
     return (this.db.prepare(sql).all(...values, filter.limit ?? -1) as Row[]).map(toResearchNote);
+  }
+
+  /** Stores a screened catalog entry; the checks live in `acceptFindings`. */
+  createCatalogEntry(input: NewCatalogEntry): CatalogEntry {
+    const id = newId();
+    this.db
+      .prepare("INSERT INTO agent_catalog (id, name, description, type, source, license, engines, instructions, reviewed_at, status, line, gap, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.name, input.description, input.type, input.source, input.license, JSON.stringify(input.engines), input.instructions, input.reviewedAt, input.status, input.line ?? null, input.gap ?? null, this.stamp());
+    return this.getCatalogEntry(id)!;
+  }
+
+  getCatalogEntry(id: string): CatalogEntry | undefined {
+    const row = this.db.prepare("SELECT * FROM agent_catalog WHERE id = ?").get(id) as Row | undefined;
+    return row ? toCatalogEntry(row) : undefined;
+  }
+
+  /** Every entry, oldest first, or only those in the given statuses. */
+  listCatalog(filter: { status?: CatalogStatus[] } = {}): CatalogEntry[] {
+    const where = filter.status?.length ? `WHERE status IN (${filter.status.map(() => "?").join(", ")})` : "";
+    return (this.db.prepare(`SELECT * FROM agent_catalog ${where} ORDER BY created_at ASC, rowid ASC`).all(...(filter.status ?? [])) as Row[]).map(toCatalogEntry);
+  }
+
+  /** Moves an entry to `added` or `rejected`, only from one of `from`; false when it was not there. */
+  decideCatalogEntry(id: string, patch: { status: "added" | "rejected"; line?: string; note?: string; from: CatalogStatus[] }): boolean {
+    const result = this.db
+      .prepare(`UPDATE agent_catalog SET status = ?, decided_at = ?, line = COALESCE(?, line), note = COALESCE(?, note) WHERE id = ? AND status IN (${patch.from.map(() => "?").join(", ")})`)
+      .run(patch.status, this.stamp(), patch.line ?? null, patch.note ?? null, id, ...patch.from);
+    return Number(result.changes) > 0;
   }
 
   getKv(key: string): string | undefined {

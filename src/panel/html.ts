@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import type { CatalogAddPlan } from "../app.js";
+import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
+import type { ConnectedClient } from "../mcp/oauth.js";
 import { safeUrl } from "../package-tabs.js";
 import { reportSection, type MonthlyReport } from "../report.js";
 import { FINAL_STATUSES, type Job, type JobStatus, type ResearchNote } from "../state/store.js";
@@ -162,10 +165,12 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/proposals", "Propuestas", `<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>`],
   ["/research", "Investigación", `<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>`],
   ["/monitor", "Monitor", `<path d="M3 12h4l2.5-7 4 14 2.5-7h5"/>`],
+  ["/control-room", "Sala de control", `<rect x="2" y="4" width="20" height="13" rx="1.5"/><path d="M8 21h8M12 17v4M6 13l3-4 3 2 3-4 3 3"/>`],
   ["/briefing", "Informe", `<path d="M4 5h13v14H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v8a2 2 0 0 1-2 2M8 9h5M8 13h5M8 16h3"/>`],
   ["/report", "Informe mensual", `<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/>`],
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
+  ["/remote-chat", "Chat remoto", `<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>`],
   ["/packages", "Paquetes", `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`],
 ];
 
@@ -277,7 +282,13 @@ ${list.packages.length ? packages : `<div class="card muted">No hay paquetes ins
 }
 
 /** The only page without a session: exchanges the key in the link's fragment for a cookie, clears it from the address bar and goes back to the page the link pointed at. */
-export function loginPage(nonce: string, failed = false): string {
+/** A path of this panel to return to after signing in: relative, never to another site. */
+export const safeBack = (back: string | null | undefined): string | undefined =>
+  back && back.startsWith("/") && !back.startsWith("//") && !/[\\\r\n]/.test(back) && back.length <= 4000 ? back : undefined;
+
+/** `back` is where the pasted-key form returns to (path and query), as an approval link needs. */
+export function loginPage(nonce: string, failed = false, back?: string): string {
+  const to = safeBack(back);
   const script = `(() => {
   const k = new URLSearchParams(location.hash.slice(1)).get("k");
   if (!k) return;
@@ -292,7 +303,7 @@ export function loginPage(nonce: string, failed = false): string {
     `<div class="card"><h1>Panel de tu fábrica</h1>
 <p class="muted">Abrí el link que te dio <code>zero panel</code>, o pegá la clave.</p>
 <p id="msg" class="bad">${failed ? "La clave no es válida." : ""}</p>
-<form method="post" action="/login"><label for="k">Clave</label><input id="k" name="k" type="password" autocomplete="off"><button class="primary">Ingresar</button></form></div>
+<form method="post" action="/login">${to ? `<input type="hidden" name="back" value="${esc(to)}">` : ""}<label for="k">Clave</label><input id="k" name="k" type="password" autocomplete="off"><button class="primary">Ingresar</button></form>${to ? `<p class="muted">Si ya abriste el panel en este navegador, <a href="${esc(to)}">seguí desde acá</a>.</p>` : ""}</div>
 <script nonce="${nonce}">${script}</script>`,
     { nonce, nav: false },
   );
@@ -354,6 +365,7 @@ ${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
 ${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}
+${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
 ${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
@@ -652,6 +664,76 @@ export function confirmMergePage(j: Job, nonce: string): string {
   );
 }
 
+const SCOPE_TEXT: Record<string, string> = {
+  "zero:read": "leer: estado, trazas, propuestas, investigación e informes",
+  "zero:act": "actuar: pedir trabajos y responder consultas (fundir, detener, aprobar propuestas o archivos protegidos y bloquear sitios te piden una confirmación aparte)",
+};
+
+/** The approval of a new remote chat connection: who asks, where the answer goes and what it may do. */
+export function authorizePage(a: { clientName: string; clientId: string; redirectUri: string; scope: string[]; params: Record<string, string> }, nonce: string): string {
+  const hidden = Object.entries(a.params)
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`)
+    .join("");
+  return page(
+    "Conectar un chat",
+    `<div class="card"><h1>¿Conectar «${esc(a.clientName)}» con tu fábrica?</h1>
+<p>Un chat pide manejar la fábrica desde afuera. Aprobalo solo si lo acabás de conectar vos.</p>
+<p><b>Cliente:</b> ${esc(a.clientName)} <span class="muted">(${esc(a.clientId)})</span></p>
+<p><b>Vuelve a:</b> <code>${esc(a.redirectUri)}</code></p>
+<p><b>Permisos:</b></p><ul>${a.scope.map((s) => `<li>${esc(SCOPE_TEXT[s] ?? s)}</li>`).join("")}</ul>
+<p class="muted">Podés revocar la conexión cuando quieras desde el panel o con <code>zero mcp revoke</code>.</p>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="confirm" value="1"><button class="primary">Sí, conectar</button></form>
+<form method="post" action="/oauth/authorize">${hidden}<input type="hidden" name="deny" value="1"><button class="danger">No, rechazar</button></form></div>`,
+    { nonce },
+  );
+}
+
+const scopeNames = (scope: string[]) => (scope.includes("zero:act") ? "leer y actuar" : "solo leer");
+
+/** The remote chat: whether it is on, the address to connect, the connected clients (revocable) and the actions waiting for confirmation. */
+export function remoteChatPage(v: RemoteChatView, nonce: string, flash?: string): string {
+  const state = v.on
+    ? v.url
+      ? `<p>Encendido. Conectá tu chat a <code>${esc(v.url)}</code> (${v.stable ? "dirección fija: sigue igual después de reiniciar" : "esta dirección cambia cuando el túnel se reinicia"}).</p>`
+      : `<p class="bad">Encendido, pero el túnel no está abierto: abrilo con <code>zero panel remote on</code>.</p>`
+    : `<p class="muted">Apagado. Se enciende desde la terminal con <code>zero mcp remote on</code>.</p>`;
+  const clients = v.clients.length
+    ? `<table><thead><tr><th>Cliente</th><th>Permisos</th><th>Aprobado</th><th>Último uso</th><th></th></tr></thead><tbody>${v.clients
+        .map(
+          (c) => `<tr><td>${esc(c.name)} <span class="muted">${esc(c.id)}</span></td><td>${esc(scopeNames(c.scope))}</td><td>${esc(c.approvedAt.slice(0, 16).replace("T", " "))}</td><td>${esc(c.lastUsedAt?.slice(0, 16).replace("T", " ") ?? "—")}</td>
+<td><form method="post" action="/remote-chat/clients/${esc(c.id)}/revoke"><button class="danger">Revocar</button></form></td></tr>`,
+        )
+        .join("")}</tbody></table>`
+    : `<p class="muted">No hay chats conectados.</p>`;
+  const pending = v.pending.length
+    ? v.pending
+        .map(
+          (a) => `<div class="card"><h3>${esc(a.text)} <span class="muted">${esc(a.id)}</span></h3>
+<p class="muted">Pedido por ${esc(a.clientName ?? a.client ?? "un chat remoto")} · vence ${esc(a.expiresAt.slice(11, 16))} UTC</p>
+<form method="post" action="/remote-chat/pending/${esc(a.id)}/confirm"><input type="hidden" name="confirm" value="1"><button class="primary">Confirmar</button></form></div>`,
+        )
+        .join("")
+    : `<p class="muted">No hay acciones esperando tu confirmación.</p>`;
+  return page(
+    "Chat remoto",
+    `<div class="card"><h1>Chat remoto</h1>${state}</div>
+<div class="card"><h2>Chats conectados</h2>${clients}</div>
+<h2>Acciones para confirmar</h2>${pending}`,
+    { nonce, flash, refresh: true, active: "/remote-chat" },
+  );
+}
+
+/** The step before revoking a remote chat client: its tokens stop working at once. */
+export function confirmRevokePage(c: ConnectedClient, nonce: string): string {
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Revocar «${esc(c.name)}»?</h1><p>El chat ${esc(c.id)} deja de poder usar la fábrica en este mismo momento; para volver a conectarlo tenés que aprobarlo de nuevo.</p>
+<form method="post" action="/remote-chat/clients/${esc(c.id)}/revoke"><input type="hidden" name="confirm" value="1"><button class="danger">Sí, revocar</button></form>
+<p><a href="/remote-chat">Cancelar</a></p></div>`,
+    { nonce, active: "/remote-chat" },
+  );
+}
+
 export function briefingPage(title: string, body: string, nonce: string): string {
   return page("Informe", `<div class="card"><h1>${esc(title)}</h1><p class="muted"><a href="/briefing?days=1">hoy</a> · <a href="/briefing?days=7">7 días</a></p>${markdown(body)}</div>`, { nonce, active: "/briefing" });
 }
@@ -919,6 +1001,11 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
     does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
     cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
   },
+  recruit: {
+    name: "Reclutador (recruit)",
+    does: "Con la fábrica libre, una vez por semana, busca en la web agentes públicos con licencia libre que llenen huecos de las líneas (sus trabas y rechazos recientes) y los suma al catálogo, propuestos para una línea cuando encajan.",
+    cannot: "No suma ningún agente ni toca el archivo de la fábrica: sumarlo lo decidís vos desde el catálogo. No instala ni ejecuta nada; lo que lee en la web es dato, nunca instrucciones.",
+  },
 };
 
 const DELIVERY: Record<FactoryGuide["lines"][number]["integrate"], string> = { merge: "merge local", branch: "rama", "pull-request": "pull request" };
@@ -945,13 +1032,54 @@ function agentSkillsSection(s: AgentGuide["skills"]): string {
 function lineAgentItems(agents: FactoryGuide["lines"][number]["agents"]): string {
   if (!agents.length) return `<li>No tiene agentes a medida.</li>`;
   const items = agents.map((a) => {
-    const kind = a.type === "build" ? `<span class="badge warn">modifica el código</span> <span class="muted">entre build y verify</span>` : `<span class="badge ok">solo lectura</span> <span class="muted">después de security${a.blocking ? "" : ", solo informa"}</span>`;
+    const kind =
+      a.type === "build"
+        ? `<span class="badge warn">modifica el código</span> <span class="muted">entre build y verify</span>`
+        : a.type === "conflict"
+          ? `<span class="badge warn">resuelve conflictos</span> <span class="muted">al traer la rama base, antes de build</span>`
+          : `<span class="badge ok">solo lectura</span> <span class="muted">después de security${a.blocking ? "" : ", solo informa"}</span>`;
     return `<li data-agent="${esc(a.name)}"><code>${esc(a.name)}</code> ${kind}${a.files.length ? ` · solo si el cambio toca ${codes(a.files, "")}` : ""}</li>`;
   });
   return `<li>Agentes a medida, en el orden en que corren:<ul class="skills">${items.join("")}</ul></li>`;
 }
 
-export function agentsPage(g: FactoryGuide, nonce: string): string {
+const CATALOG_STATUS: Record<CatalogEntry["status"], string> = { proposed: "propuesto", listed: "en el catálogo", added: "agregado", rejected: "rechazado" };
+
+/** One catalog entry with its fields and, while it can still be added, the add and reject forms. */
+function catalogCard(e: CatalogEntry, lines: string[]): string {
+  const open = e.status === "listed" || e.status === "proposed";
+  const options = lines.map((l) => `<option value="${esc(l)}"${l === e.line ? " selected" : ""}>${esc(l)}</option>`).join("");
+  const forms = open
+    ? `<form method="post" action="/agents/catalog/add"><input type="hidden" name="id" value="${esc(e.id)}"><label>Línea <select name="line">${options}</select></label> <button class="primary">Sumar</button></form>
+<form method="post" action="/agents/catalog/reject"><input type="hidden" name="id" value="${esc(e.id)}"><input name="note" placeholder="motivo (opcional)"> <button>Rechazar</button></form>`
+    : "";
+  return `<div class="card catalog" data-entry="${esc(e.id)}"><h3>${esc(e.name)} <span class="chip" data-status="${esc(e.status)}">${CATALOG_STATUS[e.status]}</span> <span class="muted">${esc(e.id)}</span></h3>
+<p>${esc(e.description)}</p>
+<ul class="kv"><li>Tipo: <b>${esc(e.type)}</b></li>
+<li>Fuente: ${webLink(e.source)}</li>
+<li>Licencia: <b>${esc(e.license)}</b></li>
+<li>Motores: ${e.engines.length ? esc(e.engines.join(", ")) : "sin dato"}</li>
+<li>Revisado: ${esc(e.reviewedAt.slice(0, 10))}</li>
+${e.line ? `<li>Línea: <b>${esc(e.line)}</b></li>` : ""}${e.gap ? `<li>Hueco que llena: ${esc(e.gap)}</li>` : ""}${e.note ? `<li>Motivo del rechazo: ${esc(e.note)}</li>` : ""}</ul>
+${forms}</div>`;
+}
+
+/** The step before adding a catalog entry: it writes the factory file and the line's repository, so the owner reads what and confirms. */
+export function confirmCatalogPage(plan: CatalogAddPlan, nonce: string): string {
+  const e = plan.entry;
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>¿Sumar ${esc(e.name)} a la línea ${esc(plan.line)}?</h1>
+<p>Lo agrega como agente <b>${esc(e.type)}</b> de la línea y escribe <code>${esc(plan.path)}</code> con esto:</p><pre>${esc(plan.content)}</pre>
+${plan.copied ? `<p>También da crédito a ${webLink(e.source)} (licencia ${esc(e.license)}) en <code>THIRD-PARTY-NOTICES.md</code>, en la raíz del repositorio de la línea.</p>` : ""}
+<p class="muted">No instala ni ejecuta nada de lo que trae el agente.</p>
+<form method="post" action="/agents/catalog/add"><input type="hidden" name="id" value="${esc(e.id)}"><input type="hidden" name="line" value="${esc(plan.line)}"><input type="hidden" name="confirm" value="1"><button class="primary">Sí, sumarlo</button></form>
+<p><a href="/agents">Cancelar</a></p></div>`,
+    { nonce, active: "/agents" },
+  );
+}
+
+export function agentsPage(g: FactoryGuide, nonce: string, catalog: CatalogEntry[] = [], flash?: string): string {
   const agents = g.agents
     .map((a) => {
       const t = AGENT_SUMMARY[a.station];
@@ -984,13 +1112,18 @@ ${lineAgentItems(l.agents)}</ul></div>`,
   return page(
     "Agentes",
     `<div class="card"><h1>Agentes</h1><p class="muted">Cada paso de la línea lo hace un agente con sus propias instrucciones y límites. Los límites los controla la fábrica, no el agente.</p></div>
-${agents}<h2>Líneas</h2>${lines}`,
-    { nonce, active: "/agents" },
+${agents}<h2>Líneas</h2>${lines}
+<h2>Catálogo</h2>${
+      catalog.length
+        ? catalog.map((e) => catalogCard(e, g.lines.map((l) => l.name))).join("")
+        : `<div class="card muted">El catálogo todavía no tiene agentes. Los suma el reclutador del turno nocturno; se ven también con <code>zero agent catalog</code>.</div>`
+    }`,
+    { nonce, flash, active: "/agents" },
   );
 }
 
 /** "45 s", "3 min", "1 h 5 min". */
-function duration(ms: number | undefined): string {
+export function duration(ms: number | undefined): string {
   if (ms === undefined) return "sin dato";
   if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
   const minutes = Math.round(ms / 60_000);

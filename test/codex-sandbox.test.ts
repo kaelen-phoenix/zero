@@ -44,6 +44,7 @@ vi.mock("../src/box/run.js", async (importOriginal) => ({
 const req = (access: Access, cwd = process.cwd()): EngineRequest => ({ instructions: "i", prompt: "p", cwd, access, timeoutMs: 30_000 });
 const OFF = parseFactory("lines: []\ncodex: { sandbox: off }\n");
 const pairAt = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+const noMcp = (args: string[]) => args.some((a, i) => a === "-c" && args[i + 1] === "mcp_servers={}");
 
 const READY: BoxStatus = { ready: true, runtime: "docker", image: "zero-box:test", problems: [], checkedAt: "2026-11-05T00:00:00Z" };
 const NOT_READY: BoxStatus = { ready: false, image: "zero-box:test", problems: ["sin runtime"], checkedAt: "2026-11-05T00:00:00Z" };
@@ -107,6 +108,7 @@ describe("how codex is started", () => {
       const args = fake.runs.at(-1)!;
       expect(pairAt(args, "--sandbox")).toBe("danger-full-access");
       expect(pairAt(args, "-c")).toBe('approval_policy="never"');
+      expect(noMcp(args)).toBe(true);
       expect(args.join(" ")).not.toMatch(/read-only|workspace-write/);
     }
   });
@@ -143,7 +145,9 @@ describe("inside the box", () => {
     expect(JSON.stringify(payload)).not.toMatch(/sandbox/i);
     const inside = resolveEngine(payload.engine, { engines: payload.engines });
     expect(inside).toBe(codexEngine);
-    expect(pairAt(codexInvocation(req("read"), { lastMessage: "l" }).args, "--sandbox")).toBe("read-only");
+    const args = codexInvocation(req("read"), { lastMessage: "l" }).args;
+    expect(pairAt(args, "--sandbox")).toBe("read-only");
+    expect(noMcp(args)).toBe(true);
   });
 });
 

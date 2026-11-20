@@ -7,16 +7,17 @@ import { AGENT_STATIONS, parseFactory } from "../src/config.js";
 import { runDaemon } from "../src/daemon.js";
 import { INSTALL_FRESHNESS_KEY } from "../src/install-freshness.js";
 import { intakeProblemKey } from "../src/intake/keys.js";
-import { mergeKey, type MergeApi, type MergeState } from "../src/line/automerge.js";
+import { mergeKey, pollMerges, stampBlocked, type Check, type MergeApi, type MergeState } from "../src/line/automerge.js";
+import { readTrain } from "../src/line/train.js";
 import { scoutSpent } from "../src/line/scout.js";
 import { SPEC_REFUSAL } from "../src/line/runner.js";
-import { collectJams, readDiagnosis, resendAfterCapability, unjamKey, unjamLine, unjamPass, unjamResentKey, unjamRetriedKey } from "../src/line/unjam.js";
+import { collectJams, readDiagnosis, resendAfterCapability, unjamKey, unjamLine, unjamPass, unjamResentKey, unjamRetriedKey, unjamUrgentKey, urgentUnjamPass } from "../src/line/unjam.js";
 import { cleanupKey } from "../src/line/cleanup.js";
 import { formatStatus } from "../src/format.js";
 import { overviewPage, proposalsPage } from "../src/panel/html.js";
 import { reportHtml, reportMarkdown } from "../src/report.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
-import { cleanup, fakeAgents, gitRepo, testFactory, validSpec } from "./helpers.js";
+import { cleanup, fakeAgents, gitIn, gitRepo, testFactory, validSpec } from "./helpers.js";
 
 afterEach(cleanup);
 
@@ -52,7 +53,8 @@ describe("unjam station", () => {
   });
 
   it("is on by default with two jobs a day, and can be turned off", () => {
-    expect(parseFactory("").unjam).toEqual({ maxJobsPerDay: 2 });
+    expect(parseFactory("").unjam).toEqual({ maxJobsPerDay: 2, urgentAfterHours: 2 });
+    expect(parseFactory("unjam: { urgentAfterHours: 0 }").unjam).toEqual({ maxJobsPerDay: 2, urgentAfterHours: 0 });
     expect(parseFactory("unjam: off").unjam).toBe("off");
     expect(parseFactory("").stations.unjam.maxTurns).toBe(40);
   });
@@ -566,7 +568,34 @@ describe("jams in sight", () => {
     const s = factoryStatus(ctx);
     expect(s.jams[0]!.job).toBeUndefined();
     const machine = diagnosed([cause({ kind: "machine", jams: ["box"], todo: "Instalá Podman o Docker" })]);
-    expect(formatStatus(factoryStatus(machine))).toContain("tienda · Checks de android rotos · 1 traba · máquina · qué hacer: Instalá Podman o Docker");
+    expect(formatStatus(factoryStatus(machine))).toContain("tienda · Checks de android rotos · 1 traba · máquina · qué falta: Instalá Podman o Docker · lo tiene que hacer: vos");
+  });
+
+  it("says what is missing and who has to do it, in status, panel and briefing", async () => {
+    const ctx = diagnosed([cause({ kind: "code", jams: ["pr:1"], todo: "Volvé a subir el commit que verificó zero", who: "author" })]);
+    const s = factoryStatus(ctx);
+    expect(s.jams[0]).toMatchObject({ todo: "Volvé a subir el commit que verificó zero", who: "author" });
+    const missing = "qué falta: Volvé a subir el commit que verificó zero · lo tiene que hacer: quien abrió el pull request";
+    expect(formatStatus(s)).toContain(missing);
+    expect(overviewPage(s, ["tienda"], "nonce")).toContain(missing);
+    expect((await briefing(ctx)).body).toContain(missing);
+    const github = diagnosed([cause({ jams: ["pr:1"], todo: "Esperar a que vuelva Actions", who: "github" })]);
+    expect(formatStatus(factoryStatus(github))).toContain("lo tiene que hacer: GitHub");
+    const factoryWho = diagnosed([cause({ jams: ["pr:1"], todo: "Esperar la próxima pasada", who: "factory" })]);
+    expect(formatStatus(factoryStatus(factoryWho))).toContain("lo tiene que hacer: la fábrica");
+  });
+
+  it("keeps the agent's who and makes a none cause without one the owner's", async () => {
+    const { ctx } = factory();
+    const a = failedJob(ctx);
+    const line = ctx.config.lines[0]!;
+    const jams = collectJams(ctx, line, at(3));
+    const id = `job:${a.id}`;
+    const drafts = [cause({ title: "Uno", jams: [id], who: "github" }), cause({ title: "Dos", jams: [id] }), cause({ title: "Tres", jams: [id], action: "retry", todo: undefined })];
+    const causes = (await unjamLine(ctx, line, jams, diagnosing(drafts).runner, at(3)))!;
+    expect(causes.find((c) => c.title === "Uno")!.who).toBe("github");
+    expect(causes.find((c) => c.title === "Dos")!.who).toBe("owner");
+    expect(causes.find((c) => c.title === "Tres")!.who).toBeUndefined();
   });
 
   it("is in the panel's overview", () => {
@@ -732,5 +761,156 @@ describe("missing capabilities", () => {
       ctx.store.updateJob(f.id, { status: "stopped" });
       expect(await resendAfterCapability(ctx, at(3))).toBe(0);
     });
+  });
+});
+
+describe("collecting jams behind a long history", () => {
+  it("sees a failure created after more than 10,000 older jobs", () => {
+    const { ctx } = factory();
+    ctx.store.transaction(() => {
+      for (let i = 0; i < 10_001; i++) {
+        const job = ctx.store.createJob({ line: "tienda", kind: "request", request: `viejo ${i}`, budgetUsd: 1 });
+        ctx.store.updateJob(job.id, { status: "stopped", finishedAt: at(1).toISOString() });
+      }
+    });
+    const failed = failedJob(ctx);
+    expect(collectJams(ctx, ctx.config.lines[0]!, at(3)).find((j) => j.kind === "failed-job")).toMatchObject({ job: failed.id });
+  });
+});
+
+describe("unjam during the day", () => {
+  const hoursAgo = (now: Date, h: number) => new Date(now.getTime() - h * 3_600_000).toISOString();
+  const stuck = (ctx: Ctx, now: Date, hours = 3) => blockedPr(ctx, 1, { blockedSince: hoursAgo(now, hours) });
+  const runningJob = (ctx: Ctx) => {
+    const job = ctx.store.createJob({ line: "tienda", kind: "request", request: "otro", budgetUsd: 1 });
+    return ctx.store.updateJob(job.id, { status: "running" });
+  };
+
+  it("runs with jobs running, outside the night shift's hours, when a pull request is blocked for hours", async () => {
+    const { ctx } = factory({ concurrency: 2, nightShift: { hours: "22:00-06:00" } }, at(14));
+    stuck(ctx, at(14));
+    runningJob(ctx);
+    const agents = diagnosing([]);
+    expect(await urgentUnjamPass(ctx, agents.runner, at(14), { running: 1 })).toBe(1);
+    expect(agents.calls.map((c) => c.station)).toEqual(["unjam"]);
+    expect(agents.calls[0]!.maxBudgetUsd).toBeGreaterThan(0);
+  });
+
+  it("does not run while an owner job is queued, without a free slot, nor for a pull request blocked a short while", async () => {
+    const agents = diagnosing([]);
+    const queued = factory({ concurrency: 2 }, at(14));
+    stuck(queued.ctx, at(14));
+    queued.ctx.store.createJob({ line: "tienda", kind: "request", request: "pedido", budgetUsd: 1 });
+    await urgentUnjamPass(queued.ctx, agents.runner, at(14), { running: 0 });
+    const full = factory({ concurrency: 1 }, at(14));
+    stuck(full.ctx, at(14));
+    await urgentUnjamPass(full.ctx, agents.runner, at(14), { running: 1 });
+    const recent = factory({ concurrency: 2 }, at(14));
+    stuck(recent.ctx, at(14), 1);
+    await urgentUnjamPass(recent.ctx, agents.runner, at(14), { running: 0 });
+    const off = factory({ unjam: { urgentAfterHours: 0 } }, at(14));
+    stuck(off.ctx, at(14));
+    await urgentUnjamPass(off.ctx, agents.runner, at(14), { running: 0 });
+    const andon = factory({}, at(14));
+    stuck(andon.ctx, at(14));
+    andon.ctx.store.setKv(ANDON_KEY, "on");
+    await urgentUnjamPass(andon.ctx, agents.runner, at(14), { running: 0 });
+    expect(agents.calls).toHaveLength(0);
+  });
+
+  it("runs once per urgentAfterHours for a line", async () => {
+    const { ctx } = factory({}, at(14));
+    stuck(ctx, at(14));
+    const agents = diagnosing([]);
+    await urgentUnjamPass(ctx, agents.runner, at(14), { running: 0 });
+    await urgentUnjamPass(ctx, agents.runner, at(15), { running: 0 });
+    expect(agents.count.unjam).toBe(1);
+    expect(ctx.store.getKv(unjamUrgentKey("tienda"))).toBe(at(14).toISOString());
+    await urgentUnjamPass(ctx, agents.runner, at(16), { running: 0 });
+    expect(agents.count.unjam).toBe(2);
+  });
+
+  it("runs in the daemon's background, outside the idle run", async () => {
+    const now = new Date();
+    const { ctx } = factory({}, now);
+    stuck(ctx, now);
+    const agents = diagnosing([]);
+    await runDaemon(ctx, { once: true, pollMs: 10, panel: false, unjam: false, urgentUnjam: true, agentRunner: () => agents.runner });
+    expect(agents.calls.map(agentName)).toEqual(["unjam"]);
+  });
+});
+
+describe("blockedSince", () => {
+  it("is set when blocked, kept while blocked and gone otherwise", () => {
+    const blocked = stampBlocked({ status: "waiting" }, { status: "blocked", why: "x" }, "t1");
+    expect(blocked.blockedSince).toBe("t1");
+    expect(stampBlocked(blocked, { ...blocked, why: "y" }, "t2").blockedSince).toBe("t1");
+    expect(stampBlocked(blocked, { status: "waiting", blockedSince: "t1" }, "t3").blockedSince).toBeUndefined();
+  });
+
+  it("keeps the first blocked time over the passes of a watched pull request", async () => {
+    const clock = { ms: at(10).getTime() };
+    const repo = gitRepo();
+    gitIn(repo, "remote", "add", "origin", "https://github.com/acme/tienda.git");
+    const ctx = testFactory({ isolation: "worktree", lines: [{ name: "tienda", repo, integrate: "pull-request", autoMerge: true }] }, () => new Date(clock.ms));
+    const job = ctx.store.createJob({ line: "tienda", kind: "request", request: "x", budgetUsd: 1 });
+    ctx.store.updateJob(job.id, { status: "delivered", finishedAt: new Date(clock.ms).toISOString(), delivery: { mode: "pull-request", branch: `zero/${job.id}`, url: "https://github.com/acme/tienda/pull/1", autoMerge: true } });
+    let checks: Check[] = [{ name: "ci", done: false, ok: false, started: at(10).toISOString() }];
+    const api: MergeApi = {
+      pullRequest: async () => ({ open: true, merged: false, mergeable: true, headSha: "a", base: "main" }),
+      checks: async () => checks,
+      merge: async () => "m",
+      deleteBranch: async () => {},
+      comment: async () => {},
+    };
+    const state = () => JSON.parse(ctx.store.getKv(mergeKey(job.id))!) as MergeState;
+    await pollMerges(ctx, () => api);
+    expect(state().status).toBe("waiting");
+    expect(state().blockedSince).toBeUndefined();
+    checks = [{ name: "ci", done: true, ok: false, started: at(10).toISOString(), at: at(10).toISOString() }];
+    clock.ms += 10 * 60_000;
+    const first = new Date(clock.ms).toISOString();
+    await pollMerges(ctx, () => api);
+    expect(state()).toMatchObject({ status: "blocked", blockedSince: first });
+    for (const minutes of [10, 120]) {
+      clock.ms += minutes * 60_000;
+      await pollMerges(ctx, () => api);
+      expect(state()).toMatchObject({ status: "blocked", blockedSince: first });
+    }
+    checks = [{ name: "ci", done: true, ok: true }];
+    clock.ms += 300 * 60_000;
+    await pollMerges(ctx, () => api);
+    expect(state().status).toBe("merged");
+    expect(state().blockedSince).toBeUndefined();
+  });
+});
+
+describe("a train cause", () => {
+  function trainFactory(autonomy: string) {
+    const repo = gitRepo();
+    gitIn(repo, "remote", "add", "origin", "https://github.com/acme/tienda.git");
+    return factory({ lines: [{ name: "tienda", repo, integrate: "pull-request", autoMerge: true, nightShift: { autonomy } }] });
+  }
+  const trainCause = (jams: string[]) => cause({ title: "Pull requests que se pisan", kind: "code", action: "train", jams, todo: null });
+
+  it("starts the line's train with the cause's pull requests on a build line", async () => {
+    const { ctx } = trainFactory("build");
+    const a = blockedPr(ctx, 1);
+    const b = blockedPr(ctx, 2);
+    const line = ctx.config.lines[0]!;
+    const causes = await unjamLine(ctx, line, collectJams(ctx, line, at(3)), diagnosing([trainCause([`pr:${a.id}`, `pr:${b.id}`])]).runner, at(3));
+    expect(causes![0]!.action).toBe("train");
+    expect(readTrain(ctx, "tienda")!.entries.map((e) => e.job)).toEqual([a.id, b.id]);
+  });
+
+  it("leaves the command as the todo on a propose line", async () => {
+    const { ctx } = trainFactory("propose");
+    const a = blockedPr(ctx, 1);
+    const b = blockedPr(ctx, 2);
+    const line = ctx.config.lines[0]!;
+    const causes = await unjamLine(ctx, line, collectJams(ctx, line, at(3)), diagnosing([trainCause([`pr:${a.id}`, `pr:${b.id}`])]).runner, at(3));
+    expect(readTrain(ctx, "tienda")).toBeUndefined();
+    expect(causes![0]!.todo).toContain("zero tren tienda 1 2");
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]!.todo).toContain("zero tren tienda");
   });
 });

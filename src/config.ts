@@ -84,12 +84,37 @@ const UnjamSchema = z.union([
     .object({
       /** Fix jobs and retries the unjam station opens on its own per local day, across every line. */
       maxJobsPerDay: z.number().int().min(0).default(2),
+      /** Hours a pull request stays blocked before the unjam station looks at its line during the day, busy factory or not; 0 turns it off. */
+      urgentAfterHours: z.number().min(0).default(2),
+    })
+    .strict(),
+]);
+
+/** The recruiter: while the factory is idle, it looks on the web for public agents that fill the lines' gaps, or `off`. */
+const RecruitSchema = z.union([
+  z.literal("off"),
+  z
+    .object({
+      /** Days between two runs. */
+      everyDays: z.number().int().min(1).default(7),
+      /** Catalog entries one run may store. */
+      perPass: z.number().int().min(0).default(3),
     })
     .strict(),
 ]);
 
 export const DEFAULT_SIGNATURE_TEXT = "— Hecho con [zero in the loop](https://zerointheloop.com)";
 export const DEFAULT_SIGNATURE_TRAILER = "Built-by: zero in the loop <https://zerointheloop.com>";
+
+/** A DNS name the person in charge controls: lowercase, two labels or more, no scheme, port, path or credentials, never a quick tunnel's. */
+const TunnelHostname = z
+  .string()
+  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+    message: "panel.tunnel.hostname debe ser un nombre DNS en minúsculas como zero.ejemplo.com, sin https://, puerto ni ruta",
+  })
+  .refine((h) => h !== "trycloudflare.com" && !h.endsWith(".trycloudflare.com"), {
+    message: "panel.tunnel.hostname no puede ser de trycloudflare.com: esas direcciones cambian; usá un subdominio de un dominio tuyo",
+  });
 
 /** zero in the loop's signature on what the factory builds, or `off`. */
 const SignatureSchema = z.union([
@@ -169,21 +194,22 @@ export const CustomEngineSchema = z
   });
 
 /** The stations zero itself defines; a custom agent never takes one of their names. */
-export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research", "unjam"] as const;
+export const FIXED_STATIONS = ["spec", "build", "verify", "review", "security", "integrate", "reply", "scout", "research", "unjam", "recruit"] as const;
 
 /**
  * A project's own agent. `review`: a read-only reviewer that runs after review
  * and security, on the same change. `build`: it writes in the work copy, after
  * build and before verify, so all it touches goes through every check. It adds
  * to the line; it never replaces or skips a fixed station, and nothing lets one
- * that writes run after verify.
+ * that writes run after verify. `conflict`: it writes in the work copy when
+ * merging the base leaves conflicts, before build; zero checks its resolution.
  */
 export const CustomAgentSchema = z
   .object({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "usá minúsculas, dígitos y guiones"),
     /** Its instructions, relative to the line's repository (line agents) or to the factory folder (global agents). */
     instructions: z.string().min(1).optional(),
-    type: z.enum(["review", "build"], { error: "el tipo de un agente a medida tiene que ser review o build" }).default("review"),
+    type: z.enum(["review", "build", "conflict"], { error: "el tipo de un agente a medida tiene que ser review o build, o conflict para resolver conflictos" }).default("review"),
     /** Where it runs in the line, derived from its type; a reviewer may still say `review`. */
     after: z.string({ error: "after tiene que ser un texto" }).optional(),
     /** Derived from its type: whatever a reviewer writes is discarded. */
@@ -205,6 +231,11 @@ export const CustomAgentSchema = z
       if (a.after !== undefined) issue("after", `el agente "${a.name}" escribe: un agente que escribe corre entre build y verify, sin after`);
       if (a.access !== undefined && a.access !== "write") issue("access", `el agente "${a.name}" escribe: su access solo puede ser write`);
       if (a.blocking === false) issue("blocking", `el agente "${a.name}" escribe: si falla, falla el intento, así que no puede ser blocking: false`);
+    } else if (a.type === "conflict") {
+      if (a.after !== undefined) issue("after", `el agente "${a.name}" resuelve conflictos: corre al traer la rama base, antes de build, sin after`);
+      if (a.access !== undefined && a.access !== "write") issue("access", `el agente "${a.name}" resuelve conflictos: su access solo puede ser write`);
+      if (a.blocking === false) issue("blocking", `el agente "${a.name}" resuelve conflictos: no puede ser blocking: false`);
+      if (a.files !== undefined) issue("files", `el agente "${a.name}" resuelve conflictos: files solo vale con type: build`);
     } else {
       if (a.after !== undefined && a.after !== "review") issue("after", `un agente de revisión solo puede correr después de review; para escribir antes de verify usá type: build`);
       if (a.access !== undefined && a.access !== "read") issue("access", `un agente de revisión solo puede ser de lectura (access: read); para escribir usá type: build`);
@@ -212,11 +243,11 @@ export const CustomAgentSchema = z
     }
   })
   .transform((a) => {
-    const writes = a.type === "build";
+    const writes = a.type !== "review";
     return {
       ...a,
       instructions: a.instructions ?? `.zero/agents/${a.name}.md`,
-      after: (writes ? "build" : "review") as "build" | "review",
+      after: (a.type === "conflict" ? "conflict" : writes ? "build" : "review") as "build" | "review" | "conflict",
       access: (writes ? "write" : "read") as "write" | "read",
       blocking: writes || (a.blocking ?? true),
       files: a.files ?? [],
@@ -329,7 +360,7 @@ export const LineSchema = z.object({
     .optional(),
   /** Per-agent additions for this line only; unknown agents are refused. */
   stations: z
-    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema, unjam: LineSkillsSchema })
+    .object({ spec: LineSkillsSchema, build: LineSkillsSchema, review: LineSkillsSchema, security: LineSkillsSchema, reply: LineSkillsSchema, scout: LineSkillsSchema, research: ResearchLineSchema, unjam: LineSkillsSchema, recruit: LineSkillsSchema })
     .partial()
     .strict()
     .optional(),
@@ -423,6 +454,8 @@ export const FactorySchema = z
         research: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
         /** Diagnoses what holds the lines up while the factory is idle; read-only, never fixes anything itself. */
         unjam: stationSchema({ maxTurns: 40, timeoutMinutes: 15 }).prefault({}),
+        /** Looks on the web for public agents for the catalog while the factory is idle; read-only, never adds or installs anything. */
+        recruit: stationSchema({ maxTurns: 40, timeoutMinutes: 20 }).prefault({}),
       })
       .prefault({}),
     /** Absent: on, at any hour the factory is idle. */
@@ -430,7 +463,9 @@ export const FactorySchema = z
     /** Absent: on, one note per line with a research skill per day. */
     research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
     /** Absent: on, with the night shift's gates, at most two jobs a day. */
-    unjam: UnjamSchema.default({ maxJobsPerDay: 2 }),
+    unjam: UnjamSchema.default({ maxJobsPerDay: 2, urgentAfterHours: 2 }),
+    /** Absent: on, with the night shift's gates, once a week, at most three findings a run. */
+    recruit: RecruitSchema.default({ everyDays: 7, perPass: 3 }),
     /** Absent: on, with the default texts. */
     signature: SignatureSchema.default({ text: DEFAULT_SIGNATURE_TEXT, trailer: DEFAULT_SIGNATURE_TRAILER }),
 
@@ -464,7 +499,14 @@ export const FactorySchema = z
       .optional(),
     townhall: z.object({ recallLimit: z.number().int().min(0).default(30) }).prefault({}),
     /** The control panel, served by the daemon; port 0 turns it off. Inside a container, 0.0.0.0 lets compose publish it. */
-    panel: z.object({ port: z.number().int().min(0).max(65535).default(4848), host: z.string().min(1).default("127.0.0.1") }).prefault({}),
+    panel: z
+      .object({
+        port: z.number().int().min(0).max(65535).default(4848),
+        host: z.string().min(1).default("127.0.0.1"),
+        /** A Cloudflare named tunnel's fixed public hostname; its token is the secret CLOUDFLARE_TUNNEL_TOKEN, never the file. */
+        tunnel: z.object({ hostname: TunnelHostname }).strict().optional(),
+      })
+      .prefault({}),
     /** Custom agents for every line, before each line's own. */
     agents: z.array(CustomAgentSchema).default([]),
     /** Installed agent packages; what they bring is loaded by `src/packages.ts`, never written here. */
@@ -627,7 +669,7 @@ export function customAgentChain(config: Pick<FactoryConfig, "engine" | "fallbac
 }
 
 /** Every station that runs an agent, in line order. */
-export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam"];
+export const AGENT_STATIONS: readonly StationName[] = ["spec", "build", "review", "security", "reply", "scout", "research", "unjam", "recruit"];
 
 /** How far the night shift goes on its own on a line: the line's own setting, else the global one. */
 export function lineAutonomy(config: Pick<FactoryConfig, "nightShift">, line: Pick<LineConfig, "nightShift">): Autonomy {

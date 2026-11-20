@@ -1,17 +1,18 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ingestEgress } from "./box/network.js";
 import { boxAvailability, readBoxStatus, type BoxStatus } from "./box/status.js";
 import { AGENT_ACCESS, agentInstructions, createAgentRunner, type AgentRunner } from "./agent.js";
 import { syncAutostart, type AutostartDeps, type AutostartResult } from "./autostart.js";
 import type { Access } from "./engines/index.js";
+import { CATALOG_STATUSES, type CatalogEntry } from "./catalog.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
-import { billedUsd, budgetState, type BudgetState, type PlanWindow } from "./budget.js";
+import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
@@ -25,27 +26,30 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, readSelfUpdate, type SelfUpdateEntry } from "./self-update.js";
-import { describeDelivery, finalizeJob, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps } from "./line/finish.js";
+import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
+import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
+import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsKey, securityAlertsProblemKey } from "./intake/keys.js";
 import type { AlertEntry } from "./intake/security-alerts.js";
-import { checksOutageKey, githubMerges, type ChecksBilling, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia } from "./line/automerge.js";
+import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
-import { jobStage } from "./line/spec.js";
+import { jobStage, type Spec } from "./line/spec.js";
 import { readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, formatEgressSites, jobName, jobOrigin } from "./format.js";
+import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
-import { REMOTE_KEY, REMOTE_URL_KEY } from "./panel/tunnel.js";
+import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
+import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
-import { tryGit } from "./shell.js";
+import { spawnGit, tryGit } from "./shell.js";
+import { checkedOutAt } from "./workspace.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
@@ -425,6 +429,8 @@ export interface FactoryStatus {
   billing: BillingHold[];
   /** The causes of each line's last unjam diagnosis (see `unjamPass`). */
   jams: JamView[];
+  /** The integration trains under way, one per line (see `startTrain`). */
+  trains: TrainView[];
   /** The installed copy of zero, only while it misses merged commits or a rebuild (see `checkInstall`). */
   install?: InstallFreshness;
   /** The GitHub quota, only while it is low or the factory's passes are paused. */
@@ -446,6 +452,8 @@ export interface FactoryStatus {
   stationRuns: ({ station: string } & StationRunRecord)[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
+  /** The panel's tunnel health, only while kv `panel.remote` is on; `hostname` with a fixed subdomain configured. */
+  tunnel?: TunnelState & { hostname?: string };
   /** The self-update, only when it is on or has a history: the last update, a problem not told by it, and a version waiting to switch. */
   selfUpdate?: SelfUpdateStatus;
   daemon: DaemonInfo;
@@ -540,6 +548,8 @@ export interface JamView {
   /** Its unjam proposal while it waits for the person in charge. */
   proposal?: string;
   todo?: string;
+  /** Who has to do the `todo`. */
+  who?: NonNullable<Cause["who"]>;
   /** When the line was diagnosed. */
   at: string;
 }
@@ -561,9 +571,30 @@ export function jamViews(ctx: FactoryContext): JamView[] {
         ...(job && !FINAL_STATUSES.includes(job.status) && { job: job.id }),
         ...(proposal?.status === "pending" && { proposal: proposal.id }),
         ...(c.todo && { todo: c.todo }),
+        ...(c.todo && { who: c.who ?? "owner" }),
         at: diagnosis.at,
       };
     });
+  });
+}
+
+/** A line's integration train as the person in charge sees it: how many pull requests, the head and how it is doing. */
+export interface TrainView {
+  line: string;
+  pulls: number;
+  head: string;
+  why?: string;
+  block?: Train["block"];
+}
+
+/** Every train under way, with what its head's last look said. */
+export function trainViews(ctx: FactoryContext): TrainView[] {
+  return allTrains(ctx).flatMap((t) => {
+    const head = t.entries[0];
+    if (!head) return [];
+    const raw = ctx.store.getKv(mergeKey(head.job));
+    const why = raw ? (JSON.parse(raw) as MergeState).why : undefined;
+    return [{ line: t.line, pulls: t.entries.length, head: head.url, ...(why && { why }), ...(t.block && { block: t.block }) }];
   });
 }
 
@@ -600,6 +631,8 @@ export interface SelfUpdateStatus {
   last?: SelfUpdateEntry;
   problem?: string;
   ready?: { from: string; to: string };
+  /** A commit that failed for the machine and is tried again at `at`. */
+  retry?: SelfUpdateRetry;
 }
 
 /** What the self-update has to tell; nothing while it is off and never ran. */
@@ -612,12 +645,17 @@ export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefi
     ...(last && { last }),
     ...(problem && { problem }),
     ...(state.status === "ready" && state.from && state.to && { ready: { from: state.from, to: state.to } }),
+    ...(state.retry && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
   };
 }
 
 export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   readGate(ctx);
-  const now = (ctx.now ?? (() => new Date()))();
+  return storedStatus(ctx, (ctx.now ?? (() => new Date()))());
+}
+
+/** `factoryStatus` from the stored state alone: it does not move the gate's records into the store first. */
+function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
@@ -634,6 +672,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     outages,
     billing,
     jams: jamViews(ctx),
+    trains: trainViews(ctx),
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
     ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [] }),
@@ -648,6 +687,7 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
+    ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
     selfUpdate: selfUpdateStatus(ctx),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
@@ -658,6 +698,13 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
     waiting: ctx.store.listJobs({ status: ["waiting"] }),
     recent: ctx.store.finishedSince(new Date(now.getTime() - 7 * 86_400_000)).slice(-5).reverse(),
   };
+}
+
+/** The tunnel's recorded health plus the fixed hostname; a remote panel the daemon has not opened yet reads as a disconnected tunnel. */
+function tunnelStatus(ctx: FactoryContext): TunnelState & { hostname?: string } {
+  const hostname = ctx.config.panel.tunnel?.hostname;
+  const state = readTunnelState(ctx.store) ?? { mode: "quick" as const, failures: 0 };
+  return { ...state, ...(hostname && { hostname }) };
 }
 
 export interface AgentGuide {
@@ -735,24 +782,24 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
   const unmerged = status.merges.filter((m) => m.status === "blocked");
   const autonomous = (j: Job) => j.source?.kind === "night-shift" && Boolean(j.source.autonomy);
   const finished = ctx.store
-    .listJobs({ status: [...FINAL_STATUSES], limit: 10_000 })
+    .listJobs({ status: [...FINAL_STATUSES], limit: -1 })
     .filter((j) => j.source?.kind === "night-shift" && j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())
     .reverse();
   const night = {
     proposals: ctx.store.listProposals({ status: ["pending"], since: from }),
-    built: ctx.store.listJobs({ status: ["waiting"], limit: 10_000 }).filter((j) => autonomous(j) && awaitsIntegration(j)),
+    built: ctx.store.listJobs({ status: ["waiting"], limit: -1 }).filter((j) => autonomous(j) && awaitsIntegration(j)),
     integrated: finished.filter((j) => autonomous(j) && j.status === "delivered"),
     jobs: finished.filter((j) => !(autonomous(j) && j.status === "delivered")),
   };
   const research = ctx.store.listResearchNotes({ since: from }).filter((n) => n.createdAt <= to.toISOString());
   const packages = ctx.store
-    .listJobs({ limit: 10_000 })
+    .listJobs({ limit: -1 })
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
-  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates);
+  return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry, status.trains);
 }
 
 /** Research notes of the last `days` days (7 by default), newest first; of one line when given. */
@@ -993,7 +1040,7 @@ export interface MonitorView {
 }
 
 /** The fixed agents the monitor always shows, even without activity. */
-const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam"];
+const MONITOR_AGENTS = ["spec", "build", "verify", "review", "security", "scout", "research", "unjam", "recruit"];
 const OPEN_PR_GONE = new Set<MergeState["status"]>(["merged", "closed", "expired"]);
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1114,6 +1161,268 @@ export function monitorView(ctx: FactoryContext, period: MonitorPeriod, now = ne
         }).length,
       };
     }),
+  };
+}
+
+/** The stations a job's dot travels in the control room, in order. */
+export const CONTROL_STATIONS = ["spec", "build", "verify", "review", "security", "integrate"] as const;
+export type ControlStation = (typeof CONTROL_STATIONS)[number];
+/** The control room's colours: ok green, warn yellow, bad red, run cyan; idle has no neon. */
+export type ControlTone = "ok" | "warn" | "bad" | "run" | "idle";
+
+export const DAEMON_TEXT: Record<DaemonState, string> = { running: "en marcha", unresponsive: "no responde", stopped: "apagado", crashed: "se cayó" };
+const DAEMON_TONE: Record<DaemonState, ControlTone> = { running: "ok", unresponsive: "warn", stopped: "warn", crashed: "bad" };
+const FINAL_TONE: Partial<Record<JobStatus, ControlTone>> = { delivered: "ok", failed: "bad", stopped: "warn" };
+
+export interface ControlEvent {
+  at: string;
+  kind: "created" | "station" | "delivered" | "failed" | "merged";
+  job?: string;
+  line?: string;
+  /** The station it entered, for `station` events. */
+  station?: ControlStation;
+  /** The merged pull request, for `merged` events. */
+  url?: string;
+}
+
+export interface ControlDot {
+  job: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  /** Its station, or `queued` at the entrance while it has none. */
+  at: ControlStation | "queued";
+  tone: ControlTone;
+}
+
+export interface ControlDecision {
+  job: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  at: string;
+  tone: ControlTone;
+}
+
+/** A line's last 24 hours in hourly buckets, oldest first; the last one ends now. */
+export interface ControlSeries {
+  line: string;
+  jobs: number[];
+  attempts: number[];
+  costUsd: number[];
+  /** Average verify time of the bucket, 0 without one. */
+  verifyMs: number[];
+}
+
+export interface ControlBusRow {
+  row: string;
+  kind: "engine" | "agent";
+  /** Each call placed in the window: `left` and `width` as fractions of it. */
+  segments: { start: string; end?: string; left: number; width: number; tone: ControlTone }[];
+}
+
+export interface ControlTraceRow {
+  end: string;
+  name: string;
+  job?: string;
+  status?: SpanRow["status"];
+  ms: number;
+  costUsd?: number;
+}
+
+export interface ControlEngine {
+  engine: string;
+  billing: BudgetState["engines"][number]["billing"];
+  windows: { label: string; percent: number }[];
+  paused: boolean;
+  until?: string;
+  reason?: string;
+  tone: ControlTone;
+}
+
+export interface ControlAlert {
+  kind: "jam" | "outage" | "billing" | "merge" | "security" | "andon" | "budget" | "daemon";
+  text: string;
+  tone: "bad";
+}
+
+/** The panel's "Sala de control": the whole factory at a glance, from the stored state. */
+export interface ControlRoomView {
+  now: string;
+  /** Local `HH:MM:SS` of `now`. */
+  clock: string;
+  topbar: {
+    queued: number;
+    running: number;
+    waiting: number;
+    delivered: number;
+    failed: number;
+    spentUsd: number;
+    estimatedUsd: number;
+    daemon: DaemonState;
+    daemonText: string;
+    daemonTone: ControlTone;
+  };
+  /** The last 24 hours, newest first, at most `CONTROL_EVENTS`. */
+  events: ControlEvent[];
+  dots: ControlDot[];
+  decisions: ControlDecision[];
+  series: ControlSeries[];
+  bus: { from: string; to: string; rows: ControlBusRow[] };
+  trace: ControlTraceRow[];
+  engines: ControlEngine[];
+  alerts: ControlAlert[];
+}
+
+const HOUR_MS = 3_600_000;
+export const CONTROL_EVENTS = 40;
+const CONTROL_DECISIONS = 20;
+const CONTROL_TRACE = 20;
+const BUS_MS = 6 * HOUR_MS;
+
+const clockText = (d: Date) => [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+const spanCost = (s: SpanRow) => (typeof s.attrs["zero.cost.usd"] === "number" ? (s.attrs["zero.cost.usd"] as number) : undefined);
+
+/**
+ * The panel's "Sala de control" tab. Read-only: built from jobs, spans and kv
+ * as they are, without asking GitHub, reading the gate or writing anything.
+ */
+export function controlRoomView(ctx: FactoryContext, now = new Date()): ControlRoomView {
+  const s = storedStatus(ctx, now);
+  const t = now.getTime();
+  const dayAgo = t - 24 * HOUR_MS;
+  const within = (iso: string | undefined, from = dayAgo) => iso !== undefined && Date.parse(iso) >= from && Date.parse(iso) <= t;
+  const jobs = ctx.store.listJobs({ limit: -1 });
+  const byId = new Map(jobs.map((j) => [j.id, j]));
+  // Spans that started a day before the window still end inside it.
+  const spans = ctx.store.spansSinceAny(new Date(dayAgo - 24 * HOUR_MS)).filter((sp) => Date.parse(sp.start) <= t);
+
+  const events: ControlEvent[] = [];
+  for (const j of jobs) {
+    if (within(j.createdAt)) events.push({ at: j.createdAt, kind: "created", job: j.id, line: j.line });
+    if ((j.status === "delivered" || j.status === "failed") && within(j.finishedAt)) events.push({ at: j.finishedAt!, kind: j.status, job: j.id, line: j.line });
+  }
+  for (const sp of spans) {
+    const station = sp.name.startsWith("zero.station.") ? sp.name.slice("zero.station.".length) : undefined;
+    if (station && sp.jobId && (CONTROL_STATIONS as readonly string[]).includes(station) && within(sp.start))
+      events.push({ at: sp.start, kind: "station", job: sp.jobId, line: byId.get(sp.jobId)?.line, station: station as ControlStation });
+    if (sp.name === "zero.merge" && sp.end && within(sp.end)) {
+      const url = sp.attrs["zero.merge.url"];
+      events.push({ at: sp.end, kind: "merged", ...(sp.jobId && { job: sp.jobId, line: byId.get(sp.jobId)?.line }), ...(typeof url === "string" && { url }) });
+    }
+  }
+  events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+
+  const dots = [...s.running, ...s.waiting, ...s.queued].map((job): ControlDot => {
+    const at = lineRow(ctx, job).at;
+    return {
+      job: job.id,
+      line: job.line,
+      title: jobName(job),
+      status: job.status,
+      at: at && (CONTROL_STATIONS as readonly string[]).includes(at) ? (at as ControlStation) : "queued",
+      tone: job.status === "running" ? "run" : job.status === "waiting" ? "warn" : "idle",
+    };
+  });
+  const decisions = jobs
+    .filter((j) => FINAL_STATUSES.includes(j.status) && within(j.finishedAt))
+    .sort((a, b) => Date.parse(b.finishedAt!) - Date.parse(a.finishedAt!))
+    .slice(0, CONTROL_DECISIONS)
+    .map((j): ControlDecision => ({ job: j.id, line: j.line, title: jobName(j), status: j.status, at: j.finishedAt!, tone: FINAL_TONE[j.status] ?? "idle" }));
+
+  // Bucket 23 holds the last hour, ending now.
+  const bucket = (iso: string) => 23 - Math.floor((t - Date.parse(iso)) / HOUR_MS);
+  const series = ctx.config.lines.map((l): ControlSeries => {
+    const own = (id: string | undefined) => id !== undefined && byId.get(id)?.line === l.name;
+    const zeros = () => Array.from({ length: 24 }, () => 0);
+    const out = { line: l.name, jobs: zeros(), attempts: zeros(), costUsd: zeros(), verifyMs: zeros() };
+    for (const j of jobs) if (j.line === l.name && within(j.createdAt)) out.jobs[bucket(j.createdAt)]!++;
+    const verify: number[][] = Array.from({ length: 24 }, () => []);
+    for (const sp of spans) {
+      if (!own(sp.jobId)) continue;
+      if (sp.name === "zero.attempt" && within(sp.start)) out.attempts[bucket(sp.start)]!++;
+      if (sp.name === AGENT_SPAN && within(sp.start)) out.costUsd[bucket(sp.start)]! += spanCost(sp) ?? 0;
+      if (sp.name === "zero.station.verify" && sp.end && !sp.attrs["zero.skipped"] && within(sp.end)) verify[bucket(sp.end)]!.push(spanMs(sp));
+    }
+    out.verifyMs = verify.map((ms) => average(ms) ?? 0);
+    return out;
+  });
+
+  const busFrom = t - BUS_MS;
+  const rows = new Map<string, ControlBusRow>();
+  const place = (row: string, kind: ControlBusRow["kind"], sp: SpanRow) => {
+    const r = rows.get(`${kind}:${row}`) ?? { row, kind, segments: [] };
+    const start = Math.max(busFrom, Date.parse(sp.start));
+    const end = sp.end ? Math.min(t, Date.parse(sp.end)) : t;
+    r.segments.push({ start: sp.start, ...(sp.end && { end: sp.end }), left: (start - busFrom) / BUS_MS, width: Math.max(0, end - start) / BUS_MS, tone: !sp.end ? "run" : sp.status === "error" ? "bad" : "ok" });
+    rows.set(`${kind}:${row}`, r);
+  };
+  for (const sp of spans) {
+    if (sp.name !== AGENT_SPAN || (sp.end && Date.parse(sp.end) < busFrom)) continue;
+    const engine = String(sp.attrs["zero.engine"] ?? "");
+    const agent = String(sp.attrs["gen_ai.agent.name"] ?? "");
+    if (engine) place(engine, "engine", sp);
+    if (agent) place(agent, "agent", sp);
+  }
+  const busRows = [...rows.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "engine" ? -1 : 1));
+
+  const trace = spans
+    .filter((sp) => sp.end && within(sp.end))
+    .sort((a, b) => Date.parse(b.end!) - Date.parse(a.end!))
+    .slice(0, CONTROL_TRACE)
+    .map((sp): ControlTraceRow => {
+      const cost = spanCost(sp);
+      return { end: sp.end!, name: sp.name, ...(sp.jobId && { job: sp.jobId }), ...(sp.status && { status: sp.status }), ms: spanMs(sp), ...(cost !== undefined && { costUsd: cost }) };
+    });
+
+  const engines = s.budget.engines.map((e): ControlEngine => ({
+    engine: e.engine,
+    billing: e.billing,
+    windows: s.budget.windows.filter((w) => w.engine === e.engine).map((w) => ({ label: w.label, percent: Math.round((w.utilization ?? 0) * 100) })),
+    paused: e.paused,
+    ...(e.until && { until: e.until }),
+    ...(e.reason && { reason: e.reason }),
+    tone: e.paused ? "bad" : "ok",
+  }));
+
+  const daemon = s.daemon.state ?? "stopped";
+  const alert = (kind: ControlAlert["kind"], text: string): ControlAlert => ({ kind, text, tone: "bad" });
+  const alerts = [
+    ...(s.andon ? [alert("andon", "Andon encendido: la fábrica no empieza trabajo nuevo")] : []),
+    ...(daemon !== "running" ? [alert("daemon", `Daemon ${DAEMON_TEXT[daemon]}`)] : []),
+    ...(s.budget.reached ? [alert("budget", `Presupuesto alcanzado${s.budget.reason ? `: ${s.budget.reason}` : ""}`)] : []),
+    ...s.jams.map((j) => alert("jam", jamLine(j))),
+    ...s.outages.map((o) => alert("outage", outageLine(o))),
+    ...s.billing.map((b) => alert("billing", billingLine(b))),
+    ...s.merges.filter((m) => m.status === "blocked").map((m) => alert("merge", `Pull request bloqueado: ${m.url}${m.why ? ` · ${m.why}` : ""}`)),
+    ...s.securityAlerts.map((a) =>
+      alert("security", `${a.line}: ${a.alerts.length} ${a.alerts.length === 1 ? "alerta de seguridad abierta" : "alertas de seguridad abiertas"}${a.problem ? ` · ${a.problem}` : ""}`),
+    ),
+  ];
+
+  return {
+    now: now.toISOString(),
+    clock: clockText(now),
+    topbar: {
+      queued: s.queued.length,
+      running: s.running.length,
+      waiting: s.waiting.length,
+      delivered: s.today.delivered,
+      failed: s.today.failed,
+      spentUsd: s.budget.spentUsd,
+      estimatedUsd: s.budget.estimatedUsd,
+      daemon,
+      daemonText: DAEMON_TEXT[daemon],
+      daemonTone: DAEMON_TONE[daemon],
+    },
+    events: events.slice(0, CONTROL_EVENTS),
+    dots,
+    decisions,
+    series,
+    bus: { from: new Date(busFrom).toISOString(), to: now.toISOString(), rows: busRows },
+    trace,
+    engines,
+    alerts,
   };
 }
 
@@ -1248,8 +1557,11 @@ const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line
   return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
 
-/** The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. */
-function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
+/**
+ * The delivered job whose pull request is `target`: a job id or a GitHub pull request URL. A URL of a line's
+ * repository the factory delivered nothing for gives its line instead; one of no line's repository is refused.
+ */
+function deliveredPullRequest(ctx: FactoryContext, target: string): Job | { line: LineConfig; url: string } {
   const wanted = pullRequestOf(target.trim());
   if (!wanted) {
     const job = getJob(ctx, target.trim());
@@ -1261,22 +1573,198 @@ function deliveredPullRequest(ctx: FactoryContext, target: string): Job {
     const pr = url ? pullRequestOf(url) : undefined;
     return pr !== undefined && pr.number === wanted.number && pr.repository.toLowerCase() === wanted.repository.toLowerCase();
   };
-  const job = ctx.store.listJobs({ status: ["delivered"], limit: 1000 }).find((j) => same(j.delivery?.url));
-  if (!job) throw new Error(`La fábrica no entregó el pull request ${wanted.repository}#${wanted.number}: solo fundo los que entregó ella.`);
-  return job;
+  const job = ctx.store.listJobs({ status: ["delivered"], limit: -1 }).find((j) => same(j.delivery?.url));
+  if (job) return job;
+  const line = ctx.config.lines.find((l) => lineRepository(l)?.toLowerCase() === wanted.repository.toLowerCase());
+  if (!line) throw new Error(`El pull request ${wanted.repository}#${wanted.number} no es de un repositorio de ninguna línea: no lo fundo.`);
+  return { line, url: `https://github.com/${lineRepository(line)}/pull/${wanted.number}` };
 }
 
 /**
  * Merges a pull request the factory delivered because the person in charge asked for it (CLI, chat or panel),
- * with or without `autoMerge` on its line, only when GitHub says it is ready.
+ * with or without `autoMerge` on its line, only when GitHub says it is ready. An open pull request of a line's
+ * repository that the factory did not deliver is merged the same way, pinned to the head read, writing no job.
  */
 export async function mergePullRequest(ctx: FactoryContext, target: string, opts: { via: MergeVia; api?: MergeApiFactory }): Promise<MergeOutcome> {
-  const job = deliveredPullRequest(ctx, target);
+  const found = deliveredPullRequest(ctx, target);
+  if (!("id" in found)) {
+    const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(found.url)!.repository, found.line);
+    if (!gh) return { url: found.url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
+    return mergeForeignRequested(ctx, found.url, gh, opts.via);
+  }
+  const job = found;
   const url = job.delivery!.url!;
   const line = ctx.config.lines.find((l) => l.name === job.line);
   const gh = (opts.api ?? directMerges(ctx))(pullRequestOf(url)!.repository, line);
   if (!gh) return { job: job.id, url, merged: false, why: "sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN" };
   return mergeRequested(ctx, job, gh, opts.via);
+}
+
+/** The spec zero writes itself for a pull request it takes: no model reads the pull request to write it. */
+function adoptionSpec(number: number, branch: string, base: string): Spec {
+  return {
+    feasible: true,
+    reason: "",
+    title: `Actualizar el pull request #${number} con ${base}`,
+    summary: `La rama ${branch} del pull request #${number} queda con ${base} mezclada, sin conflictos y con la verificación en verde, en el mismo pull request.`,
+    capability: "pull-request-update",
+    requirements: [
+      {
+        name: `La rama del pull request #${number} contiene ${base}`,
+        text: `The branch ${branch} SHALL contain ${base}, without conflict markers, keeping the intent of both sides, and MUST pass the line's verify commands.`,
+        scenarios: [{ name: "Mezcla de la base", when: `${base} is merged into ${branch}`, then: "the branch has no conflict markers, contains both tips and verify passes" }],
+      },
+    ],
+    tasks: [`Resolve the conflicts of merging ${base} into ${branch}, keeping the intent of the pull request and of ${base}.`],
+    risks: [],
+    learnings: [],
+    followUps: [],
+  };
+}
+
+/**
+ * Takes an open pull request of a line's GitHub repository, made by anyone, to update it with its base the way
+ * zero updates its own: its branch is fetched as a local branch at the pull request's head, a backup branch
+ * `respaldo/pr<N>` is left at that head, and a queued job with a spec written by zero and the `prRefreshKey` mark
+ * merges the base, resolves the conflicts at build and pushes to the same branch, opening nothing.
+ * Every refusal comes before anything is written.
+ */
+export async function adoptPullRequest(ctx: FactoryContext, input: { line: string; number: number; api?: MergeApiFactory }): Promise<Job> {
+  const line = findLine(ctx.config, input.line);
+  const number = input.number;
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`"${number}" no es un número de pull request.`);
+  if (line.integrate !== "pull-request") throw new Error(`La línea ${line.name} no integra por pull request: no tomo pull requests en ella.`);
+  const repository = lineRepository(line);
+  if (!repository) throw new Error(`El remoto ${line.remote} de la línea ${line.name} no está en GitHub.`);
+  const gh = (input.api ?? directMerges(ctx))(repository, line);
+  if (!gh) throw new Error("Sin acceso a GitHub: iniciá sesión con `gh auth login` o definí GH_TOKEN.");
+  let pr: PullRequestState;
+  try {
+    pr = await gh.pullRequest(number);
+  } catch (err) {
+    throw new Error(`No pude leer el pull request #${number} de ${repository}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (pr.merged || !pr.open) throw new Error(`El pull request #${number} de ${repository} no está abierto${pr.merged ? ": ya se fundió" : ""}.`);
+  if (!pr.headRepository || pr.headRepository.toLowerCase() !== repository.toLowerCase()) throw new Error(`La rama del pull request #${number} no está en ${repository} (viene de un fork): no puedo subir a ella.`);
+  if (pr.base !== line.baseBranch) throw new Error(`El pull request #${number} va a ${pr.base ?? "otra rama"}, no a ${line.baseBranch}, la rama base de la línea ${line.name}.`);
+  const branch = pr.headRef ?? "";
+  const head = pr.headSha;
+  if (!branch || branch.startsWith("-") || tryGit(["check-ref-format", "--branch", branch], line.repo) === undefined) throw new Error(`La rama del pull request #${number} tiene un nombre que no acepto.`);
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new Error(`GitHub no dio un commit válido para el pull request #${number}.`);
+  const taken = ctx.store.listJobs({ line: line.name, limit: -1 }).find((j) => (!FINAL_STATUSES.includes(j.status) || j.status === "delivered") && (j.branch === branch || j.delivery?.branch === branch));
+  if (taken) throw new Error(`La rama ${branch} ya es del trabajo ${taken.id}.`);
+  if (checkedOutAt(line.repo, branch)) throw new Error(`La rama ${branch} está abierta en una copia de trabajo de ${line.repo}: cerrala antes.`);
+  const ref = (name: string) => tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`], line.repo);
+  const local = ref(branch);
+  if (local && local !== head) throw new Error(`Ya hay una rama local ${branch} en otro commit (${local.slice(0, 8)}): no la piso.`);
+  const fetched = spawnGit(["fetch", "-q", line.remote, `refs/heads/${branch}`, line.baseBranch], line.repo, { timeout: 120_000 });
+  if (fetched.status !== 0 || tryGit(["cat-file", "-e", `${head}^{commit}`], line.repo) === undefined) {
+    throw new Error(`No pude traer la rama ${branch} del pull request #${number} en ${head.slice(0, 8)}: ${(fetched.stderr || String(fetched.error ?? "el commit no llegó")).trim().slice(0, 300)}`);
+  }
+
+  // The backup goes first, so whatever comes after can be undone by hand; one left at another commit is never moved.
+  const backup = `respaldo/pr${number}`;
+  const backupAt = ref(backup);
+  if (!backupAt) git(["update-ref", `refs/heads/${backup}`, head, ""], line.repo);
+  if (!local) git(["update-ref", `refs/heads/${branch}`, head, ""], line.repo);
+  const url = `https://github.com/${repository}/pull/${number}`;
+  const base = `${line.remote}/${line.baseBranch}`;
+  const spec = adoptionSpec(number, branch, base);
+  return ctx.store.transaction(() => {
+    const { job } = requestWork(ctx, {
+      line: line.name,
+      text: `Actualizar el pull request #${number} de ${repository} (${url}): mezclar ${base} en su rama ${branch}, resolver los conflictos conservando la intención del pull request y subirlo a la misma rama, sin abrir otro.`,
+      source: { kind: "pull-request", repository, number, url },
+    });
+    if (backupAt && backupAt !== head) git(["update-ref", `refs/heads/${backup}-${job.id}`, head, ""], line.repo);
+    ctx.store.setKv(prRefreshKey(job.id), JSON.stringify({ head } satisfies PrRefresh));
+    return ctx.store.updateJob(job.id, {
+      title: spec.title,
+      spec,
+      branch,
+      base,
+      checkpoint: "review",
+      station: "integrate",
+      delivery: { mode: "pull-request", branch, url, ...(line.autoMerge && { autoMerge: true }) },
+    });
+  });
+}
+
+/**
+ * `zero tren`: starts the integration train of a line with its delivered pull requests not merged yet, oldest
+ * delivery first, or with the ones given, in that order. The daemon then merges them one at a time (see
+ * `advanceTrains`), even on a line without `autoMerge`, and only when `mergeDecision` says so. A number given
+ * that the factory did not deliver is adopted (`adoptPullRequest`) and merged only at the head its job verified
+ * (`pinTrainHead`, once verify and the reviews passed), never at the head read at adoption.
+ * The line's refusals come before anything is written; a refused adoption writes no train.
+ */
+export async function startTrain(ctx: FactoryContext, input: { line: string; numbers?: string[]; api?: MergeApiFactory }): Promise<Train> {
+  const line = findLine(ctx.config, input.line);
+  if (line.integrate !== "pull-request") throw new Error(`La línea ${line.name} no integra por pull request: no armo un tren en ella.`);
+  if (readTrain(ctx, line.name)) throw new Error(`La línea ${line.name} ya tiene un tren en marcha.`);
+  const repository = lineRepository(line);
+  if (!repository) throw new Error(`El remoto ${line.remote} de la línea ${line.name} no está en GitHub.`);
+  const open = ctx.store.listJobs({ line: line.name, status: ["delivered"], limit: -1 }).filter((j) => {
+    const pr = j.delivery?.url ? pullRequestOf(j.delivery.url) : undefined;
+    if (!pr || pr.repository.toLowerCase() !== repository.toLowerCase()) return false;
+    const raw = ctx.store.getKv(mergeKey(j.id));
+    const status = raw ? (JSON.parse(raw) as MergeState).status : "waiting";
+    return status === "waiting" || status === "blocked";
+  });
+  const entries: Train["entries"] = [];
+  // An adopted pull request carries only a head its job verified: one adopted now gets it once its job passes.
+  const entryOf = (j: Job): TrainEntry => {
+    const head = j.source?.kind === "pull-request" ? verifiedHead(ctx, j.id) : undefined;
+    return { job: j.id, url: j.delivery!.url!, ...(head && { head }) };
+  };
+  if (input.numbers?.length) {
+    for (const given of input.numbers) if (!/^#?\d+$/.test(given)) throw new Error(`"${given}" no es un número de pull request.`);
+    const numbers = [...new Set(input.numbers.map((given) => Number(given.replace("#", ""))))];
+    for (const number of numbers) {
+      const job = open.find((j) => pullRequestOf(j.delivery!.url!)!.number === number);
+      if (job) {
+        entries.push(entryOf(job));
+        continue;
+      }
+      // One the factory did not deliver is adopted, and merged only at the head zero verifies for it.
+      const adopted = await adoptPullRequest(ctx, { line: line.name, number, api: input.api });
+      entries.push({ job: adopted.id, url: adopted.delivery!.url! });
+    }
+  } else {
+    for (const j of [...open].sort((a, b) => Date.parse(a.finishedAt ?? a.updatedAt) - Date.parse(b.finishedAt ?? b.updatedAt))) entries.push(entryOf(j));
+  }
+  if (!entries.length) throw new Error(`La línea ${line.name} no tiene pull requests entregados sin fundir.`);
+  const train: Train = { line: line.name, repository, entries, startedAt: (ctx.now ?? (() => new Date()))().toISOString() };
+  ctx.store.setKv(trainKey(line.name), JSON.stringify(train));
+  log.info("train of a line started", { line: line.name, pulls: train.entries.map((e) => e.url) });
+  return train;
+}
+
+export interface Adoption {
+  number: string;
+  job?: Job;
+  why?: string;
+}
+
+/** `zero actualizar-pr`: adopts each pull request in the order given; a refusal is told and the rest still go. */
+export async function adoptPullRequests(ctx: FactoryContext, input: { line: string; numbers: string[]; api?: MergeApiFactory }): Promise<Adoption[]> {
+  const out: Adoption[] = [];
+  for (const number of input.numbers) {
+    try {
+      if (!/^#?\d+$/.test(number)) throw new Error(`"${number}" no es un número de pull request.`);
+      out.push({ number, job: await adoptPullRequest(ctx, { line: input.line, number: Number(number.replace("#", "")), api: input.api }) });
+    } catch (err) {
+      out.push({ number, why: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
+}
+
+/** Runs git in a repository, throwing its error. */
+function git(args: string[], cwd: string): string {
+  const r = spawnGit(args, cwd, { timeout: 60_000 });
+  if (r.status !== 0) throw new Error(`git ${args[0]} falló: ${(r.stderr || String(r.error ?? "")).trim().slice(0, 300)}`);
+  return r.stdout.trim();
 }
 
 export function trace(ctx: FactoryContext, id: string): string {
@@ -1361,9 +1849,9 @@ function lineRow(ctx: FactoryContext, job: Job): LineRow {
 
   const final = FINAL_STATUSES.includes(job.status);
   const setupOpen = spans.some((sp) => sp.name === "zero.setup" && !sp.end);
-  // Until the line view shows a line's custom agents, their pieces sit where they run: those that write at build, the reviewers at security.
+  // Until the line view shows a line's custom agents, their pieces sit where they run: those that write (conflict resolvers too) at build, the reviewers at security.
   const line = ctx.config.lines.find((l) => l.name === job.line);
-  const writing = line && lineAgents(ctx.config, line).some((a) => a.type === "build" && a.name === job.station);
+  const writing = line && lineAgents(ctx.config, line).some((a) => a.type !== "review" && a.name === job.station);
   const station = job.station && ((LINE_STATIONS as readonly string[]).includes(job.station) ? (job.station as LineStation) : writing ? "build" : "security");
   const here: LineStation | undefined = job.status === "waiting" ? (job.question && WAITING_AT[job.question.kind]) ?? station : (station ?? (setupOpen ? "setup" : undefined));
   // The last station an attempt reached carries the attempt's failure, since verify and the reviews end well and report.
@@ -1589,6 +2077,141 @@ export function setRemotePanel(ctx: FactoryContext, on: boolean) {
   else ctx.store.deleteKv(REMOTE_KEY);
 }
 
+/** Turns the remote chat (MCP over HTTP with OAuth, through the panel's tunnel) on or off; only the owner's terminal calls it. */
+export function setRemoteMcp(ctx: Pick<FactoryContext, "store">, on: boolean) {
+  if (on) ctx.store.setKv(REMOTE_MCP_KEY, "on");
+  else ctx.store.deleteKv(REMOTE_MCP_KEY);
+}
+
+export function remoteMcpOn(ctx: Pick<FactoryContext, "store">): boolean {
+  return ctx.store.getKv(REMOTE_MCP_KEY) === "on";
+}
+
+/** The remote chat clients with a live connection, for the panel and `zero mcp clients`. */
+export function remoteChatClients(ctx: Pick<FactoryContext, "store">, now = new Date()): ConnectedClient[] {
+  return connectedClients(ctx.store, now);
+}
+
+/** Revokes a remote chat client and every token it holds; false when there is no such client. */
+export function revokeRemoteChatClient(ctx: Pick<FactoryContext, "store">, client: string): boolean {
+  return revokeClient(ctx.store, client.trim());
+}
+
+/** What the panel's `/remote-chat` page and `zero mcp clients` show: the switch, the address chats connect to, clients and held actions. */
+export interface RemoteChatView {
+  on: boolean;
+  /** `<tunnel>/mcp`, only while the panel's tunnel is open. */
+  url?: string;
+  /** The open address is the configured `https://<panel.tunnel.hostname>`, so it survives restarts. */
+  stable: boolean;
+  clients: ConnectedClient[];
+  pending: PendingRemoteAction[];
+}
+
+export function remoteChatView(ctx: Pick<FactoryContext, "store"> & Partial<Pick<FactoryContext, "config">>, now = new Date()): RemoteChatView {
+  const tunnel = ctx.store.getKv(REMOTE_URL_KEY);
+  const hostname = ctx.config?.panel.tunnel?.hostname;
+  return {
+    on: remoteMcpOn(ctx),
+    ...(tunnel && { url: `${tunnel.replace(/\/+$/, "")}/mcp` }),
+    stable: !!hostname && tunnel?.replace(/\/+$/, "") === `https://${hostname}`,
+    clients: remoteChatClients(ctx, now),
+    pending: pendingRemoteActions(ctx, now),
+  };
+}
+
+export const PENDING_PREFIX = "mcp-pending:";
+export const PENDING_TTL_MS = 15 * 60_000;
+
+/** A delicate action a remote chat asked for, held until the person in charge confirms it. */
+export type RemoteAction =
+  | { tool: "zero_merge"; args: { target: string } }
+  | { tool: "zero_stop"; args: { job?: string } }
+  | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
+  | { tool: "zero_egress_block"; args: { site: string } }
+  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
+
+export type PendingRemoteAction = RemoteAction & { id: string; client?: string; clientName?: string; createdAt: string; expiresAt: string; text: string };
+
+/** What a held action would do, in the owner's words. */
+export function describeRemoteAction(a: RemoteAction): string {
+  switch (a.tool) {
+    case "zero_merge":
+      return `fundir el pull request de ${a.args.target}`;
+    case "zero_stop":
+      return a.args.job ? `detener el trabajo ${a.args.job}` : "detener toda la fábrica";
+    case "zero_proposal_decide":
+      return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
+    case "zero_egress_block":
+      return `bloquear ${a.args.site} para la caja`;
+    case "zero_answer":
+      return `aprobar los archivos protegidos del trabajo ${a.args.job}`;
+  }
+}
+
+/** Holds a remote chat's delicate action (kv `mcp-pending:<id>`) instead of running it. */
+export function holdRemoteAction(ctx: Pick<FactoryContext, "store">, action: RemoteAction, client?: string, now = new Date()): PendingRemoteAction {
+  const id = randomBytes(4).toString("hex");
+  const known = client ? getClient(ctx.store, client) : undefined;
+  const held: PendingRemoteAction = {
+    ...action,
+    id,
+    ...(client && { client }),
+    ...(known && { clientName: known.name }),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + PENDING_TTL_MS).toISOString(),
+    text: describeRemoteAction(action),
+  };
+  ctx.store.setKv(PENDING_PREFIX + id, JSON.stringify(held));
+  return held;
+}
+
+/** The held actions still in time, oldest first; expired ones are dropped. */
+export function pendingRemoteActions(ctx: Pick<FactoryContext, "store">, now = new Date()): PendingRemoteAction[] {
+  const out: PendingRemoteAction[] = [];
+  for (const [key, raw] of ctx.store.kvWithPrefix(PENDING_PREFIX)) {
+    let held: PendingRemoteAction | undefined;
+    try {
+      held = JSON.parse(raw) as PendingRemoteAction;
+    } catch {
+      held = undefined;
+    }
+    if (!held || Date.parse(held.expiresAt) <= now.getTime()) ctx.store.deleteKv(key);
+    else out.push(held);
+  }
+  return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * Runs a held action once the person in charge confirmed it, through the same operations as the CLI. The record is
+ * removed before running, so a second confirmation does nothing; an expired one is only told.
+ */
+export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts: { now?: Date; merges?: MergeApiFactory } = {}): Promise<{ ok: boolean; text: string }> {
+  const key = PENDING_PREFIX + id.trim();
+  const raw = /^[0-9a-f]{8}$/.test(id.trim()) ? ctx.store.getKv(key) : undefined;
+  if (!raw) return { ok: false, text: `No hay ninguna acción pendiente ${id.trim()}: ya se confirmó, venció o no existe.` };
+  ctx.store.deleteKv(key);
+  const held = JSON.parse(raw) as PendingRemoteAction;
+  const now = opts.now ?? new Date();
+  if (Date.parse(held.expiresAt) <= now.getTime()) return { ok: false, text: `La acción pendiente ${held.id} (${held.text}) venció sin confirmarse: no se hizo nada.` };
+  const subscription = () => onSubscription(ctx.store, ctx.config.engine);
+  switch (held.tool) {
+    case "zero_merge":
+      return { ok: true, text: formatMerge(await mergePullRequest(ctx, held.args.target, { via: "chat", ...(opts.merges && { api: opts.merges }) })) };
+    case "zero_stop": {
+      const r = await stop(ctx, held.args.job);
+      return { ok: true, text: r.factory ? "Fábrica detenida: nada nuevo empieza hasta que la reanudes." : formatJob(r.job!, { subscription: subscription() }) };
+    }
+    case "zero_proposal_decide":
+      if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
+      return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };
+    case "zero_egress_block":
+      return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
+    case "zero_answer":
+      return { ok: true, text: formatJob(await answer(ctx, held.args.job, held.args.decision, held.args.note), { subscription: subscription() }) };
+  }
+}
+
 /** Turns a line's GitHub issue intake on (with its label) or off, keeping the file's comments. */
 export async function setIssueIntake(ctx: FactoryContext, input: { line?: string; on: boolean; label?: string }): Promise<{ line: string; label?: string }> {
   const line = findLine(ctx.config, input.line);
@@ -1700,7 +2323,7 @@ export interface AgentListEntry {
   /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
   origin: "factory" | "line" | "package";
   /** `build`: it writes, between build and verify. `review`: read-only, after security. */
-  type: "review" | "build";
+  type: "review" | "build" | "conflict";
   /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
   files: string[];
   blocking: boolean;
@@ -1720,12 +2343,18 @@ export function agentList(ctx: FactoryContext, lineName?: string): LineAgentList
   const targets = lineName ? [findLine(ctx.config, lineName)] : ctx.config.lines;
   return targets.map((line) => ({
     line: line.name,
-    // Those that write run first, whatever the file's order between the two types.
-    agents: [...lineAgents(ctx.config, line).filter((a) => a.type === "build"), ...lineAgents(ctx.config, line).filter((a) => a.type === "review")].map((a) => {
+    // Conflict resolvers first (they run when the base is merged, before build), then those that write, then the reviewers, whatever the file's order.
+    agents: (["conflict", "build", "review"] as const).flatMap((type) => lineAgents(ctx.config, line).filter((a) => a.type === type)).map((a) => {
       const path = agentInstructionsPath(a, line.repo, dirname(ctx.home.config));
       return { name: a.name, origin: a.origin, type: a.type, files: a.files, blocking: a.blocking, path, missing: !existsSync(path) };
     }),
   }));
+}
+
+/** The agent catalog, proposed entries first, then listed, added and rejected, each oldest first. */
+export function agentCatalog(ctx: FactoryContext): CatalogEntry[] {
+  const order = (e: CatalogEntry) => CATALOG_STATUSES.indexOf(e.status);
+  return ctx.store.listCatalog().sort((a, b) => order(a) - order(b));
 }
 
 const agentTemplate = (name: string, blocking: boolean) => `# Agent: ${name}
@@ -1756,19 +2385,35 @@ You are the "${name}" agent of this project. You run after zero's build station 
 - If you end abnormally, zero discards your changes and the attempt goes back to build.
 `;
 
+const conflictTemplate = (name: string) => `# Agent: ${name}
+
+You are the "${name}" agent of this project, a conflict resolver. zero calls you when merging the base branch into a job's branch leaves conflicted files, before build. You get the job's request and specification, each conflicted file with its conflict blocks and the base commits that caused them, as data. You write in the work copy, where the merge is in progress.
+
+## What to do
+- Describe here how this project resolves its conflicts (for example which side wins in generated files, lock files or translations).
+- For each conflicted file, keep the intent of both sides and leave no conflict markers.
+
+## Rules
+- Do not commit, abort the merge, push or change branches: zero checks your work and commits the merge.
+- Answer for every file: \`resolved\`, or \`returned\` with the reason when you cannot resolve it safely.
+- If you return a file or end abnormally, zero discards your changes and build resolves the conflict.
+`;
+
 /**
  * Adds a custom agent to a line: creates its instructions from a template in
  * the line's repository (never overwriting them) and adds it to the factory
  * file, keeping the file's comments.
  */
-export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean; type?: string; files?: string[] }): Promise<string> {
+export async function addAgent(ctx: FactoryContext, input: { name: string; line: string; blocking?: boolean; type?: string; files?: string[]; instructions?: string }): Promise<string> {
   const name = input.name.trim();
   const blocking = input.blocking ?? true;
   const type = input.type ?? "review";
   const files = input.files ?? [];
-  if (type !== "review" && type !== "build") throw new Error(`El tipo "${type}" no existe: usá review o build.`);
+  if (type !== "review" && type !== "build" && type !== "conflict") throw new Error(`El tipo "${type}" no existe: usá review, build o conflict.`);
   if (type === "build" && !blocking) throw new Error("Un agente que escribe no puede ser informativo: si falla, falla el intento.");
+  if (type === "conflict" && !blocking) throw new Error("Un agente que resuelve conflictos no puede ser informativo: si devuelve un archivo, build resuelve el conflicto.");
   if (type === "review" && files.length) throw new Error("--archivos solo vale con --tipo build: un agente de revisión corre en cada trabajo.");
+  if (type === "conflict" && files.length) throw new Error("--archivos solo vale con --tipo build: un agente que resuelve conflictos corre cuando hay conflictos al traer la base.");
   if (files.some((f) => !f.trim())) throw new Error("Los patrones de --archivos no pueden estar vacíos.");
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`El nombre "${name}" no sirve para un agente: usá minúsculas, dígitos y guiones.`);
   if ((FIXED_STATIONS as readonly string[]).includes(name)) throw new Error(`"${name}" es una estación fija de zero; elegí otro nombre para el agente.`);
@@ -1777,22 +2422,111 @@ export async function addAgent(ctx: FactoryContext, input: { name: string; line:
   const index = ctx.config.lines.findIndex((l) => l.name === line.name);
   const instructions = `.zero/agents/${name}.md`;
   const path = join(line.repo, instructions);
+  // Given instructions never replace someone else's file, nor take it as theirs.
+  if (input.instructions !== undefined && existsSync(path)) throw new Error(`Ya existe ${path}: no lo piso. Borralo o elegí otro nombre para el agente.`);
   await mkdir(dirname(path), { recursive: true });
   let created = true;
   try {
-    await writeFile(path, type === "build" ? writerTemplate(name) : agentTemplate(name, blocking), { flag: "wx" });
+    await writeFile(path, input.instructions ?? (type === "build" ? writerTemplate(name) : type === "conflict" ? conflictTemplate(name) : agentTemplate(name, blocking)), { flag: "wx" });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST" || input.instructions !== undefined) throw err;
     created = false;
   }
-  const entry = type === "build" ? { name, type, ...(files.length && { files }) } : { name, blocking };
+  const entry = type === "build" ? { name, type, ...(files.length && { files }) } : type === "conflict" ? { name, type } : { name, blocking };
   ctx.config = await editConfig(ctx, (doc) => {
     const node = doc.createNode(entry);
     if (doc.hasIn(["lines", index, "agents"])) doc.addIn(["lines", index, "agents"], node);
     else doc.setIn(["lines", index, "agents"], doc.createNode([entry]));
   });
-  const kind = type === "build" ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}` : blocking ? "bloqueante" : "informativo";
+  const kind =
+    type === "build"
+      ? `tipo build, escribe entre build y verify${files.length ? `, solo si el cambio toca ${files.join(", ")}` : ""}`
+      : type === "conflict"
+        ? "tipo conflict, resuelve conflictos al traer la rama base, antes de build"
+        : blocking
+          ? "bloqueante"
+          : "informativo";
   return `Agente ${name} agregado a la línea ${line.name} (${kind}). ${created ? `Escribí sus instrucciones en ${path}.` : `Usa las instrucciones que ya estaban en ${path}.`}`;
+}
+
+export const THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.md";
+
+/** What adding a catalog entry to a line would write, once every check passed. */
+export interface CatalogAddPlan {
+  entry: CatalogEntry;
+  line: string;
+  /** The instructions file, inside the line's repository. */
+  path: string;
+  /** Its exact content. */
+  content: string;
+  /** True when the entry brings instructions, which are copied and credited in THIRD-PARTY-NOTICES.md. */
+  copied: boolean;
+}
+
+/** The instructions file of a catalog entry: a header naming where it came from, then its text (or zero's template when it brings none). */
+export function catalogInstructions(entry: CatalogEntry): string {
+  const header = `# Agent: ${entry.name}\n\n> From ${entry.source} (license ${entry.license}), added from zero's agent catalog after review on ${entry.reviewedAt.slice(0, 10)}. Third-party text; credit in ${THIRD_PARTY_NOTICES}.\n`;
+  const body = entry.instructions.trim() || (entry.type === "build" ? writerTemplate(entry.name) : entry.type === "conflict" ? conflictTemplate(entry.name) : agentTemplate(entry.name, true)).replace(/^# Agent: .*\n\n/, "");
+  return `${header}\n${body.trimEnd()}\n`;
+}
+
+/** Checks that a catalog entry can be added to a line and says what it would write; throws, in Spanish, when it cannot. Writes nothing. */
+export function catalogAddPlan(ctx: FactoryContext, input: { id: string; line: string }): CatalogAddPlan {
+  const entry = ctx.store.getCatalogEntry(input.id);
+  if (!entry) throw new Error(`No hay un agente ${input.id} en el catálogo.`);
+  if (entry.status === "rejected") throw new Error(`El agente ${entry.name} (${entry.id}) fue rechazado: no se suma desde el catálogo.`);
+  if (entry.status === "added") throw new Error(`El agente ${entry.name} (${entry.id}) ya se sumó a la línea ${entry.line ?? "que lo pidió"}.`);
+  const line = findLine(ctx.config, input.line);
+  if (line.package) throw new Error(`La línea ${line.name} es del paquete ${line.package}: no se le suman agentes del catálogo.`);
+  if (lineAgents(ctx.config, line).some((a) => a.name === entry.name)) throw new Error(`La línea ${line.name} ya tiene un agente "${entry.name}".`);
+  const path = join(line.repo, `.zero/agents/${entry.name}.md`);
+  if (existsSync(path)) throw new Error(`Ya existe ${path}: no lo piso. Borralo o quitá el agente antes de sumarlo desde el catálogo.`);
+  return { entry, line: line.name, path, content: catalogInstructions(entry), copied: entry.instructions.trim() !== "" };
+}
+
+/** Adds the credit block of a source to the line's THIRD-PARTY-NOTICES.md, once per source. */
+async function addNotice(repo: string, entry: CatalogEntry): Promise<void> {
+  const path = join(repo, THIRD_PARTY_NOTICES);
+  const current = existsSync(path) ? await readFile(path, "utf8") : "";
+  if (current.split(/\r?\n/).includes(`- Source: ${entry.source}`)) return;
+  const head = current ? (current.endsWith("\n") ? current : `${current}\n`) : "# Third-party notices\n\nText in this repository that comes from third parties, with its source and license.\n";
+  await writeFile(path, `${head}\n## ${entry.name}\n\n- Source: ${entry.source}\n- License: ${entry.license}\n- Copied into: .zero/agents/${entry.name}.md\n`);
+}
+
+/**
+ * Adds a catalog entry to a line through `addAgent`, only once the owner
+ * confirmed after reading what would be written; without a `confirm` (no
+ * terminal) the answer is no and nothing is written.
+ */
+export async function addFromCatalog(ctx: FactoryContext, input: { id: string; line: string; confirm?: Confirm; say?: (text: string) => void }): Promise<{ added: boolean; text: string }> {
+  const plan = catalogAddPlan(ctx, input);
+  const { entry } = plan;
+  input.say?.(
+    [
+      `${entry.name}: ${entry.description}`,
+      `Tipo: ${entry.type} · Fuente: ${entry.source} · Licencia: ${entry.license} · Motores: ${entry.engines.join(", ") || "sin dato"}`,
+      `Voy a escribir ${plan.path} con esto:`,
+      "",
+      plan.content,
+      plan.copied ? `y a dar crédito a la fuente en ${THIRD_PARTY_NOTICES}, en la raíz del repositorio de la línea ${plan.line}.` : "",
+    ].join("\n"),
+  );
+  if (!(input.confirm && (await input.confirm(`¿Sumo ${entry.name} a la línea ${plan.line}?`)))) return { added: false, text: "No sumé nada." };
+  const line = findLine(ctx.config, plan.line);
+  await addAgent(ctx, { name: entry.name, line: line.name, type: entry.type, instructions: plan.content });
+  if (plan.copied) await addNotice(line.repo, entry);
+  ctx.store.decideCatalogEntry(entry.id, { status: "added", line: line.name, from: ["listed", "proposed"] });
+  return { added: true, text: `Agente ${entry.name} sumado a la línea ${line.name} (${entry.type}). Sus instrucciones están en ${plan.path}${plan.copied ? `, con crédito en ${THIRD_PARTY_NOTICES}` : ""}.` };
+}
+
+/** Marks a listed or proposed catalog entry as rejected, with the owner's reason; it is never added nor found again. */
+export function rejectCatalogEntry(ctx: FactoryContext, input: { id: string; note?: string }): string {
+  const entry = ctx.store.getCatalogEntry(input.id);
+  if (!entry) throw new Error(`No hay un agente ${input.id} en el catálogo.`);
+  const note = input.note?.trim();
+  if (!ctx.store.decideCatalogEntry(entry.id, { status: "rejected", from: ["listed", "proposed"], ...(note && { note }) }))
+    throw new Error(`El agente ${entry.name} (${entry.id}) ya está ${entry.status === "added" ? "agregado" : "rechazado"}.`);
+  return `Agente ${entry.name} rechazado: no vuelve a proponerse.`;
 }
 
 /** Takes a custom agent out of a line's configuration; its instructions file stays. */

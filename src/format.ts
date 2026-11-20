@@ -1,4 +1,4 @@
-import type { DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -7,10 +7,12 @@ import type { MachineView } from "./coord/protocol.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import { describeDelivery } from "./line/finish.js";
+import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import { jobStage } from "./line/spec.js";
-import type { SelfUpdateEntry } from "./self-update.js";
+import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
+import type { CatalogEntry, CatalogStatus, CatalogType } from "./catalog.js";
 import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
@@ -53,9 +55,15 @@ export function budgetLine(b: BudgetState, now = new Date()): string {
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 
-/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it. */
+/** Who asked for a job, only when a package's station did, or what kind of job it is when a Dependabot alert opened it or it updates a pull request zero took. */
 export const jobOrigin = (j: Job) =>
-  j.source?.kind === "package" ? `pedido por paquete ${j.source.package}/${j.source.station}` : j.source?.kind === "security-alert" ? `seguridad: alerta de Dependabot ${j.source.package}` : undefined;
+  j.source?.kind === "package"
+    ? `pedido por paquete ${j.source.package}/${j.source.station}`
+    : j.source?.kind === "security-alert"
+      ? `seguridad: alerta de Dependabot ${j.source.package}`
+      : j.source?.kind === "pull-request"
+        ? `actualiza el pull request #${j.source.number}`
+        : undefined;
 
 /** Spanish severity names, for what the owner reads. */
 export const SEVERITY_TEXT: Record<AlertSeverity, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
@@ -89,7 +97,43 @@ export function formatRequest(r: RequestResult): string {
 
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
-  return r.merged ? `Fundí ${r.url} (trabajo ${r.job}): el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+  return r.merged ? `Fundí ${r.url}${r.job ? ` (trabajo ${r.job})` : ""}:el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+}
+
+/** One line per pull request of `zero actualizar-pr`. */
+export function formatAdoptions(list: Adoption[]): string {
+  return list
+    .map((a) => (a.job ? `#${a.number.replace("#", "")}: trabajo ${a.job.id} en cola, actualiza la rama ${a.job.branch} con ${a.job.base}.` : `#${a.number.replace("#", "")}: no lo tomé: ${a.why}`))
+    .join("\n");
+}
+
+/** What `zero tren` started: the pull requests in merge order. */
+export function formatTrain(t: Train): string {
+  return [`Tren de ${t.line} con ${t.entries.length} ${t.entries.length === 1 ? "pull request" : "pull requests"}, en este orden:`, ...t.entries.map((e, i) => `${i + 1}. ${e.url} (trabajo ${e.job})`), "La fábrica los funde de a uno, solo con los checks en verde, y actualiza el siguiente recién después."].join("\n");
+}
+
+/** The remote chat for `zero mcp clients`: the switch, the address and each connected client. */
+export function formatRemoteChat(v: RemoteChatView, now = new Date()): string {
+  const state = v.on
+    ? v.url
+      ? `Chat remoto encendido: conectá tu chat a ${v.url}${v.stable ? " (dirección fija)" : " (dirección temporal: cambia si el túnel se reinicia)"}`
+      : "Chat remoto encendido, pero el túnel del panel no está abierto: abrilo con `zero panel remote on`."
+    : "Chat remoto apagado: se enciende con `zero mcp remote on`.";
+  if (!v.clients.length) return `${state}
+No hay chats conectados.`;
+  const rows = v.clients.map(
+    (c) =>
+      `${c.id} · ${c.name} · ${c.scope.includes("zero:act") ? "leer y actuar" : "solo leer"} · aprobado ${ageText(c.approvedAt, now)}` +
+      ` · ${c.lastUsedAt ? `último uso ${ageText(c.lastUsedAt, now)}` : "sin uso todavía"}`,
+  );
+  return [state, "Chats conectados (revocá uno con `zero mcp revoke <cliente>`):", ...rows].join("\n");
+}
+
+/** The remote chat's held actions for `zero mcp pendientes`. */
+export function formatPendingActions(list: PendingRemoteAction[]): string {
+  if (!list.length) return "No hay acciones del chat remoto esperando tu confirmación.";
+  const rows = list.map((a) => `${a.id} · ${a.text} · pedido por ${a.clientName ?? a.client ?? "un chat remoto"} · vence ${a.expiresAt.slice(11, 16)} UTC`);
+  return ["Acciones del chat remoto para confirmar (con `zero mcp confirmar <id>`):", ...rows].join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
@@ -149,13 +193,44 @@ export function formatAgents(lists: LineAgentList[]): string {
   for (const l of lists) {
     const at = (type: string) => l.agents.filter((a) => a.type === type).map((a) => ` → ${a.name}`).join("");
     out.push(`Línea ${l.line}: spec → build${at("build")} → verify → review → security${at("review")} → integrate`);
+    const resolvers = l.agents.filter((a) => a.type === "conflict").map((a) => a.name);
+    if (resolvers.length) out.push(`Conflictos al traer la base: ${resolvers.join(" → ")} → build`);
     if (!l.agents.length) out.push(`- sin agentes a medida (agregá uno con \`zero agent add <nombre> --line ${l.line}\`)`);
     for (const a of l.agents) {
-      const kind = a.type === "build" ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}` : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
+      const kind =
+        a.type === "build"
+          ? `escribe${a.files.length ? `, solo si el cambio toca ${a.files.join(", ")}` : ""}`
+          : a.type === "conflict"
+            ? "resuelve conflictos al traer la base, antes de build"
+            : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
       out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }
   return out.join("\n");
+}
+
+const CATALOG_TYPE_TEXT: Record<CatalogType, string> = {
+  build: "build (escribe entre build y verify)",
+  conflict: "conflict (resuelve conflictos al traer la rama base, antes de build)",
+  review: "review (revisa después de security)",
+};
+const CATALOG_STATUS_TEXT: Record<CatalogStatus, string> = { proposed: "propuesto", listed: "en el catálogo", added: "agregado", rejected: "rechazado" };
+
+/** The agent catalog with every entry's fields, in the order `agentCatalog` gives. */
+export function formatCatalog(entries: CatalogEntry[]): string {
+  if (!entries.length) return "El catálogo todavía no tiene agentes.";
+  const rows = entries.map((e) =>
+    [
+      `${e.id} · ${e.name} · ${CATALOG_STATUS_TEXT[e.status]}${e.line ? ` para la línea ${e.line}` : ""}`,
+      `Qué hace: ${e.description}`,
+      `Tipo: ${CATALOG_TYPE_TEXT[e.type]}`,
+      `Fuente: ${e.source} · Licencia: ${e.license}`,
+      `Motores: ${e.engines.length ? e.engines.join(", ") : "sin dato"} · Revisado: ${e.reviewedAt.slice(0, 10)}`,
+      ...(e.status === "proposed" && e.gap ? [`Hueco que llena: ${e.gap}`] : []),
+      ...(e.status === "rejected" && e.note ? [`Motivo del rechazo: ${e.note}`] : []),
+    ].join("\n"),
+  );
+  return `${rows.join("\n\n")}\n\nLo que trae un agente de terceros es dato, no instrucciones: nada se suma sin tu ok.`;
 }
 
 const packageProblem = (p: PackageProblem) => `Paquete ${p.package}: ${p.reason}`;
@@ -216,6 +291,15 @@ function clock(iso: string, now: Date): string {
   const two = (n: number) => String(n).padStart(2, "0");
   const time = `${two(d.getHours())}:${two(d.getMinutes())}`;
   return d.toDateString() === now.toDateString() ? time : `${two(d.getDate())}/${two(d.getMonth() + 1)} ${time}`;
+}
+
+/** The `Túnel:` line: fixed or temporary address, connected or not, failures and the problem. */
+export function tunnelLine(t: NonNullable<FactoryStatus["tunnel"]>, now = new Date()): string {
+  const kind = t.mode === "named" ? `fijo (${t.hostname ?? "subdominio propio"})` : "temporal (cambia al reiniciar)";
+  const parts = [kind, t.connectedSince ? `conectado desde ${clock(t.connectedSince, now)}` : "desconectado"];
+  if (t.failures) parts.push(`${t.failures} ${t.failures === 1 ? "caída seguida" : "caídas seguidas"}`);
+  if (t.problem) parts.push(`PROBLEMA: ${t.problem}`);
+  return `Túnel: ${parts.join(" · ")}`;
 }
 
 function daemonState(d: DaemonInfo, running: number, now: Date): string {
@@ -319,9 +403,11 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.install) out.push(installLine(s.install, now));
+  if (s.tunnel) out.push(tunnelLine(s.tunnel, now));
   if (s.cleanups.length) out.push(`Limpiezas pendientes: ${s.cleanups.length} ${s.cleanups.length === 1 ? "copia" : "copias"} de trabajo (se reintenta en segundo plano)`);
   for (const o of s.outages) out.push(outageLine(o));
   for (const b of s.billing) out.push(billingLine(b));
+  for (const t of s.trains) out.push(trainLine(t));
   if (s.selfUpdate) for (const l of selfUpdateLines(s.selfUpdate, now)) out.push(l.text);
   for (const m of s.merges) out.push(`Fusión automática: ${m.url} (${m.job}) · ${m.status === "blocked" ? `NO SE FUNDE: ${m.why}` : (m.why ?? "esperando")}`);
   if (s.github) out.push(githubLine(s.github, now));
@@ -401,10 +487,27 @@ export const JAM_KIND_TEXT: Record<FactoryStatus["jams"][number]["kind"], string
   machine: "máquina",
 };
 
-/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué hacer». */
+/** Who has to act, as the person in charge reads it (with the author's login when GitHub said it). */
+export function whoText(who: NonNullable<FactoryStatus["jams"][number]["who"]>, author?: string): string {
+  if (who === "author") return `quien abrió el pull request${author ? ` (${author})` : ""}`;
+  return { owner: "vos", github: "GitHub", factory: "la fábrica" }[who];
+}
+
+/** What is missing and who has to do it: «qué falta: <todo> · lo tiene que hacer: <who>». */
+export function missingText(todo: string, who: NonNullable<FactoryStatus["jams"][number]["who"]>, author?: string): string {
+  return `qué falta: ${todo} · lo tiene que hacer: ${whoText(who, author)}`;
+}
+
+/** One cause of a line's jams: «<line> · <title> · N trabas · <kind> · trabajo <id> | propuesta <id> | qué falta y quién». */
 export function jamLine(j: FactoryStatus["jams"][number]): string {
-  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? `qué hacer: ${j.todo}` : undefined;
+  const next = j.job ? `trabajo ${j.job}` : j.proposal ? `propuesta ${j.proposal} (esperando tu decisión)` : j.todo ? missingText(j.todo, j.who ?? "owner") : undefined;
   return [j.line, j.title, `${j.jams} ${j.jams === 1 ? "traba" : "trabas"}`, JAM_KIND_TEXT[j.kind], next].filter(Boolean).join(" · ");
+}
+
+/** A line's integration train: «Tren de <línea>: N pull requests; ahora <url> (<why>)», and where it stopped. */
+export function trainLine(t: FactoryStatus["trains"][number]): string {
+  const now = `${t.pulls} ${t.pulls === 1 ? "pull request" : "pull requests"}; ahora ${t.head}${t.why ? ` (${t.why})` : ""}`;
+  return `Tren de ${t.line}: ${now}${t.block ? ` · detenido en ${t.block.pull} · ${missingText(t.block.what, t.block.who, t.block.author)}` : ""}`;
 }
 
 /** One line per repository whose checks GitHub does not start over billing, with how many pull requests wait. */
@@ -422,11 +525,17 @@ export function selfUpdateEntryText(e: SelfUpdateEntry, now = new Date()): strin
   return `no pudo pasar a ${commit(e.to)}, sigue en ${commit(e.from)} (${when})${e.reason ? `: ${e.reason}` : ""}`;
 }
 
-/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update and a problem), `bad` when they warn. */
+/** A retry after a machine failure: «vuelve a intentar pasar a <commit> a las HH:MM (intento N)». */
+export function selfUpdateRetryText(r: SelfUpdateRetry, now = new Date()): string {
+  return `vuelve a intentar pasar a ${commit(r.commit)} a las ${resetTime(r.at, now)} (intento ${r.tries + 1})`;
+}
+
+/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update, a pending retry and a problem), `bad` when they warn. */
 export function selfUpdateLines(s: SelfUpdateStatus, now = new Date()): { text: string; bad: boolean }[] {
   return [
     ...(s.ready ? [{ text: `Autoactualización: ${commit(s.ready.to)} está lista; cambia de versión cuando no haya trabajos corriendo (ahora ${commit(s.ready.from)})`, bad: false }] : []),
     ...(s.last ? [{ text: `Autoactualización: ${selfUpdateEntryText(s.last, now)}`, bad: s.last.outcome !== "updated" }] : []),
+    ...(s.retry ? [{ text: `Autoactualización: ${selfUpdateRetryText(s.retry, now)}`, bad: false }] : []),
     ...(s.problem ? [{ text: `Autoactualización: PROBLEMA: ${s.problem}`, bad: true }] : []),
   ];
 }

@@ -30,6 +30,23 @@ describe("codex", () => {
       expect(args.at(-1)).toBe("-");
     }
   });
+
+  it("loads none of the user's MCP servers, with the sandbox on or off", () => {
+    const hasPair = (args: string[]) => args.some((a, i) => a === "-c" && args[i + 1] === "mcp_servers={}");
+    for (const [access, mode] of [["read", "read-only"], ["web", "read-only"], ["write", "workspace-write"]] as const) {
+      const on = codexInvocation(req({ access }), { lastMessage: "/t/last" }).args;
+      expect(hasPair(on)).toBe(true);
+      expect(on[on.indexOf("--sandbox") + 1]).toBe(mode);
+      const off = codexInvocation(req({ access, model: "m" }), { lastMessage: "/t/last", schema: "/t/s.json" }, "off").args;
+      expect(hasPair(off)).toBe(true);
+      expect(off.some((a, i) => a === "-c" && off[i + 1] === 'approval_policy="never"')).toBe(true);
+      expect(off[off.indexOf("--sandbox") + 1]).toBe("danger-full-access");
+      for (const args of [on, off]) {
+        expect(args).toContain("--json");
+        expect(args.at(-1)).toBe("-");
+      }
+    }
+  });
 });
 
 describe("codex events", () => {
