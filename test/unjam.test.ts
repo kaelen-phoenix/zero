@@ -359,6 +359,33 @@ describe("fix jobs from unjam", () => {
     expect(unjamProposals(ctx)).toHaveLength(2);
   });
 
+  const refusedFix = async (finishedAt: Date, reason: string, again: Date) => {
+    const { ctx } = factory({ nightShift: { autonomy: "build" } });
+    const pr = blockedPr(ctx, 1);
+    const jams = collectJams(ctx, lineOf(ctx), at(3));
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, at(3));
+    const [first] = unjamProposals(ctx);
+    ctx.store.updateJob(first!.jobId!, { status: "failed", reason, finishedAt: finishedAt.toISOString() });
+    await unjamLine(ctx, lineOf(ctx), jams, diagnosing([fix({ jams: [`pr:${pr.id}`] })]).runner, again);
+    return { ctx, first: first! };
+  };
+
+  it("keeps the title for seven days when the earlier job was refused at spec", async () => {
+    const { ctx, first } = await refusedFix(at(4), `${SPEC_REFUSAL}: This is already done`, at(4, 0, 32));
+    expect(unjamProposals(ctx)).toHaveLength(1);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ proposal: first.id, job: first.jobId });
+  });
+
+  it("proposes again after seven days from a refusal at spec", async () => {
+    const { ctx } = await refusedFix(at(4), `${SPEC_REFUSAL}: This is already done`, at(4, 0, 37));
+    expect(unjamProposals(ctx)).toHaveLength(2);
+  });
+
+  it("proposes again at once when the earlier job failed at verify", async () => {
+    const { ctx } = await refusedFix(at(4), "verify falló", at(4, 0, 30));
+    expect(unjamProposals(ctx)).toHaveLength(2);
+  });
+
   it("drops a fix on protected paths or with new credentials", async () => {
     const { ctx } = factory({ nightShift: { autonomy: "build" }, limits: { protectedPaths: ["infra/**"] } });
     const pr = blockedPr(ctx, 1);
@@ -689,6 +716,18 @@ describe("missing capabilities", () => {
     expect(causes.map((c) => c.action)).toEqual(["none", "none"]);
     expect(causes[0]!.line).toBeUndefined();
     expect(causes[0]!.todo).toContain("Pedile a zero");
+  });
+
+  it("is not repeated while an earlier one refused at spec holds its title", async () => {
+    const { ctx } = factory({ lines: lines(), nightShift: { autonomy: "build" } });
+    const earlier = ctx.store.createProposal({ line: "zero", title: "Agregar exportar a PDF", why: "x", change: "y", estimatedUsd: 0, paths: [], origin: "unjam" });
+    const job = ctx.store.createJob({ line: "zero", kind: "request", request: "exportar a PDF", budgetUsd: 1 });
+    ctx.store.updateJob(job.id, { status: "failed", reason: `${SPEC_REFUSAL}: This is already done`, finishedAt: at(3, 0, 27).toISOString() });
+    ctx.store.updateProposal(earlier.id, { status: "approved", decidedBy: "night-shift", jobId: job.id });
+    const f = refused(ctx);
+    await unjamLine(ctx, tienda(ctx), collectJams(ctx, tienda(ctx), at(3)), diagnosing([capability({ jams: [`job:${f.id}`] })]).runner, at(3));
+    expect(onZero(ctx)).toHaveLength(1);
+    expect(readDiagnosis(ctx.store, "tienda")!.causes[0]).toMatchObject({ proposal: earlier.id, job: job.id });
   });
 
   it("does not repeat a pending proposal, and records it", async () => {
