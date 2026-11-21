@@ -7,6 +7,7 @@ import { runDaemon } from "../src/daemon.js";
 import { busyPass, packagesPass, stationLastKey } from "../src/line/packages.js";
 import { formatPackages, formatStatus } from "../src/format.js";
 import { log } from "../src/log.js";
+import { overviewPage, packagesPage } from "../src/panel/html.js";
 import { factoryConfig } from "../src/packages.js";
 import { recordSelfUpdate } from "../src/self-update.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
@@ -259,5 +260,32 @@ describe("zero package list and zero status", () => {
   it("status has no such line without them", async () => {
     const ctx = await factory(stationPackage().dir);
     expect(formatStatus(factoryStatus(ctx))).not.toContain(STATUS_LINE);
+  });
+});
+
+describe("the panel", () => {
+  it("the packages page marks a whenBusy station", async () => {
+    const ctx = await factory(stationPackage({ whenBusy: true }).dir);
+    const card = packagesPage(packageList(ctx), [], "n")
+      .split(`<div class="card">`)
+      .find((c) => c.startsWith("<h3>nota "));
+    expect(card).toContain(BUSY);
+  });
+
+  it("the packages page does not mark a plain station", async () => {
+    const ctx = await factory(stationPackage().dir);
+    expect(packagesPage(packageList(ctx), [], "n")).not.toContain(BUSY);
+  });
+
+  it("the summary names the whenBusy stations", async () => {
+    const ctx = await factory(stationPackage({ whenBusy: true }).dir);
+    const html = overviewPage(factoryStatus(ctx), [], "n");
+    expect(html).toContain(STATUS_LINE);
+    expect(html).toContain("hello/nota");
+  });
+
+  it("the summary has no such line without them", async () => {
+    const ctx = await factory(stationPackage().dir);
+    expect(overviewPage(factoryStatus(ctx), [], "n")).not.toContain("Estaciones que corren aunque la fábrica esté ocupada");
   });
 });

@@ -253,7 +253,7 @@ export type StationUploads = Record<string, { maxMb: number; extensions: string[
 /** One station of a package: its state, its last on-demand run and, when it takes them, the forms to ask for one and to upload a file. */
 function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean, uploads?: StationUploads[string]): string {
   const ref = `${pkg}/${s.name}`;
-  const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
+  const state = `${!s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
     ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
@@ -373,6 +373,7 @@ ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma lo
 ${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.onDemand.map((d) => `<p class="muted">Corrida a demanda de <b>${esc(d.station)}</b>: pendiente desde ${esc(resetTime(d.since))}.</p>`).join("")}
 ${s.onDemandRuns.map((r) => `<p class="muted">Corrida a demanda de <b>${esc(r.station)}</b>, pedida ${esc(resetTime(r.asked))}: ${r.outcome === "failed" || r.outcome === "timeout" || r.outcome === "not-run" || r.stale ? `<span class="bad">${esc(onDemandState(r))}</span>` : esc(onDemandState(r))}.</p>`).join("")}
+${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
