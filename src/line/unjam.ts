@@ -377,11 +377,25 @@ export async function publishLessons(ctx: FactoryContext, line: LineConfig, caus
   }
 }
 
-/** An unjam proposal that still holds its title: waiting, turned down, reverted, or approved with its job unfinished. */
-function holdsTitle(ctx: FactoryContext, p: Proposal): boolean {
+/** A failed job the spec station refused as something the line cannot do without help. */
+const refusedAtSpec = (job: Job | undefined): job is Job => job?.status === "failed" && !job.spec && (job.reason ?? "").startsWith(`${SPEC_REFUSAL}:`);
+
+/** Days an approved unjam proposal whose job was refused at spec keeps holding its title after the job finished. */
+export const REFUSED_HOLD_DAYS = 7;
+
+/**
+ * An unjam proposal that still holds its title at `now`: waiting, turned down, reverted, approved with its job
+ * unfinished, or approved with its job refused at spec less than REFUSED_HOLD_DAYS days ago. Any other final job
+ * releases it at once.
+ */
+function holdsTitle(ctx: FactoryContext, p: Proposal, now: Date): boolean {
   if (p.status !== "approved") return true;
   const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
-  return !!job && !FINAL_STATUSES.includes(job.status);
+  if (!job) return false;
+  if (!FINAL_STATUSES.includes(job.status)) return true;
+  if (!refusedAtSpec(job)) return false;
+  const finished = Date.parse(job.finishedAt ?? job.updatedAt);
+  return Number.isFinite(finished) && now.getTime() - finished < REFUSED_HOLD_DAYS * 86_400_000;
 }
 
 /**
@@ -391,7 +405,7 @@ function holdsTitle(ctx: FactoryContext, p: Proposal): boolean {
  * from the cause's jams. The cause records the proposal and its open job.
  */
 export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[], now: Date, jams: Jam[] = []): void {
-  const own = ctx.store.listProposals({ line: line.name }).filter((p) => p.origin === "unjam" && holdsTitle(ctx, p));
+  const own = ctx.store.listProposals({ line: line.name }).filter((p) => p.origin === "unjam" && holdsTitle(ctx, p, now));
   const byTitle = new Map(own.map((p) => [normalizeTitle(p.title), p]));
   for (const cause of causes) {
     if (cause.action !== "fix" || !cause.request) continue;
@@ -416,9 +430,6 @@ export function openFixes(ctx: FactoryContext, line: LineConfig, causes: Cause[]
     }
   }
 }
-
-/** A failed job the spec station refused as something the line cannot do without help. */
-const refusedAtSpec = (job: Job | undefined): job is Job => job?.status === "failed" && !job.spec && (job.reason ?? "").startsWith(`${SPEC_REFUSAL}:`);
 
 /** Jobs an unjam proposal still carries: waiting, or approved. Rejected and reverted ones let them go. */
 function carriedJobs(ctx: FactoryContext): Set<string> {
@@ -452,7 +463,7 @@ export function openCapabilities(ctx: FactoryContext, line: LineConfig, causes: 
       continue;
     }
     try {
-      const held = ctx.store.listProposals({ line: target.name }).find((p) => p.origin === "unjam" && holdsTitle(ctx, p) && normalizeTitle(p.title) === normalizeTitle(cause.title));
+      const held = ctx.store.listProposals({ line: target.name }).find((p) => p.origin === "unjam" && holdsTitle(ctx, p, now) && normalizeTitle(p.title) === normalizeTitle(cause.title));
       if (held) {
         if (held.status === "pending" || held.status === "approved") cause.proposal = held.id;
         if (held.status === "approved" && held.jobId) cause.job = held.jobId;
