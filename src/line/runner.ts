@@ -56,6 +56,8 @@ export interface RunnerDeps extends LedgerDeps {
   killLeftovers?: (folder: string) => number;
   /** With a distributed factory's protocol on: whether the job's claim is still this machine's, asked before every station. */
   holds?: () => Promise<boolean>;
+  /** With a distributed factory's protocol on: pushes the job's branch and progress at a checkpoint; `lost` when the job is another machine's now. */
+  pushProgress?: (job: Job, copy: WorkCopy) => Promise<"pushed" | "lost" | "skipped">;
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
@@ -79,6 +81,12 @@ async function ensureHolds(deps: RunnerDeps, span?: { end: (status: "error", att
   if (!deps.holds || (await deps.holds())) return;
   span?.end("error", { "error.message": "claim lost to another machine" });
   throw new Interrupted("lost");
+}
+
+/** Pushes the job's progress at a checkpoint, and stops it once it is another machine's; nothing without the protocol. */
+async function checkpointPush(deps: RunnerDeps, jobId: string, copy: WorkCopy): Promise<void> {
+  if (!deps.pushProgress) return;
+  if ((await deps.pushProgress(deps.store.getJob(jobId)!, copy)) === "lost") throw new Interrupted("lost");
 }
 
 /** The first preparation of a work copy failed, after its one new try. The job is not resumed: it would find the copy made and skip setup. */
@@ -246,6 +254,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       check();
       if (typeof outcome === "string") return await fail(outcome);
       job = reload();
+      await checkpointPush(deps, jobId, copy);
     }
     const flaggedAfterSpec = await egressStop(deps, jobId, level);
     if (flaggedAfterSpec) return flaggedAfterSpec;
@@ -283,6 +292,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     }
     check();
     await ensureHolds(deps);
+    await checkpointPush(deps, jobId, copy);
     job = store.updateJob(jobId, { station: "integrate" });
     const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
       copy.publish();
@@ -319,6 +329,11 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         return finalizeJob(deps, reload(), "stopped", { reason: LOST_TO_ANOTHER });
       }
       if (why === "quota") log.info("engine quota or credit used up; job back in the queue until it renews", { job: jobId });
+      // A shutdown on purpose leaves what is committed on the remote, so another machine can go on from there.
+      if (why === "shutdown" && opened && deps.pushProgress) {
+        const copy = opened;
+        await deps.pushProgress(reload(), copy).catch((e) => log.warn("pushing the job's progress at shutdown failed", { job: jobId, error: String(e) }));
+      }
       return store.updateJob(jobId, { status: "queued" });
     }
     if (err instanceof RefreshFailed) return fail(err.message);
@@ -1096,6 +1111,7 @@ async function buildLoop(
       // A verified stage is kept: its commits stay, and the next stage starts with fresh attempts.
       store.updateJob(jobId, { stagesDone: stageNo, attempt: 0, feedback: null, station: "build" });
       attemptSpan.end("ok", { "zero.stage": stageNo });
+      await checkpointPush(deps, jobId, copy);
       continue;
     }
 

@@ -20,9 +20,9 @@
 
 ## 4. Etapa 4: Subir el avance en cada checkpoint y al apagar
 
-- [ ] 4.1 push --force-with-lease contra el último sha propio, después de stillHolds, y progress/<job> por CAS
-- [ ] 4.2 Llamadas del runner después de la spec, de cada etapa verificada y antes de integrar
-- [ ] 4.3 Subir y soltar al apagar a propósito antes de liberar el lock, con tests sobre un remoto bare
+- [x] 4.1 push --force-with-lease contra el último sha propio, después de stillHolds, y progress/<job> por CAS
+- [x] 4.2 Llamadas del runner después de la spec, de cada etapa verificada y antes de integrar
+- [x] 4.3 Subir y soltar al apagar a propósito antes de liberar el lock, con tests sobre un remoto bare
 
 ## 5. Etapa 5: Retoma desde el último checkpoint y documentación
 

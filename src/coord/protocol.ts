@@ -44,6 +44,7 @@ export const claimRef = (job: string): string => `claims/${job}`;
 export const machineRef = (id: string): string => `machines/${id}`;
 export const probeRef = (id: string): string => `probe/${id}`;
 export const queueRef = (job: string): string => `queue/${job}`;
+export const progressRef = (job: string): string => `progress/${job}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 

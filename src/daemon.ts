@@ -11,6 +11,7 @@ import { githubCoord } from "./coord/github.js";
 import { coordPass, coordReady } from "./coord/pass.js";
 import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
 import { canTake, readQueued } from "./coord/queue.js";
+import { pushProgress } from "./coord/progress.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -50,6 +51,7 @@ import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
 import { FINAL_STATUSES, type Job } from "./state/store.js";
+import type { WorkCopy } from "./workspace.js";
 import { machineIdentity, type MachineIdentity } from "./machine.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
@@ -707,7 +709,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
                     return true;
                   })
               : undefined;
-          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability, ...(holds && { holds }) };
+          const pushes = coord && machine ? { pushProgress: (j: Job, copy: WorkCopy) => pushProgress({ api: coord, store, machine, repo: line.repo, now }, j, copy) } : undefined;
+          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability, ...(holds && { holds }), ...pushes };
           const done = runJob(job.id, deps, controller.signal)
             .then((end) => (coord && machine ? releaseAtEnd(coord, machine, end, controller.signal) : undefined))
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))
