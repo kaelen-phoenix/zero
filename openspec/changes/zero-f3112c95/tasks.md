@@ -8,9 +8,9 @@
 
 ## 2. Etapa 2: Tomar, comprobar y soltar en el daemon y el runner
 
-- [ ] 2.1 claimJob antes de runJob y releaseJob con el estado final, solo con coordReady
-- [ ] 2.2 Dep `holds` en el runner antes de cada estación y final como perdido sin tocar el origen
-- [ ] 2.3 Silenciar los reportes al origen de los trabajos terminados en otra máquina o perdidos, más sus tests
+- [x] 2.1 claimJob antes de runJob y releaseJob con el estado final, solo con coordReady
+- [x] 2.2 Dep `holds` en el runner antes de cada estación y final como perdido sin tocar el origen
+- [x] 2.3 Silenciar los reportes al origen de los trabajos terminados en otra máquina o perdidos, más sus tests
 
 ## 3. Etapa 3: Cola común con capacidades
 

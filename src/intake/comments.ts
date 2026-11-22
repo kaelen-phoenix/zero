@@ -6,7 +6,7 @@ import { answer, requestWork, type FactoryContext } from "../app.js";
 import { pickEngine } from "../budget.js";
 import type { LineConfig } from "../config.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
-import { describeDelivery, reasonForOthers } from "../line/finish.js";
+import { describeDelivery, endedElsewhere, reasonForOthers } from "../line/finish.js";
 import { log } from "../log.js";
 import { spawnGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
@@ -140,6 +140,8 @@ export async function answerComments(ctx: FactoryContext, line: LineConfig, repo
     const job = state.job ? ctx.store.getJob(state.job) : undefined;
     // Comments made while the job works wait until it ends or asks the owner.
     if (!job || !(FINAL_STATUSES.includes(job.status) || job.status === "waiting")) continue;
+    // Another machine of the factory has the job: its comments are that machine's to answer.
+    if (endedElsewhere(job)) continue;
     const number = Number(key.slice(key.lastIndexOf("#") + 1));
     try {
       await handle(ctx, line, repository, number, state, job, gh, runAgent, trusted);
