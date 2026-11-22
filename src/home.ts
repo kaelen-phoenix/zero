@@ -26,6 +26,8 @@ export interface FactoryHome {
   reports: string;
   /** Regeneration drills (see line/drill.ts): each one's copy and report, never in a repository. */
   drills: string;
+  /** Repositories zero creates on GitHub and clones for their lines (see project.ts), in `<line name>`. */
+  projects: string;
 }
 
 /** The official image sets ZERO_CONTAINER=1: no system keychain, and no falling back to local copies without the owner's say. */
@@ -49,5 +51,6 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     packageRepos: join(abs, "package-repos"),
     reports: join(abs, "reports"),
     drills: join(abs, "drills"),
+    projects: join(abs, "projects"),
   };
 }

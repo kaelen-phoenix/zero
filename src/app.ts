@@ -49,6 +49,8 @@ import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type Connect
 import { billingKey, lineServices, parseBillingRecord } from "./billing/records.js";
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { spawnGit, tryGit } from "./shell.js";
+import { detectCommands, slug } from "./init.js";
+import { creationErrorText, gitCloner, githubCreator, validRepositoryName, type CreatedRepository, type RepoCloner, type RepoCreator } from "./project.js";
 import { checkedOutAt } from "./workspace.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
@@ -2018,6 +2020,109 @@ export async function joinFactory(ctx: FactoryContext, repository: string, check
   if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.` };
   ctx.config = await editConfig(ctx, (doc) => doc.setIn(["distributed", "repository"], name));
   return { joined: true, text: `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.` };
+}
+
+export interface ProjectInput {
+  /** `nombre` or `cuenta/nombre`. */
+  name: string;
+  publico?: boolean;
+  /** The distributed factory's coordination repository: always private, no clone and no line. */
+  coordination?: boolean;
+  /** The first job's request on the new line. */
+  pedido?: string;
+  verify?: string[];
+  setup?: string[];
+  confirm?: Confirm;
+  say?: (text: string) => void;
+  create?: RepoCreator;
+  clone?: RepoCloner;
+  token?: () => string | undefined;
+}
+
+export interface ProjectResult {
+  ok: boolean;
+  /** Whether the repository exists on GitHub now, even when a later step failed. */
+  created: boolean;
+  text: string;
+  url?: string;
+  line?: string;
+  job?: string;
+}
+
+/**
+ * Creates a repository on GitHub, and then either clones it into ZERO_HOME as a
+ * new line (with its first job when there is a request) or, for coordination,
+ * joins this machine to it. Creating is visible from outside and hard to undo,
+ * so nothing reaches GitHub without `confirm` saying yes to the plan said first.
+ */
+export async function createProject(ctx: FactoryContext, input: ProjectInput): Promise<ProjectResult> {
+  const fail = (text: string): ProjectResult => ({ ok: false, created: false, text });
+  const name = input.name.trim();
+  if (!validRepositoryName(name)) return fail(`"${name}" no es un nombre de repositorio válido: usá nombre o cuenta/nombre, con letras, números, puntos, guiones y guiones bajos.`);
+  const coordination = Boolean(input.coordination);
+  if (coordination && input.publico) return fail("El repositorio de coordinación tiene que ser privado: guarda la cola y el avance de la fábrica.");
+  const isPrivate = coordination || !input.publico;
+  const lineName = slug(name.split("/").pop()!);
+  const dir = join(ctx.home.projects, lineName);
+  if (!coordination) {
+    if (ctx.config.lines.some((l) => l.name === lineName)) return fail(`Ya existe la línea "${lineName}": elegí otro nombre.`);
+    if (existsSync(dir)) return fail(`Ya existe la carpeta ${dir}: elegí otro nombre o movela.`);
+  }
+  const token = (input.token ?? (() => githubToken(process.env, ctx.secrets)))();
+  if (!token) return fail("No hay token de GitHub: iniciá sesión con `zero setup` (o `gh auth login`) y volvé a intentar.");
+
+  const visibility = isPrivate ? "privado" : "público";
+  input.say?.(
+    coordination
+      ? [`Voy a crear en GitHub el repositorio ${name} (${visibility}), para coordinar la fábrica distribuida.`, "No lo clono ni lo sumo como línea: esta máquina se une a esa fábrica."].join("\n")
+      : [
+          `Voy a crear en GitHub el repositorio ${name} (${visibility}).`,
+          `Lo clono en ${dir} y lo sumo como la línea ${lineName} (integra con pull requests).`,
+          input.pedido?.trim() ? `Después abro el primer trabajo: ${input.pedido.trim()}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+  );
+  if (!(input.confirm && (await input.confirm(`¿Creo el repositorio ${name} (${visibility}) en GitHub?`)))) return fail("No creé nada.");
+
+  let repo: CreatedRepository;
+  try {
+    repo = await (input.create ?? githubCreator(token))({ name, private: isPrivate });
+  } catch (err) {
+    return fail(creationErrorText(name, err));
+  }
+  const created = { created: true, url: repo.htmlUrl };
+
+  if (coordination) {
+    const joined = await joinFactory(ctx, repo.fullName, async () => ({ private: repo.private }));
+    return { ok: joined.joined, ...created, text: `Creé el repositorio privado ${repo.fullName}: ${repo.htmlUrl}\n${joined.text}` };
+  }
+
+  try {
+    await mkdir(ctx.home.projects, { recursive: true });
+    await (input.clone ?? gitCloner)(repo.cloneUrl, dir);
+  } catch (err) {
+    return {
+      ok: false,
+      ...created,
+      text: `Creé el repositorio ${repo.fullName} (${repo.htmlUrl}), pero no pude clonarlo en ${dir}: ${err instanceof Error ? err.message : String(err)}\nNo borré nada en GitHub: revisá las credenciales de git de esta máquina, clonalo a mano y sumalo con \`zero line add <ruta> --name ${lineName}\`.`,
+    };
+  }
+  const detected = detectCommands(dir);
+  const entry = { name: lineName, repo: dir, baseBranch: repo.defaultBranch, integrate: "pull-request", setup: input.setup ?? detected.setup, verify: input.verify ?? detected.verify };
+  ctx.config = await editConfig(ctx, (doc) => {
+    if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
+    else doc.setIn(["lines"], doc.createNode([entry]));
+  });
+  const text = [`Creé el repositorio ${repo.fullName} (${visibility}): ${repo.htmlUrl}`, `Lo cloné en ${dir} y lo sumé como la línea ${lineName}.`];
+  const pedido = input.pedido?.trim();
+  if (!pedido) {
+    text.push(`Pedile trabajo con: zero request "<pedido>" --line ${lineName}`);
+    return { ok: true, ...created, line: lineName, text: text.join("\n") };
+  }
+  const job = requestWork(ctx, { text: pedido, line: lineName }).job;
+  text.push(`Abrí el primer trabajo ${job.id}: lo seguís con zero status ${job.id}.`);
+  return { ok: true, ...created, line: lineName, job: job.id, text: text.join("\n") };
 }
 
 export function lines(config: FactoryConfig) {

@@ -124,13 +124,22 @@ Con `autostart: true` en el archivo de la fábrica, zero registra su arranque al
 
 Si la fábrica se cae sin un `zero shutdown` (la máquina se reinició, el proceso murió) con trabajos en curso o en cola, la vuelve a encender lo próximo que corra: el arranque al iniciar sesión, el servidor MCP cuando tu chat lo abre o cualquier comando `zero`, que avisa `La fábrica se había caído con trabajo pendiente: la volví a encender.` Los trabajos se retoman desde su checkpoint. Una fábrica que apagaste a propósito queda apagada. `zero status` distingue los dos casos: `apagada a propósito desde HH:MM`, o `se cayó` con su último latido y cuántos trabajos quedaron en curso.
 
+### Proyecto nuevo (`zero repo crear`)
+
+```sh
+zero repo crear demo-acme --pedido "Demo web para Acme con turnos online"
+zero repo crear zero-coord --coordinacion
+```
+
+Para arrancar un proyecto desde cero, `zero repo crear <nombre|cuenta/nombre>` crea el repositorio en GitHub (privado salvo que pases `--publico`), lo clona en `ZERO_HOME/projects/<línea>` y lo suma como línea nueva que entrega con pull requests, con los comandos `--setup` y `--verify` que le des (o los que detecte en el clon). Con `--pedido "..."` además abre el primer trabajo con ese texto, que recorre la línea como cualquier otro. Crear un repositorio se ve desde afuera y no se deshace fácil, así que zero primero te muestra el plan (nombre, visibilidad y carpeta) y lo crea solo cuando confirmás (o con `--yes`); sin terminal y sin `--yes` no crea nada, y ningún agente ni estación crea uno por su cuenta. Si GitHub se niega, zero te dice por qué: el token no tiene permiso para crear repositorios (Administration con escritura en un token fine-grained, el scope `repo` en uno clásico, o ser miembro de la organización), el token es inválido o está vencido, o el nombre ya está tomado. Si falla el clon, el repositorio queda en GitHub y zero te da su URL. Con `--coordinacion` crea el repositorio privado de coordinación de una fábrica distribuida y une esta máquina a esa fábrica, sin clonarlo ni sumar una línea.
+
 ### Varias máquinas (`zero unirse`)
 
 ```sh
 zero unirse me/zero-coord
 ```
 
-Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Con la fábrica reiniciada, cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Tomar trabajos de una cola común es el paso siguiente (ver `docs/adr/0007-fabrica-distribuida.md`); por ahora cada máquina corre sus propios trabajos. Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada.
+Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación (o dejá que `zero repo crear <nombre> --coordinacion` lo cree y una esta máquina) y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Con la fábrica reiniciada, cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Tomar trabajos de una cola común es el paso siguiente (ver `docs/adr/0007-fabrica-distribuida.md`); por ahora cada máquina corre sus propios trabajos. Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada.
 
 ## Instalar con Docker
 

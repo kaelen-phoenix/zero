@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, createProject, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -89,6 +89,12 @@ Panel en el navegador:
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
+  zero repo crear <nombre|cuenta/nombre> [--publico] [--pedido "<texto>"] [--verify "<comando>"]... [--setup "<comando>"]... [-y]
+                                 Crea el repositorio en GitHub (privado salvo --publico), lo clona en ZERO_HOME/projects, lo suma
+                                 como línea (con pull requests) y abre el primer trabajo con --pedido; muestra el plan y pide tu
+                                 confirmación (sin terminal y sin --yes no crea nada)
+  zero repo crear <nombre> --coordinacion [-y]
+                                 Crea el repositorio privado de coordinación de la fábrica distribuida y une esta máquina
   zero agent list [--line <nombre>]   Agentes a medida de cada línea, en el orden en que corren
   zero agent add <nombre> --line <línea> [--informativo] [--tipo review|build|conflict] [--archivos <patrón>]...
                                  Suma un agente a la línea (crea .zero/agents/<nombre>.md con una plantilla): revisor de
@@ -160,6 +166,10 @@ async function main(argv: string[]): Promise<number> {
       label: { type: "string" },
       station: { type: "string" },
       pedido: { type: "string" },
+      publico: { type: "boolean" },
+      coordinacion: { type: "boolean" },
+      verify: { type: "string", multiple: true },
+      setup: { type: "string", multiple: true },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -597,6 +607,28 @@ Informe: ${r.report}`);
         if (rest[0] !== "on" && rest[0] !== "off") throw new Error("Indicá on u off: zero autostart on|off");
         console.log((await setAutostart(ctx, rest[0] === "on")).message);
         return 0;
+      }
+      case "repo": {
+        if (rest[0] !== "crear") break;
+        if (!rest[1]) throw new Error("Indicá el nombre: zero repo crear <nombre|cuenta/nombre>");
+        const ask = interactiveConfirm();
+        try {
+          const r = await createProject(ctx, {
+            name: rest[1],
+            publico: values.publico,
+            coordination: values.coordinacion,
+            pedido: values.pedido,
+            verify: values.verify,
+            setup: values.setup,
+            confirm: values.yes ? async () => true : ask.confirm,
+            say: (text) => console.log(text),
+          });
+          console.log(r.text);
+          if (r.job && (await ensureDaemon(ctx))) console.log("La fábrica estaba apagada: la encendí.");
+          return r.ok ? 0 : 1;
+        } finally {
+          ask.close();
+        }
       }
       case "unirse": {
         if (!rest[0]) throw new Error("Indicá el repositorio de coordinación: zero unirse <cuenta/repo>");

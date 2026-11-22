@@ -124,13 +124,22 @@ With `autostart: true` in the factory file, zero registers its own start when yo
 
 If the factory goes down without a `zero shutdown` (the machine restarted, the process died) while jobs were in progress or queued, whatever runs next brings it back: the start at login, the MCP server when your chat opens it, or any `zero` command, which says `La fábrica se había caído con trabajo pendiente: la volví a encender.` The jobs resume from their checkpoint. A factory you turned off on purpose stays off. `zero status` tells both cases apart: `apagada a propósito desde HH:MM`, or `se cayó` with its last heartbeat and how many jobs were left in progress.
 
+### New project (`zero repo crear`)
+
+```sh
+zero repo crear demo-acme --pedido "Demo web para Acme con turnos online"
+zero repo crear zero-coord --coordinacion
+```
+
+To start a project from scratch, `zero repo crear <name|account/name>` creates the repository on GitHub (private unless you pass `--publico`), clones it into `ZERO_HOME/projects/<line>` and adds it as a new line that delivers through pull requests, with the `--setup` and `--verify` commands you give (or the ones it detects in the clone). With `--pedido "..."` it also opens the first job with that text, which goes down the line like any other. Creating a repository is visible from outside and hard to undo, so zero first shows you the plan (name, visibility and folder) and creates it only when you confirm (or with `--yes`); without a terminal and without `--yes` it creates nothing, and no agent or station creates one on its own. If GitHub refuses, zero tells you why: the token has no permission to create repositories (Administration write on a fine-grained token, the `repo` scope on a classic one, or membership of the organization), the token is invalid or expired, or the name is already taken. If the clone fails, the repository stays on GitHub and zero gives you its URL. With `--coordinacion` it creates the private coordination repository of a distributed factory and joins this machine to it, without cloning it or adding a line.
+
 ### Several machines (`zero unirse`)
 
 ```sh
 zero unirse me/zero-coord
 ```
 
-A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
+A factory can live on more than one of your machines. Create a private GitHub repository for coordination (or let `zero repo crear <name> --coordinacion` create it and join this machine), then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
 
 ## Install with Docker
 

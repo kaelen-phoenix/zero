@@ -2,13 +2,13 @@
 
 ## 1. Etapa 1: Create the project from the CLI
 
-- [ ] 1.1 Open the OpenSpec change openspec/changes/zero-76fac21a (proposal, tasks, specs/project-creation/spec.md).
-- [ ] 1.2 Add home.projects in src/home.ts.
-- [ ] 1.3 src/project.ts: name validation, the RepoCreator type, the Octokit adapter with auto_init, and the 401/403/404/422 error texts.
-- [ ] 1.4 createProject in src/app.ts: validation, plan, confirm, create, clone into home.projects, line through editConfig (integrate pull-request), refresh ctx.config, first job with requestWork, and coordination via joinFactory.
-- [ ] 1.5 `zero repo crear` in src/cli.ts with --publico, --coordinacion, --pedido, --verify, --setup and -y, plus USAGE.
-- [ ] 1.6 test/project-create.test.ts with fake create, clone and token, covering confirmation, visibility, validations, error messages, the line, clone failure, first job and coordination.
-- [ ] 1.7 Docs: docs/agents/core.md, docs/agents/distributed.md, README.md and README.es.md. typecheck, test and openspec validate pass.
+- [x] 1.1 Open the OpenSpec change openspec/changes/zero-76fac21a (proposal, tasks, specs/project-creation/spec.md).
+- [x] 1.2 Add home.projects in src/home.ts.
+- [x] 1.3 src/project.ts: name validation, the RepoCreator type, the Octokit adapter with auto_init, and the 401/403/404/422 error texts.
+- [x] 1.4 createProject in src/app.ts: validation, plan, confirm, create, clone into home.projects, line through editConfig (integrate pull-request), refresh ctx.config, first job with requestWork, and coordination via joinFactory.
+- [x] 1.5 `zero repo crear` in src/cli.ts with --publico, --coordinacion, --pedido, --verify, --setup and -y, plus USAGE.
+- [x] 1.6 test/project-create.test.ts with fake create, clone and token, covering confirmation, visibility, validations, error messages, the line, clone failure, first job and coordination.
+- [x] 1.7 Docs: docs/agents/core.md, docs/agents/distributed.md, README.md and README.es.md. typecheck, test and openspec validate pass.
 
 ## 2. Etapa 2: The chat holds the creation for confirmation
 
