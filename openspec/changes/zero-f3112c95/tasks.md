@@ -14,9 +14,9 @@
 
 ## 3. Etapa 3: Cola común con capacidades
 
-- [ ] 3.1 Publicar queue/<job> con needs y la request pasada por scrubLocal, deduplicar por sources/<clave>, importar con el mismo id
-- [ ] 3.2 Filtrar por capacidades (caja, motores) y no fallar líneas desconocidas
-- [ ] 3.3 Terminar las copias locales que se cerraron en otra máquina, más sus tests
+- [x] 3.1 Publicar queue/<job> con needs y la request pasada por scrubLocal, deduplicar por sources/<clave>, importar con el mismo id
+- [x] 3.2 Filtrar por capacidades (caja, motores) y no fallar líneas desconocidas
+- [x] 3.3 Terminar las copias locales que se cerraron en otra máquina, más sus tests
 
 ## 4. Etapa 4: Subir el avance en cada checkpoint y al apagar
 

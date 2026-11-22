@@ -9,7 +9,8 @@ import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { checkInstall } from "./install-freshness.js";
 import { githubCoord } from "./coord/github.js";
 import { coordPass, coordReady } from "./coord/pass.js";
-import { claimJob, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
+import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
+import { canTake, readQueued } from "./coord/queue.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -34,7 +35,7 @@ import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { cleanupPass } from "./line/cleanup.js";
 import { killLeftovers } from "./leftovers.js";
-import { finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/finish.js";
+import { endedOn, finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
@@ -660,6 +661,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
           if (!line) {
+            // A job from the shared queue whose line went away here is left for the machines that have it.
+            if (readQueued(store, job.id)?.origin === "imported") continue;
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
@@ -677,12 +680,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           const coord = protocol();
           const machine = coord && machineIdentity(store, ctx.config);
           if (coord && machine) {
+            // A job from another machine is taken only when this one has what it needs: the box, and its engines.
+            const queuedHere = readQueued(store, job.id);
+            if (queuedHere?.origin === "imported" && !canTake(queuedHere.needs, ctx.config, currentBox(ctx).availability.ready)) continue;
             const claim = githubPaused()
               ? undefined
-              : await claimJob(coord, job.id, machine, now(), ctx.config.distributed!.leaseMinutes).catch((err) => {
+              : await claimJob(coord, job.id, machine, now(), ctx.config.distributed!.leaseMinutes, { keepFinished: true }).catch((err) => {
                   log.warn("claiming the job failed; not starting it", { job: job.id, error: String(err) });
                   return undefined;
                 });
+            // Another machine already ended it: this copy ends the same way, telling its origin nothing.
+            if (claim && !claim.claimed && finished(claim.holder) && store.getJob(job.id)?.status === "queued")
+              await finalizeJob(ctx, store.getJob(job.id)!, claim.holder.status, { reason: endedOn(claim.holder.name) });
             if (!claim?.claimed) continue;
           }
           startable = true;

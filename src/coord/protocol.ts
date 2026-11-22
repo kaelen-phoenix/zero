@@ -43,6 +43,15 @@ export interface CoordApi {
 export const claimRef = (job: string): string => `claims/${job}`;
 export const machineRef = (id: string): string => `machines/${id}`;
 export const probeRef = (id: string): string => `probe/${id}`;
+export const queueRef = (job: string): string => `queue/${job}`;
+/** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
+export const sourceRef = (key: string): string => `sources/${key}`;
+
+const FINAL = ["delivered", "failed", "stopped"];
+
+/** A closing record of a job that ended (not one sent back to the queue by a shutdown). */
+export const finished = (claim: ClaimRecord | undefined): claim is ClaimRecord & { released: true; status: "delivered" | "failed" | "stopped" } =>
+  claim?.released === true && FINAL.includes(claim.status ?? "");
 
 /** Job and machine ids that may go into a ref name or come back from one. */
 export const COORD_ID = /^[A-Za-z0-9-]{1,64}$/;
@@ -128,8 +137,17 @@ async function lostTo(api: CoordApi, jobId: string): Promise<ClaimResult> {
  * creating its claim ref, and a closing record, a claim this machine already
  * holds or one whose holder is past its lease is taken over only from the tip
  * read. Taking over another machine's expired claim reports it as `takenFrom`.
+ * With `keepFinished`, a closing record another machine left for a job that
+ * ended is not taken: it comes back as the holder, so that job is not run twice.
  */
-export async function claimJob(api: CoordApi, jobId: string, machine: MachineIdentity, now: Date, leaseMinutes = DEFAULT_LEASE_MINUTES): Promise<ClaimResult> {
+export async function claimJob(
+  api: CoordApi,
+  jobId: string,
+  machine: MachineIdentity,
+  now: Date,
+  leaseMinutes = DEFAULT_LEASE_MINUTES,
+  opts: { keepFinished?: boolean } = {},
+): Promise<ClaimResult> {
   const name = claimRef(jobId);
   const data = claimData(jobId, machine, now);
   const current = await api.read(name);
@@ -143,6 +161,7 @@ export async function claimJob(api: CoordApi, jobId: string, machine: MachineIde
     }
   }
   const holder = readClaim(current);
+  if (opts.keepFinished && finished(holder) && holder.machine !== machine.id) return { claimed: false, holder };
   const other = holder && !holder.released && holder.machine !== machine.id ? holder : undefined;
   if (other && (await holderAlive(api, other, now, leaseMinutes))) return { claimed: false, holder: other };
   try {
@@ -186,7 +205,99 @@ export async function readClaimOf(api: CoordApi, jobId: string): Promise<ClaimRe
   return readClaim(await api.read(claimRef(jobId)));
 }
 
-export type ProbeResult = { ok: true } | { ok: false; problem: string };
+/** Every claim that reads, by job: one listing instead of a read per job. */
+export async function listClaims(api: CoordApi): Promise<Map<string, ClaimRecord>> {
+  const out = new Map<string, ClaimRecord>();
+  for (const ref of await api.list("claims/")) {
+    const claim = readClaim(ref);
+    if (claim && ref.name === claimRef(claim.job)) out.set(claim.job, claim);
+  }
+  return out;
+}
+
+/** What a job needs from the machine that takes it. */
+export interface JobNeeds {
+  box: boolean;
+  engines: string[];
+}
+
+/** A job on the shared queue, as the machine that queued it published it: no local paths, no secrets. */
+export interface QueueRecord {
+  id: string;
+  line: string;
+  kind: "request" | "spec";
+  request: string;
+  priority: string;
+  source?: Record<string, unknown> & { kind: string };
+  createdAt: string;
+  needs: JobNeeds;
+}
+
+/** The longest request a queue record may carry. */
+const MAX_QUEUED_REQUEST = 100_000;
+const SOURCE_KINDS = ["github-issue", "linear-issue", "jira-issue", "night-shift", "research", "package", "security-alert", "pull-request"];
+
+/** Only plain fields: strings, finite numbers, booleans and lists of them, as every JobSource is. */
+function isSource(v: unknown): v is QueueRecord["source"] {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const fields = Object.values(v as Record<string, unknown>);
+  const plain = (x: unknown) => (typeof x === "string" && x.length <= 2000) || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x));
+  return SOURCE_KINDS.includes((v as { kind?: unknown }).kind as string) && fields.length <= 12 && fields.every((x) => plain(x) || (Array.isArray(x) && x.length <= 200 && x.every(plain)));
+}
+
+const isNeeds = (v: unknown): v is JobNeeds =>
+  !!v && typeof v === "object" && typeof (v as JobNeeds).box === "boolean" && Array.isArray((v as JobNeeds).engines) && (v as JobNeeds).engines.length <= 20 && (v as JobNeeds).engines.every((e) => typeof e === "string" && /^[a-z0-9-]{1,40}$/.test(e));
+
+/** A queue record that reads strictly, and only under its own ref; anything else is undefined. */
+export function readQueueRecord(ref: CoordRef): QueueRecord | undefined {
+  const record = parse<QueueRecord>(
+    ref,
+    (v) =>
+      isId(v.id) &&
+      isName(v.line) &&
+      (v.kind === "request" || v.kind === "spec") &&
+      typeof v.request === "string" &&
+      v.request.trim().length > 0 &&
+      v.request.length <= MAX_QUEUED_REQUEST &&
+      typeof v.priority === "string" &&
+      /^[a-z]{1,20}$/.test(v.priority) &&
+      (v.source === undefined || isSource(v.source)) &&
+      isTime(v.createdAt) &&
+      isNeeds(v.needs),
+  );
+  return record && ref.name === queueRef(record.id) ? record : undefined;
+}
+
+/** Publishes the job on the shared queue; false when it was already there. */
+export async function publishQueued(api: CoordApi, record: QueueRecord): Promise<boolean> {
+  try {
+    await api.create(queueRef(record.id), JSON.stringify(record));
+    return true;
+  } catch (err) {
+    if (err instanceof CoordConflict) return false;
+    throw err;
+  }
+}
+
+/**
+ * Makes `jobId` the one job of the request origin `key`, unless another job
+ * already is: then that job's id comes back, and the local job is a duplicate.
+ */
+export async function claimSource(api: CoordApi, key: string, jobId: string): Promise<string> {
+  const name = sourceRef(key);
+  const record = JSON.stringify({ job: jobId });
+  try {
+    await api.create(name, record);
+    return jobId;
+  } catch (err) {
+    if (!(err instanceof CoordConflict)) throw err;
+  }
+  const owner = parse<{ job: string }>(await api.read(name), (v) => isId(v.job));
+  // A record that does not read names no job: this one stays its own.
+  return owner?.job ?? jobId;
+}
+
+export type ProbeResult ={ ok: true } | { ok: false; problem: string };
 
 /**
  * Checks that `api` gives the two conflicts the protocol relies on, against the
