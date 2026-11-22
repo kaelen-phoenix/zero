@@ -38,6 +38,12 @@ describe("docs/adr/0007-fabrica-distribuida.md", () => {
     ]) expect(file).toContain(piece);
   });
 
+  it("records the second part: the probe, the closing record, the shared queue and resuming", () => {
+    const file = read(name);
+    for (const piece of ["probeCoord", "coord:probe", "registro de cierre", "queue/<trabajo>", "sources/<clave>", "progress/<trabajo>", "--force-with-lease", "Segunda parte"]) expect(file).toContain(piece);
+    expect(file).not.toContain("no verificado contra GitHub real");
+  });
+
   it("has one subsection per topic", () => {
     const headings = read(name).split("\n").filter((line) => line.startsWith("### "));
     for (const topic of [/toma un trabajo/, /máquina caída/, /sin subir/, /Conflictos/, /Seguridad/, /Cuota de GitHub/, /Presupuesto/, /Unirse/, /una sola máquina/, /Etapas/]) {

@@ -11,7 +11,7 @@ import { githubCoord } from "./coord/github.js";
 import { coordPass, coordReady } from "./coord/pass.js";
 import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
 import { canTake, readQueued } from "./coord/queue.js";
-import { pushProgress } from "./coord/progress.js";
+import { pushProgress, resumeProgress } from "./coord/progress.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -695,6 +695,10 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             if (claim && !claim.claimed && finished(claim.holder) && store.getJob(job.id)?.status === "queued")
               await finalizeJob(ctx, store.getJob(job.id)!, claim.holder.status, { reason: endedOn(claim.holder.name) });
             if (!claim?.claimed) continue;
+            // Another machine pushed this job's progress, or held it until its lease ran out: it goes on from that checkpoint.
+            await resumeProgress({ api: coord, store, machine, repo: line.repo }, job.id, Boolean(claim.takenFrom)).catch((err) =>
+              log.warn("resuming the job from its pushed progress failed; running it as it is", { job: job.id, error: String(err) }),
+            );
           }
           startable = true;
           const controller = new AbortController();

@@ -26,6 +26,6 @@
 
 ## 5. Etapa 5: Retoma desde el último checkpoint y documentación
 
-- [ ] 5.1 Leer progress, traer la rama del remoto y poner el trabajo en su checkpoint cuando hay takenFrom
-- [ ] 5.2 Tests de retoma y de la máquina que vuelve
-- [ ] 5.3 docs/agents/distributed.md, ADR 0007 con test/adr-distribuida.test.ts y el cambio OpenSpec
+- [x] 5.1 Leer progress, traer la rama del remoto y poner el trabajo en su checkpoint cuando hay takenFrom
+- [x] 5.2 Tests de retoma y de la máquina que vuelve
+- [x] 5.3 docs/agents/distributed.md, ADR 0007 con test/adr-distribuida.test.ts y el cambio OpenSpec
