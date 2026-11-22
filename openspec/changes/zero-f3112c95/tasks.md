@@ -2,9 +2,9 @@
 
 ## 1. Etapa 1: Protocolo endurecido y sondeo contra GitHub real
 
-- [ ] 1.1 Registro de cierre por CAS en releaseJob, cierre tratado como libre y takenFrom en claimJob, validación estricta de los registros
-- [ ] 1.2 probeCoord, `coord:probe` en coordPass (como mucho un intento por hora) y coordReady
-- [ ] 1.3 Tests de protocolo, sondeo y ausencia de llamadas sin distributed
+- [x] 1.1 Registro de cierre por CAS en releaseJob, cierre tratado como libre y takenFrom en claimJob, validación estricta de los registros
+- [x] 1.2 probeCoord, `coord:probe` en coordPass (como mucho un intento por hora) y coordReady
+- [x] 1.3 Tests de protocolo, sondeo y ausencia de llamadas sin distributed
 
 ## 2. Etapa 2: Tomar, comprobar y soltar en el daemon y el runner
 
