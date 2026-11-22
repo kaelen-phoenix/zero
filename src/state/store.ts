@@ -544,14 +544,15 @@ export class Store {
     return this.now().toISOString();
   }
 
-  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority }): Job {
+  /** `id` and `createdAt` are given only for a job another machine of a distributed factory queued: it keeps its id there. */
+  createJob(input: { line: string; kind: Job["kind"]; request: string; budgetUsd: number; source?: JobSource; priority?: JobPriority; id?: string; createdAt?: string }): Job {
     const at = this.stamp();
     // Ids are 32 random bits: with thousands of jobs a repeat is rare but possible, so draw again.
-    let id = newId();
-    while (this.getJob(id)) id = newId();
+    let id = input.id ?? newId();
+    while (!input.id && this.getJob(id)) id = newId();
     this.db
       .prepare("INSERT INTO jobs (id, line, kind, request, status, budget_usd, source, priority, created_at, updated_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)")
-      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), at, at);
+      .run(id, input.line, input.kind, input.request, input.budgetUsd, input.source ? JSON.stringify(input.source) : null, input.priority ?? defaultPriority(input.source), input.createdAt ?? at, at);
     return this.getJob(id)!;
   }
 

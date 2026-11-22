@@ -8,8 +8,10 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { checkInstall } from "./install-freshness.js";
 import { githubCoord } from "./coord/github.js";
-import { coordPass } from "./coord/pass.js";
-import type { CoordApi } from "./coord/protocol.js";
+import { coordPass, coordReady } from "./coord/pass.js";
+import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
+import { canTake, readQueued } from "./coord/queue.js";
+import { pushProgress, resumeProgress } from "./coord/progress.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -34,7 +36,7 @@ import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { cleanupPass } from "./line/cleanup.js";
 import { killLeftovers } from "./leftovers.js";
-import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
+import { endedOn, finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
@@ -48,7 +50,9 @@ import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readS
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
-import type { Job } from "./state/store.js";
+import { FINAL_STATUSES, type Job } from "./state/store.js";
+import type { WorkCopy } from "./workspace.js";
+import { machineIdentity, type MachineIdentity } from "./machine.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
 import { TUNNEL_TOKEN_SECRET, tunnelKeeper } from "./panel/tunnel.js";
@@ -376,6 +380,20 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // The protocol the runner relies on to take, check and release jobs: only with `distributed` and a passed probe of its repository, and in `once` runs only when injected.
+  const protocol = (): CoordApi | undefined => {
+    const distributed = ctx.config.distributed;
+    if (!distributed || (opts.once && !opts.coord) || !coordReady(ctx)) return undefined;
+    return (opts.coord ?? realCoord(meter))(distributed.repository);
+  };
+  // A job that ended is released with its status, and one cut short by a shutdown goes back to the shared queue; an andon or a quota stop keeps its claim.
+  const releaseAtEnd = async (api: CoordApi, machine: MachineIdentity, end: Job, signal: AbortSignal) => {
+    const ended = FINAL_STATUSES.includes(end.status) && end.reason !== LOST_TO_ANOTHER;
+    const shutDown = end.status === "queued" && signal.aborted && signal.reason === ("shutdown" satisfies StopReason);
+    if (!ended && !shutDown) return;
+    await releaseJob(api, end.id, machine, end.status, now()).catch((err) => log.warn("releasing the job's claim failed", { job: end.id, error: String(err) }));
+  };
+
   // What the lines' external services cost this month; the pass itself keeps each service to once a local day.
   let billingAt = 0;
   let readingBilling: Promise<void> | undefined;
@@ -645,6 +663,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
           if (!line) {
+            // A job from the shared queue whose line went away here is left for the machines that have it.
+            if (readQueued(store, job.id)?.origin === "imported") continue;
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
@@ -658,12 +678,45 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             startable = true;
             break;
           }
+          // A distributed factory runs only what it took: a job another machine holds stays in the local queue, as it is.
+          const coord = protocol();
+          const machine = coord && machineIdentity(store, ctx.config);
+          if (coord && machine) {
+            // A job from another machine is taken only when this one has what it needs: the box, and its engines.
+            const queuedHere = readQueued(store, job.id);
+            if (queuedHere?.origin === "imported" && !canTake(queuedHere.needs, ctx.config, currentBox(ctx).availability.ready)) continue;
+            const claim = githubPaused()
+              ? undefined
+              : await claimJob(coord, job.id, machine, now(), ctx.config.distributed!.leaseMinutes, { keepFinished: true }).catch((err) => {
+                  log.warn("claiming the job failed; not starting it", { job: job.id, error: String(err) });
+                  return undefined;
+                });
+            // Another machine already ended it: this copy ends the same way, telling its origin nothing.
+            if (claim && !claim.claimed && finished(claim.holder) && store.getJob(job.id)?.status === "queued")
+              await finalizeJob(ctx, store.getJob(job.id)!, claim.holder.status, { reason: endedOn(claim.holder.name) });
+            if (!claim?.claimed) continue;
+            // Another machine pushed this job's progress, or held it until its lease ran out: it goes on from that checkpoint.
+            await resumeProgress({ api: coord, store, machine, repo: line.repo }, job.id, Boolean(claim.takenFrom)).catch((err) =>
+              log.warn("resuming the job from its pushed progress failed; running it as it is", { job: job.id, error: String(err) }),
+            );
+          }
           startable = true;
           const controller = new AbortController();
           const { availability } = currentBox(ctx);
           const box = readyBox(ctx.config);
-          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
+          // A check that cannot reach the coordination repository lets the job go on: only a claim read as another machine's stops it.
+          const holds =
+            coord && machine
+              ? () =>
+                  stillHolds(coord, job.id, machine.id).catch((err) => {
+                    log.warn("checking the job's claim failed; going on", { job: job.id, error: String(err) });
+                    return true;
+                  })
+              : undefined;
+          const pushes = coord && machine ? { pushProgress: (j: Job, copy: WorkCopy) => pushProgress({ api: coord, store, machine, repo: line.repo, now }, j, copy) } : undefined;
+          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability, ...(holds && { holds }), ...pushes };
           const done = runJob(job.id, deps, controller.signal)
+            .then((end) => (coord && machine ? releaseAtEnd(coord, machine, end, controller.signal) : undefined))
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))
             .finally(() => running.delete(job.id));
           running.set(job.id, { line: job.line, controller, done });

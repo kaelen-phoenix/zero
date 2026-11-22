@@ -26,7 +26,11 @@ El repositorio de coordinación es un repositorio de GitHub privado que solo gua
 
 - `machines/<id>`: el latido de cada máquina.
 - `claims/<trabajo>`: quién tiene cada trabajo.
-- En etapas siguientes: la cola común, el avance de cada trabajo, las propuestas, las preguntas pendientes y el gasto.
+- `queue/<trabajo>`: la cola común, un registro por trabajo publicado.
+- `sources/<clave>`: el único trabajo que atiende cada origen (un issue, una propuesta), para que el mismo pedido no se haga dos veces.
+- `progress/<trabajo>`: el último checkpoint subido de cada trabajo.
+- `probe/<id>`: la referencia pasajera del sondeo del protocolo.
+- En etapas siguientes: las propuestas, las preguntas pendientes y el gasto.
 
 Cada máquina tiene una identidad fija: un id generado una sola vez y guardado en kv `machine:id` de su `state.db`, más su nombre. Dos `ZERO_HOME` en la misma máquina son dos máquinas distintas para la fábrica.
 
@@ -36,7 +40,9 @@ Tomar un trabajo es atómico porque se apoya en una operación que GitHub ya hac
 
 Si la referencia ya existe y el último latido de quien la tiene está dentro de `leaseMinutes`, la llamada no escribe nada. Si ese latido es más viejo que el plazo, la máquina toma el trabajo avanzando la referencia sin forzar, desde el commit que leyó y con un commit hijo de ese: es un compare-and-swap, porque una actualización que no es un avance rápido también responde 422. Si dos máquinas intentan tomar el mismo trabajo vencido desde la misma punta, solo una avanza y la otra recibe `claimed: false`.
 
-Que GitHub responda 422 en ambos casos (crear una referencia existente y actualizar sin forzar algo que no es un avance rápido) está documentado en la API de referencias de git, pero en esta etapa queda **no verificado contra GitHub real**: solo lo comprueban los tests con un Octokit simulado. Se confirma con una corrida real antes de que el runner dependa de esto.
+Que GitHub responda 422 en ambos casos (crear una referencia existente y actualizar sin forzar algo que no es un avance rápido) está documentado en la API de referencias de git, y cada máquina lo confirma contra GitHub real antes de que el runner dependa de esto: el pase de coordinación corre una vez por repositorio un sondeo (`probeCoord`) que crea `probe/<id>`, comprueba que crearla otra vez y moverla desde una punta vieja dan `CoordConflict` y después la borra. El resultado queda en kv `coord:probe`; un sondeo fallido se reintenta como mucho una vez por hora, y mientras no haya uno aprobado la máquina trabaja como si estuviera sola.
+
+Soltar un trabajo también es un compare-and-swap: `releaseJob` mueve `claims/<trabajo>`, sin forzar y desde la punta leída, a un registro de cierre (`released: true` y el estado final), nunca la borra, porque GitHub borra referencias sin comprobar su punta. Un registro de cierre se toma como un trabajo libre, y uno de un trabajo terminado le dice a las otras máquinas cómo terminó.
 
 ### Cómo se detecta una máquina caída
 
@@ -44,7 +50,7 @@ Cada máquina escribe su latido en `machines/<id>` como mucho cada `heartbeatSec
 
 El plazo mide el reloj de cada máquina contra el `at` que escribió otra. Por eso el plazo pide al menos tres latidos: un desfase de reloj de segundos o un latido perdido por un corte de red no libera un trabajo vivo. Un desfase de minutos sí podría, y el caso se cubre igual porque la máquina que vuelve se entera de que perdió el trabajo (ver abajo).
 
-Una máquina que vuelve (se despertó, recuperó la red) pregunta `stillHolds` antes de seguir con un trabajo y antes de subir su avance. Si la referencia ya nombra a otra máquina, deja el trabajo: no sube, no integra, no avisa a nadie como si fuera suyo, y `releaseJob` solo borra la referencia mientras la nombre a ella.
+Una máquina que vuelve (se despertó, recuperó la red) pregunta `stillHolds` antes de seguir con un trabajo y antes de subir su avance. Si la referencia ya nombra a otra máquina, deja el trabajo: no sube, no integra, no avisa a nadie como si fuera suyo, y `releaseJob` solo la suelta mientras la nombre a ella.
 
 La máquina declara en el latido qué puede: `platform`, `box` (verdadero solo cuando la caja de aislamiento está lista) y `engines` (los motores que usan sus cadenas de estaciones). Nunca rutas, variables de entorno ni secretos. Una máquina no toma un trabajo que necesita algo que no declaró (por ejemplo, una línea con `isolation: container` en una máquina sin caja).
 
@@ -52,7 +58,7 @@ La máquina declara en el latido qué puede: `platform`, `box` (verdadero solo c
 
 Lo que no está en el remoto no existe para las otras máquinas. Por eso cada máquina sube la rama del trabajo en cada checkpoint (spec, cada etapa que pasa verify, antes de integrar) y, cuando la apagan a propósito, antes de soltar el lock, con el estado del trabajo en el repositorio de coordinación. La subida usa `--force-with-lease` contra la punta que la propia máquina subió la última vez, y solo después de confirmar con `stillHolds` que el trabajo sigue siendo suyo.
 
-Una máquina que se cae pierde lo que hizo desde su último checkpoint subido: los cambios sin subir de la copia de trabajo no se recuperan. La que retoma arranca desde ese checkpoint con la rama remota, igual que hoy retoma un trabajo cortado por la red (descartando los cambios no confirmados). Un intento de build a medias se vuelve a hacer; cuesta tiempo y presupuesto, no corrección.
+Una máquina que se cae pierde lo que hizo desde su último checkpoint subido: los cambios sin subir de la copia de trabajo no se recuperan. La que retoma lee y valida `progress/<trabajo>` (`{job, machine, checkpoint, stagesDone, branch, base, sha, title, spec, attempt, at}`), trae la rama del remoto, la pone en el sha de ese registro y deja el trabajo en ese checkpoint, con su spec y sus etapas hechas, igual que hoy retoma un trabajo cortado por la red (descartando los cambios no confirmados). Un registro inválido o ausente hace que el trabajo empiece desde cero. Un intento de build a medias se vuelve a hacer; cuesta tiempo y presupuesto, no corrección.
 
 ### Conflictos
 
@@ -91,12 +97,17 @@ Sin bloque `distributed` nada cambia: el daemon no corre el pase de coordinació
 - **Etapa 2:** el bloque `distributed` y la identidad y capacidades de la máquina.
 - **Etapa 3:** el protocolo de coordinación (`claimJob`, `stillHolds`, `releaseJob`, latidos) y el adaptador de GitHub sobre referencias de git.
 - **Etapa 4:** el latido en el daemon, las máquinas en `zero status` y el panel, y `zero unirse`.
-- **Después:** la cola común, la subida del avance en cada checkpoint, la retoma de trabajos de máquinas caídas, el presupuesto sumado, el clonado de líneas y pedir, responder y aprobar desde cualquier máquina.
+- **Segunda parte, etapa 1:** el sondeo contra GitHub real y el registro de cierre al soltar.
+- **Segunda parte, etapa 2:** tomar antes de empezar, `stillHolds` antes de cada estación y soltar al terminar.
+- **Segunda parte, etapa 3:** la cola común, un trabajo por origen y las capacidades de cada máquina.
+- **Segunda parte, etapa 4:** la subida del avance en cada checkpoint y al apagar a propósito.
+- **Segunda parte, etapa 5:** la retoma desde el último checkpoint subido.
+- **Después:** el presupuesto sumado, el clonado de líneas y pedir, responder y aprobar desde cualquier máquina.
 
 ## Consecuencias
 
 - La coordinación depende de GitHub: sin GitHub, cada máquina sigue con lo que ya tiene pero no toma trabajos nuevos de la cola común.
 - Una máquina caída pierde lo que no subió desde su último checkpoint, y sus trabajos esperan hasta `leaseMinutes` antes de que otra los retome.
-- La atomicidad descansa en el 422 de la API de referencias, no verificado todavía contra GitHub real.
+- La atomicidad descansa en el 422 de la API de referencias; cada máquina lo confirma con su sondeo y, si falla, no comparte la cola.
 - Cada máquina gasta cuota de GitHub en latidos; el pase `coord` se ve en `github:usage` y se frena con la reserva.
-- Hasta que lleguen las etapas siguientes, `zero unirse` solo da visibilidad y latidos, no capacidad compartida.
+- Con el sondeo aprobado, las máquinas comparten la cola y se retoman los trabajos; el presupuesto todavía se cuenta en cada máquina.

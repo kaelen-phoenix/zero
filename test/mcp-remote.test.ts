@@ -295,7 +295,7 @@ describe("remote chat MCP", () => {
   it("lists connected clients and revokes them at once", async () => {
     const p = await panel();
     const c = await connect(p, "zero:read");
-    const listed = remoteChatClients(p.ctx);
+    const listed = remoteChatClients(p.ctx, p.ctx.now!());
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ id: c.client, name: "ChatGPT", scope: ["zero:read"] });
     expect(listed[0]!.approvedAt).toBeTruthy();

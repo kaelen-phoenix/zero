@@ -1,7 +1,7 @@
 import { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vitest";
 import { githubCoord } from "../src/coord/github.js";
-import { claimJob, CoordConflict, heartbeat, listMachines, releaseJob, stillHolds } from "../src/coord/protocol.js";
+import { claimJob, CoordConflict, heartbeat, listMachines, probeCoord, releaseJob, stillHolds } from "../src/coord/protocol.js";
 
 /** A real Octokit over a fake fetch that keeps git refs and commits like GitHub's git data API. */
 function fakeGithub() {
@@ -100,12 +100,14 @@ describe("githubCoord", () => {
       ["pc-vieja", true],
     ]);
     const later = new Date(t0.getTime() + 20 * 60_000);
-    expect(await claimJob(api, "job1", B, later, 10)).toEqual({ claimed: true });
+    expect(await claimJob(api, "job1", B, later, 10)).toEqual({ claimed: true, takenFrom: expect.objectContaining({ machine: A.id }) });
     expect(await stillHolds(api, "job1", A.id)).toBe(false);
-    expect(await releaseJob(api, "job1", A.id)).toBe(false);
-    expect(await releaseJob(api, "job1", B.id)).toBe(true);
-    expect([...refs.keys()].sort()).toEqual(["refs/heads/zero-coord/machines/id-a", "refs/heads/zero-coord/machines/id-b"]);
-    expect(await api.read("claims/job1")).toBeUndefined();
+    expect(await releaseJob(api, "job1", A, "stopped", later)).toBe(false);
+    expect(await releaseJob(api, "job1", B, "delivered", later)).toBe(true);
+    expect([...refs.keys()].sort()).toEqual(["refs/heads/zero-coord/claims/job1", "refs/heads/zero-coord/machines/id-a", "refs/heads/zero-coord/machines/id-b"]);
+    expect(JSON.parse((await api.read("claims/job1"))!.data)).toMatchObject({ machine: B.id, released: true, status: "delivered" });
+    expect(await probeCoord(api, "id-b-1")).toEqual({ ok: true });
+    expect([...refs.keys()].some((k) => k.includes("/probe/"))).toBe(false);
     expect(paths.length).toBeGreaterThan(0);
     expect(paths.some((p) => p.includes("/actions/"))).toBe(false);
   });
