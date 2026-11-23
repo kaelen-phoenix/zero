@@ -29,11 +29,18 @@ function recordedGone(ctx: FactoryContext, job: Job): boolean {
   return status === "merged" || status === "closed";
 }
 
+/** Why a job in this state cannot be discarded, if it cannot. */
+export function discardRefusal(job: Job): string | undefined {
+  if (job.status === "running") return `El trabajo ${job.id} está en marcha: detenelo primero con \`zero stop ${job.id}\`.`;
+  if (job.status === "stopped") return `El trabajo ${job.id} ya está detenido: no hay nada que descartar.`;
+  if (job.status === "delivered" && !(job.delivery?.url && pullRequestOf(job.delivery.url))) return `El trabajo ${job.id} ya está entregado y no tiene un pull request abierto: no hay nada que descartar.`;
+  return undefined;
+}
+
 /** Throws when a job in this state cannot be discarded. */
 function checkDiscardable(job: Job) {
-  if (job.status === "running") throw new Error(`El trabajo ${job.id} está en marcha: detenelo primero con \`zero stop ${job.id}\`.`);
-  if (job.status === "stopped") throw new Error(`El trabajo ${job.id} ya está detenido: no hay nada que descartar.`);
-  if (job.status === "delivered" && !(job.delivery?.url && pullRequestOf(job.delivery.url))) throw new Error(`El trabajo ${job.id} ya está entregado y no tiene un pull request abierto: no hay nada que descartar.`);
+  const refusal = discardRefusal(job);
+  if (refusal) throw new Error(refusal);
 }
 
 /** Why a job's branch is never deleted: only the factory's own `zero/` branches go, and never a base branch. */

@@ -6,7 +6,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ANDON_KEY, confirmRemoteAction, pendingRemoteActions, remoteChatClients, requestWork, revokeRemoteChatClient, setRemoteMcp } from "../src/app.js";
-import { askOwner } from "../src/line/finish.js";
+import type { MergeApi } from "../src/line/automerge.js";
+import { askOwner, finalizeJob } from "../src/line/finish.js";
 import { ACCESS_TTL_MS, REMOTE_MCP_KEY } from "../src/mcp/oauth.js";
 import { createZeroMcpServer, READ_TOOLS } from "../src/mcp/server.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
@@ -355,6 +356,63 @@ describe("delicate actions from the remote chat", () => {
     await client.callTool({ name: "zero_answer", arguments: { job: other.id, decision: "approve" } });
     expect(p.ctx.store.getJob(other.id)!.status).not.toBe("waiting");
     expect(pendingRemoteActions(p.ctx)).toHaveLength(4);
+  });
+
+  it("holds a discard until it is confirmed, and then closes its pull request and branch", async () => {
+    const p = await panel();
+    const c = await connect(p);
+    const url = "https://github.com/kaelen/tienda/pull/7";
+    const job = await finalizeJob(p.ctx, requestWork(p.ctx, { text: "algo viejo" }).job, "delivered", { delivery: { mode: "pull-request", branch: "zero/deadbeef", url } });
+    const client = await mcpClient(p, c.access);
+    const answer = textOf(await client.callTool({ name: "zero_discard", arguments: { job: job.id, reason: "ya está\nen main" } }));
+    const [held] = pendingRemoteActions(p.ctx);
+    expect(held).toMatchObject({ tool: "zero_discard", args: { job: job.id, reason: "ya está\nen main" }, client: c.client });
+    expect(held!.text).toContain(`descartar el trabajo ${job.id}`);
+    expect(held!.text).toContain("(motivo: ya está en main)");
+    expect(answer).toContain(`zero mcp confirmar ${held!.id}`);
+    expect(p.ctx.store.getJob(job.id)).toEqual(job);
+
+    const did: string[] = [];
+    const api: MergeApi = {
+      pullRequest: async () => ({ open: true, merged: false, mergeable: true, headSha: "abc", base: "main" }),
+      checks: async () => [],
+      merge: async () => undefined,
+      deleteBranch: async (b) => void did.push(`delete ${b}`),
+      comment: async (n) => void did.push(`comment #${n}`),
+      close: async (n) => void did.push(`close #${n}`),
+    };
+    const done = await confirmRemoteAction(p.ctx, held!.id, { merges: () => api });
+    expect(done.ok).toBe(true);
+    expect(done.text).toContain(`${url}: cerrado.`);
+    expect(did).toEqual(["comment #7", "close #7", "delete zero/deadbeef"]);
+    expect(p.ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: expect.stringMatching(/^Lo descartaste vos: ya está/) });
+    expect(p.ctx.store.spansForJob(job.id).find((s) => s.name === "zero.discard")!.attrs["zero.discard.via"]).toBe("chat");
+  });
+
+  it("refuses at once a discard that cannot be done, and holds nothing", async () => {
+    const p = await panel();
+    const c = await connect(p);
+    const job = requestWork(p.ctx, { text: "en marcha" }).job;
+    p.ctx.store.updateJob(job.id, { status: "running" });
+    const client = await mcpClient(p, c.access);
+    expect(textOf(await client.callTool({ name: "zero_discard", arguments: { job: job.id } }))).toContain("zero stop");
+    expect(textOf(await client.callTool({ name: "zero_discard", arguments: { job: "nope" } }))).toBe("No existe el trabajo nope.");
+    expect(pendingRemoteActions(p.ctx)).toEqual([]);
+  });
+
+  it("leaves stdio as it was: zero_discard discards at once", async () => {
+    const p = await panel();
+    const job = requestWork(p.ctx, { text: "algo viejo" }).job;
+    await finalizeJob(p.ctx, job, "failed", { reason: "no" });
+    const server = createZeroMcpServer(p.ctx.home, { autoStart: false });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(b);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(a);
+    clients.push(client);
+    expect(textOf(await client.callTool({ name: "zero_discard", arguments: { job: job.id } }))).toContain("quedó detenido");
+    expect(p.ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: "Lo descartaste vos." });
+    expect(pendingRemoteActions(p.ctx)).toEqual([]);
   });
 
   it("leaves stdio as it was: zero_stop stops at once", async () => {

@@ -3,8 +3,9 @@ import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatMerge } from "../format.js";
+import { formatDiscard, formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
+import { discardJob } from "../line/discard.js";
 import { log } from "../log.js";
 import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
@@ -459,7 +460,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       else await stop(ctx);
       return back(res, "/", form.get("state") === "off" ? "Fábrica reanudada." : "Fábrica detenida: nada nuevo empieza hasta que la reanudes.");
     }
-    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop|merge)$/.exec(path);
+    const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop|merge|discard)$/.exec(path);
     if (jobAction) {
       const [, id, action] = jobAction as unknown as [string, string, string];
       if (action === "merge") {
@@ -467,6 +468,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         if (form.get("confirm") !== "1") return send(res, 200, confirmMergePage(getJob(ctx, id), nonce), nonce);
         const r = await mergePullRequest(ctx, id, { via: "panel", ...(opts.merges && { api: opts.merges }) });
         return back(res, `/job/${id}`, formatMerge(r));
+      }
+      if (action === "discard") {
+        const r = await discardJob(ctx, id, { reason: form.get("motivo") || undefined, via: "panel", ...(opts.merges && { api: opts.merges }) });
+        return back(res, `/job/${id}`, formatDiscard(r));
       }
       if (action === "stop") {
         await stop(ctx, id);

@@ -37,11 +37,12 @@ import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
+import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -2141,6 +2142,7 @@ export const PENDING_TTL_MS = 15 * 60_000;
 export type RemoteAction =
   | { tool: "zero_merge"; args: { target: string } }
   | { tool: "zero_stop"; args: { job?: string } }
+  | { tool: "zero_discard"; args: { job: string; reason?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
   | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
@@ -2154,6 +2156,11 @@ export function describeRemoteAction(a: RemoteAction): string {
       return `fundir el pull request de ${a.args.target}`;
     case "zero_stop":
       return a.args.job ? `detener el trabajo ${a.args.job}` : "detener toda la fábrica";
+    case "zero_discard": {
+      // The reason goes to the pull request's comment, so whoever confirms reads it whole, on one line.
+      const reason = cleanText(a.args.reason ?? "").replace(/\s+/g, " ");
+      return `descartar el trabajo ${a.args.job}, cerrando su pull request abierto y borrando su rama${reason ? ` (motivo: ${reason})` : ""}`;
+    }
     case "zero_proposal_decide":
       return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
     case "zero_egress_block":
@@ -2216,6 +2223,8 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
       const r = await stop(ctx, held.args.job);
       return { ok: true, text: r.factory ? "Fábrica detenida: nada nuevo empieza hasta que la reanudes." : formatJob(r.job!, { subscription: subscription() }) };
     }
+    case "zero_discard":
+      return { ok: true, text: formatDiscard(await discardJob(ctx, held.args.job, { reason: held.args.reason, via: "chat", ...(opts.merges && { api: opts.merges }) })) };
     case "zero_proposal_decide":
       if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
       return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };

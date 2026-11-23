@@ -18,9 +18,9 @@
 
 ## 3. Etapa 3: Discard in the chat and the panel
 
-- [ ] 3.1 zero_discard MCP tool through delicate, RemoteAction variant and its description.
-- [ ] 3.2 Panel POST /job/<id>/discard and a 'Descartar' form on the job page.
-- [ ] 3.3 Tests modelled on test/mcp-remote.test.ts and test/panel.test.ts; docs/agents/panel.md.
+- [x] 3.1 zero_discard MCP tool through delicate, RemoteAction variant and its description.
+- [x] 3.2 Panel POST /job/<id>/discard and a 'Descartar' form on the job page.
+- [x] 3.3 Tests modelled on test/mcp-remote.test.ts and test/panel.test.ts; docs/agents/panel.md.
 
 ## 4. Etapa 4: Automatic cleanup of resolved failed jobs
 
