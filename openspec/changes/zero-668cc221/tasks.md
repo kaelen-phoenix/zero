@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Box and install noise
 
-- [ ] 1.1 Create the OpenSpec change openspec/changes/zero-668cc221 with all requirements.
-- [ ] 1.2 collectJams: single box jam on the first non-package line; install jam text with the real selfUpdate setting.
-- [ ] 1.3 jamViews: dedupe machine causes with the same title across lines.
-- [ ] 1.4 install-freshness: staleBuild false when HEAD is the last self-updated commit and src is clean; recheck after an update.
-- [ ] 1.5 Tests in test/unjam.test.ts and test/install-freshness.test.ts; document in docs/agents/night-shift.md and docs/agents/self-update.md.
+- [x] 1.1 Create the OpenSpec change openspec/changes/zero-668cc221 with all requirements.
+- [x] 1.2 collectJams: single box jam on the first non-package line; install jam text with the real selfUpdate setting.
+- [x] 1.3 jamViews: dedupe machine causes with the same title across lines.
+- [x] 1.4 install-freshness: staleBuild false when HEAD is the last self-updated commit and src is clean; recheck after an update.
+- [x] 1.5 Tests in test/unjam.test.ts and test/install-freshness.test.ts; document in docs/agents/night-shift.md and docs/agents/self-update.md.
 
 ## 2. Etapa 2: Discard operation and CLI
 

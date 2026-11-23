@@ -556,12 +556,22 @@ export interface JamView {
   at: string;
 }
 
-/** The causes stored by the unjam station for every configured line, with the job or proposal still open. */
+/**
+ * The causes stored by the unjam station for every configured line, with the job or proposal still open. A machine
+ * cause diagnosed on several lines is shown once, on the first of them.
+ */
 export function jamViews(ctx: FactoryContext): JamView[] {
+  const machine = new Set<string>();
   return ctx.config.lines.flatMap((l) => {
     const diagnosis = readDiagnosis(ctx.store, l.name);
     if (!diagnosis) return [];
-    return diagnosis.causes.map((c): JamView => {
+    const causes = diagnosis.causes.filter((c) => {
+      if (c.kind !== "machine") return true;
+      if (machine.has(c.title)) return false;
+      machine.add(c.title);
+      return true;
+    });
+    return causes.map((c): JamView => {
       const job = c.job ? ctx.store.getJob(c.job) : undefined;
       const proposal = c.proposal ? ctx.store.getProposal(c.proposal) : undefined;
       return {
