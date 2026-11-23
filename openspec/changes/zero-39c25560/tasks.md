@@ -2,15 +2,15 @@
 
 ## 1. Etapa 1: Express pass, cap and daemon
 
-- [ ] 1.1 Add research.usdPerRun (positive, default 2) to ResearchSchema and its default in src/config.ts, and update the default expectation in test/research.test.ts
-- [ ] 1.2 Add an optional attrs to AgentTrace in src/agent.ts, put on the agent span; express calls set zero.on_demand; scoutSpent in src/line/scout.ts skips research spans with it
-- [ ] 1.3 In src/line/research.ts add ResearchRequest, ResearchRunRecord, keys research-demand, research-demand-runs (last 10, newest first) and research-demand-told, tolerant readers, the express prompt, researchOnDemandProblem, researchOnDemandReady, researchOnDemandPass and closeInterruptedResearch; share the agent call, sanitizeNotes and the storing with researchLine; at most 5 notes, no skill, business false; never log the topic
-- [ ] 1.4 Cap the call at the smaller of research.usdPerRun and what is left of limits.usdPerDay on engines not billed by subscription; a budgetLimited run ends stopped without notes
-- [ ] 1.5 Add requestInvestigation, waitResearchStart and waitResearchEnd to src/app.ts, following requestUnjam and waitUnjamStart
-- [ ] 1.6 In src/daemon.ts add DaemonOptions.researchOnDemand (off in once runs unless set) and a background pass independent of idle, urgent and unjamming, with its own AbortController aborted when the andon is on and joined with researchStop; await it in the shutdown block and call closeInterruptedResearch at start
-- [ ] 1.7 Update the opening and the skill paragraph of agents/research.md for runs that follow a topic
-- [ ] 1.8 Write test/research-on-demand.test.ts for the request, refusals, gates, cap, night spending, notes, records, crash and daemon (busy factory, andon cut)
-- [ ] 1.9 Document it in docs/agents/night-shift.md and docs/agents/daemon.md
+- [x] 1.1 Add research.usdPerRun (positive, default 2) to ResearchSchema and its default in src/config.ts, and update the default expectation in test/research.test.ts
+- [x] 1.2 Add an optional attrs to AgentTrace in src/agent.ts, put on the agent span; express calls set zero.on_demand; scoutSpent in src/line/scout.ts skips research spans with it
+- [x] 1.3 In src/line/research.ts add ResearchRequest, ResearchRunRecord, keys research-demand, research-demand-runs (last 10, newest first) and research-demand-told, tolerant readers, the express prompt, researchOnDemandProblem, researchOnDemandReady, researchOnDemandPass and closeInterruptedResearch; share the agent call, sanitizeNotes and the storing with researchLine; at most 5 notes, no skill, business false; never log the topic
+- [x] 1.4 Cap the call at the smaller of research.usdPerRun and what is left of limits.usdPerDay on engines not billed by subscription; a budgetLimited run ends stopped without notes
+- [x] 1.5 Add requestInvestigation, waitResearchStart and waitResearchEnd to src/app.ts, following requestUnjam and waitUnjamStart
+- [x] 1.6 In src/daemon.ts add DaemonOptions.researchOnDemand (off in once runs unless set) and a background pass independent of idle, urgent and unjamming, with its own AbortController aborted when the andon is on and joined with researchStop; await it in the shutdown block and call closeInterruptedResearch at start
+- [x] 1.7 Update the opening and the skill paragraph of agents/research.md for runs that follow a topic
+- [x] 1.8 Write test/research-on-demand.test.ts for the request, refusals, gates, cap, night spending, notes, records, crash and daemon (busy factory, andon cut)
+- [x] 1.9 Document it in docs/agents/night-shift.md and docs/agents/daemon.md
 
 ## 2. Etapa 2: Terminal, chat, status and notice
 

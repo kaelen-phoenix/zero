@@ -66,8 +66,10 @@ const ResearchSchema = z.union([
     .object({
       /** Topics of interest added to every line's research. */
       topics: z.array(z.string().min(1)).default([]),
-      /** Notes each line keeps per local day; 0 turns research off. */
+      /** Notes each line keeps per local day; 0 turns the daily research off. */
       perLinePerDay: z.number().int().min(0).default(1),
+      /** What one research run asked for on demand may spend; per-use billing only. */
+      usdPerRun: z.number().positive().default(2),
       /**
        * How far every research-born proposal goes on its own, whatever scout declares about it: the stricter of this and
        * the line's autonomy.
@@ -461,7 +463,7 @@ export const FactorySchema = z
     /** Absent: on, at any hour the factory is idle. */
     nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     /** Absent: on, one note per line with a research skill per day. */
-    research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
+    research: ResearchSchema.default({ topics: [], perLinePerDay: 1, usdPerRun: 2, autonomy: "propose" }),
     /** Absent: on, with the night shift's gates, at most two jobs a day. */
     unjam: UnjamSchema.default({ maxJobsPerDay: 2, urgentAfterHours: 2 }),
     /** Absent: on, with the night shift's gates, once a week, at most three findings a run. */

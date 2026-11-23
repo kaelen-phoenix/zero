@@ -117,7 +117,7 @@ export function fakeAgents(handlers: Partial<Record<AgentStation | (string & {})
     const name = agentName(req);
     count[name] = (count[name] ?? 0) + 1;
     const engine = req.engine?.name ?? "fake";
-    const span = req.trace?.tracer.start(AGENT_SPAN, { jobId: req.trace.jobId, parentId: req.trace.parentId, attrs: { "gen_ai.agent.name": name, "gen_ai.request.model": req.engine?.model, "zero.engine": engine, "zero.engine.replaces": req.engine?.replaces, "zero.engine.reason": req.engine?.reason } });
+    const span = req.trace?.tracer.start(AGENT_SPAN, { jobId: req.trace.jobId, parentId: req.trace.parentId, attrs: { ...req.trace.attrs, "gen_ai.agent.name": name, "gen_ai.request.model": req.engine?.model, "zero.engine": engine, "zero.engine.replaces": req.engine?.replaces, "zero.engine.reason": req.engine?.reason } });
     const fallback: Partial<AgentRun<any>> =
       req.station === "spec" ? { output: validSpec() } : req.station === "review" || req.station === "security" ? { output: cleanReview() } : {};
     const result = { ok: true, text: "done", costUsd: costPerCall, costSource: "reported" as const, engine, ...fallback, ...((await handlers[name]?.(req, count[name]!)) ?? {}) };

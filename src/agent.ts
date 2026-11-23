@@ -11,7 +11,7 @@ import { log } from "./log.js";
 import { runGuarded } from "./readonly-guard.js";
 import { assignedSkills, availableSkills, resolveSkill, stageSkills, unstageSkills, withSkillText, type Skill, type StagedSkills } from "./skills.js";
 import { AGENT_SPAN } from "./telemetry/metrics.js";
-import type { Tracer } from "./telemetry/tracer.js";
+import type { Attrs, Tracer } from "./telemetry/tracer.js";
 
 /** Stations staffed by an agent. `verify` and `integrate` are run by zero itself. */
 export type AgentStation = "spec" | "build" | "review" | "security" | "reply" | "scout" | "research" | "unjam" | "recruit";
@@ -73,6 +73,8 @@ export interface AgentTrace {
   tracer: Tracer;
   jobId?: string;
   parentId?: string;
+  /** Added to the agent span's own attributes. */
+  attrs?: Attrs;
 }
 
 export type AgentRunner = <T>(req: AgentRequest<T>) => Promise<AgentRun<T>>;
@@ -215,6 +217,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       jobId: trace.jobId,
       parentId: trace.parentId,
       attrs: {
+        ...trace.attrs,
         "gen_ai.agent.name": name,
         "gen_ai.request.model": model,
         "zero.engine": engine.name,

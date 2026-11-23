@@ -40,9 +40,10 @@ import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
+import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -2916,6 +2917,67 @@ export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, w
     waited += step;
   }
   return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
+}
+
+/** Characters of the topic of an express research run. */
+export const RESEARCH_TOPIC_CHARS = 2000;
+
+/**
+ * Asks the daemon for one research run on a topic as soon as it can, on a line (the only one that is not a package's
+ * without a name), whatever the factory is doing. At most one pending in the factory; a refusal writes nothing.
+ */
+export function requestInvestigation(ctx: FactoryContext, topic: string, line?: string, now = new Date()): StationRunResult {
+  const name = line?.trim() || undefined;
+  const pending = readResearchRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una investigación pendiente para ${pending.line}, pedida el ${pending.requestedAt}` };
+  if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
+  const problem = researchOnDemandProblem(ctx, name);
+  if (problem) return { ok: false, reason: problem };
+  if (researchBudgetReached(ctx, now)) return { ok: false, reason: "se alcanzó el presupuesto" };
+  const asked = topic.trim();
+  if (asked.length > RESEARCH_TOPIC_CHARS) return { ok: false, reason: `el tema pasa de ${RESEARCH_TOPIC_CHARS} caracteres` };
+  const target = ctx.config.lines.find((l) => !l.package && (name === undefined || l.name === name))!;
+  const clean = scrubLocal(asked, target).trim();
+  if (!clean) return { ok: false, reason: "falta el tema a investigar" };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(RESEARCH_REQUEST_KEY, JSON.stringify({ requestedAt, line: target.name, topic: clean } satisfies ResearchRequest));
+  return { ok: true, text: `Investigación pedida para ${target.name}: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** The record of the research run asked for at `requestedAt` once it is as `when` says, unless the limit passes first. */
+async function waitResearchRun(ctx: FactoryContext, requestedAt: string, wait: StationWait, when: (run: ResearchRunRecord) => boolean): Promise<ResearchRunRecord | undefined> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readResearchRuns(ctx.store).find((r) => r.asked === requestedAt);
+    if (run && when(run)) return run;
+    if (waited >= wait.timeoutMs) return undefined;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+}
+
+/** Like `waitStationStart`, for the research run asked for at `requestedAt`; a run that ended without starting says why at once. */
+export async function waitResearchStart(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const run = await waitResearchRun(ctx, requestedAt, wait, (r) => Boolean(r.startedAt ?? r.endedAt));
+  if (run?.startedAt) return { started: true, text: `La investigación empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero research.` };
+  if (run) return { started: false, text: `La investigación no corrió: ${run.reason ?? "sin motivo registrado"}.` };
+  return { started: false, text: "La investigación sigue pendiente: corre en la próxima pasada del daemon." };
+}
+
+const RESEARCH_END_TEXT: Record<NonNullable<ResearchRunRecord["outcome"]>, string> = { ok: "terminó bien", failed: "falló", stopped: "se cortó", "not-run": "no pudo correr" };
+
+/** Waits for the end of the research run asked for at `requestedAt`, by default a little longer than its station's own timeout. */
+export async function waitResearchEnd(ctx: FactoryContext, requestedAt: string, wait: Partial<StationWait> = {}): Promise<{ ended: boolean; outcome?: ResearchRunRecord["outcome"]; text: string }> {
+  const timeoutMs = wait.timeoutMs ?? (ctx.config.stations.research.timeoutMinutes + 1) * 60_000;
+  const run = await waitResearchRun(ctx, requestedAt, { ...wait, timeoutMs }, (r) => Boolean(r.endedAt));
+  if (!run) return { ended: false, text: "La investigación sigue su curso. Mirá cómo va en zero status y sus notas en zero research." };
+  const outcome = run.outcome ?? "failed";
+  const notes = run.notes.map((id) => ctx.store.getResearchNote(id)).filter((n): n is ResearchNote => n !== undefined);
+  const how = `La investigación ${RESEARCH_END_TEXT[outcome]}${run.reason ? `: ${run.reason}` : ""}.`;
+  return { ended: true, outcome, text: notes.length ? `${how}\n\n${formatResearchNotes(notes)}` : how };
 }
 
 function hourMinute(iso: string): string {
