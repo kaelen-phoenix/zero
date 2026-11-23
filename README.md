@@ -360,7 +360,7 @@ With the factory running, the panel shows:
 - the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
-From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
+From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)) and block or allow sites. It is designed for the phone.
 
 ```sh
 zero panel                     # the panel link, with your key (starts the factory if needed)
@@ -999,7 +999,14 @@ stations:
   unjam: { timeoutMinutes: 15 }
 ```
 
+**On demand.** You can ask for it without waiting for the night shift: `zero destrabar`, for every line, or `zero destrabar <line>`, for one; the chat's `zero_unjam` tool (a remote chat needs permission to act); or the "Destrabar ahora" button in the panel's summary, where you choose the line. It runs once as soon as it can, with jobs queued or running, outside `nightShift.hours`, with `nightShift: off` and even for a line already diagnosed in the period, without taking a job's place and never along with another diagnosis. The regular passes keep their own turn, and package lines are never looked at.
+
+- **Same logic and limits.** `unjam.maxJobsPerDay`, `nightShift.maxAutoJobsPerDay`, no repeated titles, each job's single retry, the line's autonomy and protected paths hold as in the regular pass, and it shares `limits.usdPerNight`: with nothing left, it calls no model and ends as cut short.
+- **One pending at a time.** Asking again before it starts is refused, and so it is with the andon on, the budget reached, `unjam: off` or a line that does not exist or belongs to a package: you get the reason and nothing is recorded (the command exits 1). If the andon or the budget comes after you asked, it stays pending until neither holds.
+- **What it shows.** The command and the chat start the factory if it was off, wait a while for the run to start and tell you whether it did or is still pending. `zero status`, the panel's summary and the briefing show the pending run and the last one: when it was asked for, when it started and how it ended (fine, failed, cut short or could not run, with the reason), with each line's jams and causes.
+
 ```sh
+zero destrabar [line]     # the unjam station now, for one line or for all of them
 zero reintentar <job>     # a failed job back to the queue from its checkpoint, or a pull request in conflict back to the line
 ```
 

@@ -359,7 +359,7 @@ Con la fábrica en marcha, el panel muestra:
 - la pestaña "Sala de control": una consola de operaciones en tonos oscuros y letra monoespaciada chica, en vivo y solo lectura, con el reloj, los contadores del día, el costo y el estado del daemon, una cinta que se desplaza con los eventos de las últimas 24 horas, cada trabajo como un punto que viaja por las estaciones hasta una columna de decisiones, series de 24 horas por línea, el bus de agentes, los últimos spans, el uso del plan y las pausas de los motores, y las trabas y alertas en rojo, todo con datos reales de la fábrica y en una sola columna en el celular;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
-Desde el panel también se pide un trabajo, se tira del andon y se bloquean o permiten sitios. Está pensado para el celular.
+Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)) y se bloquean o permiten sitios. Está pensado para el celular.
 
 ```sh
 zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
@@ -998,7 +998,14 @@ stations:
   unjam: { timeoutMinutes: 15 }
 ```
 
+**A demanda.** Podés pedirlo sin esperar al turno nocturno: `zero destrabar`, para todas las líneas, o `zero destrabar <línea>`, para una; la herramienta `zero_unjam` del chat (un chat remoto necesita permiso para actuar); o el botón "Destrabar ahora" del resumen del panel, donde elegís la línea. Corre una vez apenas puede, con trabajos en cola o en marcha, fuera de `nightShift.hours`, con `nightShift: off` y aunque la línea ya se haya diagnosticado en el período, sin ocupar el lugar de un trabajo y nunca junto con otro diagnóstico. Las pasadas normales conservan su turno, y las líneas de paquetes no se miran.
+
+- **La misma lógica y los mismos límites.** `unjam.maxJobsPerDay`, `nightShift.maxAutoJobsPerDay`, no repetir títulos, el único reintento de cada trabajo, la autonomía de la línea y las rutas protegidas rigen como en la pasada normal, y comparte `limits.usdPerNight`: si no queda nada, no llama a ningún modelo y termina cortada.
+- **Una pendiente por vez.** Si la pedís de nuevo antes de que empiece, se rechaza, igual que con el andon activo, el presupuesto agotado, `unjam: off` o una línea que no existe o es de un paquete: recibís el motivo y no se registra nada (el comando sale con 1). Si el andon o el presupuesto llegan después de pedirla, queda pendiente hasta que ninguno la frene.
+- **Qué muestra.** El comando y el chat encienden la fábrica si estaba apagada, esperan un rato a que empiece la corrida y te dicen si empezó o sigue pendiente. `zero status`, el resumen del panel y el informe muestran la corrida pendiente y la última: cuándo se pidió, cuándo empezó y cómo terminó (bien, falló, se cortó o no pudo correr, con el motivo), con las trabas y causas de cada línea.
+
 ```sh
+zero destrabar [line]     # el destrabador ahora, para una línea o para todas
 zero reintentar <job>     # un trabajo fallido vuelve a la cola desde su checkpoint, o un pull request en conflicto vuelve a la línea
 ```
 
