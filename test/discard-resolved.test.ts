@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { FactoryContext } from "../src/app.js";
+import { requestUnjam, type FactoryContext } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { mergeKey, type MergeApi } from "../src/line/automerge.js";
 import { discardResolved, RESOLVED_MS } from "../src/line/discard.js";
 import { finalizeJob } from "../src/line/finish.js";
-import { readDiagnosis, unjamPass, urgentUnjamPass } from "../src/line/unjam.js";
+import { readDiagnosis, readUnjamRun, unjamOnDemandPass, unjamPass, urgentUnjamPass } from "../src/line/unjam.js";
 import type { Job } from "../src/state/store.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
@@ -195,6 +195,18 @@ describe("failed jobs already resolved", () => {
     expect(agents.calls).toEqual([]);
     expect(readDiagnosis(ctx.store, "demo")).toBeUndefined();
     expect(read(ctx, job).status).toBe("stopped");
+  });
+
+  it("are closed by an unjam run on demand before it looks: no agent, and the line has no jams", async () => {
+    const { ctx, repo } = withRemote();
+    const job = await failed(ctx, repo);
+    merge(repo, job);
+    expect(requestUnjam(ctx, "demo", new Date())).toMatchObject({ ok: true });
+    const agents = fakeAgents({});
+    await unjamOnDemandPass(ctx, agents.runner, new Date());
+    expect(agents.calls).toEqual([]);
+    expect(read(ctx, job).status).toBe("stopped");
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }] });
   });
 
   it("are closed before the daytime unjam looks: only what is left is diagnosed", async () => {

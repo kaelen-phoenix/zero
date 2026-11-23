@@ -45,7 +45,7 @@ import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { recruitPass } from "./line/recruit.js";
 import { discardResolved } from "./line/discard.js";
-import { resendAfterCapability, unjamPass, urgentUnjamPass } from "./line/unjam.js";
+import { closeInterruptedUnjam, resendAfterCapability, unjamOnDemandPass, unjamOnDemandReady, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
@@ -89,6 +89,8 @@ export interface DaemonOptions {
   unjam?: boolean;
   /** Run the unjam station during the day for a line with a pull request blocked too long (`unjam.urgentAfterHours`), busy factory or not. Defaults to on, except in `once` runs. */
   urgentUnjam?: boolean;
+  /** Run the unjam station when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
+  unjamOnDemand?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
   /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
@@ -220,6 +222,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     }
     store.updateJob(job.id, { status: "queued" });
   }
+
+  closeInterruptedUnjam(ctx, now());
 
   const running = new Map<string, Running>();
   // One gate host per runtime and image, shared by every job so only one of them starts the gate.
@@ -514,8 +518,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   let packagesAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
-    // Never two diagnoses at once: the daytime one may still be at work.
-    if (idle || urgent || running.size) return;
+    // Never two diagnoses at once: the daytime one, or the one asked for, may still be at work.
+    if (idle || urgent || unjamming || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
@@ -529,16 +533,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
         meter.endRun("scout");
       }
+      // An unjam run asked for meanwhile goes before the next step, and never along with one.
+      await startUnjamOnDemand();
       if (unjams && !researchStop.signal.aborted) {
         // The failed checks' logs are read through the meter, and not at all while GitHub holds a pause.
         const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
         await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal, merges).catch((err) => log.warn("unjam failed", { error: String(err) }));
         meter.endRun("unjam");
       }
+      await startUnjamOnDemand();
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+      await startUnjamOnDemand();
       if (recruits && !researchStop.signal.aborted)
         await recruitPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("recruiter failed", { error: String(err) }));
+      await startUnjamOnDemand();
       if (stations && !researchStop.signal.aborted)
         await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
@@ -584,7 +593,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   let urgentAt = 0;
   let urgent: Promise<unknown> | undefined;
   const runUrgentUnjam = () => {
-    if (urgent || idle || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
+    if (urgent || idle || unjamming || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
     urgentAt = Date.now();
     const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
     urgent = urgentUnjamPass(ctx, passRunner(ctx.config), now(), { running: running.size, signal: researchStop.signal, merges })
@@ -593,6 +602,24 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("unjam");
         urgent = undefined;
       });
+  };
+
+  // An unjam run the person in charge asked for: its own background pass, which takes no job slot and waits for no job. Never two diagnoses at
+  // once, and limits.usdPerNight is shared: it waits for the daytime pass to end and runs between the idle run's steps, never along with one.
+  let unjamming: Promise<void> | undefined;
+  const startUnjamOnDemand = () => {
+    if (unjamming || stopping || researchStop.signal.aborted || !(opts.unjamOnDemand ?? !opts.once) || !unjamOnDemandReady(ctx, now())) return unjamming;
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+    unjamming = unjamOnDemandPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal, merges })
+      .catch((err) => log.warn("on-demand unjam failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("unjam");
+        unjamming = undefined;
+      });
+    return unjamming;
+  };
+  const runUnjamOnDemand = () => {
+    if (!idle && !urgent) void startUnjamOnDemand();
   };
 
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
@@ -636,6 +663,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       runSchedules();
       runOnDemand();
       runBusyStations();
+      runUnjamOnDemand();
       runUrgentUnjam();
       lookForPackageUpdates();
       checkSelfUpdate();
@@ -773,6 +801,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await demanding;
     await busyRunning;
     await urgent;
+    await unjamming;
     await looking;
     await selfChecking;
     await idle;

@@ -3,7 +3,7 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, uploadToStation, type UploadContent, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -108,7 +108,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   const autoStart = opts.autoStart ?? true;
   const ensureDaemon = opts.start ?? startDaemon;
   const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
-  // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
+  // How long zero_package_run and zero_unjam wait for the run to start; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
   const remote = opts.remote;
   const canAct = !remote || remote.scope.includes("zero:act");
@@ -289,6 +289,23 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
         const wait = await waitStationStart(ctx, station, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
+    "zero_unjam",
+    {
+      title: "Destrabar ahora",
+      description: "Ask the factory to run the unjam station once, now: it diagnoses what is stuck on a line, or on every line, without waiting for the night shift or for queued and running jobs, within its usual limits. At most one pending run. Only when the owner asks for it.",
+      inputSchema: { line: z.string().optional().describe("Project (line) name; every line without it.") },
+    },
+    ({ line }) =>
+      withFactory(home, async (ctx) => {
+        const r = requestUnjam(ctx, line);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
         return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
       }),
   );

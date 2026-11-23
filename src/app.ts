@@ -39,7 +39,7 @@ import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, sta
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
-import { closedCause, readDiagnosis, type Cause } from "./line/unjam.js";
+import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
@@ -451,6 +451,8 @@ export interface FactoryStatus {
   onDemandRuns: OnDemandRun[];
   /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
   stationRuns: ({ station: string } & StationRunRecord)[];
+  /** The unjam station on demand (see `requestUnjam`). */
+  unjam: UnjamOnDemand;
   /** Loaded stations that declare `whenBusy`, as `<package>/<station>`: their regular pass also runs with the factory busy. */
   whenBusy: string[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
@@ -469,6 +471,22 @@ export interface FactoryStatus {
   queued: Job[];
   waiting: Job[];
   recent: Job[];
+}
+
+/** The unjam station on demand: what may be asked for, the request that has not started yet and the last run. */
+export interface UnjamOnDemand {
+  /** False with `unjam: off`. */
+  enabled: boolean;
+  /** The lines it can be asked for: the ones that are not a package's. */
+  lines: string[];
+  pending?: UnjamRequest;
+  last?: UnjamRunRecord;
+}
+
+function unjamOnDemand(ctx: FactoryContext): UnjamOnDemand {
+  const pending = readUnjamRequest(ctx.store);
+  const last = readUnjamRun(ctx.store);
+  return { enabled: ctx.config.unjam !== "off", lines: ctx.config.lines.filter((l) => !l.package).map((l) => l.name), ...(pending && { pending }), ...(last && { last }) };
 }
 
 /** A station's last on-demand run, as `<package>/<station>`; `stale` when it never ended and is past the station's time limit. */
@@ -700,6 +718,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
       const run = s.onDemand ? readStationRun(ctx, s.package, s.name) : undefined;
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
+    unjam: unjamOnDemand(ctx),
     whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
@@ -812,7 +831,9 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .filter((j) => j.source?.kind === "package" && (!FINAL_STATUSES.includes(j.status) || (j.finishedAt && j.finishedAt >= from.toISOString() && j.finishedAt <= to.toISOString())))
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
-  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to) };
+  const { pending, last } = status.unjam;
+  const lastInPeriod = [last?.startedAt, last?.endedAt].some((t) => t !== undefined && t >= from.toISOString() && t <= to.toISOString());
+  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to), unjam: { pending, ...(lastInPeriod && { last }) } };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
   return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry, status.trains);
 }
@@ -2858,6 +2879,43 @@ export async function waitStationStart(ctx: FactoryContext, ref: string, request
     waited += step;
   }
   return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre en la próxima pasada del daemon.` };
+}
+
+/**
+ * Asks the daemon for one run of the unjam station as soon as it can, for a line or for every line that is not a
+ * package's, whatever the factory is doing and outside the night shift's hours and periods. At most one pending in the
+ * factory; a refusal writes nothing.
+ */
+export function requestUnjam(ctx: FactoryContext, line?: string, now = new Date()): StationRunResult {
+  const name = line?.trim() || undefined;
+  const pending = readUnjamRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una corrida del destrabador pendiente${pending.line === undefined ? "" : ` para ${pending.line}`}, pedida el ${pending.requestedAt}` };
+  if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
+  if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
+  const problem = onDemandProblem(ctx, name);
+  if (problem) return { ok: false, reason: problem };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(UNJAM_REQUEST_KEY, JSON.stringify({ requestedAt, ...(name !== undefined && { line: name }) } satisfies UnjamRequest));
+  return { ok: true, text: `Corrida del destrabador pedida para ${name ?? "todas las líneas"}: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** Like `waitStationStart`, for the unjam run asked for at `requestedAt`; a run that ended without starting says why at once. */
+export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readUnjamRun(ctx.store);
+    if (run?.asked === requestedAt) {
+      if (run.startedAt) return { started: true, text: `El destrabador empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero status.` };
+      if (run.endedAt) return { started: false, text: `El destrabador no corrió: ${run.reason ?? "sin motivo registrado"}.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
 }
 
 function hourMinute(iso: string): string {

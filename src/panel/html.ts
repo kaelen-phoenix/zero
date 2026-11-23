@@ -3,7 +3,7 @@ import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, t
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -334,6 +334,18 @@ function budgetStat(s: FactoryStatus): string {
   return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${paused}</span></div>`;
 }
 
+/** The unjam station on demand: the pending request, the last run and, unless it is off, the form to ask for one. */
+function unjamCard(u: FactoryStatus["unjam"]): string {
+  if (!u.enabled && !u.pending && !u.last) return "";
+  const pending = u.pending ? `<p>Corrida a demanda: ${esc(unjamPendingText(u.pending))}</p>` : "";
+  const last = u.last ? `<p${u.last.outcome === "failed" || u.last.outcome === "not-run" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeUnjamRun(u.last))}</p>` : "";
+  const options = u.lines.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  const form = u.enabled
+    ? `<form method="post" action="/unjam"><label for="unjam-line">Línea</label><select id="unjam-line" name="line"><option value="">Todas las líneas</option>${options}</select><button class="primary">Destrabar ahora</button></form>`
+    : "";
+  return `<div class="card"><h2>Destrabador</h2>${pending}${last}${form}</div>`;
+}
+
 export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, flash?: string): string {
   const t = s.today;
   const state = s.andon ? `<span class="bad">DETENIDA (andon)</span>` : s.daemon.alive ? `<span class="ok">en marcha</span>` : s.daemon.lockHeld ? `<span class="bad">no responde${s.daemon.pid ? ` (proceso ${s.daemon.pid})` : ""}</span>` : s.daemon.state === "crashed" ? `<span class="bad">se cayó</span>` : "apagada";
@@ -379,6 +391,7 @@ ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los is
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
 ${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
+${unjamCard(s.unjam)}
 <div class="card"><h2>Pedir un trabajo</h2>
 <form method="post" action="/request"><label for="text">Qué querés, en tus palabras</label><textarea id="text" name="text" required></textarea>
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
@@ -1012,7 +1025,7 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
   },
   unjam: {
     name: "Destrabador (unjam)",
-    does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
+    does: "Con la fábrica libre, o en cualquier momento si se lo pedís (zero destrabar o el botón Destrabar ahora del resumen), junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
     cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
   },
   recruit: {
