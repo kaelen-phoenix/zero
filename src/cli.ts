@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -61,6 +61,11 @@ Uso diario (también desde el chat):
   zero destrabar [línea]         Corre ahora el destrabador en la línea (o en todas), aunque haya trabajos en cola o
                                  corriendo y fuera del turno nocturno, con sus mismos límites; responde cuando la
                                  corrida empezó (o, pasados 2 minutos, que sigue pendiente)
+  zero investigar "<tema>" [--line <nombre>] [--esperar]
+                                 Investiga ahora ese tema en la web para la línea, aunque haya trabajos en cola o corriendo
+                                 y fuera del turno nocturno, hasta research.usdPerRun; responde cuando la corrida empezó
+                                 (o, pasados 2 minutos, que sigue pendiente); con --esperar, se queda hasta que termina y
+                                 muestra sus notas
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -139,7 +144,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run` and `zero destrabar` wait for the daemon to start the run before saying it is still pending. */
+/** How long `zero package run`, `zero destrabar` and `zero investigar` wait for the daemon to start the run before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -166,6 +171,7 @@ async function main(argv: string[]): Promise<number> {
       label: { type: "string" },
       station: { type: "string" },
       pedido: { type: "string" },
+      esperar: { type: "boolean" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -373,6 +379,20 @@ async function main(argv: string[]): Promise<number> {
         console.log(r.text);
         if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
         console.log((await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
+        return 0;
+      }
+      case "investigar": {
+        const r = requestInvestigation(ctx, rest.join(" "), values.line);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        const start = await waitResearchStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS });
+        console.log(start.text);
+        if (!values.esperar || start.notRun) return 0;
+        console.log((await waitResearchEnd(ctx, r.requestedAt)).text);
         return 0;
       }
       case "resume":

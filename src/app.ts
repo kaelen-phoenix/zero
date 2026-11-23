@@ -43,7 +43,7 @@ import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnja
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -454,6 +454,8 @@ export interface FactoryStatus {
   stationRuns: ({ station: string } & StationRunRecord)[];
   /** The unjam station on demand (see `requestUnjam`). */
   unjam: UnjamOnDemand;
+  /** The research station on demand (see `requestInvestigation`). */
+  research: ResearchOnDemand;
   /** Loaded stations that declare `whenBusy`, as `<package>/<station>`: their regular pass also runs with the factory busy. */
   whenBusy: string[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
@@ -488,6 +490,21 @@ function unjamOnDemand(ctx: FactoryContext): UnjamOnDemand {
   const pending = readUnjamRequest(ctx.store);
   const last = readUnjamRun(ctx.store);
   return { enabled: ctx.config.unjam !== "off", lines: ctx.config.lines.filter((l) => !l.package).map((l) => l.name), ...(pending && { pending }), ...(last && { last }) };
+}
+
+/** The research station on demand: what may be asked for, the request that has not started yet and the runs kept, newest first. */
+export interface ResearchOnDemand {
+  /** False with `research: off`. */
+  enabled: boolean;
+  /** The lines it can be asked for: the ones that are not a package's. */
+  lines: string[];
+  pending?: ResearchRequest;
+  runs: ResearchRunRecord[];
+}
+
+function researchOnDemand(ctx: FactoryContext): ResearchOnDemand {
+  const pending = readResearchRequest(ctx.store);
+  return { enabled: ctx.config.research !== "off", lines: ctx.config.lines.filter((l) => !l.package).map((l) => l.name), ...(pending && { pending }), runs: readResearchRuns(ctx.store) };
 }
 
 /** A station's last on-demand run, as `<package>/<station>`; `stale` when it never ended and is past the station's time limit. */
@@ -720,6 +737,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
       return run ? [{ station: `${s.package}/${s.name}`, ...run }] : [];
     }),
     unjam: unjamOnDemand(ctx),
+    research: researchOnDemand(ctx),
     whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
@@ -833,8 +851,9 @@ export async function briefing(ctx: FactoryContext, days = 1): Promise<Briefing>
     .reverse();
   const alerts = securityAlerts(ctx).flatMap((l) => l.alerts.map((a) => ({ ...a, line: l.line })));
   const { pending, last } = status.unjam;
-  const lastInPeriod = [last?.startedAt, last?.endedAt].some((t) => t !== undefined && t >= from.toISOString() && t <= to.toISOString());
-  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to), unjam: { pending, ...(lastInPeriod && { last }) } };
+  const inPeriod = (...times: (string | undefined)[]) => times.some((t) => t !== undefined && t >= from.toISOString() && t <= to.toISOString());
+  const express = { pending: status.research.pending, runs: status.research.runs.filter((r) => inPeriod(r.startedAt, r.endedAt)) };
+  const onDemand = { pending: pendingOnDemand(ctx), runs: onDemandRuns(ctx, from, to), unjam: { pending, ...(inPeriod(last?.startedAt, last?.endedAt) && { last }) }, research: express };
   const selfUpdates = readSelfUpdate(ctx.store).history.filter((e) => e.outcome !== "updated" && e.at >= from.toISOString() && e.at <= to.toISOString());
   return renderBriefing(computeMetrics(ctx.store, from, to), posts, summarizeEgress(ctx.store, { from, to }), unmerged, night, research, packages, alerts, onDemand, status.outages, status.billing, status.jams, status.install, selfUpdates, status.selfUpdate?.retry, status.trains);
 }
@@ -2959,15 +2978,13 @@ async function waitResearchRun(ctx: FactoryContext, requestedAt: string, wait: S
   }
 }
 
-/** Like `waitStationStart`, for the research run asked for at `requestedAt`; a run that ended without starting says why at once. */
-export async function waitResearchStart(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+/** Like `waitStationStart`, for the research run asked for at `requestedAt`; a run that ended without starting (`notRun`) says why at once. */
+export async function waitResearchStart(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; notRun?: true; text: string }> {
   const run = await waitResearchRun(ctx, requestedAt, wait, (r) => Boolean(r.startedAt ?? r.endedAt));
   if (run?.startedAt) return { started: true, text: `La investigación empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero research.` };
-  if (run) return { started: false, text: `La investigación no corrió: ${run.reason ?? "sin motivo registrado"}.` };
+  if (run) return { started: false, notRun: true, text: `La investigación no corrió: ${run.reason ?? "sin motivo registrado"}.` };
   return { started: false, text: "La investigación sigue pendiente: corre en la próxima pasada del daemon." };
 }
-
-const RESEARCH_END_TEXT: Record<NonNullable<ResearchRunRecord["outcome"]>, string> = { ok: "terminó bien", failed: "falló", stopped: "se cortó", "not-run": "no pudo correr" };
 
 /** Waits for the end of the research run asked for at `requestedAt`, by default a little longer than its station's own timeout. */
 export async function waitResearchEnd(ctx: FactoryContext, requestedAt: string, wait: Partial<StationWait> = {}): Promise<{ ended: boolean; outcome?: ResearchRunRecord["outcome"]; text: string }> {
@@ -2976,7 +2993,7 @@ export async function waitResearchEnd(ctx: FactoryContext, requestedAt: string, 
   if (!run) return { ended: false, text: "La investigación sigue su curso. Mirá cómo va en zero status y sus notas en zero research." };
   const outcome = run.outcome ?? "failed";
   const notes = run.notes.map((id) => ctx.store.getResearchNote(id)).filter((n): n is ResearchNote => n !== undefined);
-  const how = `La investigación ${RESEARCH_END_TEXT[outcome]}${run.reason ? `: ${run.reason}` : ""}.`;
+  const how = `La investigación ${RESEARCH_END[outcome]}${run.reason ? `: ${run.reason}` : ""}.`;
   return { ended: true, outcome, text: notes.length ? `${how}\n\n${formatResearchNotes(notes)}` : how };
 }
 

@@ -14,12 +14,12 @@
 
 ## 2. Etapa 2: Terminal, chat, status and notice
 
-- [ ] 2.1 Add FactoryStatus.research (enabled, the lines that are not a package's, pending, runs) and its formatters in src/format.ts
-- [ ] 2.2 Show the pending request and the last run in formatStatus and in the briefing's 'Corridas a demanda' section
-- [ ] 2.3 Add zero investigar "<tema>" [--line] [--esperar] to src/cli.ts with its usage text, joining unquoted words
-- [ ] 2.4 Add zero_investigate to src/mcp/server.ts outside READ_TOOLS, with the same start wait as zero_unjam
-- [ ] 2.5 Append the notice of ended and untold runs in the server's withFactory for chats that may act, storing the told mark; failures are only logged
-- [ ] 2.6 Tests for status, briefing, CLI help and refusal, start and end waits, the tool, the read-only remote chat, the notice and the tool list in test/interface.test.ts
+- [x] 2.1 Add FactoryStatus.research (enabled, the lines that are not a package's, pending, runs) and its formatters in src/format.ts
+- [x] 2.2 Show the pending request and the last run in formatStatus and in the briefing's 'Corridas a demanda' section
+- [x] 2.3 Add zero investigar "<tema>" [--line] [--esperar] to src/cli.ts with its usage text, joining unquoted words
+- [x] 2.4 Add zero_investigate to src/mcp/server.ts outside READ_TOOLS, with the same start wait as zero_unjam
+- [x] 2.5 Append the notice of ended and untold runs in the server's withFactory for chats that may act, storing the told mark; failures are only logged
+- [x] 2.6 Tests for status, briefing, CLI help and refusal, start and end waits, the tool, the read-only remote chat, the notice and the tool list in test/interface.test.ts
 
 ## 3. Etapa 3: Panel and documentation
 

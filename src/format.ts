@@ -10,6 +10,7 @@ import type { DiscardOutcome } from "./line/discard.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
+import type { ResearchRequest, ResearchRunRecord } from "./line/research.js";
 import type { UnjamLineResult, UnjamRequest, UnjamRunRecord } from "./line/unjam.js";
 import { jobStage } from "./line/spec.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
@@ -411,6 +412,41 @@ export function describeUnjamRun(r: UnjamRunRecord, now = new Date()): string {
   return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...r.lines.map(unjamLineText)].join(" · ");
 }
 
+/** How an express research run ended, as the person in charge reads it. */
+export const RESEARCH_END: Record<NonNullable<ResearchRunRecord["outcome"]>, string> = {
+  ok: "terminó bien",
+  failed: "falló",
+  stopped: "se cortó",
+  "not-run": "no pudo correr",
+};
+
+/** Characters of an express run's topic where it is only mentioned. */
+const TOPIC_SHOWN = 120;
+
+const shownTopic = (topic: string) => {
+  const line = topic.replace(/\s+/g, " ");
+  return line.length > TOPIC_SHOWN ? `${line.slice(0, TOPIC_SHOWN - 1)}…` : line;
+};
+
+const noteCount = (n: number) => (n ? `${n} ${n === 1 ? "nota" : "notas"}` : "sin notas");
+
+/** The express research run asked for and not started: `pendiente para tienda desde 10:05 · "reels"`. */
+export const researchPendingText = (r: ResearchRequest, now = new Date()) => `pendiente para ${r.line} desde ${pastTime(r.requestedAt, now)} · "${shownTopic(r.topic)}"`;
+
+/** An express research run: `pedida para tienda 10:00, empezó 10:05, terminó bien (10:07) · 2 notas · "reels"`. */
+export function describeResearchRun(r: ResearchRunRecord, now = new Date()): string {
+  const asked = `pedida para ${r.line} ${pastTime(r.asked, now)}`;
+  if (!r.endedAt) return `${asked}, corriendo${r.startedAt ? ` desde ${pastTime(r.startedAt, now)}` : ""} · "${shownTopic(r.topic)}"`;
+  const started = r.startedAt ? `, empezó ${pastTime(r.startedAt, now)}` : "";
+  return `${asked}${started}, ${RESEARCH_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${r.reason ? `: ${r.reason}` : ""} · ${noteCount(r.notes.length)} · "${shownTopic(r.topic)}"`;
+}
+
+/** What the chat says once of an express research run that ended. */
+export function researchNotice(r: ResearchRunRecord): string {
+  const how = `${RESEARCH_END[r.outcome ?? "failed"]}${r.reason ? ` (${r.reason})` : ""}`;
+  return `Aviso de la fábrica: la investigación a demanda sobre "${shownTopic(r.topic)}" en ${r.line} ${how}: ${noteCount(r.notes.length)}.${r.notes.length ? " Se leen con zero_research." : ""}`;
+}
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -450,6 +486,8 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.unjam.pending) out.push(`Corrida a demanda del destrabador: ${unjamPendingText(s.unjam.pending, now)}`);
   if (s.unjam.last) out.push(`Última corrida a demanda del destrabador: ${describeUnjamRun(s.unjam.last, now)}`);
+  if (s.research.pending) out.push(`Investigación a demanda: ${researchPendingText(s.research.pending, now)}`);
+  if (s.research.runs[0]) out.push(`Última investigación a demanda: ${describeResearchRun(s.research.runs[0], now)}`);
   if (s.whenBusy.length) out.push(`Estaciones que corren aunque la fábrica esté ocupada: ${s.whenBusy.join(", ")}`);
   if (s.install) out.push(installLine(s.install, now));
   if (s.tunnel) out.push(tunnelLine(s.tunnel, now));

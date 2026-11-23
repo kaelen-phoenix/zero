@@ -229,7 +229,7 @@ export interface ResearchRunRecord {
 export const RESEARCH_REQUEST_KEY = "research-demand";
 /** The last express runs, as `ResearchRunRecord[]`. */
 export const RESEARCH_RUNS_KEY = "research-demand-runs";
-/** Which ended runs the chat already told. */
+/** Which ended runs the chat already told: their `asked`, as `string[]`. */
 export const RESEARCH_TOLD_KEY = "research-demand-told";
 
 function readJson(store: Store, key: string): unknown {
@@ -300,6 +300,25 @@ function runCap(ctx: FactoryContext, choice: EngineChoice, now: Date): number | 
   if (research === "off" || choice.billing === "subscription") return undefined;
   const { limitUsd, spentUsd } = budgetState(ctx.store, ctx.config, now);
   return Math.round(Math.min(research.usdPerRun, Math.max(0, limitUsd - spentUsd)) * 1e6) / 1e6;
+}
+
+/**
+ * The ended express runs no chat told yet, oldest first, marked as told. One write transaction, so two chats never
+ * tell the same run.
+ */
+export function takeUntoldResearch(store: Store): ResearchRunRecord[] {
+  const ended = () => readResearchRuns(store).filter((r) => r.endedAt);
+  const untold = () => {
+    const told = readJson(store, RESEARCH_TOLD_KEY);
+    return ended().filter((r) => !(Array.isArray(told) && told.includes(r.asked)));
+  };
+  if (!untold().length) return [];
+  return store.transaction(() => {
+    const runs = untold();
+    // Only the runs still kept need the mark.
+    store.setKv(RESEARCH_TOLD_KEY, JSON.stringify(ended().map((r) => r.asked)));
+    return runs.reverse();
+  });
 }
 
 type RunEnd = Pick<ResearchRunRecord, "outcome" | "reason" | "notes">;

@@ -1,12 +1,17 @@
-import { writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { agentInstructions, createAgentRunner, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, listResearchNotes, requestFromResearchNote, requestInvestigation, researchView, SHUTDOWN_KEY, waitResearchEnd, waitResearchStart } from "../src/app.js";
+import { ANDON_KEY, briefing, factoryStatus, listResearchNotes, requestFromResearchNote, requestInvestigation, researchView, SHUTDOWN_KEY, waitResearchEnd, waitResearchStart } from "../src/app.js";
 import { budgetState } from "../src/budget.js";
 import { ConfigError, parseFactory } from "../src/config.js";
+import { acquireDaemonLock } from "../src/daemon-lock.js";
 import { runDaemon } from "../src/daemon.js";
-import { formatResearchNotes } from "../src/format.js";
+import { formatResearchNotes, formatStatus } from "../src/format.js";
 import {
   closeInterruptedResearch,
   readResearchRequest,
@@ -22,6 +27,8 @@ import {
 } from "../src/line/research.js";
 import { ON_DEMAND_ATTR, scoutSpent } from "../src/line/scout.js";
 import { log } from "../src/log.js";
+import { createZeroMcpServer, type ZeroMcpOptions } from "../src/mcp/server.js";
+import { Store } from "../src/state/store.js";
 import { AGENT_SPAN, startOfDay } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
 
@@ -631,5 +638,234 @@ describe("the daemon", () => {
     await runDaemon(ctx, { ...onDemand, agentRunner: () => agents.runner });
     expect(agents.calls).toHaveLength(0);
     expect(readResearchRuns(ctx.store)[0]).toMatchObject({ outcome: "not-run", reason: expect.stringContaining("tienda") });
+  });
+});
+
+const stored = (over: Partial<ResearchRunRecord> = {}): ResearchRunRecord => ({ asked: at(13).toISOString(), line: "tienda", topic: TOPIC, startedAt: at(13, 5).toISOString(), endedAt: at(13, 9).toISOString(), outcome: "ok", notes: ["n1", "n2"], ...over });
+const recorded = (over: Partial<ResearchRunRecord> = {}, start = at(14)) => {
+  const ctx = factory({}, start);
+  ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([stored(over)]));
+  return ctx;
+};
+
+describe("seeing it", () => {
+  const shown = (ctx: Ctx, now = at(14)) => formatStatus(factoryStatus(ctx), now).split("\n").filter((l) => /investigación a demanda/i.test(l));
+
+  it("the status carries whether it is on, the lines that are not a package's, the request and the runs", () => {
+    const ctx = factory({ lines: twoLines() });
+    ctx.config.lines.push({ ...ctx.config.lines[0]!, name: "social", package: "redes" });
+    expect(factoryStatus(ctx).research).toEqual({ enabled: true, lines: ["tienda", "blog"], runs: [] });
+    ask(ctx);
+    expect(factoryStatus(ctx).research.pending).toEqual({ requestedAt: at(13).toISOString(), line: "tienda", topic: TOPIC });
+    expect(factoryStatus(recorded()).research.runs).toEqual([stored()]);
+    expect(factoryStatus(factory({ research: "off" })).research.enabled).toBe(false);
+  });
+
+  it("zero status says nothing without a request or a run", () => {
+    expect(shown(factory())).toEqual([]);
+  });
+
+  it("zero status shows the pending request and the last run", () => {
+    const ctx = factory();
+    ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([stored(), stored({ asked: at(9).toISOString(), topic: "otro" })]));
+    ask(ctx, "hashtags");
+    expect(shown(ctx)).toEqual([
+      'Investigación a demanda: pendiente para tienda desde 13:00 · "hashtags"',
+      `Última investigación a demanda: pedida para tienda 13:00, empezó 13:05, terminó bien (13:09) · 2 notas · "${TOPIC}"`,
+    ]);
+  });
+
+  it("zero status shows a run under way, and why one did not end well", () => {
+    expect(shown(recorded({ endedAt: undefined, outcome: undefined, notes: [] }))).toEqual([`Última investigación a demanda: pedida para tienda 13:00, corriendo desde 13:05 · "${TOPIC}"`]);
+    expect(shown(recorded({ outcome: "stopped", reason: "la fábrica se detuvo (andon)", notes: [] }))[0]).toContain("se cortó (13:09): la fábrica se detuvo (andon) · sin notas");
+    expect(shown(recorded({ startedAt: undefined, outcome: "not-run", reason: "no existe la línea", notes: [] }))[0]).toContain("pedida para tienda 13:00, no pudo correr (13:09): no existe la línea");
+  });
+
+  it("zero status shows at most 120 characters of the topic, in one line", () => {
+    const topic = `reels\n${"a".repeat(300)}`;
+    const quoted = shown(recorded({ topic }))[0]!.match(/"(.*)"$/)![1]!;
+    expect(quoted).toMatch(/^reels a+…$/);
+    expect(quoted).toHaveLength(120);
+    const ctx = factory();
+    ask(ctx, topic);
+    expect(shown(ctx)[0]!.match(/"(.*)"$/)![1]).toHaveLength(120);
+  });
+
+  it("the briefing lists what is pending and the runs of its period", async () => {
+    const ctx = recorded();
+    let body = (await briefing(ctx, 1)).body;
+    expect(body).toContain("## Corridas a demanda");
+    expect(body).toContain(`- investigación: pedida para tienda 13:00, empezó 13:05, terminó bien (13:09) · 2 notas · "${TOPIC}"`);
+    ask(ctx, "hashtags");
+    body = (await briefing(ctx, 1)).body;
+    expect(body).toContain('- investigación: pendiente para tienda desde 13:00 · "hashtags"');
+    // A run that could not start still ended in the period.
+    expect((await briefing(recorded({ startedAt: undefined, outcome: "not-run", notes: [] }), 1)).body).toMatch(/^- investigación: .*no pudo correr/m);
+  });
+
+  it("the briefing says nothing of a run that ended before its period", async () => {
+    expect((await briefing(recorded({}, new Date(2026, 9, 31, 14)), 1)).body).not.toContain("Corridas a demanda");
+  });
+});
+
+describe("asking from the terminal", () => {
+  const env = (ctx: Ctx) => ({ ...process.env, ZERO_HOME: ctx.home.root });
+  const args = (...rest: string[]) => ["--import", "tsx", "src/cli.ts", ...rest];
+  const zero = (ctx: Ctx, ...rest: string[]) => {
+    const r = spawnSync(process.execPath, args(...rest), { encoding: "utf8", env: env(ctx), input: "", windowsHide: true });
+    return { code: r.status, output: r.stdout + r.stderr };
+  };
+
+  it("the usage lists zero investigar with its options", () => {
+    expect(zero(factory(), "help").output).toMatch(/zero investigar "<tema>" \[--line <nombre>\] \[--esperar\]/);
+  }, 60_000);
+
+  it("an empty topic tells the reason and exits 1", () => {
+    const ctx = factory();
+    const r = zero(ctx, "investigar", "");
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("falta el tema a investigar");
+    expect(readResearchRequest(ctx.store)).toBeUndefined();
+  }, 60_000);
+
+  it("joins the unquoted words, and waits for the end with --esperar", async () => {
+    const ctx = factory();
+    // With the daemon's lock taken, the command starts no daemon.
+    const lock = acquireDaemonLock(ctx.home)!;
+    try {
+      const child = spawn(process.execPath, args("investigar", "cómo", "viralizar", "un", "reel", "--line", "tienda", "--esperar"), { env: env(ctx), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      let output = "";
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (output += d));
+      child.stderr.setEncoding("utf8").on("data", (d: string) => (output += d));
+      const closed = new Promise<number | null>((done) => child.on("close", done));
+      await until(() => readResearchRequest(ctx.store) !== undefined, 40_000);
+      const { requestedAt, line, topic } = readResearchRequest(ctx.store)!;
+      expect({ line, topic }).toEqual({ line: "tienda", topic: TOPIC });
+      const started = { asked: requestedAt, line, topic, startedAt: new Date().toISOString(), notes: [] };
+      ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([started]));
+      await until(() => output.includes("La investigación empezó"), 20_000);
+      const n = ctx.store.createResearchNote({ line: "tienda", ...note("Reels") });
+      ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([{ ...started, endedAt: new Date().toISOString(), outcome: "ok", notes: [n.id] }]));
+      expect(await closed).toBe(0);
+      expect(output).toContain("La investigación terminó bien.");
+      expect(output).toContain(n.id);
+    } finally {
+      lock.release();
+    }
+  }, 90_000);
+
+  it("starts the factory and waits as zero destrabar does", () => {
+    const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
+    const command = cli.slice(cli.indexOf('case "investigar"'), cli.indexOf('case "resume"'));
+    expect(command).toContain("await ensureDaemon(ctx)");
+    expect(command).toContain("waitResearchStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })");
+  });
+});
+
+describe("asking from the chat", () => {
+  const clients: Client[] = [];
+  afterEach(async () => {
+    await Promise.all(clients.splice(0).map((c) => c.close().catch(() => undefined)));
+  });
+  async function chat(ctx: Ctx, opts: ZeroMcpOptions = {}) {
+    const server = createZeroMcpServer(ctx.home, { autoStart: false, stationWaitMs: 0, ...opts });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(b);
+    clients.push(client);
+    const names = async () => (await client.listTools()).tools.map((t) => t.name);
+    const call = async (name: string, args: Record<string, unknown> = {}) => {
+      const r = (await client.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean };
+      return { text: r.content.map((c) => c.text).join("\n"), blocks: r.content.map((c) => c.text), isError: r.isError ?? false };
+    };
+    return { names, call };
+  }
+  const readOnly: ZeroMcpOptions = { remote: { scope: ["zero:read"], client: "c" } };
+  const acting: ZeroMcpOptions = { remote: { scope: ["zero:read", "zero:act"], client: "c" } };
+
+  it("zero_investigate asks for the run on a line and says it is still pending", async () => {
+    const ctx = factory({ lines: twoLines() });
+    const { text } = await (await chat(ctx)).call("zero_investigate", { topic: TOPIC, line: "tienda" });
+    expect(text).toContain("Investigación pedida para tienda");
+    expect(text).toContain("sigue pendiente");
+    expect(readResearchRequest(ctx.store)).toMatchObject({ line: "tienda", topic: TOPIC });
+  });
+
+  it("zero_investigate says when the factory was off", async () => {
+    const start = vi.fn(async () => true);
+    const { text } = await (await chat(factory(), { autoStart: true, start })).call("zero_investigate", { topic: TOPIC });
+    expect(text).toContain("La fábrica estaba apagada: la encendí.");
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("zero_investigate answers the refusal and changes nothing with one already pending", async () => {
+    const ctx = factory();
+    ask(ctx);
+    const before = ctx.store.getKv(RESEARCH_REQUEST_KEY);
+    const { text } = await (await chat(ctx)).call("zero_investigate", { topic: "otro" });
+    expect(text).toContain("ya hay una investigación pendiente");
+    expect(text).toContain(at(13).toISOString());
+    expect(ctx.store.getKv(RESEARCH_REQUEST_KEY)).toBe(before);
+  });
+
+  it("a remote chat has it only with zero:act, and it is not held", async () => {
+    const ctx = factory();
+    expect(await (await chat(ctx, readOnly)).names()).not.toContain("zero_investigate");
+    expect((await (await chat(ctx, acting)).call("zero_investigate", { topic: TOPIC })).text).toContain("pedida para tienda");
+    expect(readResearchRequest(ctx.store)).toMatchObject({ topic: TOPIC });
+  });
+
+  it("the next answer after a run ended carries its notice, once", async () => {
+    const ctx = recorded();
+    const { call } = await chat(ctx);
+    const first = await call("zero_status");
+    expect(first.blocks[1]).toBe(`Aviso de la fábrica: la investigación a demanda sobre "${TOPIC}" en tienda terminó bien: 2 notas. Se leen con zero_research.`);
+    expect((await call("zero_status")).text).not.toContain("Aviso de la fábrica");
+    expect((await (await chat(ctx, acting)).call("zero_status")).text).not.toContain("Aviso de la fábrica");
+    // A later run has its own notice; the first one is not told again.
+    ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([stored({ asked: at(15).toISOString(), topic: "hashtags", outcome: "failed", reason: "el motor no respondió", notes: [] }), stored()]));
+    const later = (await call("zero_lines")).blocks;
+    expect(later.slice(1)).toEqual(['Aviso de la fábrica: la investigación a demanda sobre "hashtags" en tienda falló (el motor no respondió): sin notas.']);
+    // The answer itself stays as it was.
+    expect(JSON.parse(later[0]!)).toBeTypeOf("object");
+  });
+
+  it("a run under way has no notice, and neither a failed answer nor a read-only chat uses one up", async () => {
+    const ctx = recorded({ endedAt: undefined, outcome: undefined, notes: [] });
+    const local = await chat(ctx);
+    expect((await local.call("zero_status")).text).not.toContain("Aviso de la fábrica");
+    ctx.store.setKv(RESEARCH_RUNS_KEY, JSON.stringify([stored()]));
+    expect(await local.call("zero_status", { job: "nope" })).toMatchObject({ isError: true, text: expect.not.stringContaining("Aviso de la fábrica") });
+    expect((await (await chat(ctx, readOnly)).call("zero_status")).text).not.toContain("Aviso de la fábrica");
+    expect(ctx.store.getKv(RESEARCH_TOLD_KEY)).toBeUndefined();
+    expect((await local.call("zero_status")).text).toContain("Aviso de la fábrica");
+  });
+
+  it("what cannot be read never breaks an answer", async () => {
+    const ctx = factory();
+    ctx.store.setKv(RESEARCH_RUNS_KEY, "{no json");
+    expect(await (await chat(ctx)).call("zero_status")).toMatchObject({ isError: false, text: expect.not.stringContaining("Aviso de la fábrica") });
+    const marks = recorded();
+    marks.store.setKv(RESEARCH_TOLD_KEY, "{no json");
+    const { call } = await chat(marks);
+    expect((await call("zero_status")).text).toContain("Aviso de la fábrica");
+    expect((await call("zero_status")).text).not.toContain("Aviso de la fábrica");
+  });
+
+  it("a mark that cannot be stored is only logged", async () => {
+    const ctx = recorded();
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    const transaction = vi.spyOn(Store.prototype, "transaction").mockImplementation(() => {
+      throw new Error("busy");
+    });
+    try {
+      expect((await (await chat(ctx)).call("zero_status")).isError).toBe(false);
+      expect(transaction).toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith("cannot tell the ended research runs", expect.anything());
+    } finally {
+      transaction.mockRestore();
+      warn.mockRestore();
+    }
   });
 });

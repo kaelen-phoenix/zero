@@ -112,6 +112,7 @@ The chat does the same with these tools:
 - `zero_package_run`: a package station on demand, with an optional `request`
 - `zero_package_upload`: a file for a package station that takes uploads
 - `zero_unjam`: the unjam station now, for one line or for all of them
+- `zero_investigate`: web research now on the `topic` you give, for one line
 - `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
 - `zero_egress`: internet egress
 - `zero_egress_block`: blocks a site (internet egress)

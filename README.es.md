@@ -112,6 +112,7 @@ Desde el chat se hace lo mismo con estas herramientas:
 - `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
 - `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
 - `zero_unjam`: el destrabador ahora, para una línea o para todas
+- `zero_investigate`: una investigación en la web ahora sobre el tema que le das (`topic`), para una línea
 - `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 - `zero_egress`: salidas a internet
 - `zero_egress_block`: bloquea un sitio (salidas a internet)

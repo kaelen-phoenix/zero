@@ -1,5 +1,5 @@
-import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage, TrainView, UnjamOnDemand } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, describeUnjamRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText, selfUpdateRetryText, trainLine, unjamPendingText } from "../format.js";
+import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage, ResearchOnDemand, TrainView, UnjamOnDemand } from "../app.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, describeResearchRun, describeUnjamRun, installLine, jamLine, jobOrigin, researchPendingText, resetTime, selfUpdateEntryText, selfUpdateRetryText, trainLine, unjamPendingText } from "../format.js";
 import { billingText, outageText } from "../line/automerge.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "../self-update.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
@@ -37,6 +37,8 @@ export interface BriefingOnDemand {
   runs: OnDemandRun[];
   /** The unjam station's: the request not started yet and the last run, when it is of the period. */
   unjam?: Pick<UnjamOnDemand, "pending" | "last">;
+  /** The research station's: the request not started yet and the runs of the period. */
+  research?: Pick<ResearchOnDemand, "pending" | "runs">;
 }
 
 export interface Briefing {
@@ -114,8 +116,8 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   if (trains.length) {
     sections.push(["## Trenes de integración", ...trains.map((t) => `- ${trainLine(t)}`)].join("\n"));
   }
-  const unjam = onDemand.unjam;
-  if (onDemand.pending.length || onDemand.runs.length || unjam?.pending || unjam?.last) {
+  const { unjam, research: express } = onDemand;
+  if (onDemand.pending.length || onDemand.runs.length || unjam?.pending || unjam?.last || express?.pending || express?.runs.length) {
     const now = new Date(metrics.to);
     sections.push(
       [
@@ -124,6 +126,8 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
         ...onDemand.runs.map((r) => `- ${describeOnDemandRun(r, now)}`),
         ...(unjam?.pending ? [`- destrabador: ${unjamPendingText(unjam.pending, now)}`] : []),
         ...(unjam?.last ? [`- destrabador: ${describeUnjamRun(unjam.last, now)}`] : []),
+        ...(express?.pending ? [`- investigación: ${researchPendingText(express.pending, now)}`] : []),
+        ...(express?.runs ?? []).map((r) => `- investigación: ${describeResearchRun(r, now)}`),
       ].join("\n"),
     );
   }
