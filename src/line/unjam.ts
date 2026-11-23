@@ -153,6 +153,16 @@ function readJson<T>(store: Store, key: string): T | undefined {
   }
 }
 
+/** Whether every jam a stored cause groups is of a job closed since, as a job or as its pull request: stopped, or delivered with no blocked merge. */
+export function closedCause(store: Store, cause: Cause): boolean {
+  const closed = (id: string) => {
+    const job = /^(job|pr):/.test(id) ? store.getJob(id.slice(id.indexOf(":") + 1)) : undefined;
+    if (job?.status === "delivered") return readJson<MergeState>(store, mergeKey(job.id))?.status !== "blocked";
+    return job?.status === "stopped";
+  };
+  return cause.jams.length > 0 && cause.jams.every(closed);
+}
+
 /** The GitHub repository of a line's remote, if git can read it. */
 function ownRepository(line: LineConfig): string | undefined {
   try {

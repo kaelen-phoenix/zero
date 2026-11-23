@@ -39,6 +39,7 @@ export function signedMerges(api: MergeApi, signature?: Signature): MergeApi {
     merge: (number, sha) => api.merge(number, sha),
     deleteBranch: (branch) => api.deleteBranch(branch),
     comment: (number, body) => api.comment(number, signText(body, signature)),
+    ...(api.close && { close: (number: number) => api.close!(number) }),
     ...(api.behind && { behind: (base: string, sha: string) => api.behind!(base, sha) }),
     ...(api.updateBranch && { updateBranch: (number: number, sha: string) => api.updateBranch!(number, sha) }),
     ...(api.rerun && { rerun: (run: number) => api.rerun!(run) }),

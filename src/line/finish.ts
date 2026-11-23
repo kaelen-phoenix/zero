@@ -61,6 +61,9 @@ export const STOPPED_BY_YOU = "Lo detuviste vos.";
 /** The stored reason of a job the person rejected, with their note when there is one. */
 export const rejectedByYou = (note?: string) => `Lo rechazaste vos${note ? `: ${note}` : "."}`;
 
+/** The stored reason of a job the person discarded, with their reason when there is one. */
+export const discardedByYou = (reason?: string) => `Lo descartaste vos${reason ? `: ${reason}` : "."}`;
+
 /** The stored reason of a job whose claim another machine of a distributed factory took over: this copy ends without pushing, integrating or telling its origin. */
 export const LOST_TO_ANOTHER = "Lo retomó otra máquina de la fábrica.";
 
@@ -78,7 +81,7 @@ export function endedElsewhere(job: Pick<Job, "status" | "reason">): boolean {
 
 /** A stored reason in the third person, for issues, the reply station and the townhall. Any other reason stays as it is. */
 export function reasonForOthers(reason: string): string {
-  return reason.replace(/^Lo detuviste vos/, "Lo detuvo la persona responsable").replace(/^Lo rechazaste vos/, "Lo rechazó la persona responsable");
+  return reason.replace(/^Lo detuviste vos/, "Lo detuvo la persona responsable").replace(/^Lo rechazaste vos/, "Lo rechazó la persona responsable").replace(/^Lo descartaste vos/, "Lo descartó la persona responsable");
 }
 
 /**

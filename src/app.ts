@@ -38,7 +38,7 @@ import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage, type Spec } from "./line/spec.js";
-import { readDiagnosis, type Cause } from "./line/unjam.js";
+import { closedCause, readDiagnosis, type Cause } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
@@ -558,7 +558,7 @@ export interface JamView {
 
 /**
  * The causes stored by the unjam station for every configured line, with the job or proposal still open. A machine
- * cause diagnosed on several lines is shown once, on the first of them.
+ * cause diagnosed on several lines is shown once, on the first of them, and one whose jobs are all closed is not shown.
  */
 export function jamViews(ctx: FactoryContext): JamView[] {
   const machine = new Set<string>();
@@ -566,6 +566,7 @@ export function jamViews(ctx: FactoryContext): JamView[] {
     const diagnosis = readDiagnosis(ctx.store, l.name);
     if (!diagnosis) return [];
     const causes = diagnosis.causes.filter((c) => {
+      if (closedCause(ctx.store, c)) return false;
       if (c.kind !== "machine") return true;
       if (machine.has(c.title)) return false;
       machine.add(c.title);
@@ -1565,7 +1566,7 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
 export type MergeApiFactory = (repository: string, line?: LineConfig) => MergeApi | undefined;
 
 /** The real signed adapter, outside the daemon's meter, like the CLI's own calls to GitHub. */
-const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
+export const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
   const token = githubToken(process.env, ctx.secrets);
   return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };

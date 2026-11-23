@@ -10,11 +10,11 @@
 
 ## 2. Etapa 2: Discard operation and CLI
 
-- [ ] 2.1 MergeApi.close (optional) in githubMerges and signedMerges.
-- [ ] 2.2 src/line/discard.ts discardJob with PR close, comment, local and remote branch deletion, finalizeJob(stopped); discardedByYou in finish.ts.
-- [ ] 2.3 jamViews drops causes whose jobs are all closed.
-- [ ] 2.4 `zero descartar <trabajo> [--motivo]` in src/cli.ts.
-- [ ] 2.5 test/discard.test.ts with real git temp repos and a fake MergeApi; docs/agents/production-line.md and both READMEs.
+- [x] 2.1 MergeApi.close (optional) in githubMerges and signedMerges.
+- [x] 2.2 src/line/discard.ts discardJob with PR close, comment, local and remote branch deletion, finalizeJob(stopped); discardedByYou in finish.ts.
+- [x] 2.3 jamViews drops causes whose jobs are all closed.
+- [x] 2.4 `zero descartar <trabajo> [--motivo]` in src/cli.ts.
+- [x] 2.5 test/discard.test.ts with real git temp repos and a fake MergeApi; docs/agents/production-line.md and both READMEs.
 
 ## 3. Etapa 3: Discard in the chat and the panel
 
