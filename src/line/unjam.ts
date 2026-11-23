@@ -4,6 +4,7 @@ import { ANDON_KEY, currentBox, requestWork, retryJob, startTrain, type FactoryC
 import { budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type LineConfig } from "../config.js";
 import { installBehind, readInstallFreshness } from "../install-freshness.js";
+import { readSelfUpdate } from "../self-update.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
@@ -12,6 +13,7 @@ import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/st
 import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
 import { pendingCleanups } from "./cleanup.js";
+import { discardResolved } from "./discard.js";
 import { scrubLocal } from "./research.js";
 import { SPEC_REFUSAL } from "./runner.js";
 import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
@@ -152,6 +154,16 @@ function readJson<T>(store: Store, key: string): T | undefined {
   }
 }
 
+/** Whether every jam a stored cause groups is of a job closed since, as a job or as its pull request: stopped, or delivered with no blocked merge. */
+export function closedCause(store: Store, cause: Cause): boolean {
+  const closed = (id: string) => {
+    const job = /^(job|pr):/.test(id) ? store.getJob(id.slice(id.indexOf(":") + 1)) : undefined;
+    if (job?.status === "delivered") return readJson<MergeState>(store, mergeKey(job.id))?.status !== "blocked";
+    return job?.status === "stopped";
+  };
+  return cause.jams.length > 0 && cause.jams.every(closed);
+}
+
 /** The GitHub repository of a line's remote, if git can read it. */
 function ownRepository(line: LineConfig): string | undefined {
   try {
@@ -177,7 +189,7 @@ function lineRepositories(own: string | undefined, jobs: Job[]): string[] {
  * What holds one line up, from its own records and without a model: failed jobs of the last days with their last
  * problem, waiting jobs, auto-merge pull requests blocked, the checks' outages and billing refusals of its
  * repositories, its intake problems, its pending cleanups, an installed copy of zero behind its own repository's
- * merged work and, in the box, a box that is not ready.
+ * merged work and, on the first line that is not a package's, a box that is not ready.
  */
 export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): Jam[] {
   const jams: Jam[] = [];
@@ -225,9 +237,14 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
       install.behind ? `${install.behind} merged commit${install.behind === 1 ? "" : "s"} of ${install.upstream ?? "its upstream"} missing` : "",
       install.staleBuild ? "its build (dist/cli.js) older than its code under src/" : "",
     ].filter(Boolean);
-    jams.push({ id: "install", line: line.name, kind: "install", text: `the installed copy of zero that runs the factory is behind: ${missing.join(", ")} (checked ${install.checkedAt})` });
+    const updated = readSelfUpdate(ctx.store).history.at(-1);
+    const setting = ctx.config.selfUpdate.enabled
+      ? `selfUpdate is enabled in the factory file${updated ? `; its last entry: ${updated.outcome} at ${updated.at}${updated.reason ? ` (${updated.reason})` : ""}` : "; it has not updated the copy yet"}`
+      : "selfUpdate is off in the factory file";
+    jams.push({ id: "install", line: line.name, kind: "install", text: `the installed copy of zero that runs the factory is behind: ${missing.join(", ")} (checked ${install.checkedAt}); ${setting}` });
   }
-  if (ctx.config.isolation === "container") {
+  // The box belongs to the machine: one jam, on the first line that is not a package's.
+  if (ctx.config.isolation === "container" && ctx.config.lines.find((l) => !l.package)?.name === line.name) {
     const box = currentBox(ctx).availability;
     if (!box.ready) jams.push({ id: "box", line: line.name, kind: "box", text: `the isolation box is not ready: ${box.problems.join("; ") || "no reason given"}` });
   }
@@ -699,6 +716,7 @@ const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running
 /**
  * The unjam station while the factory is idle, with the night shift's gates and its shared spending cap: every line
  * with jams and not yet diagnosed this period gets one call. A line without jams gets none, and loses its old diagnosis.
+ * Failed jobs whose work is already in are closed first, so they are no jam.
  */
 export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal, merges?: MergeApiFactory, demand?: UnjamDemand): Promise<string | undefined> {
   const shift = ctx.config.nightShift;
@@ -706,6 +724,7 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
   if (ctx.config.unjam === "off" || (!demand && (shift === "off" || !insideHours(shift, now)))) return undefined;
   const period = periodStart(shift, now);
   const logs: LogCache = new Map();
+  await discardResolved(ctx, now, merges);
   for (const line of ctx.config.lines) {
     if (line.package || (demand?.line !== undefined && line.name !== demand.line)) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
@@ -821,6 +840,7 @@ export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner
   const after = unjam.urgentAfterHours * 3_600_000;
   const logs: LogCache = new Map();
   let ran = 0;
+  await discardResolved(ctx, now, opts.merges);
   for (const line of ctx.config.lines) {
     if (line.package) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.

@@ -5,13 +5,15 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { panelLinks, requestWork, setRemotePanel } from "../src/app.js";
+import { panelLinks, requestWork, setRemotePanel, type MergeApiFactory } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
-import { askOwner } from "../src/line/finish.js";
-import { markdown } from "../src/panel/html.js";
+import type { MergeApi } from "../src/line/automerge.js";
+import { askOwner, finalizeJob } from "../src/line/finish.js";
+import { jobPage, markdown } from "../src/panel/html.js";
 import { panelKey, rotatePanelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
 import { log } from "../src/log.js";
+import type { Job } from "../src/state/store.js";
 import { downloadCloudflared, downloadPlan, readTunnelState, REMOTE_URL_KEY, TUNNEL_STATE_KEY, tunnelKeeper } from "../src/panel/tunnel.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
@@ -21,10 +23,10 @@ afterEach(async () => {
   cleanup();
 });
 
-async function panel(over: Record<string, unknown> = {}) {
+async function panel(over: Record<string, unknown> = {}, merges?: MergeApiFactory) {
   const ctx = testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "tienda", repo: gitRepo() }], ...over });
   let clock = 0;
-  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), now: () => clock });
+  const server = createPanelServer(ctx, { key: () => panelKey(ctx.secrets), now: () => clock, ...(merges && { merges }) });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -158,6 +160,59 @@ describe("panel pages and actions", () => {
     expect(decodeURIComponent(r.headers.get("location")!)).toMatch(new RegExp(`^/job/${job.id}\\?msg=.*no está esperando`));
     const bad = await p.post("/egress/rule", { site: "http://x/y", action: "block" });
     expect(decodeURIComponent(bad.headers.get("location")!)).toMatch(/^\/egress\?msg=.*no es un sitio válido/);
+  });
+
+  it("discards a job with its reason, and goes back to it", async () => {
+    const p = await panel();
+    const { job } = requestWork(p.ctx, { text: "x" });
+    await finalizeJob(p.ctx, job, "failed", { reason: "no" });
+    const html = await (await p.get(`/job/${job.id}`)).text();
+    expect(html).toContain(`action="/job/${job.id}/discard"`);
+    expect(html).toContain("Descartar");
+    expect((await p.post(`/job/${job.id}/discard`, {}, {})).status).toBe(401);
+    expect(p.ctx.store.getJob(job.id)!.status).toBe("failed");
+
+    const r = await p.post(`/job/${job.id}/discard`, { motivo: "quedó viejo" });
+    expect(r.status).toBe(303);
+    const to = new URL(r.headers.get("location")!, "http://x");
+    expect(to.pathname).toBe(`/job/${job.id}`);
+    expect(to.searchParams.get("msg")).toContain("quedó detenido");
+    expect(p.ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: "Lo descartaste vos: quedó viejo" });
+    expect(await (await p.get(`/job/${job.id}`)).text()).not.toContain("/discard");
+    const again = await p.post(`/job/${job.id}/discard`, {});
+    expect(new URL(again.headers.get("location")!, "http://x").searchParams.get("msg")).toContain("ya está detenido");
+  });
+
+  it("closes the pull request of a discarded job through the panel's GitHub access", async () => {
+    const did: string[] = [];
+    const api: MergeApi = {
+      pullRequest: async () => ({ open: true, merged: false, mergeable: true, headSha: "abc", base: "main" }),
+      checks: async () => [],
+      merge: async () => undefined,
+      deleteBranch: async (b) => void did.push(`delete ${b}`),
+      comment: async (n) => void did.push(`comment #${n}`),
+      close: async (n) => void did.push(`close #${n}`),
+    };
+    const p = await panel({}, () => api);
+    const { job } = requestWork(p.ctx, { text: "x" });
+    await finalizeJob(p.ctx, job, "delivered", { delivery: { mode: "pull-request", branch: `zero/${job.id}`, url: "https://github.com/kaelen/demo/pull/7" } });
+    await p.post(`/job/${job.id}/discard`, {});
+    expect(did).toEqual(["comment #7", "close #7", `delete zero/${job.id}`]);
+    expect(p.ctx.store.getJob(job.id)).toMatchObject({ status: "stopped", reason: "Lo descartaste vos." });
+    expect(p.ctx.store.spansForJob(job.id).find((s) => s.name === "zero.discard")!.attrs["zero.discard.via"]).toBe("panel");
+  });
+
+  it("offers to discard only a job that can be discarded", async () => {
+    const p = await panel();
+    const { job } = requestWork(p.ctx, { text: "x" });
+    const offered = (over: Partial<Job>, merge?: "merged" | "closed" | "blocked") => jobPage({ ...job, ...over }, "", "n", undefined, false, merge).includes("/discard");
+    const delivery = { mode: "pull-request" as const, branch: "zero/x", url: "https://github.com/kaelen/demo/pull/7" };
+    for (const status of ["failed", "queued", "waiting"] as const) expect(offered({ status }), status).toBe(true);
+    for (const status of ["running", "stopped", "delivered"] as const) expect(offered({ status }), status).toBe(false);
+    expect(offered({ status: "delivered", delivery })).toBe(true);
+    expect(offered({ status: "delivered", delivery }, "blocked")).toBe(true);
+    expect(offered({ status: "delivered", delivery }, "merged")).toBe(false);
+    expect(offered({ status: "delivered", delivery }, "closed")).toBe(false);
   });
 
   it("pulls the andon cord and edits the egress rules", async () => {

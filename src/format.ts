@@ -6,6 +6,7 @@ import type { GithubStatus } from "./github-quota.js";
 import type { MachineView } from "./coord/protocol.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
+import type { DiscardOutcome } from "./line/discard.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
@@ -99,6 +100,18 @@ export function formatRequest(r: RequestResult): string {
 /** What a merge on request did, for the CLI, the chat and the panel. */
 export function formatMerge(r: MergeOutcome): string {
   return r.merged ? `Fundí ${r.url}${r.job ? ` (trabajo ${r.job})` : ""}:el cambio ya está en la rama base${r.commit ? ` (commit ${r.commit.slice(0, 12)})` : ""}.` : `No lo fundí: ${r.why}`;
+}
+
+/** What discarding a job did: its final status, its pull request and its branch. */
+export function formatDiscard(r: DiscardOutcome): string {
+  const pr = r.pullRequest;
+  const places = [r.branch.local && "en el repositorio de la línea", r.branch.remote && "en GitHub"].filter(Boolean).join(" y ");
+  return [
+    `Descarté el trabajo ${r.job.id}: quedó ${STATUS_TEXT[r.job.status]}. ${r.job.reason ?? ""}`.trim(),
+    pr ? `Pull request ${pr.url}: ${pr.closed ? "cerrado" : pr.was === "merged" ? "ya estaba fundido" : pr.was === "closed" ? "ya estaba cerrado" : "no se cerró"}.` : "No tenía un pull request que cerrar.",
+    `Rama ${r.branch.name}: ${r.branch.kept ? `no la borré porque ${r.branch.kept}` : places ? `borrada ${places}` : "no borré ninguna"}.`,
+    ...r.problems.map((p) => `Problema: ${p}`),
+  ].join("\n");
 }
 
 /** One line per pull request of `zero actualizar-pr`. */

@@ -11,6 +11,7 @@ import { mergeKey, pollMerges, stampBlocked, type Check, type MergeApi, type Mer
 import { readTrain } from "../src/line/train.js";
 import { scoutSpent } from "../src/line/scout.js";
 import { SPEC_REFUSAL } from "../src/line/runner.js";
+import { recordSelfUpdate } from "../src/self-update.js";
 import { collectJams, readDiagnosis, resendAfterCapability, unjamKey, unjamLine, unjamPass, unjamResentKey, unjamRetriedKey, unjamUrgentKey, urgentUnjamPass } from "../src/line/unjam.js";
 import { cleanupKey } from "../src/line/cleanup.js";
 import { formatStatus } from "../src/format.js";
@@ -492,6 +493,54 @@ describe("an installed copy behind", () => {
     expect(collectJams(ctx, line, at(3))).toEqual([]);
     ctx.store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify({ checkedAt: at(2).toISOString(), problem: "no es un repositorio" }));
     expect(collectJams(ctx, line, at(3))).toEqual([]);
+  });
+
+  it("tells the real selfUpdate setting", () => {
+    const repo = withRemote("https://github.com/owner/zero.git");
+    const on = factory({ selfUpdate: { enabled: true }, lines: [{ name: "zero", repo }] }).ctx;
+    on.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 2 }));
+    recordSelfUpdate(on.store, { entry: { from: "a", to: "b", at: at(1).toISOString(), outcome: "updated" } });
+    const text = collectJams(on, on.config.lines[0]!, at(3))[0]!.text;
+    expect(text).toContain("selfUpdate is enabled");
+    expect(text).toContain("updated");
+    const off = factory({ lines: [{ name: "zero", repo }] }).ctx;
+    off.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: 2 }));
+    expect(collectJams(off, off.config.lines[0]!, at(3))[0]!.text).toContain("selfUpdate is off");
+  });
+});
+
+describe("the isolation box as a jam", () => {
+  const line = (name: string, over: Record<string, unknown> = {}) => ({ name, repo: gitRepo(), ...over });
+
+  it("is a single machine jam, on the first line", () => {
+    const { ctx } = factory({ isolation: "container", lines: [line("a"), line("b"), line("c")] });
+    const [a, b, c] = ctx.config.lines;
+    expect(collectJams(ctx, a!, at(3))).toEqual([expect.objectContaining({ id: "box", kind: "box", line: "a" })]);
+    expect(collectJams(ctx, b!, at(3)).filter((j) => j.kind === "box")).toEqual([]);
+    expect(collectJams(ctx, c!, at(3)).filter((j) => j.kind === "box")).toEqual([]);
+  });
+
+  it("skips a package line that comes first", () => {
+    const { ctx } = factory({ isolation: "container", lines: [line("exp-d1", { package: "exp" }), line("web")] });
+    const [pkg, web] = ctx.config.lines;
+    expect(collectJams(ctx, pkg!, at(3)).filter((j) => j.kind === "box")).toEqual([]);
+    expect(collectJams(ctx, web!, at(3))).toEqual([expect.objectContaining({ id: "box", line: "web" })]);
+  });
+
+  it("is never a jam with isolation: worktree, and status says the box is off", () => {
+    const { ctx } = factory({ isolation: "worktree", lines: [line("a"), line("b")] });
+    for (const l of ctx.config.lines) expect(collectJams(ctx, l, at(3)).filter((j) => j.kind === "box")).toEqual([]);
+    const text = formatStatus(factoryStatus(ctx));
+    expect(text).toContain("Caja de aislamiento: desactivada (isolation: worktree)");
+    expect(text).not.toContain("no lista");
+  });
+
+  it("shows a machine cause diagnosed on several lines once", () => {
+    const { ctx } = factory({ lines: [line("a"), line("b")] });
+    const box = cause({ kind: "machine", title: "La caja de aislamiento no está lista", jams: ["box"], todo: "Instalá Podman o Docker" });
+    ctx.store.setKv(unjamKey("a"), JSON.stringify({ at: at(3).toISOString(), causes: [box] }));
+    ctx.store.setKv(unjamKey("b"), JSON.stringify({ at: at(3).toISOString(), causes: [box, cause({ title: "Checks rotos" })] }));
+    expect(factoryStatus(ctx).jams.map((j) => `${j.line}:${j.title}`)).toEqual(["a:La caja de aislamiento no está lista", "b:Checks rotos"]);
   });
 });
 

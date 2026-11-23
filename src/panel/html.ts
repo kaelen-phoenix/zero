@@ -5,6 +5,7 @@ import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
 import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
+import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
@@ -405,6 +406,17 @@ function mergeable(job: Job, mergeStatus?: MergeState["status"]): boolean {
   return job.status === "delivered" && url !== undefined && pullRequestOf(url) !== undefined && mergeStatus !== "merged" && mergeStatus !== "closed";
 }
 
+/** Whether the job page offers to discard: a job `discardJob` takes, as far as the factory's own records say. */
+function discardable(job: Job, mergeStatus?: MergeState["status"]): boolean {
+  return !discardRefusal(job) && (job.status !== "delivered" || (mergeable(job, mergeStatus) && !job.delivery?.commit));
+}
+
+/** Behind `<details>`, so a stray press on the page never discards a job. */
+const discardForm = (j: Job) =>
+  `<details class="ins"><summary>Descartar este trabajo</summary><p class="muted">Queda detenido, se cierra su pull request abierto y se borra su rama. No se puede deshacer.</p>
+<form method="post" action="/job/${esc(j.id)}/discard"><label for="d-${esc(j.id)}">Motivo (opcional)</label><input id="d-${esc(j.id)}" type="text" name="motivo">
+<button class="danger">Descartar</button></form></details>`;
+
 export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"]): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
@@ -417,6 +429,7 @@ ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
 ${job.question ? `<h2>Pregunta para vos</h2><pre>${esc(job.question.text)}</pre>${answerForms(job)}` : ""}
 ${!final ? `<form method="post" action="/job/${esc(job.id)}/stop"><button class="danger">Detener este trabajo</button></form>` : ""}
 ${mergeable(job, mergeStatus) ? `<form method="post" action="/job/${esc(job.id)}/merge"><button class="primary">Fundir</button></form>` : ""}
+${discardable(job, mergeStatus) ? discardForm(job) : ""}
 <h2>Pedido</h2><pre>${esc(job.request)}</pre></div>
 <div class="card"><h2>Traza</h2><pre>${esc(traceText)}</pre></div>`,
     { nonce, flash, refresh: !final },

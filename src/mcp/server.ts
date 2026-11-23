@@ -5,8 +5,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
+import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
+import { discardJob, discardRefusal } from "../line/discard.js";
 import { log } from "../log.js";
 import type { Scope } from "./oauth.js";
 import { monthlyMarkdown } from "../report.js";
@@ -325,6 +326,27 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
           return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) });
         }),
       ),
+  );
+
+  tool(
+    "zero_discard",
+    {
+      title: "Descartar un trabajo",
+      description:
+        "Close a job the owner no longer needs: one that failed, is queued or waiting, or was delivered with its pull request still open. It ends stopped, its open pull request gets a comment and is closed, and its branch is deleted; a running job has to be stopped first. Only when the owner asks for it.",
+      inputSchema: {
+        job: z.string().describe("The job id."),
+        reason: z.string().optional().describe("The owner's reason, if they gave one; it goes to the report and the pull request's comment."),
+      },
+      annotations: { destructiveHint: true },
+    },
+    ({ job, reason }) =>
+      withFactory(home, (ctx) => {
+        // What can be refused now is never held for the person in charge to confirm.
+        const refusal = discardRefusal(getJob(ctx, job));
+        if (refusal) throw new Error(refusal);
+        return delicate(ctx, { tool: "zero_discard", args: { job, ...(reason && { reason }) } }, async () => formatDiscard(await discardJob(ctx, job, { reason, via: "chat", api: opts.merges })));
+      }),
   );
 
   tool(

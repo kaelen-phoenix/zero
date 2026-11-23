@@ -37,11 +37,12 @@ import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
+import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
-import { onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
+import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -574,12 +575,23 @@ export interface JamView {
   at: string;
 }
 
-/** The causes stored by the unjam station for every configured line, with the job or proposal still open. */
+/**
+ * The causes stored by the unjam station for every configured line, with the job or proposal still open. A machine
+ * cause diagnosed on several lines is shown once, on the first of them, and one whose jobs are all closed is not shown.
+ */
 export function jamViews(ctx: FactoryContext): JamView[] {
+  const machine = new Set<string>();
   return ctx.config.lines.flatMap((l) => {
     const diagnosis = readDiagnosis(ctx.store, l.name);
     if (!diagnosis) return [];
-    return diagnosis.causes.map((c): JamView => {
+    const causes = diagnosis.causes.filter((c) => {
+      if (closedCause(ctx.store, c)) return false;
+      if (c.kind !== "machine") return true;
+      if (machine.has(c.title)) return false;
+      machine.add(c.title);
+      return true;
+    });
+    return causes.map((c): JamView => {
       const job = c.job ? ctx.store.getJob(c.job) : undefined;
       const proposal = c.proposal ? ctx.store.getProposal(c.proposal) : undefined;
       return {
@@ -1576,7 +1588,7 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
 export type MergeApiFactory = (repository: string, line?: LineConfig) => MergeApi | undefined;
 
 /** The real signed adapter, outside the daemon's meter, like the CLI's own calls to GitHub. */
-const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
+export const directMerges = (ctx: FactoryContext): MergeApiFactory => (repository, line) => {
   const token = githubToken(process.env, ctx.secrets);
   return token ? signedMerges(githubMerges(token, repository), lineSignature(ctx.config, line ?? {})) : undefined;
 };
@@ -2151,6 +2163,7 @@ export const PENDING_TTL_MS = 15 * 60_000;
 export type RemoteAction =
   | { tool: "zero_merge"; args: { target: string } }
   | { tool: "zero_stop"; args: { job?: string } }
+  | { tool: "zero_discard"; args: { job: string; reason?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
   | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
@@ -2164,6 +2177,11 @@ export function describeRemoteAction(a: RemoteAction): string {
       return `fundir el pull request de ${a.args.target}`;
     case "zero_stop":
       return a.args.job ? `detener el trabajo ${a.args.job}` : "detener toda la fábrica";
+    case "zero_discard": {
+      // The reason goes to the pull request's comment, so whoever confirms reads it whole, on one line.
+      const reason = cleanText(a.args.reason ?? "").replace(/\s+/g, " ");
+      return `descartar el trabajo ${a.args.job}, cerrando su pull request abierto y borrando su rama${reason ? ` (motivo: ${reason})` : ""}`;
+    }
     case "zero_proposal_decide":
       return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
     case "zero_egress_block":
@@ -2226,6 +2244,8 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
       const r = await stop(ctx, held.args.job);
       return { ok: true, text: r.factory ? "Fábrica detenida: nada nuevo empieza hasta que la reanudes." : formatJob(r.job!, { subscription: subscription() }) };
     }
+    case "zero_discard":
+      return { ok: true, text: formatDiscard(await discardJob(ctx, held.args.job, { reason: held.args.reason, via: "chat", ...(opts.merges && { api: opts.merges }) })) };
     case "zero_proposal_decide":
       if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
       return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };

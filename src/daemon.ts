@@ -44,6 +44,7 @@ import { researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { recruitPass } from "./line/recruit.js";
+import { discardResolved } from "./line/discard.js";
 import { closeInterruptedUnjam, resendAfterCapability, unjamOnDemandPass, unjamOnDemandReady, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
@@ -367,6 +368,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // Failed jobs whose work is already in the base branch, closed the same way; a GitHub pause only holds back asking about their pull requests.
+  let resolvedAt = 0;
+  let closingResolved: Promise<unknown> | undefined;
+  const closeResolved = () => {
+    if (closingResolved || !ctx.config.lines.length || Date.now() - resolvedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    resolvedAt = Date.now();
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "resolved"));
+    closingResolved = discardResolved(ctx, now(), merges)
+      .catch((err) => log.warn("closing resolved jobs failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("resolved");
+        closingResolved = undefined;
+      });
+  };
+
   // A distributed factory's heartbeat and machine list, through the meter, at most every heartbeatSeconds; a single-machine factory sends nothing.
   let coordAt = 0;
   let coordinating: Promise<unknown> | undefined;
@@ -642,6 +658,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       readBilling();
       lookAtInstall();
       resendRefused();
+      closeResolved();
       exportTraces();
       runSchedules();
       runOnDemand();
@@ -778,6 +795,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await readingBilling;
     await checkingInstall;
     await resending;
+    await closingResolved;
     await exporting;
     await scheduling;
     await demanding;
