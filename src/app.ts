@@ -38,7 +38,7 @@ import { signedMerges } from "./signature.js";
 import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { jobStage, type Spec } from "./line/spec.js";
-import { readDiagnosis, type Cause } from "./line/unjam.js";
+import { onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest } from "./line/unjam.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
 import { ageText, billingLine, formatEgressSites, formatJob, formatMerge, formatRequest, jamLine, jobName, jobOrigin, outageLine } from "./format.js";
@@ -2838,6 +2838,43 @@ export async function waitStationStart(ctx: FactoryContext, ref: string, request
     waited += step;
   }
   return { started: false, text: `La corrida a demanda de ${pkg}/${name} sigue pendiente: corre en la próxima pasada del daemon.` };
+}
+
+/**
+ * Asks the daemon for one run of the unjam station as soon as it can, for a line or for every line that is not a
+ * package's, whatever the factory is doing and outside the night shift's hours and periods. At most one pending in the
+ * factory; a refusal writes nothing.
+ */
+export function requestUnjam(ctx: FactoryContext, line?: string, now = new Date()): StationRunResult {
+  const name = line?.trim() || undefined;
+  const pending = readUnjamRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una corrida del destrabador pendiente${pending.line === undefined ? "" : ` para ${pending.line}`}, pedida el ${pending.requestedAt}` };
+  if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
+  if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
+  const problem = onDemandProblem(ctx, name);
+  if (problem) return { ok: false, reason: problem };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(UNJAM_REQUEST_KEY, JSON.stringify({ requestedAt, ...(name !== undefined && { line: name }) } satisfies UnjamRequest));
+  return { ok: true, text: `Corrida del destrabador pedida para ${name ?? "todas las líneas"}: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** Like `waitStationStart`, for the unjam run asked for at `requestedAt`; a run that ended without starting says why at once. */
+export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readUnjamRun(ctx.store);
+    if (run?.asked === requestedAt) {
+      if (run.startedAt) return { started: true, text: `El destrabador empezó (${hourMinute(run.startedAt)}). Mirá su resultado en zero status.` };
+      if (run.endedAt) return { started: false, text: `El destrabador no corrió: ${run.reason ?? "sin motivo registrado"}.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
 }
 
 function hourMinute(iso: string): string {
