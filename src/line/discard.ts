@@ -2,11 +2,11 @@ import { directMerges, getJob, type FactoryContext, type MergeApiFactory } from 
 import type { LineConfig } from "../config.js";
 import { lineRepository } from "../intake/github.js";
 import { log } from "../log.js";
-import { tryGit } from "../shell.js";
-import type { Job } from "../state/store.js";
+import { spawnGit, tryGit } from "../shell.js";
+import type { Job, Store } from "../state/store.js";
 import { checkedOutAt } from "../workspace.js";
 import { mergeKey, pullRequestOf, type MergeApi, type MergeState, type MergeVia, type PullRequestState } from "./automerge.js";
-import { discardedByYou, finalizeJob, prRefreshKey } from "./finish.js";
+import { discardedByFactory, discardedByYou, finalizeJob, prRefreshKey } from "./finish.js";
 import { scrubLocal } from "./research.js";
 
 /** What discarding a job did. A GitHub or git failure is a problem here, never a job left undiscarded. */
@@ -162,4 +162,145 @@ export async function discardJob(ctx: FactoryContext, id: string, opts: { reason
     branch: { name, local, remote, ...(kept && { kept }) },
     problems,
   };
+}
+
+/** A line is looked at again after this long, or as soon as another job of it fails. */
+export const RESOLVED_MS = 60_000;
+/** A pull request closed without merging can still be reopened and merged, so it is only asked about less often. */
+const CLOSED_WAIT_MS = 24 * 60 * 60 * 1000;
+
+/** What the last look at a line's failed jobs left, so nothing unchanged is asked or compared again. */
+interface ResolvedLook {
+  at: string;
+  jobs: Record<string, { failed: string; compared?: string; askAfter?: string }>;
+}
+
+export const resolvedKey = (line: string) => `resolved:${line}`;
+
+function readLook(store: Store, line: string): ResolvedLook | undefined {
+  try {
+    const raw = store.getKv(resolvedKey(line));
+    return raw ? (JSON.parse(raw) as ResolvedLook) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const failedAt = (job: Job) => job.finishedAt ?? job.updatedAt;
+const branchOf = (job: Job) => job.delivery?.branch ?? `zero/${job.id}`;
+
+/** The tips of the line's local branches. */
+function branchTips(line: LineConfig): Map<string, string> {
+  const out = tryGit(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"], line.repo) ?? "";
+  return new Map(
+    out
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => [l.slice(l.indexOf(" ") + 1).replace("refs/heads/", ""), l.slice(0, l.indexOf(" "))]),
+  );
+}
+
+/** The line's base on its remote, brought up to date when the remote answers; undefined when there is none. */
+function remoteBase(line: LineConfig): string | undefined {
+  const ref = `refs/remotes/${line.remote}/${line.baseBranch}`;
+  if (tryGit(["remote", "get-url", line.remote], line.repo) !== undefined) {
+    const fetched = spawnGit(["fetch", "-q", line.remote, `+refs/heads/${line.baseBranch}:${ref}`], line.repo, { timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    if (fetched.status !== 0) log.warn("cannot fetch the base branch to look for resolved jobs", { line: line.name, remote: line.remote, error: (fetched.stderr || String(fetched.error ?? "")).trim().slice(0, 300) });
+  }
+  return tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], line.repo);
+}
+
+const contains = (repo: string, commit: string, tip: string) => tryGit(["merge-base", "--is-ancestor", commit, tip], repo) !== undefined;
+
+/**
+ * Whether the branch was ever worked on: a commit of the job's, or one made on the branch itself. A branch still where
+ * it started (a job that failed before its first commit) is an ancestor of the base too, with nothing of its own in it.
+ */
+function ownWork(repo: string, job: Job, branch: string, tip: string): boolean {
+  if (tryGit(["log", "-1", "--format=%H", "--fixed-strings", `--grep=zero(${job.id})`, tip], repo)) return true;
+  const commits = (tryGit(["log", "-g", "--format=%H %gs", `refs/heads/${branch}`], repo) ?? "").split("\n").filter((l) => /^\w+ commit\b/.test(l));
+  return commits.some((l) => contains(repo, l.split(" ")[0]!, tip));
+}
+
+/** The paths two trees differ in; undefined when git cannot tell. */
+function changedPaths(repo: string, from: string, to: string): string[] | undefined {
+  const r = spawnGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", from, to], repo, { maxBuffer: 64 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : undefined;
+}
+
+/** Why the branch's work is already in the base, if it is. */
+function inBase(line: LineConfig, job: Job, branch: string, tip: string, base: string): string | undefined {
+  const name = `${line.remote}/${line.baseBranch}`;
+  if (contains(line.repo, tip, base)) return ownWork(line.repo, job, branch, tip) ? `su rama ${branch} ya está en ${name}` : undefined;
+  const start = tryGit(["merge-base", tip, base], line.repo);
+  const own = start ? changedPaths(line.repo, start, tip) : undefined;
+  const differ = own?.length ? changedPaths(line.repo, tip, base) : undefined;
+  if (!own || !differ) return undefined;
+  const missing = new Set(differ);
+  return own.some((p) => missing.has(p)) ? undefined : `los cambios de su rama ${branch} ya están en ${name}`;
+}
+
+/** Closes the failed jobs of one line whose work is already in. */
+async function discardResolvedIn(ctx: FactoryContext, line: LineConfig, now: Date, merges?: MergeApiFactory): Promise<number> {
+  const failed = ctx.store.listJobs({ line: line.name, status: ["failed"], limit: -1 });
+  if (!failed.length) return 0;
+  const last = readLook(ctx.store, line.name);
+  const recent = last !== undefined && Math.abs(now.getTime() - Date.parse(last.at)) < RESOLVED_MS;
+  if (recent && failed.every((j) => last.jobs[j.id]?.failed === failedAt(j))) return 0;
+
+  const look: ResolvedLook = { at: now.toISOString(), jobs: {} };
+  const tips = branchTips(line);
+  const tipOf = (j: Job) => (branchOf(j) === line.baseBranch ? undefined : tips.get(branchOf(j)));
+  const base = failed.some(tipOf) ? remoteBase(line) : undefined;
+  let closed = 0;
+  for (const job of failed) {
+    const before = last?.jobs[job.id];
+    const seen: ResolvedLook["jobs"][string] = { failed: failedAt(job), ...(before?.failed === failedAt(job) && { compared: before.compared, askAfter: before.askAfter }) };
+    look.jobs[job.id] = seen;
+    try {
+      let why: string | undefined;
+      const tip = tipOf(job);
+      if (tip && base && seen.compared !== `${tip} ${base}`) {
+        why = inBase(line, job, branchOf(job), tip, base);
+        if (!why) seen.compared = `${tip} ${base}`;
+      }
+      const url = job.delivery?.url;
+      const pull = url ? pullRequestOf(url) : undefined;
+      const gh = !why && pull && !(seen.askAfter && now.getTime() < Date.parse(seen.askAfter)) ? merges?.(pull.repository, line) : undefined;
+      if (gh && pull) {
+        const pr = await gh.pullRequest(pull.number);
+        if (pr.merged) why = `su pull request ${url} ya se fundió`;
+        else seen.askAfter = pr.open ? undefined : new Date(now.getTime() + CLOSED_WAIT_MS).toISOString();
+      }
+      if (!why) continue;
+      // Read again: it may have been retried or discarded while GitHub answered.
+      const current = ctx.store.getJob(job.id);
+      if (!current || current.status !== "failed" || failedAt(current) !== failedAt(job)) continue;
+      await finalizeJob(ctx, current, "stopped", { reason: discardedByFactory(why), delivery: current.delivery });
+      closed++;
+      log.info("failed job closed: its work is already in", { job: job.id, line: line.name, why });
+    } catch (err) {
+      log.warn("cannot tell whether a failed job is already resolved", { job: job.id, line: line.name, error: String(err) });
+    }
+  }
+  ctx.store.setKv(resolvedKey(line.name), JSON.stringify(look));
+  return closed;
+}
+
+/**
+ * Closes on its own, as `stopped` through `finalizeJob`, the failed jobs whose work is already in: GitHub says their
+ * pull request was merged, or the base branch on the line's remote already has their branch or the same content. Any
+ * other failed job stays as it is, and nothing is asked of the person in charge. Returns how many it closed.
+ */
+export async function discardResolved(ctx: FactoryContext, now: Date, merges?: MergeApiFactory): Promise<number> {
+  let closed = 0;
+  for (const line of ctx.config.lines) {
+    if (line.package) continue;
+    try {
+      closed += await discardResolvedIn(ctx, line, now, merges);
+    } catch (err) {
+      log.warn("cannot look for resolved jobs", { line: line.name, error: String(err) });
+    }
+  }
+  return closed;
 }

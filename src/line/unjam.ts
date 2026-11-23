@@ -13,6 +13,7 @@ import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/st
 import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
 import { pendingCleanups } from "./cleanup.js";
+import { discardResolved } from "./discard.js";
 import { scrubLocal } from "./research.js";
 import { SPEC_REFUSAL } from "./runner.js";
 import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
@@ -649,12 +650,14 @@ const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running
 /**
  * The unjam station while the factory is idle, with the night shift's gates and its shared spending cap: every line
  * with jams and not yet diagnosed this period gets one call. A line without jams gets none, and loses its old diagnosis.
+ * Failed jobs whose work is already in are closed first, so they are no jam.
  */
 export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal, merges?: MergeApiFactory): Promise<void> {
   const shift = ctx.config.nightShift;
   if (ctx.config.unjam === "off" || shift === "off" || !insideHours(shift, now)) return;
   const period = periodStart(shift, now);
   const logs: LogCache = new Map();
+  await discardResolved(ctx, now, merges);
   for (const line of ctx.config.lines) {
     if (line.package) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
@@ -699,6 +702,7 @@ export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner
   const after = unjam.urgentAfterHours * 3_600_000;
   const logs: LogCache = new Map();
   let ran = 0;
+  await discardResolved(ctx, now, opts.merges);
   for (const line of ctx.config.lines) {
     if (line.package) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.

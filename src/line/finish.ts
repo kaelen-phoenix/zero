@@ -64,6 +64,9 @@ export const rejectedByYou = (note?: string) => `Lo rechazaste vos${note ? `: ${
 /** The stored reason of a job the person discarded, with their reason when there is one. */
 export const discardedByYou = (reason?: string) => `Lo descartaste vos${reason ? `: ${reason}` : "."}`;
 
+/** The stored reason of a failed job the factory closed on its own because its work is already in. */
+export const discardedByFactory = (why: string) => `Descartado por la fábrica: ${why}.`;
+
 /** The stored reason of a job whose claim another machine of a distributed factory took over: this copy ends without pushing, integrating or telling its origin. */
 export const LOST_TO_ANOTHER = "Lo retomó otra máquina de la fábrica.";
 

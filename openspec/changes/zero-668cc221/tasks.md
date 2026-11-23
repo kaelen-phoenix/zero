@@ -24,6 +24,6 @@
 
 ## 4. Etapa 4: Automatic cleanup of resolved failed jobs
 
-- [ ] 4.1 discardResolved in src/line/discard.ts (PR merged, branch in base, same content in base).
-- [ ] 4.2 Call it at the start of unjamPass/urgentUnjamPass and as a throttled daemon pass.
-- [ ] 4.3 Tests for merged, cherry-picked, PR merged, real failure, and unjam skipping resolved work; docs in docs/agents/production-line.md and night-shift.md; full typecheck, tests and openspec validate.
+- [x] 4.1 discardResolved in src/line/discard.ts (PR merged, branch in base, same content in base).
+- [x] 4.2 Call it at the start of unjamPass/urgentUnjamPass and as a throttled daemon pass.
+- [x] 4.3 Tests for merged, cherry-picked, PR merged, real failure, and unjam skipping resolved work; docs in docs/agents/production-line.md and night-shift.md; full typecheck, tests and openspec validate.
