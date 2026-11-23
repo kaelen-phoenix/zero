@@ -9,6 +9,7 @@ import { billingText, outageText, type MergeOutcome } from "./line/automerge.js"
 import { describeDelivery } from "./line/finish.js";
 import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
+import type { UnjamLineResult, UnjamRequest, UnjamRunRecord } from "./line/unjam.js";
 import { jobStage } from "./line/spec.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
@@ -365,6 +366,38 @@ export function onDemandState(r: OnDemandRun, now = new Date()): string {
 /** "hello/nota (pedida 10:00): terminó bien (10:07)". */
 export const describeOnDemandRun = (r: OnDemandRun, now = new Date()) => `${r.station} (pedida ${resetTime(r.asked, now)}): ${onDemandState(r, now)}`;
 
+const UNJAM_END: Record<NonNullable<UnjamRunRecord["outcome"]>, string> = {
+  ok: "terminó bien",
+  failed: "falló",
+  stopped: "se cortó",
+  "not-run": "no pudo correr",
+};
+
+/** A past time as `resetTime`, with its date too once the weekday no longer tells which day it was. */
+function pastTime(iso: string, now: Date): string {
+  const at = new Date(iso);
+  return now.getTime() - at.getTime() < 6 * 86_400_000 ? resetTime(iso, now) : `${at.toLocaleDateString("es-AR")} ${resetTime(iso, at)}`;
+}
+
+/** "tienda: 2 trabas, 1 causa", "blog: sin trabas" or "web: 1 traba, sin diagnóstico válido". */
+function unjamLineText(l: UnjamLineResult): string {
+  if (!l.jams) return `${l.line}: sin trabas`;
+  return `${l.line}: ${l.jams} ${l.jams === 1 ? "traba" : "trabas"}, ${l.failed ? "sin diagnóstico válido" : `${l.causes} ${l.causes === 1 ? "causa" : "causas"}`}`;
+}
+
+/** The unjam run asked for and not started: "pendiente para tienda desde 10:05". */
+export const unjamPendingText = (r: UnjamRequest, now = new Date()) => `pendiente para ${r.line ?? "todas las líneas"} desde ${pastTime(r.requestedAt, now)}`;
+
+/** The last on-demand unjam run: "pedida para tienda 10:00, empezó 10:05, terminó bien (10:07) · tienda: 2 trabas, 1 causa". */
+export function describeUnjamRun(r: UnjamRunRecord, now = new Date()): string {
+  const asked = `pedida para ${r.line ?? "todas las líneas"} ${pastTime(r.asked, now)}`;
+  if (!r.endedAt) return `${asked}, corriendo${r.startedAt ? ` desde ${pastTime(r.startedAt, now)}` : ""}`;
+  const started = r.startedAt ? `, empezó ${pastTime(r.startedAt, now)}` : "";
+  // A run that ended well needs no reason: its lines tell it.
+  const reason = r.reason && r.outcome !== "ok" ? `: ${r.reason}` : "";
+  return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...r.lines.map(unjamLineText)].join(" · ");
+}
+
 export function formatStatus(s: FactoryStatus, now = new Date()): string {
   const t = s.today;
   const out = [
@@ -402,6 +435,8 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
+  if (s.unjam.pending) out.push(`Corrida a demanda del destrabador: ${unjamPendingText(s.unjam.pending, now)}`);
+  if (s.unjam.last) out.push(`Última corrida a demanda del destrabador: ${describeUnjamRun(s.unjam.last, now)}`);
   if (s.whenBusy.length) out.push(`Estaciones que corren aunque la fábrica esté ocupada: ${s.whenBusy.join(", ")}`);
   if (s.install) out.push(installLine(s.install, now));
   if (s.tunnel) out.push(tunnelLine(s.tunnel, now));

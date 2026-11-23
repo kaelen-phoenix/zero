@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -55,6 +55,9 @@ Uso diario (también desde el chat):
                                  Arma el tren de integración de la línea con sus pull requests entregados sin fundir (o
                                  esos, en ese orden): los funde de a uno, aunque la línea no tenga autoMerge, actualizando
                                  y resolviendo el siguiente recién después, y nunca funde uno en rojo
+  zero destrabar [línea]         Corre ahora el destrabador en la línea (o en todas), aunque haya trabajos en cola o
+                                 corriendo y fuera del turno nocturno, con sus mismos límites; responde cuando la
+                                 corrida empezó (o, pasados 2 minutos, que sigue pendiente)
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -133,7 +136,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run` waits for the daemon to start the run before saying it is still pending. */
+/** How long `zero package run` and `zero destrabar` wait for the daemon to start the run before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -351,6 +354,17 @@ async function main(argv: string[]): Promise<number> {
         const train = await startTrain(ctx, { line, numbers });
         console.log(formatTrain(train));
         if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        return 0;
+      }
+      case "destrabar": {
+        const r = requestUnjam(ctx, rest[0] ?? values.line);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        console.log((await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
         return 0;
       }
       case "resume":

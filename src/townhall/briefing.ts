@@ -1,5 +1,5 @@
-import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage, TrainView } from "../app.js";
-import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText, selfUpdateRetryText, trainLine } from "../format.js";
+import type { BillingHold, FactoryStatus, JamView, OnDemandRun, Outage, TrainView, UnjamOnDemand } from "../app.js";
+import { bytes, describeAlert, describeJobStatus, describeOnDemandRun, describeUnjamRun, installLine, jamLine, jobOrigin, resetTime, selfUpdateEntryText, selfUpdateRetryText, trainLine, unjamPendingText } from "../format.js";
 import { billingText, outageText } from "../line/automerge.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "../self-update.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "../state/store.js";
@@ -35,6 +35,8 @@ export interface BriefingAlert {
 export interface BriefingOnDemand {
   pending: FactoryStatus["onDemand"];
   runs: OnDemandRun[];
+  /** The unjam station's: the request not started yet and the last run, when it is of the period. */
+  unjam?: Pick<UnjamOnDemand, "pending" | "last">;
 }
 
 export interface Briefing {
@@ -112,13 +114,16 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
   if (trains.length) {
     sections.push(["## Trenes de integración", ...trains.map((t) => `- ${trainLine(t)}`)].join("\n"));
   }
-  if (onDemand.pending.length || onDemand.runs.length) {
+  const unjam = onDemand.unjam;
+  if (onDemand.pending.length || onDemand.runs.length || unjam?.pending || unjam?.last) {
     const now = new Date(metrics.to);
     sections.push(
       [
         "## Corridas a demanda",
         ...onDemand.pending.map((d) => `- ${d.station}: pendiente desde ${resetTime(d.since, now)}`),
         ...onDemand.runs.map((r) => `- ${describeOnDemandRun(r, now)}`),
+        ...(unjam?.pending ? [`- destrabador: ${unjamPendingText(unjam.pending, now)}`] : []),
+        ...(unjam?.last ? [`- destrabador: ${describeUnjamRun(unjam.last, now)}`] : []),
       ].join("\n"),
     );
   }

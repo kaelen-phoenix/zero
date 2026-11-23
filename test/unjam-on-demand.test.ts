@@ -1,11 +1,17 @@
-import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { agentName, quotaAttrs } from "../src/agent.js";
-import { ANDON_KEY, requestUnjam, waitUnjamStart } from "../src/app.js";
+import { ANDON_KEY, briefing, factoryStatus, requestUnjam, waitUnjamStart } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
+import { formatStatus } from "../src/format.js";
 import { mergeKey } from "../src/line/automerge.js";
 import { closeInterruptedUnjam, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, UNJAM_RUN_KEY, unjamKey, unjamOnDemandPass, unjamPass, unjamPassKey, unjamUrgentKey, type UnjamRunRecord } from "../src/line/unjam.js";
+import { createZeroMcpServer, type ZeroMcpOptions } from "../src/mcp/server.js";
 import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitRepo, testFactory } from "./helpers.js";
 
@@ -556,5 +562,152 @@ describe("the daemon", () => {
     await runDaemon(ctx, { ...onDemand, agentRunner: () => agents.runner });
     expect(agents.calls).toHaveLength(0);
     expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "not-run", reason: expect.stringContaining("tienda") });
+  });
+});
+
+describe("seeing it", () => {
+  const stored = (over: Partial<UnjamRunRecord> = {}): UnjamRunRecord => ({ asked: at(13).toISOString(), line: "tienda", startedAt: at(13, 5).toISOString(), endedAt: at(13, 7).toISOString(), outcome: "ok", lines: [{ line: "tienda", jams: 2, causes: 1 }], ...over });
+  const recorded = (over: Partial<UnjamRunRecord> = {}, start = at(14)) => {
+    const ctx = factory({}, start);
+    ctx.store.setKv(UNJAM_RUN_KEY, JSON.stringify(stored(over)));
+    return ctx;
+  };
+  const shown = (ctx: Ctx, now = at(14)) => formatStatus(factoryStatus(ctx), now).split("\n").filter((l) => l.includes("destrabador"));
+
+  it("the status carries whether it is on, the lines that are not a package's, the request and the last run", () => {
+    const ctx = factory({ lines: twoLines() });
+    ctx.config.lines.push({ ...ctx.config.lines[0]!, name: "social", package: "redes" });
+    expect(factoryStatus(ctx).unjam).toEqual({ enabled: true, lines: ["tienda", "blog"] });
+    ask(ctx, "tienda");
+    expect(factoryStatus(ctx).unjam.pending).toEqual({ requestedAt: at(13).toISOString(), line: "tienda" });
+    expect(factoryStatus(recorded()).unjam.last).toEqual(stored());
+    expect(factoryStatus(factory({ unjam: "off" })).unjam.enabled).toBe(false);
+  });
+
+  it("zero status says nothing without a request or a run", () => {
+    expect(shown(factory())).toEqual([]);
+  });
+
+  it("zero status shows the pending request, for which line and since when", () => {
+    const ctx = factory();
+    ask(ctx, "tienda");
+    expect(shown(ctx)).toEqual(["Corrida a demanda del destrabador: pendiente para tienda desde 13:00"]);
+    const all = factory();
+    ask(all);
+    expect(shown(all)).toEqual(["Corrida a demanda del destrabador: pendiente para todas las líneas desde 13:00"]);
+  });
+
+  it("zero status shows a run under way and since when", () => {
+    expect(shown(recorded({ endedAt: undefined, outcome: undefined, lines: [] }))).toEqual(["Última corrida a demanda del destrabador: pedida para tienda 13:00, corriendo desde 13:05"]);
+  });
+
+  it("zero status shows how it ended, when, and each line's jams and causes", () => {
+    expect(shown(recorded())).toEqual(["Última corrida a demanda del destrabador: pedida para tienda 13:00, empezó 13:05, terminó bien (13:07) · tienda: 2 trabas, 1 causa"]);
+    const lines = [
+      { line: "tienda", jams: 0, causes: 0 },
+      { line: "blog", jams: 1, causes: 0, failed: true },
+    ];
+    expect(shown(recorded({ line: undefined, outcome: "failed", reason: "no hubo un diagnóstico válido de blog", lines }))[0]).toContain("pedida para todas las líneas 13:00, empezó 13:05, falló (13:07): no hubo un diagnóstico válido de blog · tienda: sin trabas · blog: 1 traba, sin diagnóstico válido");
+    expect(shown(recorded({ outcome: "stopped", reason: "la fábrica se detuvo (andon)", lines: [] }))[0]).toContain("se cortó (13:07): la fábrica se detuvo (andon)");
+    expect(shown(recorded({ startedAt: undefined, outcome: "not-run", reason: "no existe la línea", lines: [] }))[0]).toContain("pedida para tienda 13:00, no pudo correr (13:07): no existe la línea");
+  });
+
+  it("zero status dates a run of more than a few days ago", () => {
+    expect(shown(recorded({}, new Date(2026, 10, 20, 9)), new Date(2026, 10, 20, 9))[0]).toContain("29/10/2026 13:07");
+  });
+
+  it("the briefing lists the run that started or ended in its period, and what is pending", async () => {
+    const ctx = recorded({ outcome: "failed", reason: "no hubo un diagnóstico válido de tienda" });
+    let body = (await briefing(ctx, 1)).body;
+    expect(body).toContain("## Corridas a demanda");
+    expect(body).toMatch(/^- destrabador: pedida para tienda 13:00, empezó 13:05, falló \(13:07\)/m);
+    ask(ctx, "tienda");
+    body = (await briefing(ctx, 1)).body;
+    expect(body).toMatch(/^- destrabador: pendiente para tienda desde 13:00$/m);
+    const running = recorded({ endedAt: undefined, outcome: undefined, lines: [] });
+    expect((await briefing(running, 1)).body).toMatch(/^- destrabador: .*corriendo desde 13:05$/m);
+  });
+
+  it("the briefing says nothing of a run of another period", async () => {
+    expect((await briefing(recorded({}, at(14, 0, 31)), 1)).body).not.toContain("Corridas a demanda");
+  });
+});
+
+describe("asking from the terminal and the chat", () => {
+  const clients: Client[] = [];
+  afterEach(async () => {
+    await Promise.all(clients.splice(0).map((c) => c.close().catch(() => undefined)));
+  });
+  const zero = (ctx: Ctx, ...args: string[]) => {
+    const r = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, ZERO_HOME: ctx.home.root }, input: "", windowsHide: true });
+    return { code: r.status, output: r.stdout + r.stderr };
+  };
+  async function chat(ctx: Ctx, opts: ZeroMcpOptions = {}) {
+    const server = createZeroMcpServer(ctx.home, { autoStart: false, stationWaitMs: 0, ...opts });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a);
+    const client = new Client({ name: "test", version: "1" });
+    await client.connect(b);
+    clients.push(client);
+    const names = async () => (await client.listTools()).tools.map((t) => t.name);
+    const unjam = async (args: Record<string, unknown> = {}) => ((await client.callTool({ name: "zero_unjam", arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+    return { names, unjam };
+  }
+
+  it("the usage lists zero destrabar", () => {
+    expect(zero(factory(), "help").output).toContain("zero destrabar [línea]");
+  }, 60_000);
+
+  it("zero destrabar with the andon on tells the reason and exits 1", () => {
+    const ctx = factory();
+    ctx.store.setKv(ANDON_KEY, "on");
+    const r = zero(ctx, "destrabar");
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("andon");
+    expect(readUnjamRequest(ctx.store)).toBeUndefined();
+  }, 60_000);
+
+  it("zero destrabar starts the factory and waits as zero package run does", () => {
+    const cli = readFileSync(join(import.meta.dirname, "..", "src", "cli.ts"), "utf8");
+    const command = cli.slice(cli.indexOf('case "destrabar"'), cli.indexOf('case "resume"'));
+    expect(command).toContain("await ensureDaemon(ctx)");
+    expect(command).toContain("waitUnjamStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })");
+  });
+
+  it("zero_unjam asks for the run of a line and says it is still pending", async () => {
+    const ctx = factory();
+    const { names, unjam } = await chat(ctx);
+    expect(await names()).toContain("zero_unjam");
+    const text = await unjam({ line: "tienda" });
+    expect(text).toContain("Corrida del destrabador pedida para tienda");
+    expect(text).toContain("sigue pendiente");
+    expect(readUnjamRequest(ctx.store)).toMatchObject({ line: "tienda" });
+  });
+
+  it("zero_unjam without a line asks for every line, and says when the factory was off", async () => {
+    const ctx = factory();
+    const start = vi.fn(async () => true);
+    const text = await (await chat(ctx, { autoStart: true, start })).unjam();
+    expect(text).toContain("todas las líneas");
+    expect(text).toContain("La fábrica estaba apagada: la encendí.");
+    expect(readUnjamRequest(ctx.store)).toEqual({ requestedAt: expect.any(String) });
+  });
+
+  it("zero_unjam answers the refusal and changes nothing with one already pending", async () => {
+    const ctx = factory();
+    ask(ctx, "tienda");
+    const before = ctx.store.getKv(UNJAM_REQUEST_KEY);
+    const text = await (await chat(ctx)).unjam();
+    expect(text).toContain("ya hay una corrida del destrabador pendiente");
+    expect(text).toContain(at(13).toISOString());
+    expect(ctx.store.getKv(UNJAM_REQUEST_KEY)).toBe(before);
+  });
+
+  it("a remote chat has it only with zero:act", async () => {
+    const ctx = factory();
+    expect(await (await chat(ctx, { remote: { scope: ["zero:read"], client: "c" } })).names()).not.toContain("zero_unjam");
+    const acting = await chat(ctx, { remote: { scope: ["zero:read", "zero:act"], client: "c" } });
+    expect(await acting.unjam({ line: "tienda" })).toContain("pedida para tienda");
+    expect(readUnjamRequest(ctx.store)).toMatchObject({ line: "tienda" });
   });
 });

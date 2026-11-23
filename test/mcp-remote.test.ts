@@ -109,7 +109,8 @@ describe("remote chat switch", () => {
 
   it("offers no chat tool that turns it on", async () => {
     const p = await panel({ on: false });
-    const server = createZeroMcpServer(p.ctx.home, { autoStart: false });
+    // zero_unjam waits for its run to start, and no daemon runs here.
+    const server = createZeroMcpServer(p.ctx.home, { autoStart: false, stationWaitMs: 0 });
     const [a, b] = InMemoryTransport.createLinkedPair();
     await server.connect(b);
     const client = new Client({ name: "test", version: "1" });
