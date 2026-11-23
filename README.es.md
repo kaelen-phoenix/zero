@@ -1134,3 +1134,7 @@ Todo orquestador de IA parte del mismo supuesto: el código es el producto y los
 - API de plugins y especialistas
 - ccusage
 - MCP gobernado para los agentes de las estaciones
+
+## Licencia y marca
+
+El código tiene licencia [Apache-2.0](LICENSE): podés usarlo, modificarlo y bifurcarlo. El nombre «zero in the loop» y los logos no son parte de esa licencia; los cubre la [política de marca](TRADEMARK.md) (en inglés). Podés nombrar el proyecto para describirlo o para decir que algo funciona con él. Usar el nombre o los logos en un producto o servicio derivado necesita permiso.
