@@ -1127,3 +1127,7 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 - Plugin and specialist API
 - ccusage
 - Governed MCP for the station agents
+
+## License and trademark
+
+The code is licensed under [Apache-2.0](LICENSE): you can use it, modify it and fork it. The name "zero in the loop" and the logos are not part of that license; the [trademark policy](TRADEMARK.md) covers them. You can name the project to describe it or to say that something works with it. Using the name or the logos for a derived product or service needs permission.
