@@ -12,9 +12,10 @@ import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
+import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatTrain, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -45,6 +46,8 @@ Uso diario (también desde el chat):
   zero resume                    Reanuda la fábrica
   zero reintentar <trabajo>      Vuelve a poner en cola desde su checkpoint un trabajo fallido, o deja que la
                                  fábrica vuelva a actualizar un pull request en conflicto
+  zero descartar <trabajo>       Cierra un trabajo fallido, en cola, en espera o con su pull request sin fundir: cierra ese
+                                 pull request con un comentario y borra su rama   [--motivo "<texto>"]
   zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
                                  solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
   zero actualizar-pr <línea> <número>...
@@ -316,6 +319,11 @@ async function main(argv: string[]): Promise<number> {
         console.log(r.kind === "queued" ? `El trabajo ${r.job.id} volvió a la cola desde su checkpoint (${r.job.checkpoint}).` : `El trabajo ${r.job.id} tiene sus intentos de nuevo: la fábrica volverá a actualizar su pull request con la rama base.`);
         const started = await ensureDaemon(ctx);
         if (started) console.log("La fábrica estaba apagada: la encendí.");
+        return 0;
+      }
+      case "descartar": {
+        if (!rest[0]) throw new Error('Indicá el trabajo: zero descartar <trabajo> [--motivo "<texto>"]');
+        console.log(formatDiscard(await discardJob(ctx, rest[0], { reason: values.motivo, via: "cli" })));
         return 0;
       }
       case "status":

@@ -70,6 +70,8 @@ export interface MergeApi {
   merge(number: number, sha: string): Promise<string | undefined>;
   deleteBranch(branch: string): Promise<void>;
   comment(number: number, body: string): Promise<void>;
+  /** Closes the pull request without merging it. */
+  close?(number: number): Promise<void>;
   /** Whether the base branch has commits the pull request's tip does not. */
   behind?(base: string, sha: string): Promise<boolean>;
   /** Merges the base branch into the pull request on GitHub, only if its tip is still `sha`. */
@@ -128,6 +130,9 @@ export function githubMerges(token: string, repository: string, client?: Octokit
     },
     async comment(number, body) {
       await gh.issues.createComment({ owner, repo, issue_number: number, body: `${body}\n\n${FACTORY_MARK}` });
+    },
+    async close(number) {
+      await gh.pulls.update({ owner, repo, pull_number: number, state: "closed" });
     },
     async behind(base, sha) {
       return (await gh.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${base}...${sha}`, per_page: 1 })).data.behind_by > 0;
