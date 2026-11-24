@@ -289,7 +289,8 @@ describe("a pull request in conflict with its base", () => {
     f.setBuild(resolves("resolved twice\n"));
     expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3 });
     f.contained(updated, f.remoteTip());
-  });
+    // Three line runs on real git: the slowest of the file, over the default under the whole suite on Windows.
+  }, 120_000);
 });
 
 describe("a pull request with failed checks GitHub has not called mergeable", () => {
