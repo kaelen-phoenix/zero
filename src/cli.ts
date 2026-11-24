@@ -134,7 +134,7 @@ Fábrica:
                                  el túnel del panel; cada conexión nueva la aprobás vos en el panel
   zero mcp clients               Chats remotos conectados: nombre, permisos, cuándo los aprobaste y su último uso
   zero mcp revoke <cliente>      Desconecta un chat remoto: sus tokens dejan de servir en el momento
-  zero mcp pendientes            Acciones delicadas que pidió un chat remoto (fundir, detener, aprobar…) y esperan tu confirmación
+  zero mcp pendientes            Acciones delicadas que pidió un chat (fundir, detener, aprobar, crear un repositorio…) y esperan tu confirmación
   zero mcp confirmar <id>        Hace una de esas acciones (vencen a los 15 minutos)
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
@@ -466,6 +466,7 @@ Informe: ${r.report}`);
         if (action === "confirmar" && arg) {
           const r = await confirmRemoteAction(ctx, arg);
           console.log(r.text);
+          if (r.job && (await ensureDaemon(ctx))) console.log("La fábrica estaba apagada: la encendí.");
           return r.ok ? 0 : 1;
         }
         break;

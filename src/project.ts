@@ -11,6 +11,8 @@ export function validRepositoryName(name: string): boolean {
   return repo !== "." && repo !== "..";
 }
 
+export const invalidNameText = (name: string) => `"${name}" no es un nombre de repositorio válido: usá nombre o cuenta/nombre, con letras, números, puntos, guiones y guiones bajos.`;
+
 /** What GitHub says about a repository it just created. */
 export interface CreatedRepository {
   fullName: string;

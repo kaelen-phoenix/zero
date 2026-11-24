@@ -112,6 +112,7 @@ The chat does the same with these tools:
 - `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
 - `zero_egress`: internet egress
 - `zero_egress_block`: blocks a site (internet egress)
+- `zero_repo_create`: asks to create a new project on GitHub; nothing is created until you confirm it
 
 ### Start at login (`autostart`)
 
@@ -131,7 +132,7 @@ zero repo crear demo-acme --pedido "Demo web para Acme con turnos online"
 zero repo crear zero-coord --coordinacion
 ```
 
-To start a project from scratch, `zero repo crear <name|account/name>` creates the repository on GitHub (private unless you pass `--publico`), clones it into `ZERO_HOME/projects/<line>` and adds it as a new line that delivers through pull requests, with the `--setup` and `--verify` commands you give (or the ones it detects in the clone). With `--pedido "..."` it also opens the first job with that text, which goes down the line like any other. Creating a repository is visible from outside and hard to undo, so zero first shows you the plan (name, visibility and folder) and creates it only when you confirm (or with `--yes`); without a terminal and without `--yes` it creates nothing, and no agent or station creates one on its own. If GitHub refuses, zero tells you why: the token has no permission to create repositories (Administration write on a fine-grained token, the `repo` scope on a classic one, or membership of the organization), the token is invalid or expired, or the name is already taken. If the clone fails, the repository stays on GitHub and zero gives you its URL. With `--coordinacion` it creates the private coordination repository of a distributed factory and joins this machine to it, without cloning it or adding a line.
+To start a project from scratch, `zero repo crear <name|account/name>` creates the repository on GitHub (private unless you pass `--publico`), clones it into `ZERO_HOME/projects/<line>` and adds it as a new line that delivers through pull requests, with the `--setup` and `--verify` commands you give (or the ones it detects in the clone). With `--pedido "..."` it also opens the first job with that text, which goes down the line like any other. Creating a repository is visible from outside and hard to undo, so zero first shows you the plan (name, visibility and folder) and creates it only when you confirm (or with `--yes`); without a terminal and without `--yes` it creates nothing, and no agent or station creates one on its own. If GitHub refuses, zero tells you why: the token has no permission to create repositories (Administration write on a fine-grained token, the `repo` scope on a classic one, or membership of the organization), the token is invalid or expired, or the name is already taken. If the clone fails, the repository stays on GitHub and zero gives you its URL. With `--coordinacion` it creates the private coordination repository of a distributed factory and joins this machine to it, without cloning it or adding a line. From the chat, `zero_repo_create` (name, `publico` and `pedido`) creates nothing at once, not even from a chat on this machine: it waits for your confirmation with `zero mcp confirmar <id>` or in the panel's "Chat remoto" tab.
 
 ### Several machines (`zero unirse`)
 
@@ -401,7 +402,7 @@ zero mcp remote off            # turns it off
 - zero is its own OAuth 2.1 authorization server, with PKCE (S256) and dynamic client registration. Each new connection is approved by you on the panel's page, with your key; the chat never gets a password.
 - Access tokens last 1 hour and refresh tokens 7 days, rotating on every use. zero keeps only their SHA-256 hash.
 - Two permissions: read (status, traces, proposals, research, reports) and act (request work, answer).
-- Merging, stopping, approving proposals or protected files and blocking sites from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
+- Merging, stopping, approving proposals or protected files, blocking sites and creating repositories from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
 - The "Chat remoto" tab lists the connected chats, revokes them (it asks for confirmation first) and confirms the held actions.
 - The quick tunnel's address changes every time it restarts, so the chat's connector has to be updated then.
 

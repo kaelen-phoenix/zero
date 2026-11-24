@@ -8,6 +8,7 @@ import { onSubscription } from "../budget.js";
 import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
+import { invalidNameText, validRepositoryName } from "../project.js";
 import type { Scope } from "./oauth.js";
 import { monthlyMarkdown } from "../report.js";
 
@@ -114,12 +115,13 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   // A remote token without zero:act never gets the other tools registered, so it cannot even list them.
   const tool = ((name: string, ...rest: unknown[]) =>
     canAct || READ_TOOLS.has(name) ? (server.registerTool as (...a: unknown[]) => unknown).call(server, name, ...rest) : undefined) as typeof server.registerTool;
-  /** Over the remote server, holds a delicate action for the person in charge; elsewhere runs it. */
-  const delicate = (ctx: FactoryContext, action: RemoteAction, run: () => Promise<string> | string): Promise<string> | string => {
-    if (!remote) return run();
-    const held = holdRemoteAction(ctx, action, remote.client);
+  /** Holds an action for the person in charge, wherever the chat is. */
+  const hold = (ctx: FactoryContext, action: RemoteAction): string => {
+    const held = holdRemoteAction(ctx, action, remote?.client);
     return heldText(held.id, held.text);
   };
+  /** Over the remote server, holds a delicate action for the person in charge; elsewhere runs it. */
+  const delicate = (ctx: FactoryContext, action: RemoteAction, run: () => Promise<string> | string): Promise<string> | string => (remote ? hold(ctx, action) : run());
 
   tool(
     "zero_request",
@@ -385,6 +387,28 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: { site: z.string().describe("Site name, e.g. example.com or example.com:8443.") },
     },
     ({ site }) => withFactory(home, (ctx) => delicate(ctx, { tool: "zero_egress_block", args: { site } }, () => setEgressRule(ctx, site, "block"))),
+  );
+
+  // Creating a repository is visible from outside and hard to undo, so it is held for the local chat too:
+  // only confirmRemoteAction runs it.
+  tool(
+    "zero_repo_create",
+    {
+      title: "Crear un proyecto nuevo en GitHub",
+      description: "Ask to start a new project from scratch: create a GitHub repository (private by default), add it to the factory as a line and, with `pedido`, open its first job. It creates nothing by itself: the action is held until the owner confirms it in the panel or on the terminal. Give the owner the pending id and how to confirm it; never confirm it yourself. Only when the owner asks for it.",
+      inputSchema: {
+        name: z.string().describe("The repository: name, or account/name."),
+        publico: z.boolean().optional().describe("True for a public repository, only when the owner explicitly asks for it; private by default."),
+        pedido: z.string().optional().describe("The first job's request on the new project, in the owner's words."),
+      },
+    },
+    ({ name, publico, pedido }) =>
+      withFactory(home, (ctx) => {
+        const repo = name.trim();
+        if (!validRepositoryName(repo)) return invalidNameText(repo);
+        const request = pedido?.trim();
+        return hold(ctx, { tool: "zero_repo_create", args: { name: repo, ...(publico && { publico }), ...(request && { pedido: request }) } });
+      }),
   );
 
   tool(

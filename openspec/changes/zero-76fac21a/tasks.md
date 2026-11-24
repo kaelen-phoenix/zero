@@ -12,10 +12,10 @@
 
 ## 2. Etapa 2: The chat holds the creation for confirmation
 
-- [ ] 2.1 The zero_repo_create variant of RemoteAction, its describeRemoteAction text, and its confirmRemoteAction branch with an injectable creator.
-- [ ] 2.2 The zero_repo_create MCP tool in src/mcp/server.ts, always held with holdRemoteAction (local stdio and remote), replying with the id and how to confirm it.
-- [ ] 2.3 Tests: a stdio client calls the tool and nothing is created, the pending action shows up, confirming runs it once, and a second confirmation says there is no pending action.
-- [ ] 2.4 Docs in docs/agents/panel.md.
+- [x] 2.1 The zero_repo_create variant of RemoteAction, its describeRemoteAction text, and its confirmRemoteAction branch with an injectable creator.
+- [x] 2.2 The zero_repo_create MCP tool in src/mcp/server.ts, always held with holdRemoteAction (local stdio and remote), replying with the id and how to confirm it.
+- [x] 2.3 Tests: a stdio client calls the tool and nothing is created, the pending action shows up, confirming runs it once, and a second confirmation says there is no pending action.
+- [x] 2.4 Docs in docs/agents/panel.md.
 
 ## 3. Etapa 3: 'Proyecto nuevo' form in the panel
 

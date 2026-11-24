@@ -112,6 +112,7 @@ Desde el chat se hace lo mismo con estas herramientas:
 - `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 - `zero_egress`: salidas a internet
 - `zero_egress_block`: bloquea un sitio (salidas a internet)
+- `zero_repo_create`: pide crear un proyecto nuevo en GitHub; no se crea nada hasta que lo confirmes
 
 ### Encender al iniciar sesión (`autostart`)
 
@@ -131,7 +132,7 @@ zero repo crear demo-acme --pedido "Demo web para Acme con turnos online"
 zero repo crear zero-coord --coordinacion
 ```
 
-Para arrancar un proyecto desde cero, `zero repo crear <nombre|cuenta/nombre>` crea el repositorio en GitHub (privado salvo que pases `--publico`), lo clona en `ZERO_HOME/projects/<línea>` y lo suma como línea nueva que entrega con pull requests, con los comandos `--setup` y `--verify` que le des (o los que detecte en el clon). Con `--pedido "..."` además abre el primer trabajo con ese texto, que recorre la línea como cualquier otro. Crear un repositorio se ve desde afuera y no se deshace fácil, así que zero primero te muestra el plan (nombre, visibilidad y carpeta) y lo crea solo cuando confirmás (o con `--yes`); sin terminal y sin `--yes` no crea nada, y ningún agente ni estación crea uno por su cuenta. Si GitHub se niega, zero te dice por qué: el token no tiene permiso para crear repositorios (Administration con escritura en un token fine-grained, el scope `repo` en uno clásico, o ser miembro de la organización), el token es inválido o está vencido, o el nombre ya está tomado. Si falla el clon, el repositorio queda en GitHub y zero te da su URL. Con `--coordinacion` crea el repositorio privado de coordinación de una fábrica distribuida y une esta máquina a esa fábrica, sin clonarlo ni sumar una línea.
+Para arrancar un proyecto desde cero, `zero repo crear <nombre|cuenta/nombre>` crea el repositorio en GitHub (privado salvo que pases `--publico`), lo clona en `ZERO_HOME/projects/<línea>` y lo suma como línea nueva que entrega con pull requests, con los comandos `--setup` y `--verify` que le des (o los que detecte en el clon). Con `--pedido "..."` además abre el primer trabajo con ese texto, que recorre la línea como cualquier otro. Crear un repositorio se ve desde afuera y no se deshace fácil, así que zero primero te muestra el plan (nombre, visibilidad y carpeta) y lo crea solo cuando confirmás (o con `--yes`); sin terminal y sin `--yes` no crea nada, y ningún agente ni estación crea uno por su cuenta. Si GitHub se niega, zero te dice por qué: el token no tiene permiso para crear repositorios (Administration con escritura en un token fine-grained, el scope `repo` en uno clásico, o ser miembro de la organización), el token es inválido o está vencido, o el nombre ya está tomado. Si falla el clon, el repositorio queda en GitHub y zero te da su URL. Con `--coordinacion` crea el repositorio privado de coordinación de una fábrica distribuida y une esta máquina a esa fábrica, sin clonarlo ni sumar una línea. Desde el chat, `zero_repo_create` (nombre, `publico` y `pedido`) no crea nada en el momento, ni siquiera desde un chat de esta máquina: espera tu confirmación con `zero mcp confirmar <id>` o en la pestaña "Chat remoto" del panel.
 
 ### Varias máquinas (`zero unirse`)
 
@@ -400,7 +401,7 @@ zero mcp remote off            # lo apaga
 - zero es su propio servidor de autorización OAuth 2.1, con PKCE (S256) y registro dinámico de clientes. Cada conexión nueva la aprobás vos en la página del panel, con tu clave; el chat nunca recibe una contraseña.
 - Los tokens de acceso duran 1 hora y los de renovación 7 días, y rotan en cada uso. zero guarda solo su hash SHA-256.
 - Dos permisos: leer (estado, trazas, propuestas, investigación, informes) y actuar (pedir trabajos, responder).
-- Fundir, detener, aprobar propuestas o archivos protegidos y bloquear sitios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
+- Fundir, detener, aprobar propuestas o archivos protegidos, bloquear sitios y crear repositorios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
 - La pestaña "Chat remoto" lista los chats conectados, los revoca (pide confirmación antes) y confirma las acciones retenidas.
 - La dirección del túnel rápido cambia cada vez que se reinicia, así que entonces hay que actualizar el conector del chat.
 

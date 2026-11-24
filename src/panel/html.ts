@@ -710,7 +710,7 @@ export function remoteChatPage(v: RemoteChatView, nonce: string, flash?: string)
     ? v.pending
         .map(
           (a) => `<div class="card"><h3>${esc(a.text)} <span class="muted">${esc(a.id)}</span></h3>
-<p class="muted">Pedido por ${esc(a.clientName ?? a.client ?? "un chat remoto")} · vence ${esc(a.expiresAt.slice(11, 16))} UTC</p>
+<p class="muted">Pedido por ${esc(a.clientName ?? a.client ?? "un chat de esta máquina")} · vence ${esc(a.expiresAt.slice(11, 16))} UTC</p>
 <form method="post" action="/remote-chat/pending/${esc(a.id)}/confirm"><input type="hidden" name="confirm" value="1"><button class="primary">Confirmar</button></form></div>`,
         )
         .join("")

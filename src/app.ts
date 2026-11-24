@@ -50,7 +50,7 @@ import { billingKey, lineServices, parseBillingRecord } from "./billing/records.
 import { buildLineReport, parseMonth, previousMonth, reportFileName, reportHtml, reportMarkdown, type LineReport, type MonthlyReport } from "./report.js";
 import { spawnGit, tryGit } from "./shell.js";
 import { detectCommands, slug } from "./init.js";
-import { creationErrorText, gitCloner, githubCreator, validRepositoryName, type CreatedRepository, type RepoCloner, type RepoCreator } from "./project.js";
+import { creationErrorText, gitCloner, githubCreator, invalidNameText, validRepositoryName, type CreatedRepository, type RepoCloner, type RepoCreator } from "./project.js";
 import { checkedOutAt } from "./workspace.js";
 import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSummary, type Metrics } from "./telemetry/metrics.js";
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
@@ -2058,7 +2058,7 @@ export interface ProjectResult {
 export async function createProject(ctx: FactoryContext, input: ProjectInput): Promise<ProjectResult> {
   const fail = (text: string): ProjectResult => ({ ok: false, created: false, text });
   const name = input.name.trim();
-  if (!validRepositoryName(name)) return fail(`"${name}" no es un nombre de repositorio válido: usá nombre o cuenta/nombre, con letras, números, puntos, guiones y guiones bajos.`);
+  if (!validRepositoryName(name)) return fail(invalidNameText(name));
   const coordination = Boolean(input.coordination);
   if (coordination && input.publico) return fail("El repositorio de coordinación tiene que ser privado: guarda la cola y el avance de la fábrica.");
   const isPrivate = coordination || !input.publico;
@@ -2139,6 +2139,9 @@ export async function createProject(ctx: FactoryContext, input: ProjectInput): P
   text.push(`Abrí el primer trabajo ${job.id}: lo seguís con zero status ${job.id}.`);
   return { ok: true, ...created, line: lineName, job: job.id, text: text.join("\n") };
 }
+
+/** `createProject`, or a fake in tests. */
+export type ProjectCreator = (ctx: FactoryContext, input: ProjectInput) => Promise<ProjectResult>;
 
 export function lines(config: FactoryConfig) {
   return config.lines.map((l) => ({ name: l.name, repo: l.repo, baseBranch: l.baseBranch, integrate: l.integrate, verify: l.verify }));
@@ -2246,13 +2249,14 @@ export function remoteChatView(ctx: Pick<FactoryContext, "store"> & Partial<Pick
 export const PENDING_PREFIX = "mcp-pending:";
 export const PENDING_TTL_MS = 15 * 60_000;
 
-/** A delicate action a remote chat asked for, held until the person in charge confirms it. */
+/** A delicate action a chat asked for, held until the person in charge confirms it. */
 export type RemoteAction =
   | { tool: "zero_merge"; args: { target: string } }
   | { tool: "zero_stop"; args: { job?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
-  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
+  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } }
+  | { tool: "zero_repo_create"; args: { name: string; publico?: boolean; pedido?: string } };
 
 export type PendingRemoteAction = RemoteAction & { id: string; client?: string; clientName?: string; createdAt: string; expiresAt: string; text: string };
 
@@ -2269,10 +2273,15 @@ export function describeRemoteAction(a: RemoteAction): string {
       return `bloquear ${a.args.site} para la caja`;
     case "zero_answer":
       return `aprobar los archivos protegidos del trabajo ${a.args.job}`;
+    case "zero_repo_create": {
+      // On one line, without control characters: it is shown on the terminal as one row of a list.
+      const pedido = a.args.pedido?.replace(/[\s\p{Cc}]+/gu, " ").trim();
+      return `crear el repositorio ${a.args.publico ? "público" : "privado"} ${a.args.name} en GitHub y sumarlo como línea${pedido ? `, con el primer trabajo "${pedido}"` : ""}`;
+    }
   }
 }
 
-/** Holds a remote chat's delicate action (kv `mcp-pending:<id>`) instead of running it. */
+/** Holds a chat's delicate action (kv `mcp-pending:<id>`) instead of running it. */
 export function holdRemoteAction(ctx: Pick<FactoryContext, "store">, action: RemoteAction, client?: string, now = new Date()): PendingRemoteAction {
   const id = randomBytes(4).toString("hex");
   const known = client ? getClient(ctx.store, client) : undefined;
@@ -2309,7 +2318,7 @@ export function pendingRemoteActions(ctx: Pick<FactoryContext, "store">, now = n
  * Runs a held action once the person in charge confirmed it, through the same operations as the CLI. The record is
  * removed before running, so a second confirmation does nothing; an expired one is only told.
  */
-export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts: { now?: Date; merges?: MergeApiFactory } = {}): Promise<{ ok: boolean; text: string }> {
+export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts: { now?: Date; merges?: MergeApiFactory; project?: ProjectCreator } = {}): Promise<{ ok: boolean; text: string; job?: string }> {
   const key = PENDING_PREFIX + id.trim();
   const raw = /^[0-9a-f]{8}$/.test(id.trim()) ? ctx.store.getKv(key) : undefined;
   if (!raw) return { ok: false, text: `No hay ninguna acción pendiente ${id.trim()}: ya se confirmó, venció o no existe.` };
@@ -2332,6 +2341,12 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
       return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
     case "zero_answer":
       return { ok: true, text: formatJob(await answer(ctx, held.args.job, held.args.decision, held.args.note), { subscription: subscription() }) };
+    case "zero_repo_create": {
+      const { name, publico, pedido } = held.args;
+      // The person in charge has just confirmed this creation, with its name and visibility in the held text.
+      const r = await (opts.project ?? createProject)(ctx, { name, ...(publico && { publico }), ...(pedido && { pedido }), confirm: async () => true });
+      return { ok: r.ok, text: r.text, ...(r.job && { job: r.job }) };
+    }
   }
 }
 

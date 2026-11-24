@@ -129,11 +129,11 @@ No hay chats conectados.`;
   return [state, "Chats conectados (revocá uno con `zero mcp revoke <cliente>`):", ...rows].join("\n");
 }
 
-/** The remote chat's held actions for `zero mcp pendientes`. */
+/** The chat's held actions for `zero mcp pendientes`. */
 export function formatPendingActions(list: PendingRemoteAction[]): string {
-  if (!list.length) return "No hay acciones del chat remoto esperando tu confirmación.";
-  const rows = list.map((a) => `${a.id} · ${a.text} · pedido por ${a.clientName ?? a.client ?? "un chat remoto"} · vence ${a.expiresAt.slice(11, 16)} UTC`);
-  return ["Acciones del chat remoto para confirmar (con `zero mcp confirmar <id>`):", ...rows].join("\n");
+  if (!list.length) return "No hay acciones del chat esperando tu confirmación.";
+  const rows = list.map((a) => `${a.id} · ${a.text} · pedido por ${a.clientName ?? a.client ?? "un chat de esta máquina"} · vence ${a.expiresAt.slice(11, 16)} UTC`);
+  return ["Acciones del chat para confirmar (con `zero mcp confirmar <id>`):", ...rows].join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */
