@@ -33,10 +33,10 @@
 
 ## 5. Etapa 5: Cupo de suscripción común y vista del presupuesto
 
-- [ ] 5.1 Incluir la última lectura de plan por motor en spend/<id> y combinarla en readings() de src/budget.ts: gana la más nueva solo si la local también es de suscripción.
-- [ ] 5.2 Una lectura ajena sin lectura local solo puede pausar; no cambia la forma de cobro ni quita topes.
-- [ ] 5.3 Rotular la suma como de toda la fábrica en budgetLine, el panel y zero_status, solo si hay gasto o lecturas ajenas.
-- [ ] 5.4 Tests de ventana agotada, reserva, cobro por uso local, falta de lectura local y texto sin distributed.
+- [x] 5.1 Incluir la última lectura de plan por motor en spend/<id> y combinarla en readings() de src/budget.ts: gana la más nueva solo si la local también es de suscripción.
+- [x] 5.2 Una lectura ajena sin lectura local solo puede pausar; no cambia la forma de cobro ni quita topes.
+- [x] 5.3 Rotular la suma como de toda la fábrica en budgetLine, el panel y zero_status, solo si hay gasto o lecturas ajenas.
+- [x] 5.4 Tests de ventana agotada, reserva, cobro por uso local, falta de lectura local y texto sin distributed.
 
 ## 6. Etapa 6: Estado de toda la fábrica
 

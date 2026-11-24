@@ -42,20 +42,24 @@ export function planSummary(b: BudgetState, now = new Date()): string {
     .join(" · ");
 }
 
+/** Said of a budget that counts other machines too. */
+const SHARED_BUDGET = "el gasto y el límite son de toda la fábrica (todas las máquinas)";
+
 /** One line on what limits the factory today: the subscription plan or the daily dollar cap. */
 export function budgetLine(b: BudgetState, now = new Date()): string {
   const pause = b.reached
     ? ` · PAUSADA${b.until ? ` hasta ${resetTime(b.until, now)}` : " hasta mañana"}: ${b.reason}`
     : b.replacements.map((r) => ` · ${pausedText(r, now)} · trabajando con ${r.with}`).join("");
+  const shared = b.shared ? ` · ${SHARED_BUDGET}` : "";
   if (b.billing === "subscription") {
     const reserve = b.reservePercent ? ` · reserva para vos: ${b.reservePercent}%` : "";
     const billed = b.spentUsd > 0 ? ` · gasto real hoy ${usd(b.spentUsd)} de ${usd(b.limitUsd)}` : "";
-    return `Suscripción: ${planSummary(b, now) || "sin datos del cupo todavía"}${reserve}${pause} · costo estimado hoy ${usd(b.estimatedUsd)} (no se cobra)${billed}`;
+    return `Suscripción: ${planSummary(b, now) || "sin datos del cupo todavía"}${reserve}${pause} · costo estimado hoy ${usd(b.estimatedUsd)} (no se cobra)${billed}${shared}`;
   }
   if (b.billing === "unknown" && b.estimatedUsd > b.spentUsd) {
-    return `Presupuesto: todavía no se sabe si el motor usa una suscripción o se paga por uso; se ve en la próxima llamada · costo estimado hoy ${usd(b.estimatedUsd)}${pause}`;
+    return `Presupuesto: todavía no se sabe si el motor usa una suscripción o se paga por uso; se ve en la próxima llamada · costo estimado hoy ${usd(b.estimatedUsd)}${pause}${shared}`;
   }
-  return `Presupuesto de hoy: ${usd(b.spentUsd)} de ${usd(b.limitUsd)}${pause}`;
+  return `Presupuesto de hoy: ${usd(b.spentUsd)} de ${usd(b.limitUsd)}${pause}${shared}`;
 }
 export const jobName = (j: Job) => j.title ?? (j.request.length > 60 ? `${j.request.slice(0, 57)}…` : j.request);
 

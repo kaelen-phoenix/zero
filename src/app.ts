@@ -1320,6 +1320,8 @@ export interface ControlRoomView {
     failed: number;
     spentUsd: number;
     estimatedUsd: number;
+    /** The amounts are the whole distributed factory's. */
+    shared?: true;
     daemon: DaemonState;
     daemonText: string;
     daemonTone: ControlTone;
@@ -1472,6 +1474,7 @@ export function controlRoomView(ctx: FactoryContext, now = new Date()): ControlR
       failed: s.today.failed,
       spentUsd: s.budget.spentUsd,
       estimatedUsd: s.budget.estimatedUsd,
+      ...(s.budget.shared && { shared: true as const }),
       daemon,
       daemonText: DAEMON_TEXT[daemon],
       daemonTone: DAEMON_TONE[daemon],

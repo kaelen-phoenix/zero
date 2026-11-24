@@ -1,9 +1,9 @@
-import { callBilling } from "../budget.js";
+import { callBilling, planReadings } from "../budget.js";
 import type { FactoryConfig } from "../config.js";
 import type { MachineIdentity } from "../machine.js";
 import type { SpanRow, Store } from "../state/store.js";
 import { AGENT_SPAN, isIdleCall } from "../telemetry/metrics.js";
-import { readSpendRecord, SPEND_SLOT_MS, spendRef, type CoordApi, type SpendRecord, type SpendSlot } from "./protocol.js";
+import { planWindows, readSpendRecord, SPEND_SLOT_MS, spendRef, type CoordApi, type PlanReading, type SpendRecord, type SpendSlot } from "./protocol.js";
 
 /** What the other machines spent as the last coordination pass read it; only counted while `distributed` is set. */
 export const SPEND_KEY = "coord:spend";
@@ -23,10 +23,12 @@ const costOf = (s: SpanRow): number => {
   return Number.isFinite(usd) && usd > 0 ? usd : 0;
 };
 
+const ENGINE_NAME = /^[\w.-]{1,100}$/;
+
 /** An engine's name fit for a record. */
 const engineOf = (s: SpanRow): string => {
   const engine = String(s.attrs["zero.engine"] ?? "");
-  return /^[\w.-]{1,100}$/.test(engine) ? engine : "unknown";
+  return ENGINE_NAME.test(engine) ? engine : "unknown";
 };
 
 const order = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -48,11 +50,15 @@ export function ownSpend(store: Store, id: string, now: Date): SpendRecord {
     const usd = round(charged.reduce((sum, s) => sum + costOf(s), 0));
     return usd ? [{ id: job.id, usd }] : [];
   });
+  const plans = planReadings(store, now)
+    .filter((r) => ENGINE_NAME.test(r.engine))
+    .map((r): PlanReading => ({ engine: r.engine, at: r.at.toISOString(), limited: r.limited, windows: planWindows(r.windows) }));
   return {
     id,
     at: now.toISOString(),
     slots: [...slots].sort(([a], [b]) => order(a, b)).map(([, s]) => ({ ...s, usd: round(s.usd) })),
     jobs: jobs.sort((a, b) => order(a.id, b.id)),
+    ...(plans.length && { plans: plans.sort((a, b) => order(a.engine, b.engine)) }),
   };
 }
 
@@ -70,7 +76,7 @@ export async function spendPass(store: Store, api: CoordApi, machine: MachineIde
   const own = ownSpend(store, machine.id, now);
   const published = records.find((r) => r.id === machine.id);
   const oldest = slotStart(now.getTime() - SPEND_WINDOW_MS);
-  const content = (r: SpendRecord | undefined) => JSON.stringify([r?.slots.filter((s) => s.at >= oldest) ?? [], r?.jobs ?? []]);
+  const content = (r: SpendRecord | undefined) => JSON.stringify([r?.slots.filter((s) => s.at >= oldest) ?? [], r?.jobs ?? [], r?.plans ?? []]);
   if (content(published) === content(own)) return;
   await api.write(spendRef(machine.id), JSON.stringify(own));
 }
@@ -101,4 +107,15 @@ export function othersJobUsd(store: Store, config: Distributed, jobId: string): 
     .flatMap((r) => r.jobs)
     .filter((j) => j.id === jobId)
     .reduce((sum, j) => sum + j.usd, 0);
+}
+
+/** The newest plan reading of each engine among the other machines, alive or not; one older than `since`, or dated ahead of this machine's clock, says nothing yet. */
+export function othersPlans(store: Store, config: Distributed, since: Date, now: Date): Map<string, PlanReading> {
+  const newest = new Map<string, PlanReading>();
+  for (const plan of othersSpend(store, config).flatMap((r) => r.plans ?? [])) {
+    const at = Date.parse(plan.at);
+    const known = newest.get(plan.engine);
+    if (at >= since.getTime() && at <= now.getTime() && (!known || at > Date.parse(known.at))) newest.set(plan.engine, plan);
+  }
+  return newest;
 }

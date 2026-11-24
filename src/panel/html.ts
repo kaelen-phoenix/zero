@@ -326,13 +326,14 @@ const answerForms = (j: Job) =>
 function budgetStat(s: FactoryStatus): string {
   const b = s.budget;
   const paused = b.reached ? ` · <span class="bad">PAUSADA${b.until ? ` hasta ${esc(resetTime(b.until))}` : ""}</span>` : "";
+  const shared = b.shared ? " · todas las máquinas" : "";
   if (b.billing === "subscription") {
     const top = [...b.windows].sort((x, y) => (y.utilization ?? 0) - (x.utilization ?? 0))[0];
-    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${paused}</span></div>`;
+    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${shared}${paused}</span></div>`;
     const used = top.utilization === undefined ? "—" : `${Math.round(top.utilization * 100)}%`;
-    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${paused}</span></div>`;
+    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${shared}${paused}</span></div>`;
   }
-  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${paused}</span></div>`;
+  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${shared}${paused}</span></div>`;
 }
 
 /** The unjam station on demand: the pending request, the last run and, unless it is off, the form to ask for one. */

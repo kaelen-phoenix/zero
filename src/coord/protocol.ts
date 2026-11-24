@@ -1,4 +1,5 @@
 import { LINE_PLATFORMS, type LineConfig } from "../config.js";
+import type { QuotaWindow } from "../engines/index.js";
 import type { MachineCapabilities, MachineIdentity } from "../machine.js";
 import { findSecret } from "../secrets.js";
 
@@ -357,13 +358,25 @@ export interface SpendSlot {
   usd: number;
 }
 
-/** What a machine spent lately, for the other machines' caps: amounts only, no prompts, paths or texts. */
+/** A machine's latest reading of an engine's subscription: one plan per account, so it says where every machine stands. */
+export interface PlanReading {
+  engine: string;
+  /** When the call that told it ended (ISO). */
+  at: string;
+  /** Whether that call was refused. */
+  limited: boolean;
+  windows: QuotaWindow[];
+}
+
+/** What a machine spent lately, for the other machines' caps: amounts and plan windows only, no prompts, paths or texts. */
 export interface SpendRecord {
   id: string;
   at: string;
   slots: SpendSlot[];
   /** What that machine was charged for each job it has or had lately, whenever it was. */
   jobs: { id: string; usd: number }[];
+  /** Its latest plan readings; absent on a machine with no subscription. */
+  plans?: PlanReading[];
 }
 
 /** The most slots or jobs a spend record may carry. */
@@ -375,15 +388,26 @@ const isItems = (v: unknown, check: (item: Record<string, unknown>) => boolean):
 const isSpendSlot = (v: Record<string, unknown>): boolean =>
   isTime(v.at) && isName(v.engine) && (v.billing === "api" || v.billing === "subscription" || v.billing === "unknown") && typeof v.idle === "boolean" && isUsd(v.usd);
 
+const isPlanWindow = (v: Record<string, unknown>): boolean =>
+  isName(v.name) && isName(v.label) && (v.utilization === undefined || isUsd(v.utilization)) && (v.status === "ok" || v.status === "warning" || v.status === "exhausted") && (v.resetsAt === undefined || isTime(v.resetsAt));
+const isPlanReading = (v: Record<string, unknown>): boolean => isName(v.engine) && isTime(v.at) && typeof v.limited === "boolean" && isItems(v.windows, isPlanWindow);
+
+/** The windows of a reading that may go into a record, with only the known fields. */
+export function planWindows(windows: unknown): QuotaWindow[] {
+  const valid = (Array.isArray(windows) ? windows : []).filter((w) => isItems([w], isPlanWindow)) as QuotaWindow[];
+  return valid.map(({ name, label, utilization, status, resetsAt }) => ({ name, label, ...(utilization !== undefined && { utilization }), status, ...(resetsAt !== undefined && { resetsAt }) }));
+}
+
 /** A spend record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
 export function readSpendRecord(ref: CoordRef): SpendRecord | undefined {
-  const v = parse<SpendRecord>(ref, (v) => isId(v.id) && isTime(v.at) && isItems(v.slots, isSpendSlot) && isItems(v.jobs, (j) => isId(j.id) && isUsd(j.usd)));
+  const v = parse<SpendRecord>(ref, (v) => isId(v.id) && isTime(v.at) && isItems(v.slots, isSpendSlot) && isItems(v.jobs, (j) => isId(j.id) && isUsd(j.usd)) && (v.plans === undefined || isItems(v.plans, isPlanReading)));
   if (!v || ref.name !== spendRef(v.id)) return undefined;
   return {
     id: v.id,
     at: v.at,
     slots: v.slots.map(({ at, engine, billing, idle, usd }) => ({ at, engine, billing, idle, usd })),
     jobs: v.jobs.map(({ id, usd }) => ({ id, usd })),
+    ...(v.plans?.length && { plans: v.plans.map(({ engine, at, limited, windows }) => ({ engine, at, limited, windows: planWindows(windows) })) }),
   };
 }
 
