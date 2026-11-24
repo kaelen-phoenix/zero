@@ -45,7 +45,7 @@ const researching = (notes: unknown[] = [note("Servidor MCP X")]) => fakeAgents(
 describe("research configuration", () => {
   it("defaults", () => {
     const c = parseFactory("");
-    expect(c.research).toEqual({ topics: [], perLinePerDay: 1, autonomy: "propose" });
+    expect(c.research).toEqual({ topics: [], perLinePerDay: 1, usdPerRun: 2, autonomy: "propose" });
     expect(c.stations.research).toMatchObject({ maxTurns: 40, timeoutMinutes: 15 });
   });
 

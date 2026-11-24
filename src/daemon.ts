@@ -40,7 +40,7 @@ import { endedOn, finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/fi
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
-import { researchPass } from "./line/research.js";
+import { closeInterruptedResearch, researchOnDemandPass, researchOnDemandReady, researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { recruitPass } from "./line/recruit.js";
@@ -93,6 +93,8 @@ export interface DaemonOptions {
   unjamOnDemand?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
+  /** Run the research station when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
+  researchOnDemand?: boolean;
   /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
   recruit?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
@@ -224,6 +226,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   }
 
   closeInterruptedUnjam(ctx, now());
+  closeInterruptedResearch(ctx, now());
 
   const running = new Map<string, Running>();
   // One gate host per runtime and image, shared by every job so only one of them starts the gate.
@@ -622,6 +625,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (!idle && !urgent) void startUnjamOnDemand();
   };
 
+  // A research run the person in charge asked for: its own background pass, which takes no job slot, has its own cap and so waits
+  // neither for the idle run nor for the diagnoses. Unlike the other passes, the andon cuts it mid-call.
+  let investigating: Promise<void> | undefined;
+  let investigationStop = new AbortController();
+  const runResearchOnDemand = () => {
+    if (investigating || stopping || !(opts.researchOnDemand ?? !opts.once) || !researchOnDemandReady(ctx, now())) return;
+    investigationStop = new AbortController();
+    investigating = researchOnDemandPass(ctx, passRunner(ctx.config), now(), { signal: AbortSignal.any([investigationStop.signal, researchStop.signal]) })
+      .catch((err) => log.warn("on-demand research failed", { error: String(err) }))
+      .finally(() => (investigating = undefined));
+  };
+
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
   let stopped: DaemonStopReason | undefined;
   try {
@@ -632,6 +647,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         stopped = "shutdown";
         break;
       }
+      if (investigating && store.getKv(ANDON_KEY) === "on") investigationStop.abort("andon" satisfies StopReason);
       try {
         ctx.config = await factoryConfig(ctx.home);
         followAutostart();
@@ -665,6 +681,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       runBusyStations();
       runUnjamOnDemand();
       runUrgentUnjam();
+      runResearchOnDemand();
       lookForPackageUpdates();
       checkSelfUpdate();
       await importSwitchResult(ctx);
@@ -772,7 +789,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         idlePasses();
       }
 
-      if (opts.once && !running.size && !startable) {
+      // An express run keeps a `once` run alive, so the andon still cuts it.
+      if (opts.once && !running.size && !startable && !investigating) {
         stopped = "once";
         break;
       }
@@ -802,6 +820,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await busyRunning;
     await urgent;
     await unjamming;
+    await investigating;
     await looking;
     await selfChecking;
     await idle;

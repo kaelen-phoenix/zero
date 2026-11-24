@@ -3,11 +3,12 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
+import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
 import type { FactoryHome } from "../home.js";
 import { discardJob, discardRefusal } from "../line/discard.js";
+import { takeUntoldResearch } from "../line/research.js";
 import { log } from "../log.js";
 import type { Scope } from "./oauth.js";
 import { monthlyMarkdown } from "../report.js";
@@ -31,19 +32,32 @@ async function revive(ctx: FactoryContext, start: Starter): Promise<void> {
   }
 }
 
+/** The notices of the express research runs that ended and no chat told yet; never fails the call they go with. */
+function endedResearch(ctx: FactoryContext): string[] {
+  try {
+    return takeUntoldResearch(ctx.store).map((r) => researchNotice(r));
+  } catch (err) {
+    log.warn("cannot tell the ended research runs", { error: err instanceof Error ? err.name : "error" });
+    return [];
+  }
+}
+
 /**
  * Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client.
- * With `start`, a daemon that crashed with work left is started again after the call.
+ * With `start`, a daemon that crashed with work left is started again after the call. With `notices`, a successful
+ * answer carries what ended meanwhile, in a block of its own: the answer may be JSON, or a report to share.
  */
-async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, start?: Starter): Promise<Text> {
+async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, opts: { start?: Starter; notices: boolean }): Promise<Text> {
   let ctx: FactoryContext | undefined;
   try {
     ctx = await openFactory(home);
-    return text(await fn(ctx));
+    const answered = text(await fn(ctx));
+    if (opts.notices) answered.content.push(...endedResearch(ctx).flatMap((n) => text(n).content));
+    return answered;
   } catch (err) {
     return { ...text(err instanceof Error ? err.message : String(err)), isError: true };
   } finally {
-    if (ctx && start) await revive(ctx, start);
+    if (ctx && opts.start) await revive(ctx, opts.start);
     ctx?.store.close();
   }
 }
@@ -107,11 +121,11 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
   const ensureDaemon = opts.start ?? startDaemon;
-  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
-  // How long zero_package_run and zero_unjam wait for the run to start; shorter than the CLI's, since a chat waits on it.
+  // How long zero_package_run, zero_unjam and zero_investigate wait for the run to start; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
   const remote = opts.remote;
   const canAct = !remote || remote.scope.includes("zero:act");
+  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, { ...(autoStart && { start: ensureDaemon }), notices: canAct });
   // A remote token without zero:act never gets the other tools registered, so it cannot even list them.
   const tool = ((name: string, ...rest: unknown[]) =>
     canAct || READ_TOOLS.has(name) ? (server.registerTool as (...a: unknown[]) => unknown).call(server, name, ...rest) : undefined) as typeof server.registerTool;
@@ -306,6 +320,27 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
         if (!r.ok) return r.reason;
         const started = autoStart && (await ensureDaemon(ctx));
         const wait = await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
+    "zero_investigate",
+    {
+      title: "Investigar ahora",
+      description:
+        "Ask the factory to research one topic on the web now, for one line, without waiting for the night shift or for queued and running jobs, within the budget and its own spending cap. At most one pending run. It leaves normal research notes (zero_research); when it ends, a later zero answer carries a notice to relay to the owner. Only when the owner asks for it.",
+      inputSchema: {
+        topic: z.string().describe("What to investigate, in the owner's words; at most 2000 characters."),
+        line: z.string().optional().describe("Project (line) name; optional when the factory has a single line."),
+      },
+    },
+    ({ topic, line }) =>
+      withFactory(home, async (ctx) => {
+        const r = requestInvestigation(ctx, topic, line);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitResearchStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
         return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
       }),
   );

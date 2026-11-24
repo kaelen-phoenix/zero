@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, requestUnjam, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestInvestigation, requestStationRun, requestsView, requestUnjam, uploadToStation, requestWork, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -371,7 +371,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/remote-chat") return send(res, 200, remoteChatPage(remoteChatView(ctx, ctx.now?.()), nonce, flash), nonce);
-      if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), researchOnDemand(ctx), nonce, flash), nonce);
       if (path === "/control-room") {
         // Read-only: the fragment is what the page refreshes its modules with.
         const view = controlRoomView(ctx, ctx.now?.());
@@ -463,6 +463,12 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (path === "/unjam") {
       const r = requestUnjam(ctx, form.get("line") || undefined, ctx.now?.());
       return back(res, "/", r.ok ? r.text : r.reason);
+    }
+    if (path === "/research") {
+      // A form sends each line break as two characters; the limit of the topic counts one, as its field does.
+      const topic = (form.get("topic") ?? "").replace(/\r\n/g, "\n");
+      const r = requestInvestigation(ctx, topic, form.get("line") || undefined, ctx.now?.());
+      return back(res, "/research", r.ok ? r.text : r.reason);
     }
     const jobAction = /^\/job\/([0-9a-f]{8})\/(answer|stop|merge|discard)$/.exec(path);
     if (jobAction) {

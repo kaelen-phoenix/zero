@@ -88,6 +88,7 @@ zero descartar <job> [--motivo "<text>"]   # cierra un trabajo que ya no hace fa
 zero fusionar <job | url>      # funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 zero actualizar-pr <line> <number>...   # actualiza con su base pull requests abiertos de la línea, en ese orden
 zero tren <line> [<number>...]   # funde de a uno los pull requests trabados de la línea, el más viejo primero
+zero investigar "<topic>" [--line <line>]   # una investigación en la web ahora sobre un tema, sin esperar a la noche
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
@@ -112,6 +113,7 @@ Desde el chat se hace lo mismo con estas herramientas:
 - `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
 - `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
 - `zero_unjam`: el destrabador ahora, para una línea o para todas
+- `zero_investigate`: una investigación en la web ahora sobre el tema que le das (`topic`), para una línea
 - `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 - `zero_egress`: salidas a internet
 - `zero_egress_block`: bloquea un sitio (salidas a internet)
@@ -357,12 +359,12 @@ Con la fábrica en marcha, el panel muestra:
 - la traza de cada trabajo;
 - las salidas a internet y el informe;
 - las propuestas del turno nocturno de cada línea (pestaña "Propuestas");
-- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes);
+- las notas de investigación de cada línea (pestaña "Investigación"), las de negocio separadas de las técnicas, con sus fuentes, el enlace a su issue y un botón para pedir un trabajo a partir de una nota (pide confirmación antes), y un formulario para investigar un tema ahora, con el pedido pendiente y las últimas corridas;
 - la pestaña "Monitor": totales de la fábrica (trabajos por día, entregados, fallidos, en cola y en curso, tasa de éxito, tiempo promedio por trabajo y por estación, intentos por trabajo), uso de la suscripción, gasto del mes por motor y tokens, una tarjeta por agente (llamadas, tokens, costo, tiempo, tasa de éxito, entregas, motores, modelos y líneas) y una por línea (trabajos, entregas, último trabajo, pull requests abiertos), dibujados en SVG dentro del panel, con filtro por hoy, 7 o 30 días, solo lectura y con actualización automática;
 - la pestaña "Sala de control": una consola de operaciones en tonos oscuros y letra monoespaciada chica, en vivo y solo lectura, con el reloj, los contadores del día, el costo y el estado del daemon, una cinta que se desplaza con los eventos de las últimas 24 horas, cada trabajo como un punto que viaja por las estaciones hasta una columna de decisiones, series de 24 horas por línea, el bus de agentes, los últimos spans, el uso del plan y las pausas de los motores, y las trabas y alertas en rojo, todo con datos reales de la fábrica y en una sola columna en el celular;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
-Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)) y se bloquean o permiten sitios. Está pensado para el celular.
+Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)), se pide investigar un tema ("Investigar ahora" en la pestaña "Investigación", ver [Investigación](#investigación)) y se bloquean o permiten sitios. Está pensado para el celular.
 
 ```sh
 zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
@@ -947,6 +949,7 @@ Una skill de investigación puede ser **de negocio** (precios, licencias, produc
 research:                 # o `research: off` para apagarla
   topics: ["motores de agentes locales"]   # opcional: temas de interés para todas las líneas
   perLinePerDay: 1        # notas por cada skill de investigación por día (0 = apagada); si no alcanza, se turnan
+  usdPerRun: 2            # tope en dólares de cada corrida que pedís (motores que se pagan por uso)
   autonomy: propose       # propose · build · auto: hasta dónde llega sola una propuesta nacida de una nota
 stations:
   research: { timeoutMinutes: 15 }
@@ -983,6 +986,18 @@ No investigues frameworks de frontend que no sean React.
 Cada nota trae un tema, lo encontrado, las fuentes (enlaces http(s); una nota sin fuentes se descarta), para qué parte de la línea serviría y qué tan madura y confiable es. Se guarda en `state.db`, sin rutas de tu máquina ni secretos. Para no repetir temas, la estación recibe los temas de la línea de los últimos 60 días. La nota recuerda qué skill la escribió. La ves con `zero research [--line <línea>] [--days N]`, en el informe ("Investigación de hoy", con las notas de negocio y las técnicas por separado, bajo "Negocio" y "Técnica") y desde el chat (`zero_research`). Para convertir una nota en un trabajo de su línea: `zero research request <id>` (o `zero_research_request` en el chat), o el botón "Pedir trabajo" de la pestaña "Investigación" del panel, que muestra las notas de los últimos 30 días de cada línea, separadas en "Negocio" y "Técnica", cada una con la skill que la escribió. `scout` recibe las notas de su línea de los últimos 7 días y puede proponer, por ejemplo, asignar una skill a una estación o crear una estación nueva; las notas de una línea solo generan propuestas en esa misma línea.
 
 En las líneas de GitHub cada nota se publica también como issue en el repo de la línea, con la etiqueta `zero:investigacion` (la fábrica la crea si falta) y nunca con `zero`, así que no se convierte en trabajo sola. El issue trae lo encontrado, para qué serviría, su madurez, las fuentes, el id de la nota y cómo pedir un trabajo (`zero research request <id>`). Antes de publicar, zero tapa secretos y rutas de tu PC y desactiva las menciones (@usuario) para no avisarle a nadie. Las imágenes Markdown y las etiquetas que cargan recursos (`img`, `picture`, `source`, `video`, `audio`, `iframe`) se publican como texto, en notas, propuestas y comentarios de propuesta, y las fuentes de una nota se guardan sin query string ni fragmento. Esto reduce la exposición pero no garantiza nada: un dato todavía puede viajar en la ruta de una URL, y los enlaces normales siguen, aunque requieren un clic. Si GitHub falla, lo reintenta en la pasada siguiente.
+
+**A demanda.** Podés pedir que investigue un tema sin esperar al turno nocturno: `zero investigar "<tema>" [--line <línea>]`; la herramienta `zero_investigate` del chat (un chat remoto necesita permiso para actuar); o el formulario "Investigar ahora" de la pestaña "Investigación" del panel, con el tema y la línea. Con una sola línea que no es de un paquete podés no poner la línea. Corre una vez apenas puede, con trabajos en cola o en marcha, fuera de `nightShift.hours`, con `nightShift: off`, con `perLinePerDay: 0` y en una línea sin skill de investigación, sin ocupar el lugar de un trabajo. Las corridas normales de las skills conservan su turno.
+
+- **El resultado son notas normales.** A lo sumo 5 por corrida, con la misma regla que las de la noche: una nota sin una fuente http(s) se descarta, y zero no comprueba que la página diga lo que la nota afirma. No llevan skill y nunca son de negocio. Solo Claude busca en la web en esta estación; con otro motor una corrida puede terminar sin notas.
+- **Su propio tope.** En los motores que se pagan por uso una corrida gasta a lo sumo `research.usdPerRun` (2 dólares por defecto), o lo que queda de `limits.usdPerDay` si es menos. Una corrida que llega al tope termina cortada, sin notas. Su gasto cuenta en el presupuesto del día y no en `limits.usdPerNight`. Con suscripción mandan las ventanas del plan y el tiempo límite de la estación.
+- **Una pendiente por vez.** Si la pedís de nuevo antes de que empiece, se rechaza, igual que con el andon activo, el presupuesto agotado, `research: off`, un tema vacío o de más de 2000 caracteres, o una línea que no existe o es de un paquete: recibís el motivo y no se registra nada (el comando sale con 1). Si el andon o el presupuesto llegan después de pedirla, queda pendiente hasta que ninguno la frene. El andon o un apagado (incluido un cambio de versión) corta la corrida en curso, y hay que volver a pedirla.
+- **Cómo te enterás.** El comando y el chat encienden la fábrica si estaba apagada, esperan un rato a que empiece la corrida y te dicen si empezó o sigue pendiente; con `--esperar` la terminal se queda hasta el final y te muestra las notas. Cuando termina, la siguiente respuesta de zero en el chat te lo dice, una sola vez; y `zero status`, el resumen del panel y el informe muestran el pedido pendiente y la última corrida, con el tema, cuándo se pidió, cómo terminó (bien, falló, se cortó o no pudo correr, con el motivo) y cuántas notas dejó. La pestaña "Investigación" del panel guarda las últimas 10 corridas, con enlaces a sus notas.
+
+```sh
+zero investigar "new payment rules" --line tienda   # una investigación ahora sobre un tema
+zero investigar "new payment rules" --line tienda --esperar   # lo mismo, esperando el final
+```
 
 Seguridad: lo que viene de la web es dato, nunca instrucciones, y así se lo dicen las instrucciones de `research` y de `scout`. La estación es de solo lectura: no instala, no clona y no ejecuta nada de lo que encuentra. Con Claude solo tiene las herramientas de lectura más `WebSearch` (la búsqueda corre del lado del proveedor; `WebFetch` está apagado); con otros motores trabaja como una estación de solo lectura. Todavía no pasa por la caja, así que sus búsquedas no aparecen en `zero egress`.
 

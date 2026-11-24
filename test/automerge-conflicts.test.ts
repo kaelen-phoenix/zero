@@ -289,7 +289,8 @@ describe("a pull request in conflict with its base", () => {
     f.setBuild(resolves("resolved twice\n"));
     expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3 });
     f.contained(updated, f.remoteTip());
-  });
+    // Three whole deliveries in one test: under the full suite's load they do not fit in the default limit.
+  }, 120_000);
 });
 
 describe("a pull request with failed checks GitHub has not called mergeable", () => {

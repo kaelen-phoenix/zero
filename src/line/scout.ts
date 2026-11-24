@@ -80,11 +80,15 @@ const IDLE_STATIONS = new Set(["scout", "research", "unjam", "recruit"]);
 /** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
 export const PACKAGE_AGENT_PREFIX = "package:";
 
+/** On the span of a research call the person in charge asked for: it has its own cap (`research.usdPerRun`) and takes nothing from the night's. */
+export const ON_DEMAND_ATTR = "zero.on_demand";
+
 /** What the idle-time stations (scout, research and the packages' stations) were really charged since `since`, so together they never pass the night cap. */
 export function scoutSpent(store: Store, since: Date, now = new Date()): number {
   const idle = store
     .spansSince(AGENT_SPAN, since)
-    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX));
+    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX))
+    .filter((s) => !(s.attrs["gen_ai.agent.name"] === "research" && s.attrs[ON_DEMAND_ATTR]));
   return billedUsd(store, idle, now);
 }
 
