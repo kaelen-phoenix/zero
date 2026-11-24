@@ -1,9 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestInvestigation, requestStationRun, requestsView, requestUnjam, uploadToStation, requestWork, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answerAnywhere, confirmRemoteAction, decideProposal, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, requestAnywhere, requestFromResearchNote, requestInvestigation, requestLines, requestStationRun, requestsView, requestUnjam, uploadToStation, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type RequestResult, type RequestSent } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatDiscard, formatMerge } from "../format.js";
+import { formatDiscard, formatMerge, formatProposalDecision } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
 import { discardJob } from "../line/discard.js";
 import { log } from "../log.js";
@@ -287,6 +287,9 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     res.end();
   };
 
+  /** A request that was taken, on this machine or to be published. */
+  const requested = (res: ServerResponse, r: RequestResult | RequestSent) => ("sent" in r ? back(res, `/job/${r.id}`, r.sent) : back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`));
+
   /** A file for a package station, read only up to that station's limit and stored through `uploadToStation`. */
   async function upload(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string) {
     const uploads = stationUploads(ctx);
@@ -350,7 +353,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (req.method === "GET") {
       if (path === "/line/events") return openStream(req, res, sessionFor(key), lineFeed);
       if (path === "/control-room/events") return openStream(req, res, sessionFor(key), controlFeed);
-      if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), ctx.config.lines.map((l) => l.name), nonce, flash), nonce);
+      if (path === "/") return send(res, 200, overviewPage(factoryStatus(ctx), requestLines(ctx), nonce, flash), nonce);
       if (path === "/line") {
         // The fragment is what the page's script fetches to update its rows in place.
         if (url.searchParams.get("fragment") === "1") return send(res, 200, lineView(productionLine(ctx)), nonce);
@@ -439,12 +442,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       return void res.end();
     }
     if (path === "/request") {
-      const r = requestWork(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined });
-      return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+      return requested(res, requestAnywhere(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined }));
     }
     if (path === "/requests") {
-      const r = requestWork(ctx, { type: form.get("type") ?? "", title: form.get("title") ?? "", description: form.get("description") ?? "", line: form.get("line") || undefined });
-      return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+      return requested(res, requestAnywhere(ctx, { type: form.get("type") ?? "", title: form.get("title") ?? "", description: form.get("description") ?? "", line: form.get("line") || undefined }));
     }
     const requestAction = /^\/requests\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
     if (requestAction) {
@@ -456,8 +457,8 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return back(res, "/requests", `Frenando el trabajo ${id}.`);
       }
       const decision = form.get("decision") === "approve" ? "approve" : "reject";
-      await answer(ctx, id, decision, form.get("note") || undefined);
-      return back(res, "/requests", decision === "approve" ? `Aprobado: el trabajo ${id} sigue.` : `Rechazado: el trabajo ${id} se detuvo.`);
+      const r = await answerAnywhere(ctx, id, decision, form.get("note") || undefined);
+      return back(res, "/requests", "sent" in r ? r.sent : decision === "approve" ? `Aprobado: el trabajo ${id} sigue.` : `Rechazado: el trabajo ${id} se detuvo.`);
     }
     if (path === "/andon") {
       if (form.get("state") === "off") resume(ctx);
@@ -492,24 +493,25 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return back(res, `/job/${id}`, "Deteniendo el trabajo.");
       }
       const decision = form.get("decision") === "approve" ? "approve" : "reject";
-      await answer(ctx, id, decision, form.get("note") || undefined);
-      return back(res, `/job/${id}`, decision === "approve" ? "Aprobado: el trabajo sigue." : "Rechazado: el trabajo se detuvo.");
+      const r = await answerAnywhere(ctx, id, decision, form.get("note") || undefined);
+      return back(res, `/job/${id}`, "sent" in r ? r.sent : decision === "approve" ? "Aprobado: el trabajo sigue." : "Rechazado: el trabajo se detuvo.");
     }
     const proposalAction = /^\/proposals\/([0-9a-f]{8})\/(approve|reject)$/.exec(path);
     if (proposalAction) {
       const [, id, action] = proposalAction as unknown as [string, string, string];
       if (action === "reject") {
-        await rejectProposal(ctx, id, form.get("note") || undefined);
-        return back(res, "/proposals", "Propuesta rechazada.");
+        const r = await decideProposal(ctx, id, "reject", form.get("note") || undefined);
+        return back(res, "/proposals", "sent" in r ? r.sent : "Propuesta rechazada.");
       }
       // Approving opens a job or integrates one, so the first press only asks for confirmation.
       if (form.get("confirm") !== "1") {
-        const proposal = proposalsView(ctx).lines.flatMap((l) => l.proposals).find((p) => p.id === id);
+        const view = proposalsView(ctx);
+        const proposal = view.lines.flatMap((l) => l.proposals).find((p) => p.id === id) ?? view.away?.find((p) => p.id === id);
         if (!proposal) throw new Error(`No existe la propuesta ${id}.`);
         return send(res, 200, confirmProposalPage(proposal, nonce), nonce);
       }
-      const r = approveProposal(ctx, id);
-      return back(res, "/proposals", `Propuesta aprobada: trabajo ${r.job.id}. ${r.next}`);
+      const r = await decideProposal(ctx, id, "approve");
+      return back(res, "/proposals", "approved" in r ? `Propuesta aprobada: trabajo ${r.approved.job.id}. ${r.approved.next}` : formatProposalDecision(id, r));
     }
     const revokeAction = /^\/remote-chat\/clients\/([0-9a-f-]{36})\/revoke$/.exec(path);
     if (revokeAction) {

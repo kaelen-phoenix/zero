@@ -53,6 +53,8 @@ export const progressRef = (job: string): string => `progress/${job}`;
 export const lineRef = (name: string): string => `lines/${name}`;
 export const spendRef = (id: string): string => `spend/${id}`;
 export const statusRef = (id: string): string => `status/${id}`;
+/** One ref per question or proposal, so the first decision published is the only one. */
+export const decisionRef = (target: DecisionTarget): string => `decisions/${decisionKey(target)}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 
@@ -243,7 +245,7 @@ export interface QueueRecord {
 }
 
 /** The longest request a queue record may carry. */
-const MAX_QUEUED_REQUEST = 100_000;
+export const MAX_QUEUED_REQUEST = 100_000;
 const SOURCE_KINDS = ["github-issue", "linear-issue", "jira-issue", "night-shift", "research", "package", "security-alert", "pull-request"];
 
 /** Only plain fields: strings, finite numbers, booleans and lists of them, as every JobSource is. */
@@ -518,6 +520,49 @@ export function readStatusRecord(ref: CoordRef): StatusRecord | undefined {
   const proposals = v.proposals.map(statusProposal).filter((p) => p !== undefined);
   if (jobs.length !== v.jobs.length || proposals.length !== v.proposals.length) return undefined;
   return { id: v.id, at: v.at, jobs, proposals };
+}
+
+/** What a decision is about: a job's question, told apart by when it was asked, or a proposal. */
+export type DecisionTarget = { job: string; askedAt: string } | { proposal: string };
+
+export const decisionKey = (t: DecisionTarget): string => ("job" in t ? `job-${t.job}-${Date.parse(t.askedAt)}` : `proposal-${t.proposal}`);
+
+/** A decision taken on one machine for a job or a proposal of another: it answers that, and nothing else. */
+export interface DecisionRecord {
+  target: DecisionTarget;
+  /** The machine that has the job or the proposal, the one that applies it. */
+  to: string;
+  machine: string;
+  name: string;
+  at: string;
+  decision: "approve" | "reject";
+  note?: string;
+}
+
+export const MAX_DECISION_NOTE = 4000;
+
+function decisionTarget(v: unknown): DecisionTarget | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const { job, askedAt, proposal } = v as Record<string, unknown>;
+  if (proposal === undefined) return isId(job) && isTime(askedAt) ? { job, askedAt } : undefined;
+  return job === undefined && askedAt === undefined && isId(proposal) ? { proposal } : undefined;
+}
+
+/** A decision that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readDecisionRecord(ref: CoordRef): DecisionRecord | undefined {
+  const v = parse<DecisionRecord>(
+    ref,
+    (v) =>
+      isId(v.to) &&
+      isId(v.machine) &&
+      isName(v.name) &&
+      isTime(v.at) &&
+      (v.decision === "approve" || v.decision === "reject") &&
+      (v.note === undefined || (isText(v.note) && v.note.length <= MAX_DECISION_NOTE)),
+  );
+  const target = v && decisionTarget(v.target);
+  if (!v || !target || ref.name !== decisionRef(target)) return undefined;
+  return { target, to: v.to, machine: v.machine, name: v.name, at: v.at, decision: v.decision, ...(v.note !== undefined && { note: v.note }) };
 }
 
 /** Publishes the job on the shared queue; false when it was already there. */

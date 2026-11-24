@@ -42,8 +42,8 @@ import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
+import { FINAL_STATUSES, newId, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, sentLine, sentState } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -57,9 +57,10 @@ import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./teleme
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
 import { githubCoord } from "./coord/github.js";
-import { forgetTakenOut, lineProblem, linesAway, linesPass, type LineAway, type LineCloner } from "./coord/lines.js";
+import { forgetTakenOut, lineProblem, linesAway, linesPass, publishedElsewhere, type LineAway, type LineCloner } from "./coord/lines.js";
+import { decisionOnItsWay, outbox, saveOutbox, type OutboxDecision, type OutboxEntry } from "./coord/outbox.js";
 import { coordReady, probeOnce, readMachines, readProbe } from "./coord/pass.js";
-import { finished as finishedClaim, type ClaimRecord, type CoordApi, type LineRecord, type MachineView, type StatusJob } from "./coord/protocol.js";
+import { finished as finishedClaim, MAX_DECISION_NOTE, MAX_QUEUED_REQUEST, queueRef, readQueueRecord, TEXT_CONTROL, type ClaimRecord, type CoordApi, type DecisionTarget, type LineRecord, type MachineView, type QueueRecord, type StatusJob, type StatusProposal } from "./coord/protocol.js";
 import { ownStatusJob, readStatus, STATUS_DAYS } from "./coord/status.js";
 import { machineIdentity } from "./machine.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
@@ -309,10 +310,20 @@ function checkPriority(name: string): JobPriority {
   return name;
 }
 
-export function requestWork(
-  ctx: FactoryContext,
-  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string; budgetUsd?: number },
-): RequestResult {
+export interface RequestInput {
+  text?: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  line?: string;
+  kind?: Job["kind"];
+  source?: JobSource;
+  priority?: string;
+  budgetUsd?: number;
+}
+
+/** A request's text, cap and priority, or why it is not one. */
+function checkRequest(ctx: FactoryContext, input: RequestInput): { text: string; budgetUsd: number; priority?: JobPriority } {
   const text = input.type !== undefined ? typedRequest(input.type, input.title, input.description) : (input.text ?? "").trim();
   if (!text) throw new Error("El pedido está vacío.");
   const cap = ctx.config.limits.usdPerJob;
@@ -323,6 +334,11 @@ export function requestWork(
   const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
   // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
   if (priority === "urgente" && input.source) throw new Error("Solo vos podés marcar un trabajo como urgente.");
+  return { text, budgetUsd, priority };
+}
+
+export function requestWork(ctx: FactoryContext, input: RequestInput): RequestResult {
+  const { text, budgetUsd, priority } = checkRequest(ctx, input);
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
   const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd, source: input.source, priority });
@@ -347,6 +363,50 @@ export function requestWork(
       ? "Primero armo la especificación y te la muestro para que la apruebes."
       : `La fábrica lo especifica, lo construye, lo verifica y ${integration} sola${level.level === "L2" ? "; solo te consulta si toca algo protegido o se agota el presupuesto" : ""}.`;
   return { job, level, next };
+}
+
+/** A request that went to the outbox: no local job, only the id its job will have on the machine that takes it. */
+export interface RequestSent {
+  id: string;
+  line: string;
+  sent: string;
+}
+
+/** The lines a request may name: this machine's, and the published ones that are not here. */
+export function requestLines(ctx: FactoryContext): string[] {
+  return [...ctx.config.lines.map((l) => l.name), ...publishedElsewhere(ctx).map((r) => r.name)];
+}
+
+/**
+ * The person in charge's request, also for a line another machine published and
+ * this one does not have: then it waits in the outbox for the coordination pass,
+ * which puts it on the shared queue with what the line needs.
+ */
+export function requestAnywhere(ctx: FactoryContext, input: RequestInput): RequestResult | RequestSent {
+  const { lines } = ctx.config;
+  const published = publishedElsewhere(ctx);
+  const name = input.line ?? (!lines.length && published.length === 1 ? published[0]!.name : undefined);
+  const away = published.find((r) => r.name === name);
+  if (!away) {
+    if (name && published.length && !lines.some((l) => l.name === name)) throw new Error(`No existe la línea "${name}". Líneas: ${requestLines(ctx).join(", ")}.`);
+    return requestWork(ctx, input);
+  }
+  const { text, priority } = checkRequest(ctx, input);
+  let id = newId();
+  while (ctx.store.getJob(id)) id = newId();
+  const record: QueueRecord = {
+    id,
+    line: away.name,
+    kind: input.kind ?? "request",
+    request: scrubLocal(text, { repo: ctx.home.root }),
+    priority: priority ?? "media",
+    createdAt: (ctx.now ?? (() => new Date()))().toISOString(),
+    needs: { box: false, engines: away.needs.engines },
+  };
+  // What the other machines would not accept would never be taken.
+  if (!readQueueRecord({ name: queueRef(id), sha: "", data: JSON.stringify(record) })) throw new Error(`El pedido para una línea de otra máquina no puede superar los ${MAX_QUEUED_REQUEST} caracteres.`);
+  saveOutbox(ctx.store, { kind: "request", state: "pending", at: record.createdAt, record });
+  return { id, line: away.name, sent: `Pedido anotado: trabajo ${id} en la línea "${away.name}", que no está en esta máquina. Sale a la cola de la fábrica en el próximo pase y lo toma una máquina que tenga la línea.` };
 }
 
 export function getJob(ctx: FactoryContext, id: string): Job {
@@ -397,6 +457,40 @@ export async function answer(ctx: FactoryContext, id: string, decision: Decision
   return answerJob(ctx, getJob(ctx, id), decision, note);
 }
 
+/** A decision for another machine goes to the outbox once: while one is on its way, there is nothing else to say. */
+function sendDecision(ctx: FactoryContext, target: DecisionTarget, to: JobMachine, decision: Decision, note?: string): OutboxDecision {
+  const own = machineIdentity(ctx.store, ctx.config);
+  const at = (ctx.now ?? (() => new Date()))().toISOString();
+  const said = scrubLocal((note ?? "").replace(/\r\n?/g, "\n").replace(TEXT_CONTROL, " "), { repo: ctx.home.root }).trim().slice(0, MAX_DECISION_NOTE);
+  const entry: OutboxDecision = { kind: "decision", state: "pending", at, toName: to.name, record: { target, to: to.id, machine: own.id, name: own.name, at, decision, ...(said && { note: said }) } };
+  return ctx.store.transaction(() => {
+    const before = decisionOnItsWay(ctx.store, target);
+    if (before) throw new Error(`Eso ya lo decidiste desde esta máquina: ${sentLine(before)}.`);
+    saveOutbox(ctx.store, entry);
+    return entry;
+  });
+}
+
+/** What the owner reads of a decision that was just sent. */
+const decisionSent = (entry: OutboxDecision, to: JobMachine): string =>
+  `Anotado: ${sentLine(entry)}.${to.alive ? " Se entrega en el próximo pase." : ` La máquina ${to.name} está apagada o caída: se entrega cuando vuelva, si para entonces todavía espera tu respuesta.`}`;
+
+/** What answering did: the local job as it is now, or what was sent to the machine that has it. */
+export type AnswerResult = { job: Job } | { sent: string };
+
+/**
+ * The owner's answer to a job wherever it is in the factory. With `askedAt`, only
+ * to the question that was asked then.
+ */
+export async function answerAnywhere(ctx: FactoryContext, id: string, decision: Decision, note?: string, askedAt?: string): Promise<AnswerResult> {
+  const away = jobElsewhere(ctx, id);
+  const { question, status } = away ?? getJob(ctx, id);
+  if (askedAt !== undefined && question?.askedAt !== askedAt) throw new Error(`La pregunta del trabajo ${id} ya no es la misma: no se respondió nada.`);
+  if (!away) return { job: await answer(ctx, id, decision, note) };
+  if (status !== "waiting" || !question) throw new Error(`El trabajo ${id} no está esperando una respuesta (estado: ${status}).`);
+  return { sent: decisionSent(sendDecision(ctx, { job: id, askedAt: question.askedAt }, away.machine, decision, note), away.machine) };
+}
+
 /** The andon cord: stops one job, or the whole factory when no job is given. */
 export async function stop(ctx: FactoryContext, id?: string): Promise<{ job?: Job; factory?: boolean }> {
   if (!id) {
@@ -445,6 +539,8 @@ export interface FactoryStatus {
   machines?: MachineView[];
   /** The unfinished and lately finished jobs of every machine, each once (see `factoryView`); absent while this machine is the only one. */
   jobs?: FactoryJob[];
+  /** What was decided or asked for here for other machines, on its way or lately ended; absent with none. */
+  sent?: OutboxEntry[];
   /** The lines the other machines published that are not on this one, and why; absent without `distributed`. */
   linesAway?: LineAway[];
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -725,6 +821,8 @@ export interface FactoryJob extends StatusJob {
   machine: JobMachine;
   /** The full record, when this machine's is the copy that counts; nothing else of another machine's job is here. */
   local?: Job;
+  /** What was done about it here: the answer on its way to its machine, or the request no machine told of yet. */
+  note?: string;
 }
 
 /** A copy without a claim that decides: the one at work, then the one still to do. */
@@ -741,7 +839,8 @@ export function factoryView(ctx: FactoryContext, local: Job[]): FactoryJob[] | u
   const own = machineIdentity(ctx.store, ctx.config);
   const { records, claims } = readStatus(ctx.store);
   const machines = readMachines(ctx.store) ?? [];
-  if (!records.length && !machines.some((m) => m.id !== own.id)) return undefined;
+  const asked = outbox(ctx.store).flatMap((e) => (e.kind === "request" ? [e] : []));
+  if (!records.length && !asked.length && !machines.some((m) => m.id !== own.id)) return undefined;
   const machine = (id: string, name?: string): JobMachine => {
     if (id === own.id) return { id, name: own.name, alive: true };
     const known = machines.find((m) => m.id === id);
@@ -760,9 +859,44 @@ export function factoryView(ctx: FactoryContext, local: Job[]): FactoryJob[] | u
       add({ ...job, machine: machine(record.id) });
     }
   }
+  // Asked for here, on a line this machine does not have, and told by no machine yet.
+  for (const entry of asked) {
+    const { id, line, request, priority, createdAt } = entry.record;
+    if (copies.has(id) || ctx.store.getJob(id)) continue;
+    add({ id, line, title: jobName({ request }), status: "queued", priority: isPriority(priority) ? priority : "media", createdAt, machine: machine(own.id), note: sentState(entry) });
+  }
   const claimOf = new Map(claims.map((c) => [c.job, c]));
-  return [...copies.values()].map((list) => heldCopy(list, claimOf.get(list[0]!.id), machine)).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  const answered = (j: FactoryJob): FactoryJob => {
+    const entry = j.question && !j.local ? decisionOnItsWay(ctx.store, { job: j.id, askedAt: j.question.askedAt }) : undefined;
+    return entry ? { ...j, note: sentLine(entry) } : j;
+  };
+  return [...copies.values()].map((list) => answered(heldCopy(list, claimOf.get(list[0]!.id), machine))).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
+
+/** A proposal that waits on another machine of the factory. */
+export interface FactoryProposal extends StatusProposal {
+  machine: JobMachine;
+  /** The decision on it that is on its way from here. */
+  note?: string;
+}
+
+/** The pending proposals of the other machines, as the last pass read them; none without the protocol. */
+export function proposalsElsewhere(ctx: FactoryContext): FactoryProposal[] {
+  if (!coordReady(ctx)) return [];
+  const machines = readMachines(ctx.store) ?? [];
+  return readStatus(ctx.store).records.flatMap((r) => {
+    const known = machines.find((m) => m.id === r.id);
+    return r.proposals
+      .filter((p) => !ctx.store.getProposal(p.id))
+      .map((p) => {
+        const entry = decisionOnItsWay(ctx.store, { proposal: p.id });
+        return { ...p, machine: { id: r.id, name: known?.name ?? r.id, alive: known?.alive ?? false }, ...(entry && { note: sentLine(entry) }) };
+      });
+  });
+}
+
+/** One of them. */
+export const proposalElsewhere = (ctx: FactoryContext, id: string): FactoryProposal | undefined => proposalsElsewhere(ctx).find((p) => p.id === id);
 
 /** Which of a job's copies counts, or the one at hand as its claim says it is when its machine told nothing of it yet. */
 function heldCopy(copies: FactoryJob[], claim: ClaimRecord | undefined, machine: (id: string, name?: string) => JobMachine): FactoryJob {
@@ -784,7 +918,11 @@ export function jobElsewhere(ctx: FactoryContext, id: string): FactoryJob | unde
 /** A job's details, wherever it is in the factory: what `zero status <id>` and the chat say. */
 export function jobText(ctx: FactoryContext, id: string): string {
   const away = jobElsewhere(ctx, id);
-  if (away) return formatFactoryJob(away);
+  if (away) {
+    // Also what came of an answer to a question that is over.
+    const told = outbox(ctx.store).flatMap((e) => (e.kind === "decision" && "job" in e.record.target && e.record.target.job === id ? [sentLine(e)] : []));
+    return formatFactoryJob(away, told.filter((t) => t !== away.note));
+  }
   const job = getJob(ctx, id);
   const machine = factoryView(ctx, [job])?.find((j) => j.id === id)?.machine;
   return formatJob(job, { subscription: onSubscription(ctx.store, ctx.config.engine), machine });
@@ -800,6 +938,7 @@ function factoryJobs(ctx: FactoryContext, now: Date): FactoryJob[] | undefined {
 /** `factoryStatus` from the stored state alone: it does not move the gate's records into the store first. */
 function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
   const jobs = factoryJobs(ctx, now);
+  const sent = coordReady(ctx) ? outbox(ctx.store) : [];
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
@@ -821,6 +960,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     github: githubStatus(ctx.store, now),
     ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [], linesAway: linesAway(ctx) }),
     ...(jobs && { jobs }),
+    ...(sent.length && { sent }),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
@@ -1105,7 +1245,7 @@ export interface RequestsView {
 
 /** The panel's "Pedidos" list: every job of the factory (not only the store's first 1000), filtered, newest first, at most 200. */
 export function requestsView(ctx: FactoryContext, filter: { line?: string; estado?: string } = {}, now = new Date()): RequestsView {
-  const lines = ctx.config.lines.map((l) => l.name);
+  const lines = requestLines(ctx);
   const line = filter.line && lines.includes(filter.line) ? filter.line : undefined;
   const estado: RequestFilter = filter.estado && Object.hasOwn(REQUEST_FILTERS, filter.estado) ? (filter.estado as RequestFilter) : "todos";
   const all = factoryView(ctx, ctx.store.listJobs({ limit: -1 }));
@@ -1640,7 +1780,8 @@ export interface ProposalLine {
 }
 
 /** Every proposal of every line, newest first, with the job it became and each line's night-shift autonomy. */
-export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"; lines: ProposalLine[] } {
+export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"; lines: ProposalLine[]; away?: FactoryProposal[] } {
+  const away = proposalsElsewhere(ctx);
   const all = ctx.store.listProposals().reverse();
   const view = (p: Proposal): ProposalView => {
     const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
@@ -1655,6 +1796,7 @@ export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"
       const line = ctx.config.lines.find((l) => l.name === name);
       return { line: name, autonomy: line ? lineAutonomy(ctx.config, line) : "propose", proposals: all.filter((p) => p.line === name).map(view) };
     }),
+    ...(away.length && { away }),
   };
 }
 
@@ -1713,6 +1855,16 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
     log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
   }
   return proposal;
+}
+
+/** What deciding a proposal did, or what was sent to the machine that has it. */
+export type ProposalOutcome = { approved: RequestResult } | { rejected: Proposal } | { sent: string };
+
+/** The owner's decision on a proposal, wherever it is in the factory. */
+export async function decideProposal(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<ProposalOutcome> {
+  const away = proposalElsewhere(ctx, id);
+  if (away) return { sent: decisionSent(sendDecision(ctx, { proposal: id }, away.machine, decision, note), away.machine) };
+  return decision === "reject" ? { rejected: await rejectProposal(ctx, id, note) } : { approved: approveProposal(ctx, id) };
 }
 
 /** Builds the GitHub adapter of a repository for a line, or nothing without access. */
@@ -2356,7 +2508,8 @@ export type RemoteAction =
   | { tool: "zero_discard"; args: { job: string; reason?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
-  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
+  /** `askedAt` ties it to the question it was asked for, when the job is on another machine. */
+  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string; askedAt?: string } };
 
 export type PendingRemoteAction = RemoteAction & { id: string; client?: string; clientName?: string; createdAt: string; expiresAt: string; text: string };
 
@@ -2437,12 +2590,13 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
     case "zero_discard":
       return { ok: true, text: formatDiscard(await discardJob(ctx, held.args.job, { reason: held.args.reason, via: "chat", ...(opts.merges && { api: opts.merges }) })) };
     case "zero_proposal_decide":
-      if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
-      return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };
+      return { ok: true, text: formatProposalDecision(held.args.id, await decideProposal(ctx, held.args.id, held.args.decision, held.args.note)) };
     case "zero_egress_block":
       return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
-    case "zero_answer":
-      return { ok: true, text: formatJob(await answer(ctx, held.args.job, held.args.decision, held.args.note), { subscription: subscription() }) };
+    case "zero_answer": {
+      const r = await answerAnywhere(ctx, held.args.job, held.args.decision, held.args.note, held.args.askedAt);
+      return { ok: true, text: "sent" in r ? r.sent : formatJob(r.job, { subscription: subscription() }) };
+    }
   }
 }
 

@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -16,7 +16,7 @@ import { githubIssues, lineRepository } from "./intake/github.js";
 import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -314,7 +314,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "request": {
         const text = rest.join(" ");
-        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
+        const r = requestAnywhere(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
         const started = await ensureDaemon(ctx);
         console.log(formatRequest(r) + (started ? "\nLa fábrica estaba apagada: la encendí." : ""));
         return 0;
@@ -342,7 +342,12 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       case "approve": {
         if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");
-        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        const r = await answerAnywhere(ctx, rest[0], values.reject ? "reject" : "approve", values.note);
+        if ("job" in r) console.log(formatJob(r.job, { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        else {
+          const started = await ensureDaemon(ctx);
+          console.log(`${r.sent}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        }
         return 0;
       }
       case "stop": {
@@ -424,17 +429,14 @@ Informe: ${r.report}`);
       }
       case "proposals": {
         if (!rest[0]) {
-          console.log(formatProposals(listProposals(ctx)));
+          console.log(formatProposals(listProposals(ctx), false, proposalsElsewhere(ctx)));
           return 0;
         }
         if ((rest[0] !== "approve" && rest[0] !== "reject") || !rest[1]) break;
-        if (rest[0] === "reject") {
-          console.log(`Propuesta ${(await rejectProposal(ctx, rest[1], values.note)).id} rechazada y archivada.`);
-          return 0;
-        }
-        const r = approveProposal(ctx, rest[1]);
-        const started = await ensureDaemon(ctx);
-        console.log(`Propuesta ${rest[1]} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        const r = await decideProposal(ctx, rest[1], rest[0], values.note);
+        // An approval opens a job, and a decision sent goes out with the daemon's pass.
+        const started = !("rejected" in r) && (await ensureDaemon(ctx));
+        console.log(`${formatProposalDecision(rest[1], r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
         return 0;
       }
       case "research": {

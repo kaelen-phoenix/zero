@@ -1,8 +1,9 @@
+import type { FactoryContext } from "../app.js";
 import type { FactoryConfig } from "../config.js";
 import { githubHalt } from "../github-quota.js";
 import { machineCapabilities, machineIdentity } from "../machine.js";
-import type { LedgerDeps } from "../line/finish.js";
 import type { Store } from "../state/store.js";
+import { decisionsPass, outboxPass } from "./actions.js";
 import { queuePass } from "./queue.js";
 import { heartbeat, listMachines, probeCoord, type CoordApi, type MachineView } from "./protocol.js";
 import { spendPass } from "./spend.js";
@@ -58,12 +59,14 @@ export async function probeOnce(ctx: { store: Store }, api: CoordApi, repository
  * repository, then every machine's record kept in kv for status, panel and chat.
  * Before that, once per coordination repository, the probe that confirms its
  * conflicts (`coord:probe`), and once it passed, what each machine spent
- * (spendPass), the shared queue (queuePass) and where every machine's jobs
- * stand (statusPass).
+ * (spendPass), the shared queue (queuePass), what other machines decided for
+ * this one (decisionsPass), where every machine's jobs stand (statusPass) and
+ * what was decided or asked for here (outboxPass). A decision attended here is
+ * deleted only after the status tells what came of it.
  * Nothing at all without `distributed`, and nothing while GitHub holds a pause.
  */
 export async function coordPass(
-  ctx: LedgerDeps & { home?: { root: string } },
+  ctx: FactoryContext,
   api: CoordApi,
   box: { ready: boolean } | undefined,
   now: Date,
@@ -79,7 +82,10 @@ export async function coordPass(
   if (coordReady(ctx)) {
     await spendPass(ctx.store, api, machine, now);
     const claims = await queuePass(ctx, api, machine, box?.ready === true);
+    const decisions = await decisionsPass(ctx, api, machine, claims);
     await statusPass(ctx, api, machine, claims, now);
+    for (const name of decisions.attended) await api.delete(name);
+    await outboxPass(ctx, api, machine, decisions.refs, now);
   }
   return machines;
 }

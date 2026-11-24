@@ -47,11 +47,11 @@
 
 ## 7. Etapa 7: Pedir, responder y decidir desde cualquier máquina
 
-- [ ] 7.1 Buzón local kv coord:outbox:<id> que escriben la CLI, el chat y el panel; coordPass lo publica una sola vez, también después de una pausa de GitHub, y guarda el resultado.
-- [ ] 7.2 Registros decisions/ con lector estricto (trabajo y askedAt, o propuesta); la máquina dueña aplica con answerJob, approveProposal o rejectProposal, y borra lo atendido.
-- [ ] 7.3 answer, confirmRemoteAction, zero_answer, zero_proposal_decide, zero approve, zero proposals y los formularios del panel aceptan trabajos y propuestas ajenos. La retención delicada usa la pregunta de la vista común.
-- [ ] 7.4 requestWork para líneas publicadas que no están acá: entra al buzón como registro de queue/ con las necesidades de la línea, sin trabajo local.
-- [ ] 7.5 test/coord-actions.test.ts con dos y tres fábricas, carreras, pregunta vieja, chat remoto retenido y pausa de GitHub.
+- [x] 7.1 Buzón local kv coord:outbox:<id> que escriben la CLI, el chat y el panel; coordPass lo publica una sola vez, también después de una pausa de GitHub, y guarda el resultado.
+- [x] 7.2 Registros decisions/ con lector estricto (trabajo y askedAt, o propuesta); la máquina dueña aplica con answerJob, approveProposal o rejectProposal, y borra lo atendido.
+- [x] 7.3 answer, confirmRemoteAction, zero_answer, zero_proposal_decide, zero approve, zero proposals y los formularios del panel aceptan trabajos y propuestas ajenos. La retención delicada usa la pregunta de la vista común.
+- [x] 7.4 requestWork para líneas publicadas que no están acá: entra al buzón como registro de queue/ con las necesidades de la línea, sin trabajo local.
+- [x] 7.5 test/coord-actions.test.ts con dos y tres fábricas, carreras, pregunta vieja, chat remoto retenido y pausa de GitHub.
 
 ## 8. Etapa 8: Guía de Linux y documentación
 

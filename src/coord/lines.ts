@@ -22,6 +22,9 @@ import { primaryEngines } from "./queue.js";
 export const lineKey = (name: string) => `coord:line:${name}`;
 const LINE_PREFIX = lineKey("");
 
+/** Every line published in the coordination repository as the last pass read it, on this machine or not. */
+export const PUBLISHED_LINES_KEY = "coord:lines";
+
 /** A failed clone is tried again at most this often. */
 export const CLONE_RETRY_MS = 60 * 60_000;
 const CLONE_TIMEOUT_MS = 30 * 60_000;
@@ -55,6 +58,18 @@ export interface LineAway {
   name: string;
   state: "unattended" | "failed";
   why: string;
+}
+
+/** The published lines that are not on this machine: its requests for them go out through the shared queue. */
+export function publishedElsewhere(ctx: { store: Store; config: FactoryConfig }): LineRecord[] {
+  const raw = coordReady(ctx) ? ctx.store.getKv(PUBLISHED_LINES_KEY) : undefined;
+  if (!raw) return [];
+  try {
+    const all = JSON.parse(raw) as LineRecord[] | null;
+    return Array.isArray(all) ? all.filter((r) => !ctx.config.lines.some((l) => l.name === r.name)) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** The published lines the last pass left out of this machine, by name. */
@@ -232,6 +247,7 @@ export async function linesPass(ctx: FactoryContext, api: CoordApi, opts: LinesO
 
   const result: LinesResult = { cloned: [], unattended: [], failed: [] };
   const records = [...refs.values()].map(readLineRecord).filter((r) => r !== undefined);
+  store.setKv(PUBLISHED_LINES_KEY, JSON.stringify(records));
   // What was kept of a line that is here now, or that nobody publishes any more, says nothing.
   for (const [key] of store.kvWithPrefix(LINE_PREFIX)) {
     const name = key.slice(LINE_PREFIX.length);

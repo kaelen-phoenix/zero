@@ -259,7 +259,7 @@ describe("the view of the whole factory", () => {
     expect(overviewPage(factoryStatus(b), ["demo"], "n")).toContain(`<span class="bad"> · en pc-a (máquina caída)</span>`);
   });
 
-  it("keeps a local question with its answer, and says where the others are answered", async () => {
+  it("gives every question its answer, and says where the others' is delivered", async () => {
     const coord = memoryCoord();
     const a = factory("pc-a", { lines: [{ name: "tienda", repo: gitRepo() }] });
     const b = factory("pc-b");
@@ -271,10 +271,10 @@ describe("the view of the whole factory", () => {
     await pass(b, coord);
     const html = overviewPage(factoryStatus(b), ["demo"], "n");
     expect(html).toContain(`action="/job/${near.id}/answer"`);
-    expect(html).not.toContain(`action="/job/${far.id}/answer"`);
+    expect(html).toContain(`action="/job/${far.id}/answer"`);
     expect(html).toContain("¿Y &lt;b&gt;esto&lt;/b&gt;?");
     expect(html).not.toContain("<b>esto</b>");
-    expect(html).toContain("Se responde en la máquina pc-a.");
+    expect(html).toContain("Tu respuesta se entrega en la máquina pc-a.");
     const list = requestsPage(requestsView(b, { estado: "esperando" }), "n");
     expect(list).toContain(`id="request-${near.id}"`);
     expect(list).toContain(`id="request-${far.id}"`);
@@ -322,7 +322,7 @@ describe("a job by its id", () => {
     expect(await call({})).toContain(`- ${id} · tienda · Solo en <i>A</i> · en pc-a`);
   });
 
-  it("has its page in the panel, with the text escaped and no action on it", async () => {
+  it("has its page in the panel, with the text escaped and no action but its answer", async () => {
     const { b, id } = await waitingOnA();
     const server = createPanelServer(b, { key: () => panelKey(b.secrets) });
     servers.push(server);
@@ -335,6 +335,7 @@ describe("a job by its id", () => {
     expect(html).not.toContain("<i>A</i>");
     expect(html).toContain("¿Apruebo el cambio?");
     expect(html).toContain("en pc-a");
+    expect(html).toContain(`action="/job/${id}/answer"`);
     expect(html).not.toContain(`/job/${id}/stop`);
     expect(await (await get("/requests")).text()).toContain(`id="request-${id}"`);
   });

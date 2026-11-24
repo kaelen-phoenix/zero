@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryJob, type FactoryStatus, type JobMachine, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryJob, type FactoryProposal, type FactoryStatus, type JobMachine, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -322,17 +322,20 @@ const onMachine = (m?: JobMachine) => (m ? (m.alive ? esc(machineNote(m)) : `<sp
 const awayLine = (j: FactoryJob) =>
   `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(j.title)}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)} · ${esc(describeFactoryJob(j))}${onMachine(j.machine)}</span></li>`;
 
-/** The question of a job another machine has. */
+/** Where an answer goes, or what was already sent from here. */
+const awayNote = (m: JobMachine, note?: string) => `<p class="muted">${note ? `Desde esta máquina: ${esc(note)}.` : `Tu respuesta se entrega en la máquina ${esc(m.name)}${m.alive ? "" : " cuando vuelva"}.`}</p>`;
+
+/** The question of a job another machine has, with its answer unless one was already sent. */
 const awayQuestion = (j: FactoryJob) =>
   j.question
     ? `<pre>${esc(j.question.text)}</pre>
-<p class="muted">Si nadie responde antes de ${esc(j.question.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}. Se responde en la máquina ${esc(j.machine.name)}.</p>`
+<p class="muted">Si nadie responde antes de ${esc(j.question.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${awayNote(j.machine, j.note)}${j.note ? "" : answerForms(j)}`
     : "";
 
 const jobLine = (j: Job, machine?: JobMachine) =>
   `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}${onMachine(machine)}</span></li>`;
 
-const answerForms = (j: Job) =>
+const answerForms = (j: Pick<Job, "id">) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
 <button class="primary" name="decision" value="approve">Aprobar</button><button class="danger" name="decision" value="reject">Rechazar</button></form>`;
 
@@ -413,7 +416,7 @@ ${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
 ${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}${s.linesAway?.length ? `<p class="muted">Líneas que no están en esta máquina:</p><ul>${s.linesAway.map((l) => `<li class="muted">${l.state === "failed" ? `<span class="bad">${esc(lineAwayLine(l))}</span>` : esc(lineAwayLine(l))}</li>`).join("")}</ul>` : ""}
-${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
+${s.sent?.length ? `<p class="muted">Para otras máquinas:</p><ul>${s.sent.map((e) => `<li class="muted">${esc(sentLine(e))}</li>`).join("")}</ul>` : ""}${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
 ${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
@@ -436,7 +439,7 @@ ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="
   );
 }
 
-/** The page of a job another machine has: what that machine tells, with no action on it. */
+/** The page of a job another machine has: what that machine tells, and the answer to its question. */
 export function factoryJobPage(job: FactoryJob, nonce: string, flash?: string): string {
   return page(
     job.title,
@@ -444,7 +447,7 @@ export function factoryJobPage(job: FactoryJob, nonce: string, flash?: string): 
 <p class="muted">${esc(job.id)} · línea ${esc(job.line)} · prioridad ${esc(job.priority)}${onMachine(job.machine)}</p>
 <p>${chip(job.status)} <b>${esc(describeFactoryJob(job))}</b></p>
 ${job.question ? `<h2>Pregunta para vos</h2>${awayQuestion(job)}` : ""}
-<p class="muted">La traza y la entrega están en la máquina ${esc(job.machine.name)}.</p></div>`,
+${job.note && !job.question ? `<p class="muted">Pedido desde esta máquina: ${esc(job.note)}.</p>` : `<p class="muted">La traza y la entrega están en la máquina ${esc(job.machine.name)}.</p>`}</div>`,
     { nonce, flash, refresh: !FINAL_STATUSES.includes(job.status) },
   );
 }
@@ -588,7 +591,7 @@ function proposalCard(p: ProposalView): string {
     : "";
   const actions = decidable
     ? `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">${p.awaitsIntegration ? "Aprobar e integrar" : "Aprobar"}</button></form>
-<form method="post" action="/proposals/${esc(p.id)}/reject"><label for="r-${esc(p.id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(p.id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`
+${rejectForm(p.id)}`
     : "";
   return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}</span></h3>
 <p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
@@ -600,6 +603,17 @@ ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.iss
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
 }
 
+const rejectForm = (id: string) => `<form method="post" action="/proposals/${esc(id)}/reject"><label for="r-${esc(id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`;
+
+/** A proposal that waits on another machine: its texts come from that machine. */
+function awayProposal(p: FactoryProposal): string {
+  const actions = p.note ? "" : `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">Aprobar</button></form>
+${rejectForm(p.id)}`;
+  return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}${onMachine(p.machine)}</span></h3>
+<p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
+<p class="muted">Línea ${esc(p.line)} · costo estimado ${usd(p.estimatedUsd)}</p>${awayNote(p.machine, p.note)}${actions}</div>`;
+}
+
 function proposalLine(l: ProposalLine): string {
   const groups = STAGES.map(([stage, title]) => {
     const items = l.proposals.filter((p) => p.stage === stage);
@@ -609,20 +623,22 @@ function proposalLine(l: ProposalLine): string {
 }
 
 /** The night shift's proposals of every line, grouped by where they stand, with each line's autonomy. */
-export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[] }, nonce: string, flash?: string): string {
+export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[]; away?: FactoryProposal[] }, nonce: string, flash?: string): string {
   const research = data.research === "off" ? "apagada" : AUTONOMY[data.research];
   return page(
     "Propuestas",
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
 <p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
-${data.lines.map(proposalLine).join("")}`,
+${data.lines.map(proposalLine).join("")}${data.away?.length ? `<h2>En otras máquinas</h2>${data.away.map(awayProposal).join("")}` : ""}`,
     { nonce, flash, refresh: true, active: "/proposals" },
   );
 }
 
 /** The step before approving a proposal: approving opens a job or integrates one, so the owner confirms it. */
-export function confirmProposalPage(p: ProposalView, nonce: string): string {
-  const what = p.awaitsIntegration
+export function confirmProposalPage(p: ProposalView | FactoryProposal, nonce: string): string {
+  const what = "machine" in p
+    ? `Aprobar abre un trabajo normal en la línea ${esc(p.line)}, en la máquina ${esc(p.machine.name)}.`
+    : p.awaitsIntegration
     ? `El trabajo ${esc(p.job?.id)} ya está construido: aprobar lo integra según la configuración de la línea ${esc(p.line)}.`
     : `Aprobar abre un trabajo normal en la línea ${esc(p.line)}.`;
   return page(

@@ -6,6 +6,7 @@ import { jobStage } from "../line/spec.js";
 import type { MachineIdentity } from "../machine.js";
 import { storedPriority } from "../priority.js";
 import { FINAL_STATUSES, type Job, type Store } from "../state/store.js";
+import { outbox } from "./outbox.js";
 import { CONTROL, MAX_STATUS_ITEMS, MAX_STATUS_TEXT, MAX_STATUS_TITLE, readStatusRecord, statusJob, statusProposal, statusRef, TEXT_CONTROL, type ClaimRecord, type CoordApi, type StatusJob, type StatusRecord } from "./protocol.js";
 
 /** What the other machines said of their jobs, and who holds them, as the last coordination pass read it. */
@@ -17,7 +18,7 @@ const STATUS_FINISHED = 10;
 
 export interface StoredStatus {
   records: StatusRecord[];
-  /** The claims of the jobs told in `records` or not finished here. */
+  /** The claims of the jobs told in `records`, not finished here or asked for from here. */
   claims: ClaimRecord[];
 }
 
@@ -100,7 +101,8 @@ export async function statusPass(ctx: StatusCtx, api: CoordApi, machine: Machine
   const all = refs.map(readStatusRecord).filter((r) => r !== undefined);
   const records = all.filter((r) => r.id !== machine.id);
   const open = store.listJobs({ status: ["queued", "running", "waiting"], limit: -1 });
-  const ids = new Set([...open, ...records.flatMap((r) => r.jobs)].map((j) => j.id));
+  const asked = outbox(store).flatMap((e) => (e.kind === "request" ? [e.record] : []));
+  const ids = new Set([...open, ...records.flatMap((r) => r.jobs), ...asked].map((j) => j.id));
   store.setKv(STATUS_KEY, JSON.stringify({ records, claims: [...claims.values()].filter((c) => ids.has(c.job)) } satisfies StoredStatus));
 
   const own = ownStatus(ctx, machine.id, now);
