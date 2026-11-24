@@ -15,7 +15,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
@@ -57,7 +57,7 @@ import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./teleme
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
 import { readMachines } from "./coord/pass.js";
-import type { MachineView } from "./coord/protocol.js";
+import type { LineRecord, MachineView } from "./coord/protocol.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -2368,10 +2368,28 @@ export interface PackageLineInput {
 /** Adds a package's line to the factory file; throws when the name is taken or the file refuses it. */
 export async function addPackageLine(ctx: FactoryContext, input: PackageLineInput): Promise<void> {
   if (ctx.config.lines.some((l) => l.name === input.name)) throw new Error(`ya existe la línea "${input.name}"`);
-  const entry = { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify };
+  await addLineEntry(ctx, { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify });
+}
+
+async function addLineEntry(ctx: FactoryContext, entry: LineEntry): Promise<void> {
   ctx.config = await editConfig(ctx, (doc) => {
     if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
     else doc.setIn(["lines"], doc.createNode([entry]));
+  });
+}
+
+/** Adds a line another machine of the factory published, cloned in `repo`, with what its record carries; a name taken meanwhile is refused by the file's own check. */
+export async function addSharedLine(ctx: FactoryContext, record: LineRecord, repo: string): Promise<void> {
+  await addLineEntry(ctx, {
+    name: record.name,
+    repo,
+    baseBranch: record.baseBranch,
+    setup: record.setup,
+    verify: record.verify,
+    ...(record.verifyTimeoutMinutes !== undefined && { verifyTimeoutMinutes: record.verifyTimeoutMinutes }),
+    integrate: record.integrate,
+    ...(record.autoMerge && { autoMerge: true }),
+    ...(record.needs.platforms.length && { platforms: record.needs.platforms }),
   });
 }
 
@@ -3068,7 +3086,7 @@ function addedText(ctx: FactoryContext, name: string, source: string, already: b
 }
 
 /** A rename right after git and npm wrote in the folder; on Windows something may still hold it for a moment. */
-async function renameFolder(from: string, to: string): Promise<void> {
+export async function renameFolder(from: string, to: string): Promise<void> {
   for (let tries = 5; ; tries--) {
     try {
       return await rename(from, to);

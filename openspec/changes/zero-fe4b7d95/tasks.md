@@ -2,12 +2,12 @@
 
 ## 1. Etapa 1: Publicar y clonar las líneas
 
-- [ ] 1.1 En src/coord/protocol.ts, lineRef y un lector estricto del registro de lines/ (nombre de línea, cuenta/nombre de GitHub, rama base, comandos sin caracteres de control y con largo acotado, integrate, platforms, engines).
-- [ ] 1.2 Agregar platforms opcional a LineSchema y `lines` (ZERO_HOME/lines) a FactoryHome en src/home.ts.
-- [ ] 1.3 Nuevo src/coord/lines.ts con linesPass: publicar, decidir si la máquina la atiende (plataforma inyectable), clonar con un clonador inyectable y agregar la línea por editConfig. Estado por línea en kv coord:line:<nombre>.
-- [ ] 1.4 El clonador real es asíncrono y con tiempo límite, sin prompts de terminal, en carpeta temporal dentro de ZERO_HOME/lines y con rename al final; rechazar un nombre que salga de esa carpeta.
-- [ ] 1.5 Pase de fondo en src/daemon.ts con githubMeter (pase coord), solo con coordReady y sin GitHub en pausa, esperado en el finally y cortado al apagar; en once solo con coord inyectado.
-- [ ] 1.6 test/coord-lines.test.ts con dos fábricas sobre memoryCoord y repositorios bare, más el caso sin distributed.
+- [x] 1.1 En src/coord/protocol.ts, lineRef y un lector estricto del registro de lines/ (nombre de línea, cuenta/nombre de GitHub, rama base, comandos sin caracteres de control y con largo acotado, integrate, platforms, engines).
+- [x] 1.2 Agregar platforms opcional a LineSchema y `lines` (ZERO_HOME/lines) a FactoryHome en src/home.ts.
+- [x] 1.3 Nuevo src/coord/lines.ts con linesPass: publicar, decidir si la máquina la atiende (plataforma inyectable), clonar con un clonador inyectable y agregar la línea por editConfig. Estado por línea en kv coord:line:<nombre>.
+- [x] 1.4 El clonador real es asíncrono y con tiempo límite, sin prompts de terminal, en carpeta temporal dentro de ZERO_HOME/lines y con rename al final; rechazar un nombre que salga de esa carpeta.
+- [x] 1.5 Pase de fondo en src/daemon.ts con githubMeter (pase coord), solo con coordReady y sin GitHub en pausa, esperado en el finally y cortado al apagar; en once solo con coord inyectado.
+- [x] 1.6 test/coord-lines.test.ts con dos fábricas sobre memoryCoord y repositorios bare, más el caso sin distributed.
 
 ## 2. Etapa 2: Unirse, líneas no atendidas y creación del repositorio
 

@@ -1,4 +1,6 @@
+import { LINE_PLATFORMS, type LineConfig } from "../config.js";
 import type { MachineCapabilities, MachineIdentity } from "../machine.js";
+import { findSecret } from "../secrets.js";
 
 /**
  * The distributed factory's coordination protocol (docs/adr/0007-fabrica-distribuida.md).
@@ -45,6 +47,7 @@ export const machineRef = (id: string): string => `machines/${id}`;
 export const probeRef = (id: string): string => `probe/${id}`;
 export const queueRef = (job: string): string => `queue/${job}`;
 export const progressRef = (job: string): string => `progress/${job}`;
+export const lineRef = (name: string): string => `lines/${name}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 
@@ -267,6 +270,76 @@ export function readQueueRecord(ref: CoordRef): QueueRecord | undefined {
       isNeeds(v.needs),
   );
   return record && ref.name === queueRef(record.id) ? record : undefined;
+}
+
+/** A branch or base name read back from the coordination repository: plain ref characters only, never an option or a path out. */
+export const REF_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}$/;
+
+/** A line of the factory as the machine that has it published it: what another machine needs to clone it, no local paths, no secrets. */
+export interface LineRecord {
+  name: string;
+  /** `account/name` on GitHub. */
+  repository: string;
+  baseBranch: string;
+  setup: string[];
+  verify: string[];
+  verifyTimeoutMinutes?: number;
+  integrate: LineConfig["integrate"];
+  autoMerge: boolean;
+  /** Engines a machine must have in its chains, and platforms the line runs on (none: any). */
+  needs: { engines: string[]; platforms: NonNullable<LineConfig["platforms"]> };
+  machine: string;
+  at: string;
+}
+
+/** A line's name also names its clone's folder: nothing that leaves it, nor a device name of Windows. */
+const LINE_NAME = /^(?!(?:con|prn|aux|nul|com\d|lpt\d)$)[a-z0-9][a-z0-9-]{0,63}$/;
+const GITHUB_REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)(?!.*\.git$)[A-Za-z0-9._-]{1,100}$/;
+
+const isCommands = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.length <= 50 && v.every((c) => typeof c === "string" && c.trim().length > 0 && c.length <= 2000 && !/[\u0000-\u001f\u007f]/.test(c));
+
+const isLineNeeds = (v: unknown): v is LineRecord["needs"] => {
+  const platforms = (v as LineRecord["needs"] | null)?.platforms;
+  return isNeeds({ ...(v as object), box: false }) && Array.isArray(platforms) && platforms.length <= LINE_PLATFORMS.length && platforms.every((p) => LINE_PLATFORMS.includes(p));
+};
+
+/** A line record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readLineRecord(ref: CoordRef): LineRecord | undefined {
+  if (findSecret(ref.data)) return undefined;
+  const v = parse<LineRecord>(
+    ref,
+    (v) =>
+      typeof v.name === "string" &&
+      LINE_NAME.test(v.name) &&
+      typeof v.repository === "string" &&
+      GITHUB_REPOSITORY.test(v.repository) &&
+      typeof v.baseBranch === "string" &&
+      REF_NAME.test(v.baseBranch) &&
+      isCommands(v.setup) &&
+      isCommands(v.verify) &&
+      (v.verifyTimeoutMinutes === undefined || (typeof v.verifyTimeoutMinutes === "number" && v.verifyTimeoutMinutes > 0 && v.verifyTimeoutMinutes <= 24 * 60)) &&
+      (v.integrate === "merge" || v.integrate === "branch" || v.integrate === "pull-request") &&
+      typeof v.autoMerge === "boolean" &&
+      (!v.autoMerge || v.integrate === "pull-request") &&
+      isLineNeeds(v.needs) &&
+      isId(v.machine) &&
+      isTime(v.at),
+  );
+  if (!v || ref.name !== lineRef(v.name)) return undefined;
+  return {
+    name: v.name,
+    repository: v.repository,
+    baseBranch: v.baseBranch,
+    setup: v.setup,
+    verify: v.verify,
+    ...(v.verifyTimeoutMinutes !== undefined && { verifyTimeoutMinutes: v.verifyTimeoutMinutes }),
+    integrate: v.integrate,
+    autoMerge: v.autoMerge,
+    needs: { engines: v.needs.engines, platforms: v.needs.platforms },
+    machine: v.machine,
+    at: v.at,
+  };
 }
 
 /** Publishes the job on the shared queue; false when it was already there. */

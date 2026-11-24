@@ -304,6 +304,9 @@ const JiraSiteSchema = z
   }, "an https address with no credentials or path, such as https://acme.atlassian.net")
   .transform((raw) => new URL(raw).origin);
 
+/** The platforms a line may say it runs on. */
+export const LINE_PLATFORMS = ["win32", "darwin", "linux"] as const;
+
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
   /** Local git repository the line works on. */
@@ -376,6 +379,8 @@ export const LineSchema = z.object({
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
   /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
   allowedArtifacts: z.array(z.string()).default([]),
+  /** The platforms this line can be worked on; absent: any. A machine of a distributed factory on another one does not clone it. */
+  platforms: z.array(z.enum(LINE_PLATFORMS)).min(1).optional(),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
   /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
@@ -633,6 +638,8 @@ export interface LoadedPackages {
 /** `loadedPackages` never comes from the file: the schema drops that key, and only `src/packages.ts` sets it. */
 export type FactoryConfig = z.infer<typeof FactorySchema> & { loadedPackages?: LoadedPackages };
 export type LineConfig = z.infer<typeof LineSchema>;
+/** A line as the factory file writes it. */
+export type LineEntry = z.input<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
 export type CustomAgent = z.output<typeof CustomAgentSchema>;
