@@ -48,6 +48,7 @@ export const probeRef = (id: string): string => `probe/${id}`;
 export const queueRef = (job: string): string => `queue/${job}`;
 export const progressRef = (job: string): string => `progress/${job}`;
 export const lineRef = (name: string): string => `lines/${name}`;
+export const spendRef = (id: string): string => `spend/${id}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 
@@ -339,6 +340,50 @@ export function readLineRecord(ref: CoordRef): LineRecord | undefined {
     needs: { engines: v.needs.engines, platforms: v.needs.platforms },
     machine: v.machine,
     at: v.at,
+  };
+}
+
+export const SPEND_SLOT_MS = 15 * 60_000;
+
+/** What the agent calls that started within one slot cost, as the engines estimate it. */
+export interface SpendSlot {
+  /** When the slot starts (ISO); it lasts SPEND_SLOT_MS. */
+  at: string;
+  engine: string;
+  /** How they were billed on the machine that made them. */
+  billing: "api" | "subscription" | "unknown";
+  /** Whether they count against `limits.usdPerNight`. */
+  idle: boolean;
+  usd: number;
+}
+
+/** What a machine spent lately, for the other machines' caps: amounts only, no prompts, paths or texts. */
+export interface SpendRecord {
+  id: string;
+  at: string;
+  slots: SpendSlot[];
+  /** What that machine was charged for each job it has or had lately, whenever it was. */
+  jobs: { id: string; usd: number }[];
+}
+
+/** The most slots or jobs a spend record may carry. */
+const MAX_SPEND_ITEMS = 20_000;
+
+const isUsd = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const isItems = (v: unknown, check: (item: Record<string, unknown>) => boolean): boolean =>
+  Array.isArray(v) && v.length <= MAX_SPEND_ITEMS && v.every((item) => !!item && typeof item === "object" && check(item as Record<string, unknown>));
+const isSpendSlot = (v: Record<string, unknown>): boolean =>
+  isTime(v.at) && isName(v.engine) && (v.billing === "api" || v.billing === "subscription" || v.billing === "unknown") && typeof v.idle === "boolean" && isUsd(v.usd);
+
+/** A spend record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readSpendRecord(ref: CoordRef): SpendRecord | undefined {
+  const v = parse<SpendRecord>(ref, (v) => isId(v.id) && isTime(v.at) && isItems(v.slots, isSpendSlot) && isItems(v.jobs, (j) => isId(j.id) && isUsd(j.usd)));
+  if (!v || ref.name !== spendRef(v.id)) return undefined;
+  return {
+    id: v.id,
+    at: v.at,
+    slots: v.slots.map(({ at, engine, billing, idle, usd }) => ({ at, engine, billing, idle, usd })),
+    jobs: v.jobs.map(({ id, usd }) => ({ id, usd })),
   };
 }
 

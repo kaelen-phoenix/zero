@@ -25,11 +25,11 @@
 
 ## 4. Etapa 4: Gasto publicado y topes en dólares
 
-- [ ] 4.1 Nuevo src/coord/spend.ts: armar el registro con tramos de 15 minutos a partir de los spans, publicarlo solo si cambió, leer y validar los ajenos y guardarlos en kv coord:spend.
-- [ ] 4.2 Llamarlo desde coordPass después del latido y solo con coordReady.
-- [ ] 4.3 Sumar lo ajeno en billedToday, spentToday, scoutSpent y jobBilledUsd solo con distributed, pasando la configuración donde hoy solo llega store. Un tramo que cruza el inicio del período cuenta entero.
-- [ ] 4.4 Actualizar las llamadas en src/line (scout, research, recruit, unjam, packages, runner) y en app.ts.
-- [ ] 4.5 test/coord-spend.test.ts, y que test/budget.test.ts pase sin cambios de resultado.
+- [x] 4.1 Nuevo src/coord/spend.ts: armar el registro con tramos de 15 minutos a partir de los spans, publicarlo solo si cambió, leer y validar los ajenos y guardarlos en kv coord:spend.
+- [x] 4.2 Llamarlo desde coordPass después del latido y solo con coordReady.
+- [x] 4.3 Sumar lo ajeno en billedToday, spentToday, scoutSpent y jobBilledUsd solo con distributed, pasando la configuración donde hoy solo llega store. Un tramo que cruza el inicio del período cuenta entero.
+- [x] 4.4 Actualizar las llamadas en src/line (scout, research, recruit, unjam, packages, runner) y en app.ts.
+- [x] 4.5 test/coord-spend.test.ts, y que test/budget.test.ts pase sin cambios de resultado.
 
 ## 5. Etapa 5: Cupo de suscripción común y vista del presupuesto
 

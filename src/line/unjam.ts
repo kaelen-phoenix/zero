@@ -743,7 +743,7 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
     if (!choice.available) return CUT.engine;
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now, ctx.config);
       if (left <= 0) return CUT.night;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }
@@ -861,7 +861,7 @@ export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner
     if (!choice.available) return ran;
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now, ctx.config);
       if (left <= 0) return ran;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }

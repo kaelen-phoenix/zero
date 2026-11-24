@@ -1,4 +1,5 @@
 import { AGENT_STATIONS, customAgentChain, stationChain, type ChainLink, type CustomAgent, type FactoryConfig, type StationName } from "./config.js";
+import { othersJobUsd, othersSpentSince } from "./coord/spend.js";
 import type { QuotaReport, QuotaWindow } from "./engines/index.js";
 import type { SpanRow, Store } from "./state/store.js";
 import { AGENT_SPAN, dailyBudgetReached, spentToday, startOfDay } from "./telemetry/metrics.js";
@@ -7,6 +8,8 @@ import { AGENT_SPAN, dailyBudgetReached, spentToday, startOfDay } from "./teleme
 const READING_MAX_AGE_MS = 8 * 86_400_000;
 /** How long new work waits when a plan refuses calls without saying when it renews. */
 const UNKNOWN_RESET_MS = 15 * 60_000;
+
+const DAY_LIMIT = "se alcanzó el límite de gasto del día";
 
 export interface PlanWindow extends QuotaWindow {
   engine: string;
@@ -96,16 +99,26 @@ export function resetTime(iso: string, now = new Date()): string {
 /** How a call is billed: its own reading, else its engine's latest one (calls made before engines reported their plan). */
 const billingOf = (s: SpanRow, all: Map<string, Reading>) => s.attrs["zero.billing"] ?? all.get(String(s.attrs["zero.engine"] ?? ""))?.billing;
 
+/** How each call was billed, with what is known at `now`. */
+export function callBilling(store: Store, now = new Date()): (s: SpanRow) => EngineBudget["billing"] {
+  const all = readings(store, now);
+  return (s) => {
+    const billing = billingOf(s, all);
+    return billing === "api" || billing === "subscription" ? billing : "unknown";
+  };
+}
+
 /**
- * What today's calls really cost, for every engine or only one. A call billed
- * like its engine's latest reading is not counted while that is unknown: the
- * next call tells.
+ * What today's calls really cost, for every engine or only one, the other
+ * machines of a distributed factory included. A call billed like its engine's
+ * latest reading is not counted while that is unknown: the next call tells.
  */
-function billedToday(store: Store, all: Map<string, Reading>, now: Date, engine?: string): number {
-  return store
+function billedToday(store: Store, config: BudgetConfig, all: Map<string, Reading>, now: Date, engine?: string): number {
+  const own = store
     .spansSince(AGENT_SPAN, startOfDay(now))
     .filter((s) => (engine === undefined || String(s.attrs["zero.engine"] ?? "") === engine) && billingOf(s, all) === "api")
     .reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
+  return own + othersSpentSince(store, config, startOfDay(now), (s) => (engine === undefined || s.engine === engine) && s.billing === "api");
 }
 
 /**
@@ -117,12 +130,12 @@ export function billedUsd(store: Store, spans: SpanRow[], now = new Date()): num
   return spans.filter((s) => billingOf(s, all) !== "subscription").reduce((sum, s) => sum + Number(s.attrs["zero.cost.usd"] ?? 0), 0);
 }
 
-/** What a job's calls really cost, for its `usdPerJob` cap. */
-export function jobBilledUsd(store: Store, jobId: string, now = new Date()): number {
-  return billedUsd(store, store.spansForJob(jobId).filter((s) => s.name === AGENT_SPAN), now);
+/** What a job's calls really cost, for its `usdPerJob` cap: here and on the machines of a distributed factory that had it before. */
+export function jobBilledUsd(store: Store, config: Pick<FactoryConfig, "distributed">, jobId: string, now = new Date()): number {
+  return billedUsd(store, store.spansForJob(jobId).filter((s) => s.name === AGENT_SPAN), now) + othersJobUsd(store, config, jobId);
 }
 
-type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback"> & {
+type BudgetConfig = Pick<FactoryConfig, "engine" | "limits" | "stations" | "fallback" | "distributed"> & {
   agents?: Pick<CustomAgent, "engine" | "model">[];
   lines?: { agents?: Pick<CustomAgent, "engine" | "model">[] }[];
   loadedPackages?: { agents: Pick<CustomAgent, "engine" | "model">[] };
@@ -142,12 +155,13 @@ function customAgentChains(config: BudgetConfig): ChainLink[][] {
  */
 function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[]): EngineBudget {
   const r = all.get(engine);
-  if (!r) return { engine, billing: "unknown", paused: false };
+  // Its own calls do not count until one tells how it is billed; what the other machines were charged does.
+  if (!r) return { engine, billing: "unknown", ...(dailyBudgetReached(billedToday(store, config, all, now, engine), config.limits.usdPerDay) ? { paused: true, reason: DAY_LIMIT } : { paused: false }) };
   if (r.billing === "api") {
     const until = new Date(r.at.getTime() + UNKNOWN_RESET_MS);
     if (r.limited && until > now) return { engine, billing: "api", paused: true, until: until.toISOString(), reason: "la clave de API se quedó sin saldo" };
-    return dailyBudgetReached(billedToday(store, all, now, engine), config.limits.usdPerDay)
-      ? { engine, billing: "api", paused: true, reason: "se alcanzó el límite de gasto del día" }
+    return dailyBudgetReached(billedToday(store, config, all, now, engine), config.limits.usdPerDay)
+      ? { engine, billing: "api", paused: true, reason: DAY_LIMIT }
       : { engine, billing: "api", paused: false };
   }
   const reservePercent = config.limits.reservePercent;
@@ -276,8 +290,8 @@ export function budgetState(store: Store, config: BudgetConfig, now = new Date()
 
   const base = {
     billing: all.get(config.engine)?.billing ?? ("unknown" as const),
-    spentUsd: billedToday(store, all, now),
-    estimatedUsd: spentToday(store, now),
+    spentUsd: billedToday(store, config, all, now),
+    estimatedUsd: spentToday(store, now) + othersSpentSince(store, config, startOfDay(now)),
     limitUsd: config.limits.usdPerDay,
     reservePercent: config.limits.reservePercent,
     windows,

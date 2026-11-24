@@ -640,7 +640,7 @@ const choose = (deps: RunnerDeps, who: Who) =>
 const engineOf = (c: EngineChoice): AgentRequest["engine"] => ({ name: c.engine, model: c.model, replaces: c.replaces, reason: c.reason });
 
 /** What the job may still be charged; subscription calls cost nothing extra. */
-const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, job.id, nowOf(deps)), 0.01);
+const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, deps.config, job.id, nowOf(deps)), 0.01);
 
 /** The dollar cap of the next call: none on a subscription, whose real limit is the plan itself. */
 const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.billing === "subscription" ? undefined : remaining(deps, job));
@@ -879,7 +879,7 @@ async function buildLoop(
     }
     // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
     // An attempt that starts with less than a small share of the cap would only be cut short by it.
-    const billed = jobBilledUsd(store, jobId, nowOf(deps));
+    const billed = jobBilledUsd(store, deps.config, jobId, nowOf(deps));
     const cap = job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0);
     const next = choose(deps, resumingWriter >= 0 ? writers[resumingWriter]! : resumingCustom >= 0 ? custom[resumingCustom]! : resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
     if ((billed >= cap || cap - billed < cap * MIN_ATTEMPT_SHARE) && next.billing !== "subscription") return budgetStop(deps, job, level, spec, billed);
@@ -953,7 +953,7 @@ async function buildLoop(
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1, station: "build" });
         attemptSpan.end("error", { "error.message": "job budget used up" });
-        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
       }
       if (!run.ok) {
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
@@ -1051,7 +1051,7 @@ async function buildLoop(
           // The job's dollar cap cut the call short: the owner decides, and it resumes at this agent.
           copy.discardChanges();
           attemptSpan.end("error", { "error.message": "job budget used up" });
-          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
         }
         if (!run.ok) {
           // Unlike build, nothing half-done stays for the next commit to pick up as someone else's work.

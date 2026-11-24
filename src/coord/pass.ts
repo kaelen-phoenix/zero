@@ -5,6 +5,7 @@ import type { LedgerDeps } from "../line/finish.js";
 import type { Store } from "../state/store.js";
 import { queuePass } from "./queue.js";
 import { heartbeat, listMachines, probeCoord, type CoordApi, type MachineView } from "./protocol.js";
+import { spendPass } from "./spend.js";
 
 /** The machines of the factory as the last coordination pass saw them; only written while `distributed` is set. */
 export const MACHINES_KEY = "coord:machines";
@@ -55,7 +56,8 @@ export async function probeOnce(ctx: { store: Store }, api: CoordApi, repository
  * The daemon's coordination pass: this machine's heartbeat in the coordination
  * repository, then every machine's record kept in kv for status, panel and chat.
  * Before that, once per coordination repository, the probe that confirms its
- * conflicts (`coord:probe`), and once it passed, the shared queue (queuePass).
+ * conflicts (`coord:probe`), and once it passed, what each machine spent
+ * (spendPass) and the shared queue (queuePass).
  * Nothing at all without `distributed`, and nothing while GitHub holds a pause.
  */
 export async function coordPass(
@@ -72,7 +74,10 @@ export async function coordPass(
   await heartbeat(api, machine, machineCapabilities(ctx.config, box), jobs, now);
   const machines = await listMachines(api, now, distributed.leaseMinutes);
   ctx.store.setKv(MACHINES_KEY, JSON.stringify(machines));
-  if (coordReady(ctx)) await queuePass(ctx, api, machine, box?.ready === true);
+  if (coordReady(ctx)) {
+    await spendPass(ctx.store, api, machine, now);
+    await queuePass(ctx, api, machine, box?.ready === true);
+  }
   return machines;
 }
 
