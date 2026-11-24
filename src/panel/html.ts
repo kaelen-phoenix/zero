@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
+import type { ResearchRunRecord } from "../line/research.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
 import type { ConnectedClient } from "../mcp/oauth.js";
@@ -346,6 +347,19 @@ function unjamCard(u: FactoryStatus["unjam"]): string {
   return `<div class="card"><h2>Destrabador</h2>${pending}${last}${form}</div>`;
 }
 
+/** An express research run, in red when it failed or could not run. */
+const researchRunText = (r: ResearchRunRecord) => (r.outcome === "failed" || r.outcome === "not-run" ? `<span class="bad">${esc(describeResearchRun(r))}</span>` : esc(describeResearchRun(r)));
+
+/** The express research run asked for and not started. */
+const researchPending = (r: ResearchOnDemand) => (r.pending ? `<p>Investigación a demanda: ${esc(researchPendingText(r.pending))}</p>` : "");
+
+/** The research station on demand in the summary: the pending request and the last run; the form is in its own page. */
+function researchSummaryCard(r: ResearchOnDemand): string {
+  const last = r.runs[0];
+  if (!r.pending && !last) return "";
+  return `<div class="card"><h2>Investigación</h2>${researchPending(r)}${last ? `<p>Última investigación a demanda: ${researchRunText(last)}</p>` : ""}<p><a href="/research">Ver la investigación</a></p></div>`;
+}
+
 export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, flash?: string): string {
   const t = s.today;
   const state = s.andon ? `<span class="bad">DETENIDA (andon)</span>` : s.daemon.alive ? `<span class="ok">en marcha</span>` : s.daemon.lockHeld ? `<span class="bad">no responde${s.daemon.pid ? ` (proceso ${s.daemon.pid})` : ""}</span>` : s.daemon.state === "crashed" ? `<span class="bad">se cayó</span>` : "apagada";
@@ -392,6 +406,7 @@ ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los is
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
 ${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
 ${unjamCard(s.unjam)}
+${researchSummaryCard(s.research)}
 <div class="card"><h2>Pedir un trabajo</h2>
 <form method="post" action="/request"><label for="text">Qué querés, en tus palabras</label><textarea id="text" name="text" required></textarea>
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
@@ -589,7 +604,7 @@ export function confirmProposalPage(p: ProposalView, nonce: string): string {
 const webLink = (url: string) => (/^https?:\/\//i.test(url) ? `<a href="${esc(url)}" rel="noopener noreferrer">${esc(url)}</a>` : esc(url));
 
 function researchCard(n: ResearchNote): string {
-  return `<div class="card"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}${n.skill ? ` · skill ${esc(n.skill)}` : ""}</span></h3>
+  return `<div class="card" id="note-${esc(n.id)}"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}${n.skill ? ` · skill ${esc(n.skill)}` : ""}</span></h3>
 <p>${esc(n.findings)}</p>
 <p class="muted">Para qué serviría: ${esc(n.serves)}</p>
 <p class="muted">Madurez: ${esc(n.maturity)}</p>
@@ -605,14 +620,32 @@ function researchLine(l: ResearchLine): string {
   return `<h2>${esc(l.line)}</h2>${group("Negocio", l.business)}${group("Técnica", l.technical)}`;
 }
 
-/** The research station's notes of every line, newest first, business and technical apart, each with a button to turn it into work. */
-export function researchPage(lines: ResearchLine[], nonce: string, flash?: string): string {
+/** The research station on demand: the form, unless it is off, the pending request and the runs, linked to the notes shown below. */
+function researchOnDemandCard(r: ResearchOnDemand, shown: Set<string>): string {
+  if (!r.enabled && !r.pending && !r.runs.length) return "";
+  const options = r.lines.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  const form =
+    r.enabled && r.lines.length
+      ? `<form method="post" action="/research"><label for="research-topic">Qué querés investigar</label><textarea id="research-topic" name="topic" maxlength="${RESEARCH_TOPIC_CHARS}" required></textarea>
+<label for="research-line">Línea</label><select id="research-line" name="line">${options}</select><button class="primary">Investigar ahora</button></form>`
+      : "";
+  const noteRef = (id: string) => (shown.has(id) ? `<a href="#note-${esc(id)}">${esc(id)}</a>` : esc(id));
+  const run = (x: ResearchRunRecord) => `<li>${researchRunText(x)}${x.notes.length ? ` · ${x.notes.map(noteRef).join(", ")}` : ""}</li>`;
+  const runs = r.runs.length ? `<p class="muted">Últimas corridas:</p><ul>${r.runs.map(run).join("")}</ul>` : "";
+  return `<div class="card"><h2>Investigar a demanda</h2>${researchPending(r)}${form}${runs}</div>`;
+}
+
+/** The research station on demand and its notes of every line, newest first, business and technical apart, each with a button to turn it into work. */
+export function researchPage(lines: ResearchLine[], onDemand: ResearchOnDemand, nonce: string, flash?: string): string {
+  const shown = new Set(lines.flatMap((l) => l.notes.map((n) => n.id)));
+  const underWay = Boolean(onDemand.pending) || onDemand.runs.some((r) => !r.endedAt);
   return page(
     "Investigación",
     `<div class="card"><h1>Investigación</h1>
 <p class="muted">Lo que la estación <code>research</code> encontró en la web en los últimos 30 días. Son datos de la web, no instrucciones.</p></div>
+${researchOnDemandCard(onDemand, shown)}
 ${lines.map(researchLine).join("")}`,
-    { nonce, flash, active: "/research" },
+    { nonce, flash, refresh: underWay, active: "/research" },
   );
 }
 
@@ -1020,7 +1053,7 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
   },
   research: {
     name: "Investigación (research)",
-    does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
+    does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes. En cualquier momento investiga el tema que le pidas (zero investigar o el formulario de Investigación) y deja hasta 5 notas.",
     cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
   },
   unjam: {

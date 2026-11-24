@@ -23,8 +23,8 @@
 
 ## 3. Etapa 3: Panel and documentation
 
-- [ ] 3.1 Extend researchPage in src/panel/html.ts with the form (hidden with research: off), the pending request and the runs linking to their notes' cards, all escaped, and add an anchor id to researchCard
-- [ ] 3.2 Add POST /research to src/panel/server.ts, redirecting to /research with the result, and pass the new data to researchPage
-- [ ] 3.3 Show the pending request and the last run in overviewPage with a link to /research, and update the research text of the Agentes page
-- [ ] 3.4 Tests for the form, the POST, refusals, escaping, research: off, and the session and origin checks
-- [ ] 3.5 Update the Research sections, tool lists and configuration examples of README.md and README.es.md with the same headings and code blocks, and docs/agents/panel.md
+- [x] 3.1 Extend researchPage in src/panel/html.ts with the form (hidden with research: off), the pending request and the runs linking to their notes' cards, all escaped, and add an anchor id to researchCard
+- [x] 3.2 Add POST /research to src/panel/server.ts, redirecting to /research with the result, and pass the new data to researchPage
+- [x] 3.3 Show the pending request and the last run in overviewPage with a link to /research, and update the research text of the Agentes page
+- [x] 3.4 Tests for the form, the POST, refusals, escaping, research: off, and the session and origin checks
+- [x] 3.5 Update the Research sections, tool lists and configuration examples of README.md and README.es.md with the same headings and code blocks, and docs/agents/panel.md

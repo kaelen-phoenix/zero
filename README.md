@@ -88,6 +88,7 @@ zero descartar <job> [--motivo "<text>"]   # closes a job you no longer need, wi
 zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero actualizar-pr <line> <number>...   # updates open pull requests of the line with its base, in that order
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
+zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -359,12 +360,12 @@ With the factory running, the panel shows:
 - each job's trace;
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
-- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
+- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first), and a form to research a topic now, with the pending request and the last runs;
 - the "Monitor" tab: factory totals (jobs per day, delivered, failed, queued and running, success rate, average time per job and per station, attempts per job), subscription use, the month's spend per engine and tokens, one card per agent (calls, tokens, cost, time, success rate, deliveries, engines, models and lines) and one per line (jobs, deliveries, last job, open pull requests), drawn in SVG inside the panel, filtered by today, 7 or 30 days, read-only and refreshed on its own;
 - the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
-From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)) and block or allow sites. It is designed for the phone.
+From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
 
 ```sh
 zero panel                     # the panel link, with your key (starts the factory if needed)
@@ -949,6 +950,7 @@ A research skill can be a **business** one (pricing, licenses, comparable produc
 research:                 # or `research: off` to turn it off
   topics: ["local agent engines"]   # optional: topics of interest for every line
   perLinePerDay: 1        # notes per research skill per day (0 = off); if not enough, they take turns
+  usdPerRun: 2            # cap in dollars of each run you ask for (pay-per-use engines)
   autonomy: propose       # propose · build · auto: how far a proposal born from a note goes on its own
 stations:
   research: { timeoutMinutes: 15 }
@@ -985,6 +987,18 @@ Do not research frontend frameworks other than React.
 Each note has a topic, what was found, the sources (http(s) links; a note without sources is discarded), which part of the line it would help and how mature and trustworthy it is. It is stored in `state.db`, without paths from your machine or secrets. To avoid repeating topics, the station receives the line's topics of the last 60 days. The note remembers which skill wrote it. You see notes with `zero research [--line <line>] [--days N]`, in the report ("Investigación de hoy", with business and technical notes apart, under "Negocio" and "Técnica") and from the chat (`zero_research`). To turn a note into a job on its line: `zero research request <id>` (or `zero_research_request` in the chat), or the "Pedir trabajo" button of the panel's "Investigación" tab, which shows each line's notes of the last 30 days, split into "Negocio" and "Técnica", each with the skill that wrote it. `scout` receives its line's notes of the last 7 days and can propose, for example, assigning a skill to a station or creating a new station; a line's notes only produce proposals on that same line.
 
 On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. Markdown images and tags that load resources (`img`, `picture`, `source`, `video`, `audio`, `iframe`) are published as text, in notes, proposals and proposal comments, and a note's sources are stored without query string or fragment. This reduces exposure but guarantees nothing: data can still travel in a URL's path, and normal links remain, though they take a click. If GitHub fails, it retries on the next pass.
+
+**On demand.** You can ask for research on a topic without waiting for the night shift: `zero investigar "<topic>" [--line <line>]`; the chat's `zero_investigate` tool (a remote chat needs permission to act); or the "Investigar ahora" form in the panel's "Investigación" tab, with the topic and the line. With a single line that is not a package's you can leave the line out. It runs once as soon as it can, with jobs queued or running, outside `nightShift.hours`, with `nightShift: off`, with `perLinePerDay: 0` and on a line without a research skill, without taking a job's place. The skills' regular runs keep their own turn.
+
+- **The result is normal notes.** At most 5 per run, with the same rule as the nightly ones: a note without an http(s) source is discarded, and zero does not check that the page says what the note claims. They carry no skill and are never business notes. Only Claude searches the web in this station; with another engine a run can end without notes.
+- **Its own cap.** On pay-per-use engines a run spends at most `research.usdPerRun` (2 dollars by default), or what is left of `limits.usdPerDay` when that is less. A run that reaches the cap ends cut short, without notes. Its spending counts in the day's budget and not in `limits.usdPerNight`. On a subscription, the plan's windows and the station's time limit hold.
+- **One pending at a time.** Asking again before it starts is refused, and so it is with the andon on, the budget reached, `research: off`, an empty topic or one over 2000 characters, or a line that does not exist or belongs to a package: you get the reason and nothing is recorded (the command exits 1). If the andon or the budget comes after you asked, it stays pending until neither holds. The andon or a shutdown (a version change included) cuts a run in progress, which has to be asked for again.
+- **How you find out.** The command and the chat start the factory if it was off, wait a while for the run to start and tell you whether it did or is still pending; with `--esperar` the terminal stays until the end and shows you the notes. When it ends, the chat's next zero answer says so, once; and `zero status`, the panel's summary and the briefing show the pending request and the last run, with the topic, when it was asked for, how it ended (fine, failed, cut short or could not run, with the reason) and how many notes it left. The panel's "Investigación" tab keeps the last 10 runs, with links to their notes.
+
+```sh
+zero investigar "new payment rules" --line tienda   # research now on a topic
+zero investigar "new payment rules" --line tienda --esperar   # the same, waiting for the end
+```
 
 Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
 

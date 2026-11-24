@@ -502,7 +502,7 @@ export interface ResearchOnDemand {
   runs: ResearchRunRecord[];
 }
 
-function researchOnDemand(ctx: FactoryContext): ResearchOnDemand {
+export function researchOnDemand(ctx: FactoryContext): ResearchOnDemand {
   const pending = readResearchRequest(ctx.store);
   return { enabled: ctx.config.research !== "off", lines: ctx.config.lines.filter((l) => !l.package).map((l) => l.name), ...(pending && { pending }), runs: readResearchRuns(ctx.store) };
 }
