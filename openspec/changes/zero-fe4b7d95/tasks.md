@@ -55,7 +55,7 @@
 
 ## 8. Etapa 8: Guía de Linux y documentación
 
-- [ ] 8.1 Sección de máquina Linux en la nube en README.md y README.es.md, con los mismos bloques: Node 22, git y gh, Podman sin root, llavero (Secret Service), zero init, zero setup, zero box setup, zero autostart on, loginctl enable-linger, gh auth login, claude setup-token y zero secret set, zero unirse, zero panel remote on.
-- [ ] 8.2 Actualizar la sección de varias máquinas en ambos: cola común, clonado, presupuesto común, control desde cualquiera, platforms, y recomendar integrate: pull-request para líneas compartidas.
-- [ ] 8.3 ADR 0007: lines/, spend/, status/ y decisions/, la excepción de agregar líneas nuevas y quitar esto de Después; ampliar test/adr-distribuida.test.ts.
-- [ ] 8.4 docs/agents/distributed.md, daemon.md, engines.md y panel.md; test/docs.test.ts para la guía; npx openspec validate --all.
+- [x] 8.1 Sección de máquina Linux en la nube en README.md y README.es.md, con los mismos bloques: Node 22, git y gh, Podman sin root, llavero (Secret Service), zero init, zero setup, zero box setup, zero autostart on, loginctl enable-linger, gh auth login, claude setup-token y zero secret set, zero unirse, zero panel remote on.
+- [x] 8.2 Actualizar la sección de varias máquinas en ambos: cola común, clonado, presupuesto común, control desde cualquiera, platforms, y recomendar integrate: pull-request para líneas compartidas.
+- [x] 8.3 ADR 0007: lines/, spend/, status/ y decisions/, la excepción de agregar líneas nuevas y quitar esto de Después; ampliar test/adr-distribuida.test.ts.
+- [x] 8.4 docs/agents/distributed.md, daemon.md, engines.md y panel.md; test/docs.test.ts para la guía; npx openspec validate --all.

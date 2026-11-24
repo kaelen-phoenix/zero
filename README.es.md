@@ -132,10 +132,80 @@ Si la fábrica se cae sin un `zero shutdown` (la máquina se reinició, el proce
 ### Varias máquinas (`zero unirse`)
 
 ```sh
-zero unirse me/zero-coord
+gh repo create me/zero-coord --private --add-readme   # una sola vez; --add-readme deja el primer commit que GitHub necesita
+zero unirse me/zero-coord                             # en cada máquina
 ```
 
-Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Con la fábrica reiniciada, cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Tomar trabajos de una cola común es el paso siguiente (ver `docs/adr/0007-fabrica-distribuida.md`); por ahora cada máquina corre sus propios trabajos. Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada.
+Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Sin repositorio, o con uno que no puede usar, explica cómo crearlo; zero no crea nada por su cuenta. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Reiniciá la fábrica (`zero shutdown` y `zero start`) después de unirte.
+
+```yaml
+distributed:
+  repository: me/zero-coord
+  machine: cloud                 # opcional: el nombre de esta máquina; si falta, el del host
+```
+
+- **Quién está.** Cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Las máquinas nunca se conectan entre sí.
+- **Una cola común.** Todas las máquinas toman trabajos de la misma cola, cada trabajo en una sola máquina a la vez, y solo los que pueden hacer (la caja y los motores que tienen). Si una se cae, otra retoma sus trabajos desde el último checkpoint subido; lo que no se subió se vuelve a hacer.
+- **Las líneas se clonan solas.** Cada máquina publica sus líneas con remoto de GitHub (nombre, repositorio, rama base, `setup`, `verify` e integración; nunca rutas, secretos ni el resto de su configuración), y las demás las clonan en `ZERO_HOME/lines` al unirse y cuando aparece una nueva, con las credenciales del propio git. Una línea que ya existe en una máquina nunca se cambia, y las líneas de paquetes no se comparten. Con `platforms` (`win32`, `darwin`, `linux`) una línea dice dónde se puede atender: una máquina de otra plataforma, o sin sus motores, no la clona, y `zero status` y el panel dicen por qué.
+- **Las líneas clonadas corren comandos.** Una línea clonada trae los comandos de `setup` y `verify` que esta máquina va a correr: quien puede escribir en el repositorio de coordinación puede agregar líneas. Que sea solo tuyo.
+- **Usá `integrate: pull-request` en las líneas compartidas.** Con `merge` o `branch`, el trabajo se entrega en el clon de la máquina que lo hizo, y las demás no lo ven.
+- **Un solo presupuesto.** Lo que gastan todas las máquinas cuenta contra los mismos límites (`usdPerDay`, `usdPerNight`, `usdPerJob`), y una suscripción tiene un solo cupo: un motor pausado en una máquina por su plan o por `reservePercent` se pausa en todas. Esto supone que todas usan la misma cuenta. Lo que gastaron las otras llega con hasta un latido de atraso, así que varias máquinas a la vez pueden pasarse un poco de un tope.
+- **Desde cualquiera.** El chat, la CLI y el panel de cualquier máquina muestran los trabajos de todas, con el nombre de la máquina, y desde ahí podés pedir trabajos (también para una línea que esa máquina no tiene), responder, aprobar y decidir propuestas. Lo que es para otra máquina sale con el próximo latido y se aplica con el de ella, no al instante; si está caída, cuando vuelva. Detener, descartar y fusionar un trabajo, y su traza, siguen siendo de la máquina que lo tiene.
+- **Paquetes.** No se copian entre máquinas, y sus estaciones se pueden fijar a una (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada. Las razones y el protocolo están en `docs/adr/0007-fabrica-distribuida.md`.
+
+### Máquina Linux en la nube
+
+Para sumar una máquina virtual con Linux que trabaje sola, sin escritorio y sin puertos abiertos. Necesita:
+
+- Debian 12, Ubuntu 24.04 o posterior, con systemd y un usuario tuyo que no sea root. Otras distribuciones sirven con sus propios nombres de paquetes.
+- Node 22 o posterior y npm, instalados para todo el sistema ([nodejs.org](https://nodejs.org)): el servicio no lee la configuración de tu shell, así que no encuentra lo que un gestor de versiones deja en tu carpeta.
+- Salida por HTTPS. No entra nada salvo tu propio SSH: dejá cerrados los demás puertos, incluido el 4848 del panel.
+
+Los comandos con `sudo` piden administrador y los corrés vos; zero no pide ninguno.
+
+```sh
+sudo apt install git gh podman uidmap gnome-keyring dbus-user-session   # administrador
+sudo npm install -g @anthropic-ai/claude-code                           # administrador: los CLI de los motores que vayas a usar
+sudo loginctl enable-linger "$USER"                                     # administrador: los servicios de tu usuario arrancan con la máquina
+```
+
+**Caja.** zero usa Podman sin root: `podman info` tiene que responder con tu usuario. Si se queja de los identificadores, a tu usuario le falta un rango en `/etc/subuid` y `/etc/subgid` (lo agrega un administrador con `usermod --add-subuids` y `--add-subgids`). Si rechaza `--cpus`, systemd no le delega ese controlador a tu usuario: lo agrega un administrador (`Delegate=cpu cpuset io memory pids` en un drop-in de `user@.service`).
+
+**Llavero.** zero guarda la llave del panel y las credenciales en el llavero del sistema (Secret Service), nunca en un archivo. Sin escritorio hay que desbloquearlo a mano. Esto pide su contraseña sin mostrarla, y la primera vez crea el llavero:
+
+```sh
+read -rsp "Contraseña del llavero: " KEYRING && printf %s "$KEYRING" | gnome-keyring-daemon --replace --unlock --components=secrets; unset KEYRING
+```
+
+**Después de cada reinicio el llavero vuelve a quedar bloqueado**: el servicio enciende la fábrica solo, pero el panel y las credenciales guardadas no funcionan hasta que entres por SSH, corras otra vez ese comando y reinicies la fábrica (`zero shutdown` y `zero start --detach`).
+
+**Instalar y unirse.** Con el llavero desbloqueado:
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh   # al final abre zero setup
+zero init                                              # crea la fábrica si no lo hizo zero setup
+zero setup                                             # motores, límites, panel y GitHub; correlo de nuevo para cambiar algo
+gh auth login --git-protocol https --web               # muestra un código para escribir en el navegador de otra máquina
+gh auth setup-git                                      # git le pide a gh la credencial cuando clona las líneas
+zero box setup                                         # construye la imagen de la caja con Podman
+claude setup-token                                     # el token de tu suscripción
+zero secret set CLAUDE_CODE_OAUTH_TOKEN                # se pega sin mostrarse y queda en el llavero
+zero unirse me/zero-coord                              # se une a la fábrica y clona sus líneas
+zero autostart on                                      # el servicio de usuario que arranca con la máquina
+zero shutdown && zero start --detach                   # la enciende ya unida
+zero panel remote on                                   # el panel por el túnel, sin puertos abiertos
+```
+
+- Ningún secreto se pega en un archivo, un argumento ni una variable de entorno: `zero secret set` y `zero setup` lo piden sin mostrarlo. Con el llavero desbloqueado, `gh auth login` deja ahí su sesión; sin llavero la deja en un archivo **en texto plano**. `gh auth status` dice cuál de los dos.
+- Codex necesita una clave dentro de la caja (`zero secret set OPENAI_API_KEY`). `codex login --device-auth` deja su sesión en un archivo que maneja el CLI, sin cifrar: usá la clave si preferís evitarlo.
+- Puede que `zero setup` ya haya hecho los pasos de GitHub, del token y del arranque: repetirlos no hace daño.
+- `zero panel remote on` pregunta antes de bajar `cloudflared`, que solo hace conexiones de salida, y te da el link. El panel de cualquier otra máquina también muestra la fábrica entera.
+- Si el CLI de un motor está en una carpeta tuya como `~/.local/bin`, poné esa carpeta en el `PATH` de `~/.config/environment.d/zero.conf`: el servicio no lee `.bashrc`.
+- Lo que nunca tiene que salir desde una dirección de la nube, como la estación de un paquete, se fija a otra máquina (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+Los tests de zero no prueban esta instalación: solo comprueban que esta guía tenga sus piezas. Podman sin root, el llavero sin escritorio, el servicio de systemd después de un reinicio, los inicios de sesión y el túnel no se corrieron con ellos en una máquina de la nube.
 
 ## Instalar con Docker
 
@@ -514,6 +584,7 @@ lines:
     verify: ["npm test"]  # todo debe pasar antes de la revisión
     verifyTimeoutMinutes: 20  # opcional: minutos que puede tardar cada comando de verify; zero lo sube al doble de su corrida aprobada más lenta
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
+    platforms: [win32, linux]   # opcional: dónde se puede atender (win32 · darwin · linux); una máquina unida de otra plataforma no la clona
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     # jira: { site: "https://acme.atlassian.net", project: ABC }   # opcional: issues de Jira con la etiqueta "zero"; credenciales con zero secret set
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
