@@ -41,7 +41,7 @@ async function panel(opts: { on?: boolean; tunnel?: boolean } = {}) {
   const fetchAt = (path: string, init: RequestInit = {}) => fetch(base + path, { redirect: "manual", ...init });
   const form = (path: string, body: Record<string, string>, headers: Record<string, string> = {}) =>
     fetchAt(path, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, body: new URLSearchParams(body).toString() });
-  return { ctx, base, port, cookie, fetchAt, form, tick: (ms: number) => (at += ms) };
+  return { ctx, base, port, cookie, fetchAt, form, tick: (ms: number) => (at += ms), now: () => new Date(at) };
 }
 type Panel = Awaited<ReturnType<typeof panel>>;
 
@@ -295,7 +295,7 @@ describe("remote chat MCP", () => {
   it("lists connected clients and revokes them at once", async () => {
     const p = await panel();
     const c = await connect(p, "zero:read");
-    const listed = remoteChatClients(p.ctx);
+    const listed = remoteChatClients(p.ctx, p.now());
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ id: c.client, name: "ChatGPT", scope: ["zero:read"] });
     expect(listed[0]!.approvedAt).toBeTruthy();

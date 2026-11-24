@@ -2091,11 +2091,18 @@ export async function createProject(ctx: FactoryContext, input: ProjectInput): P
   } catch (err) {
     return fail(creationErrorText(name, err));
   }
+  // From here the repository exists: every failure says so, instead of a raw error that hides it.
   const created = { created: true, url: repo.htmlUrl };
+  const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
   if (coordination) {
-    const joined = await joinFactory(ctx, repo.fullName, async () => ({ private: repo.private }));
-    return { ok: joined.joined, ...created, text: `Creé el repositorio privado ${repo.fullName}: ${repo.htmlUrl}\n${joined.text}` };
+    const made = `Creé el repositorio ${repo.fullName} (${repo.private ? "privado" : "público"}): ${repo.htmlUrl}`;
+    try {
+      const joined = await joinFactory(ctx, repo.fullName, async () => ({ private: repo.private }));
+      return { ok: joined.joined, ...created, text: `${made}\n${joined.text}` };
+    } catch (err) {
+      return { ok: false, ...created, text: `${made}\nNo pude unir esta máquina: ${reason(err)}\nNo borré nada en GitHub: cuando esté resuelto, corré \`zero unirse ${repo.fullName}\`.` };
+    }
   }
 
   try {
@@ -2105,15 +2112,23 @@ export async function createProject(ctx: FactoryContext, input: ProjectInput): P
     return {
       ok: false,
       ...created,
-      text: `Creé el repositorio ${repo.fullName} (${repo.htmlUrl}), pero no pude clonarlo en ${dir}: ${err instanceof Error ? err.message : String(err)}\nNo borré nada en GitHub: revisá las credenciales de git de esta máquina, clonalo a mano y sumalo con \`zero line add <ruta> --name ${lineName}\`.`,
+      text: `Creé el repositorio ${repo.fullName} (${repo.htmlUrl}), pero no pude clonarlo en ${dir}: ${reason(err)}\nNo borré nada en GitHub: revisá las credenciales de git de esta máquina, clonalo a mano y sumalo con \`zero line add <ruta> --name ${lineName}\`.`,
     };
   }
-  const detected = detectCommands(dir);
-  const entry = { name: lineName, repo: dir, baseBranch: repo.defaultBranch, integrate: "pull-request", setup: input.setup ?? detected.setup, verify: input.verify ?? detected.verify };
-  ctx.config = await editConfig(ctx, (doc) => {
-    if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
-    else doc.setIn(["lines"], doc.createNode([entry]));
-  });
+  try {
+    const detected = detectCommands(dir);
+    const entry = { name: lineName, repo: dir, baseBranch: repo.defaultBranch, integrate: "pull-request", setup: input.setup ?? detected.setup, verify: input.verify ?? detected.verify };
+    ctx.config = await editConfig(ctx, (doc) => {
+      if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
+      else doc.setIn(["lines"], doc.createNode([entry]));
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      ...created,
+      text: `Creé el repositorio ${repo.fullName} (${repo.htmlUrl}) y lo cloné en ${dir}, pero no pude sumar la línea: ${reason(err)}\nNo borré nada: cuando esté resuelto, sumala con \`zero line add ${dir} --name ${lineName}\`.`,
+    };
+  }
   const text = [`Creé el repositorio ${repo.fullName} (${visibility}): ${repo.htmlUrl}`, `Lo cloné en ${dir} y lo sumé como la línea ${lineName}.`];
   const pedido = input.pedido?.trim();
   if (!pedido) {

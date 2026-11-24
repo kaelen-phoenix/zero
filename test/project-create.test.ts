@@ -239,6 +239,25 @@ describe("createProject line", () => {
     expect(ctx.config.lines.map((l) => l.name)).toEqual(["demo"]);
     expect(f.created).toHaveLength(1);
   });
+
+  it("says what was created when the factory file cannot take the line", async () => {
+    const ctx = factory();
+    const f = fakes();
+    const r = await createProject(ctx, {
+      ...f.input,
+      name: "demo-x",
+      pedido: "Demo",
+      confirm: f.confirm(true),
+      clone: async (url, dir) => {
+        await f.input.clone(url, dir);
+        writeFileSync(ctx.home.config, "lines: 3\n");
+      },
+    });
+    expect(r).toMatchObject({ ok: false, created: true, url: "https://github.com/me/demo-x" });
+    expect(r.text).toContain("no pude sumar la línea");
+    expect(ctx.config.lines.map((l) => l.name)).toEqual(["demo"]);
+    expect(ctx.store.listJobs()).toEqual([]);
+  });
 });
 
 describe("createProject first job", () => {
@@ -277,6 +296,16 @@ describe("createProject coordination", () => {
     expect(ctx.config.distributed).toMatchObject({ repository: "me/zero-coord" });
     expect(file(ctx)).toMatch(/distributed:\s*\n\s+repository: me\/zero-coord/);
     expect(r.text).toContain("me/zero-coord");
+  });
+
+  it("says the repository exists when this machine cannot join it", async () => {
+    const ctx = factory();
+    const f = fakes({ repo: { fullName: "me/zero-coord", private: true } });
+    writeFileSync(ctx.home.config, "lines: 3\n");
+    const r = await createProject(ctx, { ...f.input, name: "zero-coord", coordination: true, confirm: f.confirm(true) });
+    expect(r).toMatchObject({ ok: false, created: true });
+    expect(r.text).toContain("https://github.com/me/zero-coord");
+    expect(r.text).toContain("zero unirse me/zero-coord");
   });
 
   it("does not check the line or the folder for coordination", async () => {
