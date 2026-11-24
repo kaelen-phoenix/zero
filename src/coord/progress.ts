@@ -5,7 +5,7 @@ import type { MachineIdentity } from "../machine.js";
 import { spawnGit, tryGit } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import { removeWorkCopy, type WorkCopy } from "../workspace.js";
-import { COORD_ID, CoordConflict, progressRef, stillHolds, type CoordApi, type CoordRef } from "./protocol.js";
+import { COORD_ID, CoordConflict, progressRef, REF_NAME, stillHolds, type CoordApi, type CoordRef } from "./protocol.js";
 
 /** `coord:pushed:<id>`: the last sha of the job's branch this machine pushed, the lease of its next push. */
 export const pushedKey = (id: string) => `coord:pushed:${id}`;
@@ -103,8 +103,6 @@ export async function pushProgress(deps: PushDeps, job: Job, copy: WorkCopy): Pr
   return "pushed";
 }
 
-/** A branch or base name read back from the coordination repository: plain ref characters only, never an option or a path out. */
-const REF_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const CHECKPOINTS: Job["checkpoint"][] = ["none", "spec", "review"];
 

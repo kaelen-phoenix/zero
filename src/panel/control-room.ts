@@ -81,7 +81,7 @@ const topbar = (v: ControlRoomView) => `
 <span class="kpi">te esperan <b data-stat="waiting" data-status="warn">${v.topbar.waiting}</b></span>
 <span class="kpi">entregados hoy <b data-stat="delivered" data-status="ok">${v.topbar.delivered}</b></span>
 <span class="kpi">fallidos hoy <b data-stat="failed" data-status="${v.topbar.failed ? "bad" : "idle"}">${v.topbar.failed}</b></span>
-<span class="kpi">costo del día <b data-stat="cost">${usd(v.topbar.spentUsd)}</b> <span class="dim">estimado <span data-stat="estimated">${usd(v.topbar.estimatedUsd)}</span></span></span>
+<span class="kpi">costo del día${v.topbar.shared ? " (todas las máquinas)" : ""} <b data-stat="cost">${usd(v.topbar.spentUsd)}</b> <span class="dim">estimado <span data-stat="estimated">${usd(v.topbar.estimatedUsd)}</span></span></span>
 <span class="kpi">daemon <span data-stat="daemon" data-status="${v.topbar.daemonTone}">${esc(v.topbar.daemonText)}</span></span>
 </header>`;
 

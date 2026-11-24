@@ -3,9 +3,9 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answerAnywhere, decideProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, jobElsewhere, jobText, linesWithSkills, mergePullRequest, monthlyReport, openFactory, proposalsElsewhere, requestAnywhere, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
+import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposalDecision, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
 import type { FactoryHome } from "../home.js";
 import { discardJob, discardRefusal } from "../line/discard.js";
 import { takeUntoldResearch } from "../line/research.js";
@@ -153,7 +153,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     },
     ({ text: request, line, kind, priority }) =>
       withFactory(home, async (ctx) => {
-        const result = requestWork(ctx, { text: request, line, kind, priority });
+        const result = requestAnywhere(ctx, { text: request, line, kind, priority });
         const started = autoStart && (await ensureDaemon(ctx));
         return formatRequest(result) + (started ? "\nLa fábrica estaba apagada: la encendí." : "");
       }),
@@ -167,7 +167,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: { job: z.string().optional().describe("Job id for details; omit for the factory overview.") },
       annotations: { readOnlyHint: true },
     },
-    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)))),
+    ({ job }) => withFactory(home, (ctx) => (job ? jobText(ctx, job) : formatStatus(factoryStatus(ctx)))),
   );
 
   tool(
@@ -183,10 +183,17 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     },
     ({ job, decision, note }) =>
       withFactory(home, async (ctx) => {
-        const run = async () => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) });
-        // Approving changes to protected paths is the delicate answer; the others go through as on the terminal.
-        if (decision !== "approve" || getJob(ctx, job).question?.kind !== "protected-path") return run();
-        return delicate(ctx, { tool: "zero_answer", args: { job, decision, ...(note && { note }) } }, run);
+        const run = async () => {
+          const r = await answerAnywhere(ctx, job, decision, note);
+          if ("job" in r) return formatJob(r.job, { subscription: onSubscription(ctx.store, ctx.config.engine) });
+          const started = autoStart && (await ensureDaemon(ctx));
+          return `${r.sent}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+        };
+        // Approving changes to protected paths is the delicate answer, wherever the job is; the others go through as on the terminal.
+        const away = jobElsewhere(ctx, job);
+        const { question } = away ?? getJob(ctx, job);
+        if (decision !== "approve" || question?.kind !== "protected-path") return run();
+        return delicate(ctx, { tool: "zero_answer", args: { job, decision, ...(note && { note }), ...(away && { askedAt: question.askedAt }) } }, run);
       }),
   );
 
@@ -208,7 +215,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true)),
+    () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true, proposalsElsewhere(ctx))),
   );
 
   tool(
@@ -225,10 +232,10 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ id, decision, note }) =>
       withFactory(home, (ctx) =>
         delicate(ctx, { tool: "zero_proposal_decide", args: { id, decision, ...(note && { note }) } }, async () => {
-          if (decision === "reject") return `Propuesta ${(await rejectProposal(ctx, id, note)).id} rechazada y archivada.`;
-          const r = approveProposal(ctx, id);
-          const started = await ensureDaemon(ctx);
-          return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+          const r = await decideProposal(ctx, id, decision, note);
+          // An approval opens a job, and a decision sent goes out with the daemon's pass.
+          const started = !("rejected" in r) && (await ensureDaemon(ctx));
+          return `${formatProposalDecision(id, r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
         }),
       ),
   );

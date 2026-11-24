@@ -132,10 +132,80 @@ If the factory goes down without a `zero shutdown` (the machine restarted, the p
 ### Several machines (`zero unirse`)
 
 ```sh
-zero unirse me/zero-coord
+gh repo create me/zero-coord --private --add-readme   # once; --add-readme leaves the first commit GitHub needs
+zero unirse me/zero-coord                             # on each machine
 ```
 
-A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
+A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Without a repository, or with one it cannot use, it explains how to create it; zero creates nothing on its own. Secrets stay in each machine's own store and never travel through that repository. Restart the factory (`zero shutdown` and `zero start`) after joining.
+
+```yaml
+distributed:
+  repository: me/zero-coord
+  machine: cloud                 # optional: this machine's name; without it, the host's
+```
+
+- **Who is there.** Each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. The machines never connect to each other.
+- **A shared queue.** Every machine takes jobs from the same queue, each job on one machine at a time, and only those it can do (the box and the engines it has). If one goes down, another takes its jobs over from the last checkpoint pushed; what was not pushed is done again.
+- **Lines cloned on their own.** Each machine publishes its lines that have a GitHub remote (name, repository, base branch, `setup`, `verify` and integration; never paths, secrets or the rest of its configuration), and the others clone them into `ZERO_HOME/lines` when they join and whenever a new one appears, with git's own credentials. A line that already exists on a machine is never changed, and package lines are not shared. With `platforms` (`win32`, `darwin`, `linux`) a line says where it can be worked on: a machine with another platform, or without its engines, does not clone it, and `zero status` and the panel say why.
+- **Cloned lines run commands.** A cloned line brings the `setup` and `verify` commands that this machine will run: whoever can write in the coordination repository can add lines. Keep it yours alone.
+- **Use `integrate: pull-request` in shared lines.** With `merge` or `branch`, the work is delivered in the clone of the machine that did it, and the others do not see it.
+- **One budget.** What every machine spends counts against the same limits (`usdPerDay`, `usdPerNight`, `usdPerJob`), and a subscription has one quota: an engine paused on one machine by its plan or by `reservePercent` is paused on all. This assumes that they all use the same account. What the others spent arrives up to a heartbeat late, so several machines working at once can go a little over a cap.
+- **From any of them.** The chat, the CLI and the panel of any machine show the jobs of all, with the machine's name, and from there you can ask for work (also for a line that machine does not have), answer, approve, and decide proposals. What is for another machine goes out with the next heartbeat and is applied with that machine's, not at once; if it is down, when it comes back. Stopping, discarding and merging a job, and its trace, are still for the machine that has it.
+- **Packages.** They are not copied between machines, and their stations can be pinned to one (see [Agent packages](#agent-packages)).
+
+Without `distributed`, a single-machine factory works as always and sends nothing. The reasons and the protocol are in `docs/adr/0007-fabrica-distribuida.md`.
+
+### Linux machine in the cloud
+
+To add a Linux virtual machine that works on its own, with no desktop and no open ports. It needs:
+
+- Debian 12, Ubuntu 24.04 or later, with systemd and a user of yours that is not root. Other distributions work with their own package names.
+- Node 22 or later and npm, installed for the whole system ([nodejs.org](https://nodejs.org)): the service does not read your shell's configuration, so it does not find what a version manager leaves in your folder.
+- Outgoing HTTPS. Nothing comes in except your own SSH: leave every other port closed, the panel's 4848 included.
+
+The commands with `sudo` need administrator rights and you run them; zero asks for none.
+
+```sh
+sudo apt install git gh podman uidmap gnome-keyring dbus-user-session   # administrator
+sudo npm install -g @anthropic-ai/claude-code                           # administrator: the CLIs of the engines you will use
+sudo loginctl enable-linger "$USER"                                     # administrator: your user's services start with the machine
+```
+
+**Box.** zero uses Podman without root: `podman info` has to answer with your user. If it complains about identifiers, your user needs a range in `/etc/subuid` and `/etc/subgid` (an administrator adds it with `usermod --add-subuids` and `--add-subgids`). If it refuses `--cpus`, systemd does not delegate that controller to your user: an administrator adds it (`Delegate=cpu cpuset io memory pids` in a drop-in of `user@.service`).
+
+**Keyring.** zero keeps the panel's key and the credentials in the system keyring (Secret Service), never in a file. With no desktop it has to be unlocked by hand. This asks for its password without showing it, and the first time it creates the keyring:
+
+```sh
+read -rsp "Keyring password: " KEYRING && printf %s "$KEYRING" | gnome-keyring-daemon --replace --unlock --components=secrets; unset KEYRING
+```
+
+**After every restart the keyring is locked again**: the service starts the factory on its own, but the panel and the stored credentials do not work until you come in through SSH, run that command again and restart the factory (`zero shutdown` and `zero start --detach`).
+
+**Install and join.** With the keyring unlocked:
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh   # ends by opening zero setup
+zero init                                              # creates the factory if zero setup did not
+zero setup                                             # engines, limits, panel and GitHub; run it again to change anything
+gh auth login --git-protocol https --web               # shows a code to type in the browser of another machine
+gh auth setup-git                                      # git asks gh for the credential when it clones the lines
+zero box setup                                         # builds the box's image with Podman
+claude setup-token                                     # your subscription's token
+zero secret set CLAUDE_CODE_OAUTH_TOKEN                # pasted without being shown, kept in the keyring
+zero unirse me/zero-coord                              # joins the factory and clones its lines
+zero autostart on                                      # the user service that starts with the machine
+zero shutdown && zero start --detach                   # starts it already joined
+zero panel remote on                                   # the panel through the tunnel, no open port
+```
+
+- No secret is pasted into a file, an argument or an environment variable: `zero secret set` and `zero setup` ask for it without showing it. With the keyring unlocked, `gh auth login` leaves its session there; without one it leaves it in a file **in plain text**. `gh auth status` tells which.
+- Codex needs a key inside the box (`zero secret set OPENAI_API_KEY`). `codex login --device-auth` leaves its session in a file that the CLI manages, unencrypted: use the key if you would rather avoid that.
+- `zero setup` may already have done the steps of GitHub, the token and the start at login: running them again does no harm.
+- `zero panel remote on` asks before downloading `cloudflared`, which only makes outgoing connections, and gives you the link. The panel of any other machine also shows the whole factory.
+- If an engine's CLI is in a folder of yours such as `~/.local/bin`, put that folder in the `PATH` of `~/.config/environment.d/zero.conf`: the service does not read `.bashrc`.
+- What should never go out from a cloud address, such as a package's station, is pinned to another machine (see [Agent packages](#agent-packages)).
+
+zero's tests do not exercise this installation: they only check that this guide has its pieces. Podman without root, the keyring with no desktop, the systemd service after a restart, the logins and the tunnel have not been run by them on a cloud machine.
 
 ## Install with Docker
 
@@ -515,6 +585,7 @@ lines:
     verify: ["npm test"]  # everything must pass before the review
     verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
+    platforms: [win32, linux]   # optional: where it can be worked on (win32 · darwin · linux); a joined machine on another platform does not clone it
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
@@ -686,7 +757,7 @@ Guarantees that zero enforces, never the agent: custom agents are read-only (in 
 
 Packages are a way to extend zero with your own agents or with third-party ones, without touching zero or the factory's fixed stations. A package is a local folder or an npm package with a `zero-package.yaml` at its root. From it zero loads agents with their instructions, skills and, only with your explicit permission, stations with their own code.
 
-You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine` and `model`:
+You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine`, `model`, `machine` and `machines`:
 
 ```yaml
 packages:
@@ -697,7 +768,12 @@ packages:
     allowCode: true                # off by default: without it, its stations never run
     config:
       greeting: Hello
+    machine: home-pc               # optional: its stations run only on this machine, by name or id
+    machines:                      # optional: the same for a single station; it wins over machine
+      note: home-pc
 ```
+
+**Stations pinned to a machine.** With several machines (see [Several machines](#several-machines-zero-unirse)), `machine` pins every station of a package and `machines` only the ones it names, to one machine: its `distributed.machine` (or the host name when there is none; upper and lower case do not matter) or its id. A pinned station never runs on another machine, whether in its period, with the factory busy, at its scheduled times, on demand or from an upload: zero does not even import its module there, and asking for it there is refused naming the right machine. A name that matches no machine leaves the station running nowhere. If `machines` names a station the package does not have, the package shows the problem and none of its stations run, so a typo never leaves one free to run anywhere. `zero package list` and the panel's "Paquetes" tab show the pinned machine. A package's agents and skills, and the jobs its stations request, are not pinned.
 
 **The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included, and a skill's folder cannot hold links at all.
 

@@ -8,6 +8,7 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { checkInstall } from "./install-freshness.js";
 import { githubCoord } from "./coord/github.js";
+import { linesPass, type LineCloner } from "./coord/lines.js";
 import { coordPass, coordReady } from "./coord/pass.js";
 import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
 import { canTake, readQueued } from "./coord/queue.js";
@@ -113,6 +114,8 @@ export interface DaemonOptions {
   launchSwitch?: SwitchLauncher;
   /** The coordination repository of a distributed factory; tests inject a memory one. Without it, `once` runs do not beat. */
   coord?: (repository: string) => CoordApi | undefined;
+  /** Clones a line another machine published; tests inject a fake. Defaults to git. */
+  cloneLine?: LineCloner;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -409,6 +412,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     if (!distributed || (opts.once && !opts.coord) || !coordReady(ctx)) return undefined;
     return (opts.coord ?? realCoord(meter))(distributed.repository);
   };
+  // The factory's lines, published and cloned in a pass of their own: a slow clone never holds up the heartbeat nor the start of jobs. A shutdown cuts it.
+  let linesAt = 0;
+  let sharingLines: Promise<unknown> | undefined;
+  const shareLines = () => {
+    if (sharingLines || Date.now() - linesAt < (opts.once ? 0 : (ctx.config.distributed?.heartbeatSeconds ?? 0) * 1000)) return;
+    const api = protocol();
+    if (!api) return;
+    linesAt = Date.now();
+    sharingLines = linesPass(ctx, api, { now, signal: researchStop.signal, clone: opts.cloneLine })
+      .catch((err) => log.warn("shared lines pass failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("coord");
+        sharingLines = undefined;
+      });
+  };
   // A job that ended is released with its status, and one cut short by a shutdown goes back to the shared queue; an andon or a quota stop keeps its claim.
   const releaseAtEnd = async (api: CoordApi, machine: MachineIdentity, end: Job, signal: AbortSignal) => {
     const ended = FINAL_STATUSES.includes(end.status) && end.reason !== LOST_TO_ANOTHER;
@@ -667,6 +685,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         findReverts();
         readAlerts();
         coordinate();
+        shareLines();
       }
       takeLinear();
       takeJira();
@@ -809,6 +828,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await checkingReverts;
     await readingAlerts;
     await coordinating;
+    await sharingLines;
     await cleaning;
     await readingBilling;
     await checkingInstall;
