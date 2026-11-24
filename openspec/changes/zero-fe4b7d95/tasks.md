@@ -18,10 +18,10 @@
 
 ## 3. Etapa 3: Estaciones de paquetes fijadas a una máquina
 
-- [ ] 3.1 machine y machines en PackageEntrySchema (src/config.ts), y problema de paquete para una estación inexistente en src/packages.ts.
-- [ ] 3.2 Un único predicado runsHere(ctx, station) con machineIdentity (nombre sin distinguir mayúsculas, o id), usado en packagesPass, busyPass, scheduledPass, onDemandPass, onDemandPending, whenBusyStations y como última barrera en runTurn antes de importar el módulo.
-- [ ] 3.3 Rechazo en stationForRun y en la subida nombrando la máquina, y la máquina fijada en zero package list y en el panel de paquetes.
-- [ ] 3.4 test/package-machine.test.ts, el bloque de ejemplo en los dos README y docs/agents/packages.md.
+- [x] 3.1 machine y machines en PackageEntrySchema (src/config.ts), y problema de paquete para una estación inexistente en src/packages.ts.
+- [x] 3.2 Un único predicado runsHere(ctx, station) con machineIdentity (nombre sin distinguir mayúsculas, o id), usado en packagesPass, busyPass, scheduledPass, onDemandPass, onDemandPending, whenBusyStations y como última barrera en runTurn antes de importar el módulo.
+- [x] 3.3 Rechazo en stationForRun y en la subida nombrando la máquina, y la máquina fijada en zero package list y en el panel de paquetes.
+- [x] 3.4 test/package-machine.test.ts, el bloque de ejemplo en los dos README y docs/agents/packages.md.
 
 ## 4. Etapa 4: Gasto publicado y topes en dólares
 

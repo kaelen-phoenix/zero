@@ -274,8 +274,8 @@ export function formatPackages(l: PackageList, now = new Date()): string {
     if (p.agents.length) out.push(`- agentes: ${p.agents.join(", ")}`);
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
-      const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
+      const state = !s.allowed ? "no corre" : s.elsewhere ? "no corre en esta máquina" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
+      out.push(`- estación ${s.name}: ${state}${s.machine !== undefined ? ` · fijada a la máquina ${s.machine}` : ""}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));

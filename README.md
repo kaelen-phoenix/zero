@@ -686,7 +686,7 @@ Guarantees that zero enforces, never the agent: custom agents are read-only (in 
 
 Packages are a way to extend zero with your own agents or with third-party ones, without touching zero or the factory's fixed stations. A package is a local folder or an npm package with a `zero-package.yaml` at its root. From it zero loads agents with their instructions, skills and, only with your explicit permission, stations with their own code.
 
-You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine` and `model`:
+You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine`, `model`, `machine` and `machines`:
 
 ```yaml
 packages:
@@ -697,7 +697,12 @@ packages:
     allowCode: true                # off by default: without it, its stations never run
     config:
       greeting: Hello
+    machine: home-pc               # optional: its stations run only on this machine, by name or id
+    machines:                      # optional: the same for a single station; it wins over machine
+      note: home-pc
 ```
+
+**Stations pinned to a machine.** With several machines (see [Several machines](#several-machines-zero-unirse)), `machine` pins every station of a package and `machines` only the ones it names, to one machine: its `distributed.machine` (or the host name when there is none; upper and lower case do not matter) or its id. A pinned station never runs on another machine, whether in its period, with the factory busy, at its scheduled times, on demand or from an upload: zero does not even import its module there, and asking for it there is refused naming the right machine. A name that matches no machine leaves the station running nowhere. If `machines` names a station the package does not have, the package shows the problem and none of its stations run, so a typo never leaves one free to run anywhere. `zero package list` and the panel's "Paquetes" tab show the pinned machine. A package's agents and skills, and the jobs its stations request, are not pinned.
 
 **The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included, and a skill's folder cannot hold links at all.
 

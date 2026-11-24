@@ -21,7 +21,7 @@ import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
 import { isGitSource, parseGitSource } from "./package-source.js";
-import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, pinnedMachine, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
@@ -35,7 +35,7 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
-import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
+import { onDemandRecord, readStationRun, runsHere, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
@@ -461,7 +461,7 @@ export interface FactoryStatus {
   unjam: UnjamOnDemand;
   /** The research station on demand (see `requestInvestigation`). */
   research: ResearchOnDemand;
-  /** Loaded stations that declare `whenBusy`, as `<package>/<station>`: their regular pass also runs with the factory busy. */
+  /** Loaded stations that declare `whenBusy` and may run on this machine, as `<package>/<station>`: their regular pass also runs with the factory busy. */
   whenBusy: string[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
@@ -743,7 +743,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     }),
     unjam: unjamOnDemand(ctx),
     research: researchOnDemand(ctx),
-    whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy).map((s) => `${s.package}/${s.name}`),
+    whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy && runsHere(ctx, s)).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
     selfUpdate: selfUpdateStatus(ctx),
@@ -2708,6 +2708,10 @@ export interface PackageStationView {
   lastOnDemand?: StationRunRecord;
   /** Whether its manifest declares `whenBusy`: its regular pass also runs with the factory busy. */
   whenBusy?: true;
+  /** The only machine its entry lets it run on, as the file says it. */
+  machine?: string;
+  /** Whether that machine is another one, so it does not run here. */
+  elsewhere?: true;
 }
 
 /** A package's tab as the panel's menu links it. */
@@ -2810,6 +2814,7 @@ export function packageList(ctx: FactoryContext): PackageList {
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
           const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
           const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
+          const machine = pinnedMachine(p.entry, name);
           return {
             name,
             allowed: Boolean(station),
@@ -2819,6 +2824,8 @@ export function packageList(ctx: FactoryContext): PackageList {
             ...(pendingRequest && { onDemandRequest: pendingRequest }),
             ...(lastOnDemand && { lastOnDemand }),
             ...(station?.whenBusy && { whenBusy: true as const }),
+            ...(machine !== undefined && { machine }),
+            ...(station && !runsHere(ctx, station) && { elsewhere: true as const }),
           };
         }),
       };
@@ -2849,6 +2856,7 @@ function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: 
   if (!known.stations.includes(name)) return { ok: false, reason: `el paquete ${pkg} no tiene una estación "${name}"` };
   const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
+  if (!runsHere(ctx, station)) return { ok: false, reason: `la estación ${pkg}/${name} está fijada a la máquina ${pinnedMachine(station.entry, name)} y esta es ${machineIdentity(ctx.store, ctx.config).name}: pedila desde esa máquina` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
   const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
   if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };

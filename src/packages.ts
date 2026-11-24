@@ -276,6 +276,11 @@ export function entryName(entry: PackageEntry, home: Pick<FactoryHome, "config" 
   }
 }
 
+/** The only machine the owner lets a station run on, as the file says it; undefined: any. */
+export function pinnedMachine(entry: Pick<PackageEntry, "machine" | "machines">, station: string): string | undefined {
+  return entry.machines && Object.hasOwn(entry.machines, station) ? entry.machines[station] : entry.machine;
+}
+
 /** Why code from this real folder must not be imported: the jobs' agents can write there. */
 function codeRefusal(config: Pick<FactoryConfig, "lines">, home: Pick<FactoryHome, "worktrees" | "jobs">, dir: string): string | undefined {
   const real = (p: string) => {
@@ -323,10 +328,17 @@ export function loadPackages(config: Pick<FactoryConfig, "packages" | "agents" |
       out.packages.push({ name: manifest.name, version: manifest.version, dir: root, index, entry, agents: agents.map((a) => a.name), skills: skills.map((s) => s.fullName), stations: stations.map((s) => s.name), tabs });
       out.agents.push(...agents);
       out.skills.push(...skills);
-      if (!stations.length) continue;
+      const unknown = Object.keys(entry.machines ?? {}).filter((name) => !stations.some((s) => s.name === name));
+      // A misspelled name would leave the station it meant free to run anywhere, so none of them runs.
+      const pins = unknown.length ? `machines fija estaciones que el paquete no trae (${unknown.join(", ")})` : undefined;
+      if (!stations.length) {
+        if (pins) out.problems.push({ package: manifest.name, reason: pins });
+        continue;
+      }
       const names = stations.map((s) => s.name).join(", ");
       const refusal = entry.allowCode ? codeRefusal(config, home, root) : `falta allowCode: true en su entrada para correr código`;
-      if (refusal) out.problems.push({ package: manifest.name, reason: `sus estaciones (${names}) no corren: ${refusal}` });
+      const refusals = [refusal, pins].filter((r) => r !== undefined);
+      if (refusals.length) out.problems.push({ package: manifest.name, reason: `sus estaciones (${names}) no corren: ${refusals.join("; ")}` });
       else out.stations.push(...stations);
     } catch (err) {
       out.problems.push({ package: label, reason: err instanceof Refused ? err.message : `no se pudo cargar: ${err instanceof Error ? err.message : String(err)}` });

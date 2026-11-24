@@ -281,6 +281,10 @@ export const PackageEntrySchema = z
     config: z.unknown().optional(),
     engine: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    /** The only machine its stations may run on, by name or id; absent: any. */
+    machine: z.string().trim().min(1).optional(),
+    /** The same for single stations, by name; it wins over `machine`. */
+    machines: z.record(z.string(), z.string().trim().min(1)).optional(),
   })
   .strict()
   .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm")

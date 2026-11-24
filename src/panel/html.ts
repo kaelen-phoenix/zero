@@ -255,15 +255,15 @@ export type StationUploads = Record<string, { maxMb: number; extensions: string[
 /** One station of a package: its state, its last on-demand run and, when it takes them, the forms to ask for one and to upload a file. */
 function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean, uploads?: StationUploads[string]): string {
   const ref = `${pkg}/${s.name}`;
-  const state = `${!s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
+  const state = `${!s.allowed ? "no corre" : s.elsewhere ? "no corre en esta máquina" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.machine !== undefined ? ` · fijada a la máquina ${s.machine}` : ""}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
     ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
   const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
-  const form = onDemand
+  const form = onDemand && !s.elsewhere
     ? `<form method="post" action="/packages/run"><input type="hidden" name="station" value="${esc(ref)}"><label for="p-${esc(ref)}">Pedido (opcional)</label><textarea id="p-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Pedir ahora</button></form>`
     : "";
-  const upload = uploads
+  const upload = uploads && !s.elsewhere
     ? `<form method="post" action="/packages/upload?station=${esc(encodeURIComponent(ref))}" enctype="multipart/form-data"><input type="hidden" name="station" value="${esc(ref)}"><label for="f-${esc(ref)}">Archivo (${esc(uploads.extensions.join(", "))}, hasta ${esc(String(uploads.maxMb))} MB)</label><input id="f-${esc(ref)}" type="file" name="file" accept="${esc(uploads.extensions.join(","))}" required><label for="u-${esc(ref)}">Pedido (opcional)</label><textarea id="u-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Subir archivo</button></form>`
     : "";
   return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;

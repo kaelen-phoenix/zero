@@ -685,7 +685,7 @@ Garantías que impone zero, nunca el agente: los agentes a medida son de solo le
 
 Los paquetes son una forma de extender zero con agentes propios o de terceros, sin tocar zero ni las estaciones fijas de la fábrica. Un paquete es una carpeta local o un paquete npm con un `zero-package.yaml` en su raíz. De ahí zero carga agentes con sus instrucciones, skills y, solo con tu permiso explícito, estaciones con código propio.
 
-Lo instalado se declara en `packages`, en el archivo de la fábrica. Cada entrada tiene exactamente uno de `path` o `npm`, y opcionalmente `allowCode`, `config`, `engine` y `model`:
+Lo instalado se declara en `packages`, en el archivo de la fábrica. Cada entrada tiene exactamente uno de `path` o `npm`, y opcionalmente `allowCode`, `config`, `engine`, `model`, `machine` y `machines`:
 
 ```yaml
 packages:
@@ -696,7 +696,12 @@ packages:
     allowCode: true                # apagado por defecto: sin esto, sus estaciones nunca corren
     config:
       greeting: Hello
+    machine: home-pc               # opcional: sus estaciones corren solo en esta máquina, por nombre o id
+    machines:                      # opcional: lo mismo para una sola estación; manda sobre machine
+      note: home-pc
 ```
+
+**Estaciones fijadas a una máquina.** Con varias máquinas (ver [Varias máquinas](#varias-máquinas-zero-unirse)), `machine` fija todas las estaciones de un paquete y `machines` solo las que nombra, a una máquina: su `distributed.machine` (o el nombre del equipo si no hay; no importan las mayúsculas) o su id. Una estación fijada nunca corre en otra máquina, ni en su período, ni con la fábrica ocupada, ni en sus horarios, ni a demanda, ni por un archivo subido: zero ni siquiera importa ahí su módulo, y pedirla desde ahí se rechaza nombrando la máquina correcta. Un nombre que no coincide con ninguna máquina deja la estación sin correr en ninguna. Si `machines` nombra una estación que el paquete no trae, el paquete muestra el problema y ninguna de sus estaciones corre, así un error de tipeo nunca deja una libre para correr en cualquier lado. `zero package list` y la pestaña "Paquetes" del panel muestran la máquina fijada. Los agentes y las skills de un paquete, y los trabajos que piden sus estaciones, no quedan fijados.
 
 **El manifiesto**, `zero-package.yaml`. `interface` dice para qué versión de este formato se escribió el paquete: este zero soporta `interface: 1` y deja afuera cualquier otra, diciendo cuál pidió. Las claves desconocidas se rechazan, así que un manifiesto no puede elegir motor ni modelo. Toda ruta tiene que ser relativa y quedarse dentro de la carpeta del paquete, enlaces incluidos, y la carpeta de una skill no puede tener ningún enlace.
 
