@@ -2,10 +2,10 @@
 
 ## 1. Etapa 1: Declaración en el paquete y alcance de los datos
 
-- [ ] 1.1 Write the OpenSpec change for capability control-panel with these requirements.
-- [ ] 1.2 src/packages.ts: optional strict `guests` in ManifestSchema (`scope: {name (NAME), title}`, `tabs`, `run`, `upload`, at least one offered); refuse unknown or repeated names, `run` without onDemand and `upload` without uploads; add `guests?` to LoadedPackage in src/config.ts, set only when declared.
-- [ ] 1.3 src/package-tabs.ts: optional item `scope`; tabFile takes an optional list of allowed scope values. app.ts: packageTabView and packageTabFile take the same optional limit (exact match, items without scope hidden, categories only from visible items when limited); without it nothing changes.
-- [ ] 1.4 Tests: new test/panel-guests-manifest.test.ts; run test/packages.test.ts and test/panel-package-tabs.test.ts.
+- [x] 1.1 Write the OpenSpec change for capability control-panel with these requirements.
+- [x] 1.2 src/packages.ts: optional strict `guests` in ManifestSchema (`scope: {name (NAME), title}`, `tabs`, `run`, `upload`, at least one offered); refuse unknown or repeated names, `run` without onDemand and `upload` without uploads; add `guests?` to LoadedPackage in src/config.ts, set only when declared.
+- [x] 1.3 src/package-tabs.ts: optional item `scope`; tabFile takes an optional list of allowed scope values. app.ts: packageTabView and packageTabFile take the same optional limit (exact match, items without scope hidden, categories only from visible items when limited); without it nothing changes.
+- [x] 1.4 Tests: new test/panel-guests-manifest.test.ts; run test/packages.test.ts and test/panel-package-tabs.test.ts.
 
 ## 2. Etapa 2: Accesos, registro y comandos
 
