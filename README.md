@@ -360,6 +360,7 @@ With the factory running, the panel shows:
 - the factory's status;
 - the jobs;
 - the requests ("Pedidos" tab): a form with line, type (new feature, fix, security, design, documentation or other; the type goes to the factory inside the request), title and description, and below it every request with its status, line and age, filters by line and status, and per request a link to its detail and trace, the buttons to answer its pending question and a button to stop it (it asks for confirmation first);
+- the "Proyecto nuevo" form (linked from "Resumen" and "Pedidos"): name, public or private, first request and verify commands; it checks them, shows what it is going to do and creates the repository only when you confirm on the next page;
 - the questions, with buttons to approve or reject;
 - each job's trace;
 - internet egress and the report;

@@ -19,6 +19,6 @@
 
 ## 3. Etapa 3: 'Proyecto nuevo' form in the panel
 
-- [ ] 3.1 The 'Proyecto nuevo' form and its confirmation page in src/panel/html.ts, plus the POST route in src/panel/server.ts with same-origin, confirm=1 and an injectable creator in PanelOptions.
-- [ ] 3.2 Tests: without confirm=1 only the confirmation page shows, with confirm=1 the creator runs once.
-- [ ] 3.3 Docs in docs/agents/panel.md, keeping both READMEs in sync if they mention the panel.
+- [x] 3.1 The 'Proyecto nuevo' form and its confirmation page in src/panel/html.ts, plus the POST route in src/panel/server.ts with same-origin, confirm=1 and an injectable creator in PanelOptions.
+- [x] 3.2 Tests: without confirm=1 only the confirmation page shows, with confirm=1 the creator runs once.
+- [x] 3.3 Docs in docs/agents/panel.md, keeping both READMEs in sync if they mention the panel.

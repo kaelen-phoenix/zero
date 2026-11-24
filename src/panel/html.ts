@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
-import type { CatalogAddPlan } from "../app.js";
+import type { CatalogAddPlan, ProjectPlan, ProjectResult } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
 import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
@@ -68,7 +68,7 @@ button { font:inherit; font-weight:500; padding:8px 14px; border-radius:8px; bor
 button:hover { border-color:var(--muted); }
 button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); } button.danger { border-color:var(--bad); color:var(--bad); }
 textarea, input, select { font:inherit; width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--rule); background:var(--bg); color:var(--fg); }
-textarea { min-height:90px; } label { display:block; margin:8px 0 4px; font-size:.92rem; color:var(--muted); }
+textarea { min-height:90px; } input.check { width:auto; } label { display:block; margin:8px 0 4px; font-size:.92rem; color:var(--muted); }
 ul.jobs { list-style:none; padding:0; margin:0; } ul.jobs li { padding:10px 0; border-top:1px solid var(--rule); } ul.jobs li:first-child { border-top:0; }
 ul.jobs .top { display:flex; gap:8px; align-items:center; justify-content:space-between; }
 a.job { color:var(--fg); text-decoration:none; } a.job:hover { text-decoration:underline; }
@@ -381,7 +381,8 @@ ${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos ter
 <div class="card"><h2>Pedir un trabajo</h2>
 <form method="post" action="/request"><label for="text">Qué querés, en tus palabras</label><textarea id="text" name="text" required></textarea>
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
-<button class="primary">Pedir</button></form></div>`,
+<button class="primary">Pedir</button></form>
+<p><a href="/projects">Proyecto nuevo</a> <span class="muted">crea el repositorio en GitHub y lo suma como línea</span></p></div>`,
     { nonce, flash, refresh: true, active: "/" },
   );
 }
@@ -633,13 +634,64 @@ export function requestsPage(view: RequestsView, nonce: string, flash?: string):
 <label for="q-type">Tipo de pedido</label><select id="q-type" name="type">${types}</select>
 <label for="q-title">Título</label><input id="q-title" type="text" name="title" required>
 <label for="q-desc">Descripción</label><textarea id="q-desc" name="description"></textarea>
-<button class="primary">Pedir</button></form></div>`;
+<button class="primary">Pedir</button></form>
+<p><a href="/projects">Proyecto nuevo</a> <span class="muted">crea el repositorio en GitHub y lo suma como línea</span></p></div>`;
   const filters = `<div class="card"><h2>Pedidos de la fábrica</h2>
 <form method="get" action="/requests"><label for="f-line">Línea</label><select id="f-line" name="line"><option value="">Todas las líneas</option>${lineOptions(view.line)}</select>
 <label for="f-estado">Estado</label><select id="f-estado" name="estado">${ESTADOS.map(([v, label]) => `<option value="${v}"${v === view.estado ? " selected" : ""}>${label}</option>`).join("")}</select>
 <button>Filtrar</button></form>
 ${view.rows.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
   return page("Pedidos", form + filters + `<section class="requests">${view.rows.map(requestRow).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
+}
+
+/** What the "Proyecto nuevo" form carries; `verify` has one command per line. */
+export interface ProjectForm {
+  name: string;
+  publico: boolean;
+  pedido: string;
+  verify: string;
+}
+
+/** The "Proyecto nuevo" form; with an error, what was typed is kept. */
+export function projectPage(nonce: string, opts: { form?: ProjectForm; error?: string; flash?: string } = {}): string {
+  const { form, error, flash } = opts;
+  return page(
+    "Proyecto nuevo",
+    `${error ? `<div class="card bad"><pre>${esc(error)}</pre></div>` : ""}<div class="card"><h1>Proyecto nuevo</h1>
+<p class="muted">Crea el repositorio en GitHub, lo clona en la carpeta de la fábrica y lo suma como línea nueva. Antes de crear nada te muestra qué va a hacer y te pide confirmación.</p>
+<form method="post" action="/projects"><label for="p-name">Nombre (nombre o cuenta/nombre)</label><input id="p-name" type="text" name="name" value="${esc(form?.name)}" required>
+<label for="p-publico"><input id="p-publico" class="check" type="checkbox" name="publico" value="1"${form?.publico ? " checked" : ""}> Público (si no, es privado)</label>
+<label for="p-pedido">Primer pedido (opcional)</label><textarea id="p-pedido" name="pedido">${esc(form?.pedido)}</textarea>
+<label for="p-verify">Comandos de verificación (opcional, uno por renglón)</label><textarea id="p-verify" name="verify">${esc(form?.verify)}</textarea>
+<button class="primary">Crear</button></form></div>`,
+    { nonce, flash, active: "/requests" },
+  );
+}
+
+/** The step before creating a repository: it is visible from outside and hard to undo, so the owner reads the plan and confirms. */
+export function confirmProjectPage(plan: ProjectPlan, form: ProjectForm, nonce: string): string {
+  const hidden = Object.entries({ name: plan.name, ...(form.publico && { publico: "1" }), pedido: form.pedido, verify: form.verify })
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${esc(v)}">`)
+    .join("");
+  return page(
+    "Confirmar",
+    `<div class="card"><h1>${esc(plan.question)}</h1><pre>${esc(plan.text)}</pre>
+${form.verify.trim() ? `<p>Comandos de verificación:</p><pre>${esc(form.verify.trim())}</pre>` : ""}
+<p class="muted">Crear un repositorio se ve desde afuera y no se deshace fácil.</p>
+<form method="post" action="/projects">${hidden}<input type="hidden" name="confirm" value="1"><button class="primary">Sí, crearlo</button></form>
+<p><a href="/projects">Cancelar</a></p></div>`,
+    { nonce, active: "/requests" },
+  );
+}
+
+/** How a creation ended, with its whole text: a failure once the repository exists has to be read in full. */
+export function projectResultPage(r: ProjectResult, nonce: string): string {
+  return page(
+    "Proyecto nuevo",
+    `<div class="card${r.ok ? "" : " bad"}"><h1>${r.ok ? "Proyecto creado" : r.created ? "El repositorio se creó, pero falta un paso" : "No se creó el proyecto"}</h1><pre>${esc(r.text)}</pre>
+<p>${r.job ? `<a href="/job/${esc(r.job)}">Ver el primer trabajo</a> · ` : ""}<a href="/projects">Volver</a></p></div>`,
+    { nonce, active: "/requests" },
+  );
 }
 
 /** The step before stopping a job from the list: the owner confirms it. */

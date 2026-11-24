@@ -2049,6 +2049,48 @@ export interface ProjectResult {
   job?: string;
 }
 
+/** What creating a project would do, once every check before GitHub passed. */
+export interface ProjectPlan {
+  name: string;
+  coordination: boolean;
+  private: boolean;
+  visibility: "privado" | "público";
+  line: string;
+  dir: string;
+  /** What the person in charge reads before confirming. */
+  text: string;
+  question: string;
+}
+
+/** The checks before asking for confirmation, and the plan they allow: it creates and writes nothing. */
+export function projectPlan(ctx: FactoryContext, input: ProjectInput): { plan: ProjectPlan; token: string } | { error: string } {
+  const name = input.name.trim();
+  if (!validRepositoryName(name)) return { error: invalidNameText(name) };
+  const coordination = Boolean(input.coordination);
+  if (coordination && input.publico) return { error: "El repositorio de coordinación tiene que ser privado: guarda la cola y el avance de la fábrica." };
+  const isPrivate = coordination || !input.publico;
+  const line = slug(name.split("/").pop()!);
+  const dir = join(ctx.home.projects, line);
+  if (!coordination) {
+    if (ctx.config.lines.some((l) => l.name === line)) return { error: `Ya existe la línea "${line}": elegí otro nombre.` };
+    if (existsSync(dir)) return { error: `Ya existe la carpeta ${dir}: elegí otro nombre o movela.` };
+  }
+  const token = (input.token ?? (() => githubToken(process.env, ctx.secrets)))();
+  if (!token) return { error: "No hay token de GitHub: iniciá sesión con `zero setup` (o `gh auth login`) y volvé a intentar." };
+
+  const visibility = isPrivate ? "privado" : "público";
+  const text = coordination
+    ? [`Voy a crear en GitHub el repositorio ${name} (${visibility}), para coordinar la fábrica distribuida.`, "No lo clono ni lo sumo como línea: esta máquina se une a esa fábrica."].join("\n")
+    : [
+        `Voy a crear en GitHub el repositorio ${name} (${visibility}).`,
+        `Lo clono en ${dir} y lo sumo como la línea ${line} (integra con pull requests).`,
+        input.pedido?.trim() ? `Después abro el primer trabajo: ${input.pedido.trim()}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+  return { token, plan: { name, coordination, private: isPrivate, visibility, line, dir, text, question: `¿Creo el repositorio ${name} (${visibility}) en GitHub?` } };
+}
+
 /**
  * Creates a repository on GitHub, and then either clones it into ZERO_HOME as a
  * new line (with its first job when there is a request) or, for coordination,
@@ -2057,33 +2099,12 @@ export interface ProjectResult {
  */
 export async function createProject(ctx: FactoryContext, input: ProjectInput): Promise<ProjectResult> {
   const fail = (text: string): ProjectResult => ({ ok: false, created: false, text });
-  const name = input.name.trim();
-  if (!validRepositoryName(name)) return fail(invalidNameText(name));
-  const coordination = Boolean(input.coordination);
-  if (coordination && input.publico) return fail("El repositorio de coordinación tiene que ser privado: guarda la cola y el avance de la fábrica.");
-  const isPrivate = coordination || !input.publico;
-  const lineName = slug(name.split("/").pop()!);
-  const dir = join(ctx.home.projects, lineName);
-  if (!coordination) {
-    if (ctx.config.lines.some((l) => l.name === lineName)) return fail(`Ya existe la línea "${lineName}": elegí otro nombre.`);
-    if (existsSync(dir)) return fail(`Ya existe la carpeta ${dir}: elegí otro nombre o movela.`);
-  }
-  const token = (input.token ?? (() => githubToken(process.env, ctx.secrets)))();
-  if (!token) return fail("No hay token de GitHub: iniciá sesión con `zero setup` (o `gh auth login`) y volvé a intentar.");
-
-  const visibility = isPrivate ? "privado" : "público";
-  input.say?.(
-    coordination
-      ? [`Voy a crear en GitHub el repositorio ${name} (${visibility}), para coordinar la fábrica distribuida.`, "No lo clono ni lo sumo como línea: esta máquina se une a esa fábrica."].join("\n")
-      : [
-          `Voy a crear en GitHub el repositorio ${name} (${visibility}).`,
-          `Lo clono en ${dir} y lo sumo como la línea ${lineName} (integra con pull requests).`,
-          input.pedido?.trim() ? `Después abro el primer trabajo: ${input.pedido.trim()}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-  );
-  if (!(input.confirm && (await input.confirm(`¿Creo el repositorio ${name} (${visibility}) en GitHub?`)))) return fail("No creé nada.");
+  const planned = projectPlan(ctx, input);
+  if ("error" in planned) return fail(planned.error);
+  const { token } = planned;
+  const { name, coordination, private: isPrivate, visibility, line: lineName, dir, text: plan, question } = planned.plan;
+  input.say?.(plan);
+  if (!(input.confirm && (await input.confirm(question)))) return fail("No creé nada.");
 
   let repo: CreatedRepository;
   try {

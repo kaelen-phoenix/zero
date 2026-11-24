@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, createProject, projectPlan, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestStationRun, requestsView, uploadToStation, requestWork, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type ProjectCreator, type ProjectInput } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -10,7 +10,7 @@ import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { controlRoomFragment, controlRoomPage } from "./control-room.js";
-import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
+import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProjectPage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, projectPage, projectResultPage, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type ProjectForm, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
 const COOKIE = "zero_panel";
@@ -120,6 +120,7 @@ function returnTo(path: string): string {
   if (path.startsWith("/proposals")) return "/proposals";
   if (path.startsWith("/requests")) return "/requests";
   if (path.startsWith("/research")) return "/research";
+  if (path.startsWith("/projects")) return "/projects";
   if (path.startsWith("/packages")) return "/packages";
   if (path.startsWith("/remote-chat")) return "/remote-chat";
   if (path.startsWith("/agents")) return "/agents";
@@ -137,6 +138,8 @@ export interface PanelOptions {
   heartbeatMs?: number;
   /** GitHub adapters for merging on request; the daemon passes its metered real ones. */
   merges?: MergeApiFactory;
+  /** Creates a project once its confirmation came back; tests inject a fake. */
+  project?: ProjectCreator;
 }
 
 /** What a live page's stream sends: its fragment, and what of it counts as a change (all of it by default). */
@@ -364,6 +367,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         const merge = JSON.parse(ctx.store.getKv(mergeKey(job)) ?? "{}") as Partial<MergeState>;
         return send(res, 200, jobPage(getJob(ctx, job), trace(ctx, job), nonce, flash, onSubscription(ctx.store, ctx.config.engine), merge.status), nonce);
       }
+      if (path === "/projects") return send(res, 200, projectPage(nonce, { flash }), nonce);
       if (path === "/egress") {
         const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 1) || 1, 1), 90);
         return send(res, 200, egressPage(egressReport(ctx, { days }), ctx.config.egress, nonce, flash), nonce);
@@ -440,6 +444,19 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (path === "/requests") {
       const r = requestWork(ctx, { type: form.get("type") ?? "", title: form.get("title") ?? "", description: form.get("description") ?? "", line: form.get("line") || undefined });
       return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
+    }
+    if (path === "/projects") {
+      const fields: ProjectForm = { name: form.get("name") ?? "", publico: form.get("publico") === "1", pedido: form.get("pedido") ?? "", verify: form.get("verify") ?? "" };
+      const pedido = fields.pedido.trim();
+      const verify = fields.verify.split("\n").map((c) => c.trim()).filter(Boolean);
+      const input: ProjectInput = { name: fields.name.trim(), ...(fields.publico && { publico: true }), ...(pedido && { pedido }), ...(verify.length && { verify }) };
+      // Creating a repository is visible from outside and hard to undo, so the first press only checks and shows the plan.
+      if (form.get("confirm") !== "1") {
+        const planned = projectPlan(ctx, input);
+        return send(res, 200, "error" in planned ? projectPage(nonce, { form: fields, error: planned.error }) : confirmProjectPage(planned.plan, fields, nonce), nonce);
+      }
+      const r = await (opts.project ?? createProject)(ctx, { ...input, confirm: async () => true });
+      return send(res, 200, projectResultPage(r, nonce), nonce);
     }
     const requestAction = /^\/requests\/([0-9a-f]{8})\/(answer|stop)$/.exec(path);
     if (requestAction) {
