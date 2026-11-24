@@ -13,7 +13,7 @@ import type { Access } from "./engines/index.js";
 import { CATALOG_STATUSES, type CatalogEntry } from "./catalog.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
-import { githubStatus, type GithubStatus } from "./github-quota.js";
+import { githubHalt, githubMeter, githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
 import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { Octokit } from "@octokit/rest";
@@ -56,8 +56,11 @@ import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSum
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
-import { readMachines } from "./coord/pass.js";
-import type { LineRecord, MachineView } from "./coord/protocol.js";
+import { githubCoord } from "./coord/github.js";
+import { forgetTakenOut, lineProblem, linesAway, linesPass, type LineAway, type LineCloner } from "./coord/lines.js";
+import { coordReady, probeOnce, readMachines, readProbe } from "./coord/pass.js";
+import type { CoordApi, LineRecord, MachineView } from "./coord/protocol.js";
+import { machineIdentity } from "./machine.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -439,6 +442,8 @@ export interface FactoryStatus {
   github?: GithubStatus;
   /** Every machine of a distributed factory as the last coordination pass saw them; absent without `distributed`. */
   machines?: MachineView[];
+  /** The lines the other machines published that are not on this one, and why; absent without `distributed`. */
+  linesAway?: LineAway[];
   box: { status?: BoxStatus; availability: BoxAvailability };
   /** Jobs wait for the box instead of running in local copies (see waitsForBox). */
   boxWait?: boolean;
@@ -725,7 +730,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     trains: trainViews(ctx),
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
-    ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [] }),
+    ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [], linesAway: linesAway(ctx) }),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
@@ -2054,23 +2059,82 @@ export const githubRepoCheck =
 
 const COORD_REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
+/** How to create the coordination repository; zero itself never creates it. */
+const coordRepoHelp = (name = "<cuenta>/<nombre>") => `Para crear el repositorio privado de coordinación:
+
+  gh repo create ${name} --private --add-readme
+
+--add-readme le deja un primer commit: sin ninguno, GitHub no deja escribir la coordinación. Después corré zero unirse ${name} en cada máquina.`;
+
+/** What joining reaches besides the visibility check; tests inject a memory repository and a fake cloner. */
+export interface JoinDeps {
+  coord: (repository: string) => CoordApi | undefined;
+  /** Defaults to git. */
+  clone?: LineCloner;
+  platform?: NodeJS.Platform;
+  /** Cuts the clone under way. */
+  signal?: AbortSignal;
+}
+
+/** The real coordination repository, with the factory's GitHub token from zero's own process and counting its requests. */
+export const githubJoin = (ctx: FactoryContext): JoinDeps => ({
+  coord: (repository) => {
+    const token = githubToken(process.env, ctx.secrets);
+    return token ? githubCoord(githubMeter(ctx.store, ctx.now).client(token, "coord"), repository) : undefined;
+  },
+});
+
 /**
  * Joins this machine to a distributed factory: only the coordination repository's
- * name goes in the factory file, and only once GitHub says it is private.
+ * name goes in the factory file, and only once GitHub says it is private. Then its
+ * lines are cloned once; whatever happens there, the machine stays joined.
  * Secrets stay in each machine's own store; nothing here writes one.
  */
-export async function joinFactory(ctx: FactoryContext, repository: string, check: CoordRepoCheck = githubRepoCheck(ctx.secrets)): Promise<{ joined: boolean; text: string }> {
+export async function joinFactory(
+  ctx: FactoryContext,
+  repository: string,
+  check: CoordRepoCheck = githubRepoCheck(ctx.secrets),
+  deps: JoinDeps = githubJoin(ctx),
+): Promise<{ joined: boolean; text: string }> {
   const name = repository.trim();
-  if (!COORD_REPOSITORY.test(name)) return { joined: false, text: "El repositorio de coordinación tiene que tener la forma cuenta/nombre." };
+  if (!name) return { joined: false, text: `Indicá el repositorio de coordinación: zero unirse <cuenta/repo>.\n\n${coordRepoHelp()}` };
+  if (!COORD_REPOSITORY.test(name)) return { joined: false, text: `El repositorio de coordinación tiene que tener la forma cuenta/nombre.\n\n${coordRepoHelp()}` };
   let visibility: { private: boolean };
   try {
     visibility = await check(name);
   } catch {
-    return { joined: false, text: `No pude leer ${name} en GitHub: revisá que exista, que sea privado y que tu sesión de GitHub tenga acceso (zero setup).` };
+    return { joined: false, text: `No pude leer ${name} en GitHub: revisá que exista, que sea privado y que tu sesión de GitHub tenga acceso (zero setup).\n\n${coordRepoHelp(name)}` };
   }
-  if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.` };
+  if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.\n\n${coordRepoHelp()}` };
   ctx.config = await editConfig(ctx, (doc) => doc.setIn(["distributed", "repository"], name));
-  return { joined: true, text: `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.` };
+  const text = `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.`;
+  const lines = await joinLines(ctx, name, deps).catch((err) => `No pude traer las líneas ahora (${lineProblem(ctx, err)}). ${JOIN_RETRY}`);
+  return { joined: true, text: `${text}\n${lines}` };
+}
+
+const JOIN_RETRY = "La fábrica lo vuelve a intentar cuando está encendida.";
+
+/** The lines pass of a machine that has just joined, and what it did in words. Joining again brings back the lines taken out by hand. */
+async function joinLines(ctx: FactoryContext, repository: string, deps: JoinDeps): Promise<string> {
+  const now = (ctx.now ?? (() => new Date()))();
+  forgetTakenOut(ctx);
+  if (githubHalt(ctx.store, now)) return `No traje las líneas todavía: GitHub está en pausa. ${JOIN_RETRY}`;
+  const api = deps.coord(repository);
+  if (!api) return `No traje las líneas todavía: no hay token de GitHub. ${JOIN_RETRY}`;
+  // Asked for by hand, a probe that failed a while ago is tried again.
+  await probeOnce(ctx, api, repository, machineIdentity(ctx.store, ctx.config).id, now, 0);
+  if (!coordReady(ctx)) {
+    const problem = readProbe(ctx.store)?.problem;
+    return `No traje las líneas todavía: el repositorio de coordinación no pasó la prueba${problem ? ` (${lineProblem(ctx, problem)})` : ""}. Si está vacío, agregale un primer commit. ${JOIN_RETRY}`;
+  }
+  const result = await linesPass(ctx, api, { clone: deps.clone, platform: deps.platform, signal: deps.signal });
+  if (!result) return `No traje las líneas todavía. ${JOIN_RETRY}`;
+  const out: string[] = [];
+  if (result.cloned.length) out.push(`Líneas clonadas: ${result.cloned.join(", ")}.`);
+  for (const l of result.unattended) out.push(`${l.name}: no se atiende en esta máquina ${l.why}.`);
+  for (const l of result.failed) out.push(`${l.name}: no se pudo clonar (${l.why}). Se vuelve a intentar pasada una hora, con la fábrica encendida.`);
+  if (deps.signal?.aborted) out.push(`El clonado se cortó. ${JOIN_RETRY}`);
+  return out.length ? out.join("\n") : "No hay líneas nuevas para clonar.";
 }
 
 export function lines(config: FactoryConfig) {

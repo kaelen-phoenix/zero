@@ -11,10 +11,10 @@
 
 ## 2. Etapa 2: Unirse, líneas no atendidas y creación del repositorio
 
-- [ ] 2.1 joinFactory: dependencias inyectables de coord y clonador, sondeo, una corrida de linesPass, permitir volver a clonar líneas quitadas a mano y texto con el resultado.
-- [ ] 2.2 Explicación con gh repo create --private --add-readme en zero unirse sin argumento, inválido, público o ilegible, sin crear nada; ajustar la ayuda de src/cli.ts.
-- [ ] 2.3 FactoryStatus con las líneas no atendidas o con clon fallido, en formatStatus y en el resumen del panel, solo con distributed.
-- [ ] 2.4 Tests en test/coord-daemon.test.ts o test/coord-lines.test.ts y revisar test/wording.test.ts.
+- [x] 2.1 joinFactory: dependencias inyectables de coord y clonador, sondeo, una corrida de linesPass, permitir volver a clonar líneas quitadas a mano y texto con el resultado.
+- [x] 2.2 Explicación con gh repo create --private --add-readme en zero unirse sin argumento, inválido, público o ilegible, sin crear nada; ajustar la ayuda de src/cli.ts.
+- [x] 2.3 FactoryStatus con las líneas no atendidas o con clon fallido, en formatStatus y en el resumen del panel, solo con distributed.
+- [x] 2.4 Tests en test/coord-daemon.test.ts o test/coord-lines.test.ts y revisar test/wording.test.ts.
 
 ## 3. Etapa 3: Estaciones de paquetes fijadas a una máquina
 

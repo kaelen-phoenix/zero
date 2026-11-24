@@ -3,7 +3,7 @@ import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -391,7 +391,7 @@ ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><
 ${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}</span></p>` : ""}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
-${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}
+${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}${s.linesAway?.length ? `<p class="muted">Líneas que no están en esta máquina:</p><ul>${s.linesAway.map((l) => `<li class="muted">${l.state === "failed" ? `<span class="bad">${esc(lineAwayLine(l))}</span>` : esc(lineAwayLine(l))}</li>`).join("")}</ul>` : ""}
 ${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
 ${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}

@@ -3,15 +3,17 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { requestWork, SHUTDOWN_KEY, type FactoryContext } from "../src/app.js";
+import { factoryStatus, joinFactory, requestWork, SHUTDOWN_KEY, type FactoryContext } from "../src/app.js";
 import { parseFactory } from "../src/config.js";
 import { gitCloneLine, lineKey, linesPass, readLineState, type LineCloner, type LinesOptions } from "../src/coord/lines.js";
-import { PROBE_KEY } from "../src/coord/pass.js";
+import { PROBE_KEY, readProbe } from "../src/coord/pass.js";
 import { lineRef, machineRef, memoryCoord, readLineRecord, type LineRecord } from "../src/coord/protocol.js";
 import { primaryEngines } from "../src/coord/queue.js";
 import { runDaemon } from "../src/daemon.js";
+import { formatStatus } from "../src/format.js";
 import { HALT_KEY } from "../src/github-quota.js";
 import { machineIdentity } from "../src/machine.js";
+import { overviewPage } from "../src/panel/html.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
@@ -361,6 +363,166 @@ describe("lines a machine cannot take", () => {
     api.refs.delete(lineRef("tienda"));
     await pass(b, api);
     expect(b.store.getKv(lineKey("tienda"))).toBeUndefined();
+  });
+});
+
+describe("joining a factory", () => {
+  const isPrivate = async () => ({ private: true });
+  const single = () => testFactory({ isolation: "worktree", lines: [] });
+  const CREATE = "gh repo create <cuenta>/<nombre> --private --add-readme";
+
+  it("probes the repository, clones the lines it can take and names the ones it cannot", async () => {
+    const { bare } = githubRepo();
+    const { clone } = cloner(bare);
+    const api = memoryCoord();
+    published(api);
+    published(api, { name: "ios", repository: "acme/ios", needs: { engines: [], platforms: ["darwin"] } });
+    const b = single();
+    const asked: string[] = [];
+    const deps = { coord: (r: string) => (asked.push(r), api), clone, platform: "linux" as const };
+    const result = await joinFactory(b, REPOSITORY, isPrivate, deps);
+    expect(result.joined).toBe(true);
+    expect(asked).toEqual([REPOSITORY]);
+    expect(readProbe(b.store)).toMatchObject({ repository: REPOSITORY, ok: true });
+    expect(existsSync(join(b.home.lines, "tienda", ".git"))).toBe(true);
+    expect(b.config.lines.map((l) => l.name)).toEqual(["tienda"]);
+    expect(parseFactory(file(b)).lines.map((l) => l.name)).toEqual(["tienda"]);
+    expect(result.text).toContain("Líneas clonadas: tienda.");
+    expect(result.text).toContain("ios: no se atiende en esta máquina por la plataforma");
+    // A passed probe is not tried again, nor a line that is here cloned.
+    const again = await joinFactory(b, REPOSITORY, isPrivate, deps);
+    expect(again.text).not.toContain("Líneas clonadas");
+    expect(api.calls.filter((c) => c.startsWith("create probe/"))).toHaveLength(2);
+  });
+
+  it("stays joined and tells it when the clone fails", async () => {
+    const api = memoryCoord();
+    published(api);
+    const b = single();
+    const result = await joinFactory(b, REPOSITORY, isPrivate, { coord: () => api, clone: async () => Promise.reject(new Error("sin permiso")) });
+    expect(result.joined).toBe(true);
+    expect(parseFactory(file(b)).distributed?.repository).toBe(REPOSITORY);
+    expect(b.config.lines).toEqual([]);
+    expect(result.text).toContain("tienda: no se pudo clonar (sin permiso)");
+  });
+
+  it("stays joined when the lines cannot be read, the probe fails, GitHub is paused or there is no token", async () => {
+    const never = neverClones();
+    const joins = async (api: ReturnType<typeof memoryCoord> | undefined, b = single()) => {
+      const result = await joinFactory(b, REPOSITORY, isPrivate, { coord: () => api, clone: never.clone });
+      expect(result.joined).toBe(true);
+      expect(parseFactory(file(b)).distributed?.repository).toBe(REPOSITORY);
+      return result.text;
+    };
+    const unreadable = memoryCoord();
+    unreadable.list = async () => Promise.reject(new Error("503 https://u:clave@github.com/x"));
+    const text = await joins(unreadable);
+    expect(text).toContain("503");
+    expect(text).not.toContain("clave");
+    const empty = memoryCoord();
+    empty.create = async () => Promise.reject(new Error("Git Repository is empty"));
+    const b = single();
+    expect(await joins(empty, b)).toContain("primer commit");
+    // Joining again tries the failed probe at once.
+    expect(await joins(memoryCoord(), b)).toContain("No hay líneas nuevas para clonar.");
+    const paused = single();
+    paused.store.setKv(HALT_KEY, JSON.stringify({ until: new Date(Date.now() + 3_600_000).toISOString(), why: "límite" }));
+    const untouched = memoryCoord();
+    expect(await joins(untouched, paused)).toContain("pausa");
+    expect(untouched.calls).toEqual([]);
+    expect(await joins(undefined)).toContain("no hay token");
+    expect(never.calls()).toBe(0);
+  });
+
+  it("brings back a line cloned here and taken out by hand, in the folder that was still there", async () => {
+    const { bare } = githubRepo();
+    const api = memoryCoord();
+    published(api);
+    const b = factory("nube");
+    const c = cloner(bare);
+    await pass(b, api, { clone: c.clone });
+    const doc = parseDocument(file(b));
+    doc.deleteIn(["lines", 0]);
+    writeFileSync(b.home.config, doc.toString());
+    b.config = parseFactory(file(b));
+    writeTree(join(b.home.lines, "tienda"), { "mio.txt": "x" });
+    const result = await joinFactory(b, REPOSITORY, isPrivate, { coord: () => api, clone: c.clone });
+    expect(result.text).toContain("Líneas clonadas: tienda.");
+    expect(b.config.lines.map((l) => l.name)).toEqual(["tienda"]);
+    expect(c.asked).toHaveLength(1);
+    expect(existsSync(join(b.home.lines, "tienda", "mio.txt"))).toBe(true);
+  });
+
+  it("counts as cloned a line the daemon added while it was cloning", async () => {
+    const { bare } = githubRepo();
+    const api = memoryCoord();
+    published(api);
+    const b = factory("nube");
+    const c = cloner(bare);
+    const daemon: FactoryContext = { ...b };
+    const clone: LineCloner = async (input) => {
+      await linesPass(daemon, api, { clone: c.clone });
+      await c.clone(input);
+    };
+    const result = await joinFactory(b, REPOSITORY, isPrivate, { coord: () => api, clone });
+    expect(result.text).toContain("Líneas clonadas: tienda.");
+    expect(parseFactory(file(b)).lines.map((l) => l.name)).toEqual(["tienda"]);
+    expect(b.config.lines.map((l) => l.name)).toEqual(["tienda"]);
+    expect(readLineState(b.store, "tienda")!.state).toBe("cloned");
+    expect(readdirSync(b.home.lines)).toEqual(["tienda"]);
+  });
+
+  it("explains how to create the repository, and creates and writes nothing", async () => {
+    const b = single();
+    const before = file(b);
+    const api = memoryCoord();
+    const refused = async (name: string, check: () => Promise<{ private: boolean }> = isPrivate) => {
+      const result = await joinFactory(b, name, check, { coord: () => api, clone: neverClones().clone });
+      expect(result.joined).toBe(false);
+      expect(result.text).toContain("primer commit");
+      return result.text;
+    };
+    expect(await refused("")).toContain(CREATE);
+    expect(await refused("zero-coord")).toContain(CREATE);
+    expect(await refused("me/zero-coord", async () => ({ private: false }))).toContain(CREATE);
+    expect(await refused("me/zero-coord", async () => Promise.reject(new Error("Not Found")))).toContain("gh repo create me/zero-coord --private --add-readme");
+    expect(file(b)).toBe(before);
+    expect(api.calls).toEqual([]);
+    expect(b.store.kvWithPrefix("coord:")).toEqual([]);
+  });
+
+  it("explains it from the CLI without a repository", () => {
+    const b = single();
+    const before = file(b);
+    const r = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "unirse"], { encoding: "utf8", env: { ...process.env, ZERO_HOME: b.home.root }, input: "", windowsHide: true });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain(CREATE);
+    expect(file(b)).toBe(before);
+  });
+});
+
+describe("lines that are not on this machine, in status and panel", () => {
+  it("shows why, and nothing without distributed", async () => {
+    const api = memoryCoord();
+    published(api, { name: "ios", repository: "acme/ios", needs: { engines: [], platforms: ["darwin"] } });
+    published(api);
+    const b = factory("nube");
+    await linesPass(b, api, { platform: "linux", clone: async () => Promise.reject(new Error("falló <b>algo</b>")) });
+    const status = factoryStatus(b);
+    const text = formatStatus(status);
+    expect(text).toContain("Líneas que no están en esta máquina:");
+    expect(text).toContain("- ios · no se atiende en esta máquina por la plataforma");
+    expect(text).toContain("- tienda · no se pudo clonar: falló");
+    const html = overviewPage(status, [], "n");
+    expect(html).toContain("ios · no se atiende en esta máquina por la plataforma");
+    expect(html).toContain("tienda · no se pudo clonar");
+    expect(html).not.toContain("<b>algo</b>");
+
+    b.config = { ...b.config, distributed: undefined };
+    const alone = factoryStatus(b);
+    expect(alone.linesAway).toBeUndefined();
+    expect(formatStatus(alone)).not.toContain("Líneas que no están");
+    expect(overviewPage(alone, [], "n")).not.toContain("Líneas que no están");
   });
 });
 

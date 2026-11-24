@@ -7,10 +7,11 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, rejectProposal, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, githubJoin, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
+import { gitCloneLine, type LineCloner } from "./coord/lines.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
 import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
@@ -132,7 +133,8 @@ Fábrica:
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
-  zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado)
+  zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado) y clona
+                                 sus líneas; sin repositorio, explica cómo crearlo
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
   zero mcp remote on|off         Deja manejar la fábrica desde el chat del celular (ChatGPT, Claude u otro cliente MCP) por
@@ -641,8 +643,15 @@ Informe: ${r.report}`);
         return 0;
       }
       case "unirse": {
-        if (!rest[0]) throw new Error("Indicá el repositorio de coordinación: zero unirse <cuenta/repo>");
-        const joined = await joinFactory(ctx, rest[0]);
+        // git runs on its own, so Ctrl+C has to reach it too.
+        const stopJoin = new AbortController();
+        const clone: LineCloner = async (input) => {
+          console.log(`Clonando ${input.url}…`);
+          const cut = () => stopJoin.abort();
+          process.once("SIGINT", cut);
+          await gitCloneLine(input).finally(() => process.off("SIGINT", cut));
+        };
+        const joined = await joinFactory(ctx, rest[0] ?? "", undefined, { ...githubJoin(ctx), clone, signal: stopJoin.signal });
         console.log(joined.text);
         return joined.joined ? 0 : 1;
       }

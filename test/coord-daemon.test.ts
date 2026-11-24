@@ -147,7 +147,7 @@ describe("zero unirse", () => {
 
   it("writes the repository when it is private", async () => {
     const ctx = testFactory({ isolation: "worktree", lines: [] });
-    const result = await joinFactory(ctx, "me/zero-coord", async () => ({ private: true }));
+    const result = await joinFactory(ctx, "me/zero-coord", async () => ({ private: true }), { coord: () => memoryCoord() });
     expect(result.joined).toBe(true);
     expect(ctx.config.distributed).toMatchObject({ repository: "me/zero-coord", heartbeatSeconds: 60, leaseMinutes: 10 });
     expect(file(ctx)).toMatch(/distributed:\s*\n\s+repository: me\/zero-coord/);

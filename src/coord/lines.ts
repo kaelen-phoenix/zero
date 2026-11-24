@@ -11,7 +11,7 @@ import { scrubLocal } from "../line/research.js";
 import { log } from "../log.js";
 import { machineCapabilities, machineIdentity, type MachineIdentity } from "../machine.js";
 import { cleanError, findGit, gitEnv } from "../package-install.js";
-import { isInside } from "../packages.js";
+import { factoryConfig, isInside } from "../packages.js";
 import { TRUSTED_CWD, tryGit } from "../shell.js";
 import type { Store } from "../state/store.js";
 import { coordReady } from "./pass.js";
@@ -49,6 +49,34 @@ export interface LinesOptions {
   clone?: LineCloner;
   signal?: AbortSignal;
 }
+
+/** A published line that is not on this machine, and why. */
+export interface LineAway {
+  name: string;
+  state: "unattended" | "failed";
+  why: string;
+}
+
+/** The published lines the last pass left out of this machine, by name. */
+export function linesAway(ctx: { store: Store; config: FactoryConfig }): LineAway[] {
+  return ctx.store.kvWithPrefix(LINE_PREFIX).flatMap(([key]) => {
+    const name = key.slice(LINE_PREFIX.length);
+    const last = readLineState(ctx.store, name);
+    if (!last || last.state === "cloned" || ctx.config.lines.some((l) => l.name === name)) return [];
+    return [{ name, state: last.state, why: last.why ?? "" }];
+  });
+}
+
+/** Lets the lines cloned here and then taken out by hand be cloned again: joining again asks for it. */
+export function forgetTakenOut(ctx: { store: Store; config: FactoryConfig }): void {
+  for (const [key] of ctx.store.kvWithPrefix(LINE_PREFIX)) {
+    const name = key.slice(LINE_PREFIX.length);
+    if (readLineState(ctx.store, name)?.state === "cloned" && !ctx.config.lines.some((l) => l.name === name)) ctx.store.deleteKv(key);
+  }
+}
+
+/** A failure as it is kept and shown: no credentials, no path of this machine. */
+export const lineProblem = (ctx: Pick<FactoryContext, "home">, err: unknown): string => scrubLocal(cleanError(err instanceof Error ? err.message : String(err)), { repo: ctx.home.root });
 
 export function readLineState(store: Store, name: string): LineState | undefined {
   const raw = store.getKv(lineKey(name));
@@ -136,9 +164,12 @@ async function cloneLine(ctx: FactoryContext, record: LineRecord, clone: LineClo
   const dir = cloneFolder(ctx.home, record.name);
   if (!dir) throw new Error(`el nombre "${record.name}" sale de la carpeta de líneas`);
   const url = cloneUrl(record.repository);
-  if (existsSync(dir)) {
+  const whole = () => {
+    if (!existsSync(dir)) return false;
     if (!existsSync(join(dir, ".git")) || tryGit(["config", "--get", "remote.origin.url"], dir) !== url) throw new Error("su carpeta en ZERO_HOME/lines ya existe y no es un clon de ese repositorio");
-  } else {
+    return true;
+  };
+  if (!whole()) {
     await mkdir(ctx.home.lines, { recursive: true });
     // A line's name never starts with a dot, so it cannot be another line's folder.
     const temp = await mkdtemp(join(ctx.home.lines, `.${record.name}-`));
@@ -146,7 +177,8 @@ async function cloneLine(ctx: FactoryContext, record: LineRecord, clone: LineClo
       await clone({ url, branch: record.baseBranch, dir: temp, signal });
       signal?.throwIfAborted();
       if (tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${record.baseBranch}^{commit}`], temp) === undefined) throw new Error(`el repositorio no tiene la rama ${record.baseBranch}`);
-      await renameFolder(temp, dir);
+      // The daemon's pass and `zero unirse` may clone it at the same time: the first one to finish stays.
+      if (!whole()) await renameFolder(temp, dir);
     } finally {
       await rm(temp, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove a line's partial clone", { line: record.name, error: String(err) }));
     }
@@ -186,7 +218,8 @@ export const gitCloneLine: LineCloner = ({ url, branch, dir, signal }) =>
  * machine's lines on GitHub go out as `lines/<name>`, and those of the other
  * machines whose name is not in the factory file are cloned in ZERO_HOME/lines
  * and added, unless this machine cannot take them. A line that exists is never
- * changed, and one cloned (or published) here and taken out by hand does not come back.
+ * changed, and one cloned (or published) here and taken out by hand does not come back
+ * (one cloned, until `zero unirse` runs again).
  * Undefined, and nothing done, while the protocol is off or GitHub holds a pause.
  */
 export async function linesPass(ctx: FactoryContext, api: CoordApi, opts: LinesOptions = {}): Promise<LinesResult | undefined> {
@@ -239,7 +272,15 @@ export async function linesPass(ctx: FactoryContext, api: CoordApi, opts: LinesO
     } catch (err) {
       // A shutdown cut it: nothing failed, the next pass starts over.
       if (opts.signal?.aborted) break;
-      const why = scrubLocal(cleanError(err instanceof Error ? err.message : String(err)), { repo: ctx.home.root });
+      // Another process of this machine added it meanwhile: the line is here.
+      const fresh = await factoryConfig(ctx.home).catch(() => undefined);
+      if (fresh?.lines.some((l) => l.name === record.name && isInside(l.repo, ctx.home.lines))) {
+        ctx.config = fresh;
+        save("cloned");
+        result.cloned.push(record.name);
+        continue;
+      }
+      const why = lineProblem(ctx, err);
       save("failed", why);
       result.failed.push({ name: record.name, why });
       log.warn("cloning a line of the factory failed", { line: record.name, repository: record.repository, error: why });

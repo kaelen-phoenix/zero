@@ -3,6 +3,7 @@ import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
 import type { GithubStatus } from "./github-quota.js";
+import type { LineAway } from "./coord/lines.js";
 import type { MachineView } from "./coord/protocol.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
@@ -355,6 +356,12 @@ export function machineLine(m: MachineView, now = new Date()): string {
   return `${m.name} · ${m.alive ? "viva" : "caída"} · último latido ${resetTime(m.at, now)} · ${m.jobs.length ? `trabajos ${m.jobs.join(", ")}` : "sin trabajos"}`;
 }
 
+/** A published line that is not on this machine: "ios · no se atiende en esta máquina por la plataforma: …". */
+export function lineAwayLine(l: LineAway): string {
+  if (l.state === "failed") return `${l.name} · no se pudo clonar${l.why ? `: ${l.why}` : ""}`;
+  return `${l.name} · no se atiende en esta máquina${l.why ? ` ${l.why}` : ""}`;
+}
+
 /** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
 export function priorityNote(job: Job, now = new Date()): string {
   const level = effectivePriority(job, now);
@@ -502,6 +509,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
     out.push(`Máquinas:${s.machines.length ? "" : " todavía sin latidos"}`);
     for (const m of s.machines) out.push(`- ${machineLine(m, now)}`);
   }
+  if (s.linesAway?.length) out.push("Líneas que no están en esta máquina:", ...s.linesAway.map((l) => `- ${lineAwayLine(l)}`));
   out.push(budgetLine(s.budget, now));
   out.push(`Hoy:${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
   const origin = (j: Job) => (jobOrigin(j) ? ` · ${jobOrigin(j)}` : "");

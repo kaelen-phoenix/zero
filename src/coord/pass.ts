@@ -42,10 +42,10 @@ export function coordReady(ctx: { store: Store; config: FactoryConfig }): boolea
   return probe?.ok === true && probe.repository === distributed.repository;
 }
 
-/** Probes the repository once, and a failed probe again at most every PROBE_RETRY_MS. */
-async function probeOnce(ctx: { store: Store }, api: CoordApi, repository: string, machineId: string, now: Date): Promise<void> {
+/** Probes the repository once, and a failed probe again at most every `retryMs`. */
+export async function probeOnce(ctx: { store: Store }, api: CoordApi, repository: string, machineId: string, now: Date, retryMs = PROBE_RETRY_MS): Promise<void> {
   const last = readProbe(ctx.store);
-  if (last && last.repository === repository && (last.ok || now.getTime() - Date.parse(last.at) < PROBE_RETRY_MS)) return;
+  if (last && last.repository === repository && (last.ok || now.getTime() - Date.parse(last.at) < retryMs)) return;
   const result = await probeCoord(api, `${machineId}-${now.getTime()}`);
   const record: ProbeRecord = { repository, at: now.toISOString(), ok: result.ok, ...(result.ok ? {} : { problem: result.problem }) };
   ctx.store.setKv(PROBE_KEY, JSON.stringify(record));
