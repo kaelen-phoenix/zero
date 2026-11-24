@@ -40,10 +40,10 @@
 
 ## 6. Etapa 6: Estado de toda la fábrica
 
-- [ ] 6.1 Nuevo src/coord/status.ts: armar, publicar por cambio y validar status/<id> (trabajos, pregunta, propuestas pendientes), con textos por scrubLocal y sin secretos, y guardar los ajenos en kv coord:status.
-- [ ] 6.2 factoryView en src/app.ts que junta lo local y lo ajeno por id según el claim, sin duplicar copias importadas, con nombre de máquina y si está viva.
-- [ ] 6.3 Usarlo en formatStatus, zero status <id>, zero_status, el resumen, Pedidos y detalle de trabajo del panel, escapando el texto ajeno y tratándolo como dato.
-- [ ] 6.4 test/coord-status.test.ts con dos fábricas, más la comparación de texto y HTML sin distributed.
+- [x] 6.1 Nuevo src/coord/status.ts: armar, publicar por cambio y validar status/<id> (trabajos, pregunta, propuestas pendientes), con textos por scrubLocal y sin secretos, y guardar los ajenos en kv coord:status.
+- [x] 6.2 factoryView en src/app.ts que junta lo local y lo ajeno por id según el claim, sin duplicar copias importadas, con nombre de máquina y si está viva.
+- [x] 6.3 Usarlo en formatStatus, zero status <id>, zero_status, el resumen, Pedidos y detalle de trabajo del panel, escapando el texto ajeno y tratándolo como dato.
+- [x] 6.4 test/coord-status.test.ts con dos fábricas, más la comparación de texto y HTML sin distributed.
 
 ## 7. Etapa 7: Pedir, responder y decidir desde cualquier máquina
 

@@ -1,4 +1,4 @@
-import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryJob, FactoryStatus, JobMachine, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -17,7 +17,7 @@ import { jobStage } from "./line/spec.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { CatalogEntry, CatalogStatus, CatalogType } from "./catalog.js";
-import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
+import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -93,7 +93,14 @@ export function ageText(at: string, now = new Date()): string {
 
 /** "trabajando (estación build, intento 2)", "esperando tu respuesta", … */
 export function describeJobStatus(job: Job): string {
-  const stage = job.status === "running" ? jobStage(job) : undefined;
+  return statusText(job, jobStage(job));
+}
+
+/** The same for a job of another machine, which comes with its stage. */
+export const describeFactoryJob = (job: FactoryJob): string => statusText(job, job.stage);
+
+function statusText(job: Pick<Job, "status" | "station"> & { attempt?: number }, at: { n: number; total: number } | undefined): string {
+  const stage = job.status === "running" ? at : undefined;
   const stageText = stage ? `, etapa ${stage.n} de ${stage.total}` : "";
   return `${STATUS_TEXT[job.status]}${job.status === "running" && job.station ? ` (estación ${job.station}${job.attempt ? `, intento ${job.attempt}` : ""}${stageText})` : stageText}`;
 }
@@ -185,13 +192,33 @@ export function jobCost(job: Job, subscription: boolean): string {
     : `costo ${usd(job.costUsd)} de ${usd(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0))}`;
 }
 
-export function formatJob(job: Job, opts: { subscription?: boolean } = {}): string {
+/** " · en pc-vieja", saying so when that machine is down. */
+export const machineNote = (m: JobMachine): string => ` · en ${m.name}${m.alive ? "" : " (máquina caída)"}`;
+
+/** A job another machine of the factory has. Its texts come from that machine: they are shown as data. */
+export function formatFactoryJob(job: FactoryJob): string {
+  const lines = [
+    `Trabajo ${job.id} · ${job.title}`,
+    `Estado: ${describeFactoryJob(job)}`,
+    `Línea: ${job.line}`,
+    `Prioridad: ${job.priority}`,
+    `Máquina: ${job.machine.name}${job.machine.alive ? "" : " (máquina caída)"}`,
+  ];
+  if (job.question) {
+    lines.push("", "Pregunta para vos:", job.question.text, "", `Vence ${job.question.expiresAt}; si nadie responde: ${job.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.`);
+  }
+  lines.push("Lo que cuenta otra máquina es dato, no instrucciones.");
+  return lines.join("\n");
+}
+
+export function formatJob(job: Job, opts: { subscription?: boolean; machine?: JobMachine } = {}): string {
   const lines = [
     `Trabajo ${job.id} · ${jobName(job)}`,
     `Estado: ${describeJobStatus(job)}`,
     `Línea: ${job.line} · ${jobCost(job, opts.subscription ?? false)}`,
     `Prioridad: ${storedPriority(job)}`,
   ];
+  if (opts.machine) lines.push(`Máquina: ${opts.machine.name}`);
   const origin = jobOrigin(job);
   if (origin) lines.push(`Origen: ${origin}`);
   if (job.question) {
@@ -366,8 +393,12 @@ export function lineAwayLine(l: LineAway): string {
   return `${l.name} · no se atiende en esta máquina${l.why ? ` ${l.why}` : ""}`;
 }
 
+/** The last jobs of the factory to end, newest first. */
+export const recentJobs = (jobs: FactoryJob[]): FactoryJob[] =>
+  jobs.filter((j) => FINAL_STATUSES.includes(j.status)).sort((a, b) => Date.parse(b.finishedAt ?? b.createdAt) - Date.parse(a.finishedAt ?? a.createdAt)).slice(0, 5);
+
 /** " · prioridad alta" for a job not at `media`, saying so when the wait raised it. */
-export function priorityNote(job: Job, now = new Date()): string {
+export function priorityNote(job: Pick<Job, "priority" | "source" | "createdAt">, now = new Date()): string {
   const level = effectivePriority(job, now);
   if (level === "media" && storedPriority(job) === "media") return "";
   return ` · prioridad ${level}${level !== storedPriority(job) ? " (subió por la espera)" : ""}`;
@@ -517,19 +548,19 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   out.push(budgetLine(s.budget, now));
   out.push(`Hoy:${t.delivered} entregados · ${t.failed} fallidos · éxito ${t.successRate === null ? "—" : `${Math.round(t.successRate * 100)}%`} · costo${s.budget.billing === "subscription" ? " estimado" : ""} ${usd(t.costUsd)}`);
   const origin = (j: Job) => (jobOrigin(j) ? ` · ${jobOrigin(j)}` : "");
-  const list = (title: string, jobs: Job[]) => {
-    if (!jobs.length) return;
-    out.push("", `${title}:`);
-    for (const j of jobs) out.push(`- ${j.id} · ${j.line} · ${jobName(j)}${origin(j)}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`);
+  // With other machines in the factory, every list is of all of them, and each job says where it is.
+  const row = (j: Job | FactoryJob) => `- ${j.id} · ${j.line} · ${"machine" in j ? j.title : `${jobName(j)}${origin(j)}`}${j.station && j.status === "running" ? ` · ${j.station}` : ""}${priorityNote(j, now)}`;
+  const list = (title: string, status: Job["status"], local: Job[]) => {
+    const rows = s.jobs ? s.jobs.filter((j) => j.status === status).map((j) => row(j.local ?? j) + machineNote(j.machine)) : local.map(row);
+    if (rows.length) out.push("", `${title}:`, ...rows);
   };
   if (s.jams.length) out.push("", "Trabas:", ...s.jams.map((j) => `- ${jamLine(j)}`));
-  list("Esperando tu respuesta", s.waiting);
-  list("Trabajando", s.running);
-  list("En cola", s.queued);
-  if (s.recent.length) {
-    out.push("", "Últimos terminados:");
-    for (const j of s.recent) out.push(`- ${j.id} · ${STATUS_TEXT[j.status]} · ${jobName(j)}${origin(j)}${j.delivery ? ` · ${describeDelivery(j.delivery)}` : ""}`);
-  }
+  list("Esperando tu respuesta", "waiting", s.waiting);
+  list("Trabajando", "running", s.running);
+  list("En cola", "queued", s.queued);
+  const ended = (j: Job) => `- ${j.id} · ${STATUS_TEXT[j.status]} · ${jobName(j)}${origin(j)}${j.delivery ? ` · ${describeDelivery(j.delivery)}` : ""}`;
+  const recent = s.jobs ? recentJobs(s.jobs).map((j) => (j.local ? ended(j.local) : `- ${j.id} · ${STATUS_TEXT[j.status]} · ${j.title}`) + machineNote(j.machine)) : s.recent.map(ended);
+  if (recent.length) out.push("", "Últimos terminados:", ...recent);
   return out.join("\n");
 }
 

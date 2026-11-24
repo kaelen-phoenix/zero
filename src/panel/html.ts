@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryJob, type FactoryStatus, type JobMachine, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -315,8 +315,22 @@ export function loginPage(nonce: string, failed = false, back?: string): string 
 const CHIP_TEXT: Record<JobStatus, string> = { queued: "en cola", running: "trabajando", waiting: "te espera", delivered: "entregado", failed: "fallido", stopped: "detenido" };
 const chip = (status: JobStatus) => `<span class="chip" data-status="${status}">${CHIP_TEXT[status]}</span>`;
 
-const jobLine = (j: Job) =>
-  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
+/** Where a job is, only with other machines in the factory. */
+const onMachine = (m?: JobMachine) => (m ? (m.alive ? esc(machineNote(m)) : `<span class="bad">${esc(machineNote(m))}</span>`) : "");
+
+/** A job another machine has: its texts come from that machine. */
+const awayLine = (j: FactoryJob) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(j.title)}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)} · ${esc(describeFactoryJob(j))}${onMachine(j.machine)}</span></li>`;
+
+/** The question of a job another machine has. */
+const awayQuestion = (j: FactoryJob) =>
+  j.question
+    ? `<pre>${esc(j.question.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}. Se responde en la máquina ${esc(j.machine.name)}.</p>`
+    : "";
+
+const jobLine = (j: Job, machine?: JobMachine) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}${onMachine(machine)}</span></li>`;
 
 const answerForms = (j: Job) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
@@ -372,11 +386,17 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
         : s.boxWait
           ? "Sin caja: los trabajos esperan en la cola. Corré <code>zero box setup</code> o elegí otra cosa con <code>zero setup</code>."
           : "Sin caja: los trabajos corren en copias locales.";
-  const waiting = s.waiting
-    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
-<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
-    .join("");
-  const list = (title: string, jobs: Job[]) => (jobs.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${jobs.map(jobLine).join("")}</ul></div>` : "");
+  const waitingCard = (j: Job, machine?: JobMachine) =>
+    `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}${machine ? `<p class="muted">${esc(j.id)}${onMachine(machine)}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`;
+  const awayCard = (j: FactoryJob) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(j.title)}</a></h3><p class="muted">${esc(j.id)}${onMachine(j.machine)}</p>${awayQuestion(j)}</div>`;
+  // With other machines in the factory, every list is of all of them.
+  const all = (status: JobStatus) => s.jobs?.filter((j) => j.status === status);
+  const waiting = (all("waiting")?.map((j) => (j.local ? waitingCard(j.local, j.machine) : awayCard(j))) ?? s.waiting.map((j) => waitingCard(j))).join("");
+  const list = (title: string, local: Job[], jobs?: FactoryJob[]) => {
+    const rows = jobs?.map((j) => (j.local ? jobLine(j.local, j.machine) : awayLine(j))) ?? local.map((j) => jobLine(j));
+    return rows.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${rows.join("")}</ul></div>` : "";
+  };
   const options = lines.map((l) => `<option>${esc(l)}</option>`).join("");
   return page(
     "Resumen",
@@ -405,7 +425,7 @@ ${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
-${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
+${list("Trabajando", s.running, all("running"))}${list("En cola", s.queued, all("queued"))}${list("Últimos terminados", s.recent, s.jobs && recentJobs(s.jobs))}
 ${unjamCard(s.unjam)}
 ${researchSummaryCard(s.research)}
 <div class="card"><h2>Pedir un trabajo</h2>
@@ -413,6 +433,19 @@ ${researchSummaryCard(s.research)}
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
 <button class="primary">Pedir</button></form></div>`,
     { nonce, flash, refresh: true, active: "/" },
+  );
+}
+
+/** The page of a job another machine has: what that machine tells, with no action on it. */
+export function factoryJobPage(job: FactoryJob, nonce: string, flash?: string): string {
+  return page(
+    job.title,
+    `<div class="card"><h1>${esc(job.title)}</h1>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · prioridad ${esc(job.priority)}${onMachine(job.machine)}</p>
+<p>${chip(job.status)} <b>${esc(describeFactoryJob(job))}</b></p>
+${job.question ? `<h2>Pregunta para vos</h2>${awayQuestion(job)}` : ""}
+<p class="muted">La traza y la entrega están en la máquina ${esc(job.machine.name)}.</p></div>`,
+    { nonce, flash, refresh: !FINAL_STATUSES.includes(job.status) },
   );
 }
 
@@ -433,12 +466,12 @@ const discardForm = (j: Job) =>
 <form method="post" action="/job/${esc(j.id)}/discard"><label for="d-${esc(j.id)}">Motivo (opcional)</label><input id="d-${esc(j.id)}" type="text" name="motivo">
 <button class="danger">Descartar</button></form></details>`;
 
-export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"]): string {
+export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"], machine?: JobMachine): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
-<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}</p>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}${onMachine(machine)}</p>
 <p>${chip(job.status)} <b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
@@ -669,7 +702,7 @@ const ESTADOS: [RequestFilter, string][] = [
 ];
 
 /** One job of the "Pedidos" list, with its actions: detail and trace, its pending question, stop. */
-function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
+function requestRow({ job: j, machine, age }: RequestsView["rows"][number]): string {
   const id = esc(j.id);
   const question =
     j.status === "waiting" && j.question
@@ -678,8 +711,16 @@ function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
       : "";
   const halt = FINAL_STATUSES.includes(j.status) ? "" : `<form method="post" action="/requests/${id}/stop"><button class="danger">Frenar</button></form>`;
   return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(jobName(j))}</a></h3>
-<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}</p>
+<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}${onMachine(machine)}</p>
 <p><a href="/job/${id}">Ver detalle y traza</a></p>${question}${halt}</div>`;
+}
+
+/** One job of the list that another machine has. */
+function awayRow({ job: j, age }: RequestsView["away"][number]): string {
+  const id = esc(j.id);
+  return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(j.title)}</a></h3>
+<p class="muted">${id} · ${esc(j.line)} · ${esc(describeFactoryJob(j))} · ${esc(age)}${onMachine(j.machine)}</p>
+<p><a href="/job/${id}">Ver detalle</a></p>${awayQuestion(j)}</div>`;
 }
 
 /** The "Pedidos" section: a typed request form, then every request with filters and per-request actions. */
@@ -698,8 +739,12 @@ export function requestsPage(view: RequestsView, nonce: string, flash?: string):
 <form method="get" action="/requests"><label for="f-line">Línea</label><select id="f-line" name="line"><option value="">Todas las líneas</option>${lineOptions(view.line)}</select>
 <label for="f-estado">Estado</label><select id="f-estado" name="estado">${ESTADOS.map(([v, label]) => `<option value="${v}"${v === view.estado ? " selected" : ""}>${label}</option>`).join("")}</select>
 <button>Filtrar</button></form>
-${view.rows.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
-  return page("Pedidos", form + filters + `<section class="requests">${view.rows.map(requestRow).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
+${view.rows.length || view.away.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
+  const at = (row: { job: { createdAt: string } }) => Date.parse(row.job.createdAt);
+  const rows = [...view.rows.map((r) => ({ at: at(r), html: requestRow(r) })), ...view.away.map((r) => ({ at: at(r), html: awayRow(r) }))];
+  // The local rows come newest first already; only other machines' need a place among them.
+  if (view.away.length) rows.sort((a, b) => b.at - a.at);
+  return page("Pedidos", form + filters + `<section class="requests">${rows.map((r) => r.html).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
 }
 
 /** The step before stopping a job from the list: the owner confirms it. */

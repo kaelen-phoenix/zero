@@ -3,7 +3,7 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, rejectProposal, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, jobText, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -167,7 +167,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: { job: z.string().optional().describe("Job id for details; omit for the factory overview.") },
       annotations: { readOnlyHint: true },
     },
-    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)))),
+    ({ job }) => withFactory(home, (ctx) => (job ? jobText(ctx, job) : formatStatus(factoryStatus(ctx)))),
   );
 
   tool(

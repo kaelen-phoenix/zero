@@ -1,7 +1,9 @@
 import { LINE_PLATFORMS, type LineConfig } from "../config.js";
 import type { QuotaWindow } from "../engines/index.js";
 import type { MachineCapabilities, MachineIdentity } from "../machine.js";
+import { isPriority, type JobPriority } from "../priority.js";
 import { findSecret } from "../secrets.js";
+import type { JobStatus, Question } from "../state/store.js";
 
 /**
  * The distributed factory's coordination protocol (docs/adr/0007-fabrica-distribuida.md).
@@ -50,6 +52,7 @@ export const queueRef = (job: string): string => `queue/${job}`;
 export const progressRef = (job: string): string => `progress/${job}`;
 export const lineRef = (name: string): string => `lines/${name}`;
 export const spendRef = (id: string): string => `spend/${id}`;
+export const statusRef = (id: string): string => `status/${id}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 
@@ -409,6 +412,112 @@ export function readSpendRecord(ref: CoordRef): SpendRecord | undefined {
     jobs: v.jobs.map(({ id, usd }) => ({ id, usd })),
     ...(v.plans?.length && { plans: v.plans.map(({ engine, at, limited, windows }) => ({ engine, at, limited, windows: planWindows(windows) })) }),
   };
+}
+
+/** A job as its machine tells the others about it: no local paths, no secrets. */
+export interface StatusJob {
+  id: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  station?: string;
+  attempt?: number;
+  stage?: { n: number; total: number; title: string };
+  priority: JobPriority;
+  createdAt: string;
+  finishedAt?: string;
+  /** Only while it waits. */
+  question?: Pick<Question, "kind" | "text" | "askedAt" | "expiresAt" | "onTimeout">;
+}
+
+/** A scout proposal that waits to be decided on its machine. */
+export interface StatusProposal {
+  id: string;
+  line: string;
+  title: string;
+  why: string;
+  change: string;
+  estimatedUsd: number;
+  createdAt: string;
+}
+
+/** Where a machine's jobs and proposals stand, for the view of the whole factory. */
+export interface StatusRecord {
+  id: string;
+  at: string;
+  jobs: StatusJob[];
+  proposals: StatusProposal[];
+}
+
+/** The most jobs or proposals a status record may carry, and how long its texts may be. */
+export const MAX_STATUS_ITEMS = 1000;
+export const MAX_STATUS_TITLE = 300;
+export const MAX_STATUS_TEXT = 20_000;
+
+const JOB_STATUSES: readonly JobStatus[] = ["queued", "running", "waiting", "delivered", "failed", "stopped"];
+const QUESTION_KINDS: readonly Question["kind"][] = ["spec-ready", "before-integrate", "protected-path", "budget-exceeded", "integration-blocked", "egress-suspicious"];
+
+/** Characters a terminal would obey instead of showing; a text of several lines keeps its line breaks and tabs. */
+export const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const TEXT_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+const isTitle = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= MAX_STATUS_TITLE && v.search(CONTROL) < 0;
+const isText = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_STATUS_TEXT && v.search(TEXT_CONTROL) < 0;
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 10_000;
+const isStage = (v: Partial<NonNullable<StatusJob["stage"]>> | null): boolean => !!v && isCount(v.n) && isCount(v.total) && (v.title === "" || isTitle(v.title));
+const isAsked = (v: Partial<NonNullable<StatusJob["question"]>> | null): boolean =>
+  !!v && QUESTION_KINDS.includes(v.kind!) && isText(v.text) && isTime(v.askedAt) && isTime(v.expiresAt) && (v.onTimeout === "approve" || v.onTimeout === "reject");
+
+/** A job fit for a status record, with only the known fields; undefined when anything is off. */
+export function statusJob(value: unknown): StatusJob | undefined {
+  const v = value as StatusJob | null;
+  const valid =
+    !!v &&
+    typeof v === "object" &&
+    isId(v.id) &&
+    isName(v.line) &&
+    isTitle(v.title) &&
+    JOB_STATUSES.includes(v.status) &&
+    (v.station === undefined || isTitle(v.station)) &&
+    (v.attempt === undefined || isCount(v.attempt)) &&
+    (v.stage === undefined || isStage(v.stage)) &&
+    isPriority(v.priority) &&
+    isTime(v.createdAt) &&
+    (v.finishedAt === undefined || isTime(v.finishedAt)) &&
+    (v.question === undefined || (v.status === "waiting" && isAsked(v.question)));
+  if (!valid) return undefined;
+  const { stage, question } = v;
+  return {
+    id: v.id,
+    line: v.line,
+    title: v.title,
+    status: v.status,
+    ...(v.station !== undefined && { station: v.station }),
+    ...(v.attempt !== undefined && { attempt: v.attempt }),
+    ...(stage && { stage: { n: stage.n, total: stage.total, title: stage.title } }),
+    priority: v.priority,
+    createdAt: v.createdAt,
+    ...(v.finishedAt !== undefined && { finishedAt: v.finishedAt }),
+    ...(question && { question: { kind: question.kind, text: question.text, askedAt: question.askedAt, expiresAt: question.expiresAt, onTimeout: question.onTimeout } }),
+  };
+}
+
+/** A proposal fit for a status record, with only the known fields; undefined when anything is off. */
+export function statusProposal(value: unknown): StatusProposal | undefined {
+  const v = value as StatusProposal | null;
+  if (!v || typeof v !== "object" || !isId(v.id) || !isName(v.line) || !isTitle(v.title) || !isText(v.why) || !isText(v.change) || !isUsd(v.estimatedUsd) || !isTime(v.createdAt)) return undefined;
+  return { id: v.id, line: v.line, title: v.title, why: v.why, change: v.change, estimatedUsd: v.estimatedUsd, createdAt: v.createdAt };
+}
+
+/** A status record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readStatusRecord(ref: CoordRef): StatusRecord | undefined {
+  const fits = (v: unknown) => Array.isArray(v) && v.length <= MAX_STATUS_ITEMS;
+  const v = parse<StatusRecord>(ref, (v) => isId(v.id) && isTime(v.at) && fits(v.jobs) && fits(v.proposals));
+  if (!v || ref.name !== statusRef(v.id)) return undefined;
+  const jobs = v.jobs.map(statusJob).filter((j) => j !== undefined);
+  const proposals = v.proposals.map(statusProposal).filter((p) => p !== undefined);
+  if (jobs.length !== v.jobs.length || proposals.length !== v.proposals.length) return undefined;
+  return { id: v.id, at: v.at, jobs, proposals };
 }
 
 /** Publishes the job on the shared queue; false when it was already there. */

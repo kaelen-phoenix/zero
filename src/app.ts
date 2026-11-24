@@ -43,7 +43,7 @@ import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnja
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -59,7 +59,8 @@ import { installBehind, readInstallFreshness, type InstallFreshness } from "./in
 import { githubCoord } from "./coord/github.js";
 import { forgetTakenOut, lineProblem, linesAway, linesPass, type LineAway, type LineCloner } from "./coord/lines.js";
 import { coordReady, probeOnce, readMachines, readProbe } from "./coord/pass.js";
-import type { CoordApi, LineRecord, MachineView } from "./coord/protocol.js";
+import { finished as finishedClaim, type ClaimRecord, type CoordApi, type LineRecord, type MachineView, type StatusJob } from "./coord/protocol.js";
+import { ownStatusJob, readStatus, STATUS_DAYS } from "./coord/status.js";
 import { machineIdentity } from "./machine.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
@@ -442,6 +443,8 @@ export interface FactoryStatus {
   github?: GithubStatus;
   /** Every machine of a distributed factory as the last coordination pass saw them; absent without `distributed`. */
   machines?: MachineView[];
+  /** The unfinished and lately finished jobs of every machine, each once (see `factoryView`); absent while this machine is the only one. */
+  jobs?: FactoryJob[];
   /** The lines the other machines published that are not on this one, and why; absent without `distributed`. */
   linesAway?: LineAway[];
   box: { status?: BoxStatus; availability: BoxAvailability };
@@ -709,8 +712,94 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   return storedStatus(ctx, (ctx.now ?? (() => new Date()))());
 }
 
+/** A machine of the factory as the owner sees it next to a job. */
+export interface JobMachine {
+  id: string;
+  name: string;
+  /** Within its lease when the last coordination pass looked; this machine always is. */
+  alive: boolean;
+}
+
+/** A job of the whole factory, as the machine that has it tells it. */
+export interface FactoryJob extends StatusJob {
+  machine: JobMachine;
+  /** The full record, when this machine's is the copy that counts; nothing else of another machine's job is here. */
+  local?: Job;
+}
+
+/** A copy without a claim that decides: the one at work, then the one still to do. */
+const copyRank = (j: StatusJob): number => (j.status === "running" || j.status === "waiting" ? 0 : j.status === "queued" ? 1 : 2);
+
+/**
+ * The jobs of the whole factory by creation: `local` and what the other machines
+ * published, each job once, as told by the machine that holds its claim or left
+ * its closing record. undefined without the protocol, or while no other machine
+ * is known: everything shows as on a single machine.
+ */
+export function factoryView(ctx: FactoryContext, local: Job[]): FactoryJob[] | undefined {
+  if (!coordReady(ctx)) return undefined;
+  const own = machineIdentity(ctx.store, ctx.config);
+  const { records, claims } = readStatus(ctx.store);
+  const machines = readMachines(ctx.store) ?? [];
+  if (!records.length && !machines.some((m) => m.id !== own.id)) return undefined;
+  const machine = (id: string, name?: string): JobMachine => {
+    if (id === own.id) return { id, name: own.name, alive: true };
+    const known = machines.find((m) => m.id === id);
+    return { id, name: known?.name ?? name ?? id, alive: known?.alive ?? false };
+  };
+
+  // This machine's copies first, then the ones told most recently.
+  const copies = new Map<string, FactoryJob[]>();
+  const add = (copy: FactoryJob) => copies.set(copy.id, [...(copies.get(copy.id) ?? []), copy]);
+  const addLocal = (job: Job) => add({ ...ownStatusJob(job), machine: machine(own.id), local: job });
+  for (const job of local) addLocal(job);
+  for (const record of [...records].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))) {
+    for (const job of record.jobs) {
+      const here = copies.has(job.id) ? undefined : ctx.store.getJob(job.id);
+      if (here) addLocal(here);
+      add({ ...job, machine: machine(record.id) });
+    }
+  }
+  const claimOf = new Map(claims.map((c) => [c.job, c]));
+  return [...copies.values()].map((list) => heldCopy(list, claimOf.get(list[0]!.id), machine)).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+/** Which of a job's copies counts, or the one at hand as its claim says it is when its machine told nothing of it yet. */
+function heldCopy(copies: FactoryJob[], claim: ClaimRecord | undefined, machine: (id: string, name?: string) => JobMachine): FactoryJob {
+  const ended = finishedClaim(claim) ? claim : undefined;
+  if (!claim || (claim.released && !ended)) return [...copies].sort((a, b) => copyRank(a) - copyRank(b))[0]!;
+  const told = copies.find((c) => c.machine.id === claim.machine);
+  if (told) return told;
+  const { id, line, title, priority, createdAt } = copies[0]!;
+  return { id, line, title, priority, createdAt, machine: machine(claim.machine, claim.name), ...(ended ? { status: ended.status, finishedAt: ended.at } : { status: "running" }) };
+}
+
+/** One job of the whole factory, when the copy that counts is not this machine's. */
+export function jobElsewhere(ctx: FactoryContext, id: string): FactoryJob | undefined {
+  const local = ctx.store.getJob(id);
+  const job = factoryView(ctx, local ? [local] : [])?.find((j) => j.id === id);
+  return job?.local ? undefined : job;
+}
+
+/** A job's details, wherever it is in the factory: what `zero status <id>` and the chat say. */
+export function jobText(ctx: FactoryContext, id: string): string {
+  const away = jobElsewhere(ctx, id);
+  if (away) return formatFactoryJob(away);
+  const job = getJob(ctx, id);
+  const machine = factoryView(ctx, [job])?.find((j) => j.id === id)?.machine;
+  return formatJob(job, { subscription: onSubscription(ctx.store, ctx.config.engine), machine });
+}
+
+/** The jobs `FactoryStatus.jobs` shows. */
+function factoryJobs(ctx: FactoryContext, now: Date): FactoryJob[] | undefined {
+  const since = new Date(now.getTime() - STATUS_DAYS * 86_400_000);
+  const open = ctx.store.listJobs({ status: ["queued", "running", "waiting"], limit: -1 });
+  return factoryView(ctx, [...open, ...ctx.store.finishedSince(since)])?.filter((j) => !FINAL_STATUSES.includes(j.status) || Date.parse(j.finishedAt ?? j.createdAt) >= since.getTime());
+}
+
 /** `factoryStatus` from the stored state alone: it does not move the gate's records into the store first. */
 function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
+  const jobs = factoryJobs(ctx, now);
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
@@ -731,6 +820,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
     ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [], linesAway: linesAway(ctx) }),
+    ...(jobs && { jobs }),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
@@ -1007,20 +1097,33 @@ export interface RequestsView {
   /** The filter as applied: an unknown line or estado is dropped. */
   line?: string;
   estado: RequestFilter;
-  rows: { job: Job; age: string }[];
+  /** `machine` only with other machines in the factory. */
+  rows: { job: Job; machine?: JobMachine; age: string }[];
+  /** The jobs of the factory's other machines, with the same filter and within the same limit. */
+  away: { job: FactoryJob; age: string }[];
 }
 
-/** The panel's "Pedidos" list: every job (not only the store's first 1000), filtered, newest first, at most 200. */
+/** The panel's "Pedidos" list: every job of the factory (not only the store's first 1000), filtered, newest first, at most 200. */
 export function requestsView(ctx: FactoryContext, filter: { line?: string; estado?: string } = {}, now = new Date()): RequestsView {
   const lines = ctx.config.lines.map((l) => l.name);
   const line = filter.line && lines.includes(filter.line) ? filter.line : undefined;
   const estado: RequestFilter = filter.estado && Object.hasOwn(REQUEST_FILTERS, filter.estado) ? (filter.estado as RequestFilter) : "todos";
+  const all = factoryView(ctx, ctx.store.listJobs({ limit: -1 }));
+  if (all) {
+    const shown = all
+      .filter((j) => (!line || j.line === line) && (REQUEST_FILTERS[estado]?.includes(j.status) ?? true))
+      .reverse()
+      .slice(0, REQUESTS_VIEW_MAX);
+    const rows = shown.flatMap((j) => (j.local ? [{ job: j.local, machine: j.machine, age: ageText(j.createdAt, now) }] : []));
+    const away = shown.flatMap((j) => (j.local ? [] : [{ job: j, age: ageText(j.createdAt, now) }]));
+    return { lines, line, estado, rows, away };
+  }
   const rows = ctx.store
     .listJobs({ line, status: REQUEST_FILTERS[estado], limit: -1 })
     .reverse()
     .slice(0, REQUESTS_VIEW_MAX)
     .map((job) => ({ job, age: ageText(job.createdAt, now) }));
-  return { lines, line, estado, rows };
+  return { lines, line, estado, rows, away: [] };
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */
