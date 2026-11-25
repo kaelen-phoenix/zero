@@ -16,7 +16,7 @@ import { githubIssues, lineRepository } from "./intake/github.js";
 import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatGuestLog, formatGuests, formatInvitation, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatDiscard, formatDrill, formatEgress, formatGuestLog, formatGuests, formatInvitation, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -444,8 +444,7 @@ async function main(argv: string[]): Promise<number> {
         const [line, capability] = rest;
         if (!line || !capability) throw new Error("Uso: zero simulacro <línea> <capacidad> --archivos <patrón>... [--usd N] [--conservar]");
         const r = await regenerationDrill(ctx, { line, capability, patterns: values.archivos ?? [], usd: values.usd === undefined ? undefined : Number(values.usd), keep: Boolean(values.conservar) });
-        console.log(`Resultado: ${r.outcome}
-Informe: ${r.report}`);
+        console.log(formatDrill(r));
         return 0;
       }
       case "proposals": {

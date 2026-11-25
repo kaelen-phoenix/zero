@@ -9,6 +9,7 @@ import type { MachineView } from "./coord/protocol.js";
 import { installBehind, type InstallFreshness } from "./install-freshness.js";
 import { billingText, outageText, type MergeOutcome } from "./line/automerge.js";
 import type { DiscardOutcome } from "./line/discard.js";
+import type { DrillResult } from "./line/drill.js";
 import { describeDelivery } from "./line/finish.js";
 import type { Train } from "./line/train.js";
 import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
@@ -231,6 +232,15 @@ export function guestEventText(e: GuestEvent): string {
 export function formatGuestLog(events: GuestEvent[]): string {
   if (!events.length) return "No hay nada en el registro de invitados.";
   return events.map((e) => `${e.at.slice(0, 19).replace("T", " ")} UTC · ${e.name} · ${guestEventText(e)}`).join("\n");
+}
+
+/** What `zero simulacro` measured and where its report is. */
+export function formatDrill(r: Pick<DrillResult, "outcome" | "report">): string {
+  return [
+    `Resultado: ${r.outcome}`,
+    ...(r.outcome === "sin medir" ? ["Verify se cortó por tiempo, y eso no dice nada de las especificaciones. El límite se cambia con verifyTimeoutMinutes de la línea, en el archivo de la fábrica."] : []),
+    `Informe: ${r.report}`,
+  ].join("\n");
 }
 
 /** What deciding a proposal did, for the CLI and the chat. */
