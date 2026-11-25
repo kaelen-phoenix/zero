@@ -15,7 +15,8 @@ import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import type { ResearchRequest, ResearchRunRecord } from "./line/research.js";
 import type { UnjamLineResult, UnjamRequest, UnjamRunRecord } from "./line/unjam.js";
 import { jobStage } from "./line/spec.js";
-import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
+import { releaseTag } from "./releases.js";
+import type { SelfUpdateEntry, SelfUpdateRetry, SelfUpdateTarget, UpdateRunRecord } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { CatalogEntry, CatalogStatus, CatalogType } from "./catalog.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "./state/store.js";
@@ -687,9 +688,43 @@ export function selfUpdateRetryText(r: SelfUpdateRetry, now = new Date()): strin
   return `vuelve a intentar pasar a ${commit(r.commit)} a las ${resetTime(r.at, now)} (intento ${r.tries + 1})`;
 }
 
-/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update, a pending retry and a problem), `bad` when they warn. */
+/** A version as the person in charge reads it: its release with the short commit, or only the commit. */
+export const selfUpdateTargetText = (t: SelfUpdateTarget) => (t.version ? `${releaseTag(t.version)} (${commit(t.commit)})` : commit(t.commit));
+
+/** The «Canal:» line: the channel, the installed version and whether there is a newer one, as the last look left it. */
+function channelLine(s: SelfUpdateStatus, now: Date): string {
+  if (!s.look) return `Canal: ${s.channel} · todavía no se comprobó si hay una versión nueva`;
+  const { current, available, checkedAt } = s.look;
+  const unreleased = s.channel === "estable" && !current.version ? " (no es una versión liberada)" : "";
+  // A version already prepared has a line of its own, which says when it goes in.
+  const how = available && s.ready?.to !== available.commit ? "; para pasar a ella: zero actualizar" : "";
+  const news = available ? `hay una versión nueva: ${selfUpdateTargetText(available)}${how}` : "no hay una versión nueva";
+  return `Canal: ${s.channel} · versión actual: ${selfUpdateTargetText(current)}${unreleased} · ${news} (comprobado ${pastTime(checkedAt, now)})`;
+}
+
+/** The last update asked for: «pedida 10:00, preparando v1.1.0 (…) desde 10:01», or how it ended, with what its switch did. */
+export function describeUpdateRun(r: UpdateRunRecord, last?: SelfUpdateEntry, now = new Date()): string {
+  const asked = `pedida ${pastTime(r.asked, now)}`;
+  const version = r.target ? selfUpdateTargetText(r.target) : "la versión nueva";
+  if (!r.endedAt) return `${asked}, ${r.target ? "preparando" : "buscando"} ${version} desde ${pastTime(r.startedAt, now)}`;
+  if (r.outcome === "ready") {
+    const switched = last && last.to === r.target?.commit && last.at >= r.startedAt ? last : undefined;
+    if (!switched) return `${asked}, ${version} quedó lista (${pastTime(r.endedAt, now)})`;
+    return `${asked}, ${switched.outcome === "updated" ? "pasó" : "no pudo pasar"} a ${version} (${pastTime(switched.at, now)})`;
+  }
+  const how = r.outcome === "up-to-date" ? "no había una versión nueva" : r.outcome === "stopped" ? "quedó sin terminar" : "falló";
+  return `${asked}, ${how} (${pastTime(r.endedAt, now)})${r.reason ? `: ${r.reason}` : ""}`;
+}
+
+/**
+ * The lines of status and the panel about zero's own version, `bad` when they warn: «Canal:» with a channel, the update
+ * asked for, and the «Autoactualización:» ones (a version waiting to switch, the last update, a pending retry and a problem).
+ */
 export function selfUpdateLines(s: SelfUpdateStatus, now = new Date()): { text: string; bad: boolean }[] {
   return [
+    ...(s.channel ? [{ text: channelLine(s, now), bad: false }] : []),
+    ...(s.pending ? [{ text: `Actualización a pedido: pendiente desde ${pastTime(s.pending.requestedAt, now)}`, bad: false }] : []),
+    ...(s.run ? [{ text: `Última actualización a pedido: ${describeUpdateRun(s.run, s.last, now)}`, bad: s.run.outcome === "failed" || s.run.outcome === "stopped" }] : []),
     ...(s.ready ? [{ text: `Autoactualización: ${commit(s.ready.to)} está lista; cambia de versión cuando no haya trabajos corriendo (ahora ${commit(s.ready.from)})`, bad: false }] : []),
     ...(s.last ? [{ text: `Autoactualización: ${selfUpdateEntryText(s.last, now)}`, bad: s.last.outcome !== "updated" }] : []),
     ...(s.retry ? [{ text: `Autoactualización: ${selfUpdateRetryText(s.retry, now)}`, bad: false }] : []),

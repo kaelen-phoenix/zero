@@ -20,9 +20,9 @@
 
 ## 4. Etapa 4: Estado, panel y chat
 
-- [ ] 4.1 Extend selfUpdateStatus, selfUpdateLines/formatStatus and the panel summary with channel, current version, available version and request, all from the record.
-- [ ] 4.2 Add the `zero_update` tool with `delicate`, its RemoteAction with description and confirmation, its bullets in both READMEs (test/docs.test.ts needs them), and update test/interface.test.ts and test/mcp-remote.test.ts.
-- [ ] 4.3 Add the panel's `Actualizar ahora` form and POST route with session and same-origin tests.
+- [x] 4.1 Extend selfUpdateStatus, selfUpdateLines/formatStatus and the panel summary with channel, current version, available version and request, all from the record.
+- [x] 4.2 Add the `zero_update` tool with `delicate`, its RemoteAction with description and confirmation, its bullets in both READMEs (test/docs.test.ts needs them), and update test/interface.test.ts and test/mcp-remote.test.ts.
+- [x] 4.3 Add the panel's `Actualizar ahora` form and POST route with session and same-origin tests.
 
 ## 5. Etapa 5: Paquetes de git en el canal estable o fijados a una etiqueta
 

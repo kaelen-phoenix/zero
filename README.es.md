@@ -113,6 +113,7 @@ Desde el chat se hace lo mismo con estas herramientas:
 - `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
 - `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
 - `zero_unjam`: el destrabador ahora, para una línea o para todas
+- `zero_update`: actualiza zero a la última versión de su canal, cuando no haya trabajos corriendo
 - `zero_investigate`: una investigación en la web ahora sobre el tema que le das (`topic`), para una línea
 - `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 - `zero_egress`: salidas a internet
@@ -467,7 +468,7 @@ zero mcp remote off            # lo apaga
 - zero es su propio servidor de autorización OAuth 2.1, con PKCE (S256) y registro dinámico de clientes. Cada conexión nueva la aprobás vos en la página del panel, con tu clave; el chat nunca recibe una contraseña.
 - Los tokens de acceso duran 1 hora y los de renovación 7 días, y rotan en cada uso. zero guarda solo su hash SHA-256.
 - Dos permisos: leer (estado, trazas, propuestas, investigación, informes) y actuar (pedir trabajos, responder).
-- Fundir, detener, descartar trabajos, aprobar propuestas o archivos protegidos y bloquear sitios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
+- Fundir, detener, descartar trabajos, aprobar propuestas o archivos protegidos, bloquear sitios y actualizar zero desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
 - La pestaña "Chat remoto" lista los chats conectados, los revoca (pide confirmación antes) y confirma las acciones retenidas.
 - La dirección del túnel rápido cambia cada vez que se reinicia, así que entonces hay que actualizar el conector del chat.
 

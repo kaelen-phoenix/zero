@@ -26,9 +26,9 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, installFolder, readSelfUpdate, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest } from "./self-update.js";
+import { entryProblem, installFolder, ofChannel, readSelfUpdate, readSelfUpdateLook, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateChannel, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest, type UpdateRunRecord } from "./self-update.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
-import { parseReleaseRequest, publishRelease, releaseTag, type ReleaseResult, type ReleaseTarget } from "./releases.js";
+import { parseReleaseRequest, publishRelease, type ReleaseResult, type ReleaseTarget } from "./releases.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
@@ -45,7 +45,7 @@ import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnja
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, newId, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, sentLine, sentState } from "./format.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, selfUpdateTargetText, sentLine, sentState } from "./format.js";
 import { log } from "./log.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
@@ -789,19 +789,44 @@ export interface SelfUpdateStatus {
   ready?: { from: string; to: string };
   /** A commit that failed for the machine and is tried again at `at`. */
   retry?: SelfUpdateRetry;
+  /** The configured channel. */
+  channel?: SelfUpdateChannel;
+  /** The last look on record at that channel; absent: it was not looked at yet. */
+  look?: { checkedAt: string; current: SelfUpdateTarget; available?: SelfUpdateTarget };
+  /** The update asked for that has not started yet. */
+  pending?: UpdateRequest;
+  /** The last update asked for, while it is recent. */
+  run?: UpdateRunRecord;
+  /** The panel offers to ask for an update. */
+  offer?: boolean;
 }
 
-/** What the self-update has to tell; nothing while it is off and never ran. */
-export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefined {
+/** How long an update asked for is told once it ended. */
+export const UPDATE_RUN_SHOWN_MS = 7 * 86_400_000;
+
+/** What the self-update has to tell, only from what is on record; nothing while it is off, without a channel, and never ran nor was asked for. */
+export function selfUpdateStatus(ctx: FactoryContext, now = new Date()): SelfUpdateStatus | undefined {
   const { state, history } = readSelfUpdate(ctx.store);
-  if (!ctx.config.selfUpdate.enabled && !history.length) return undefined;
+  const { enabled, channel } = ctx.config.selfUpdate;
+  const pending = readUpdateRequest(ctx.store);
+  const lastRun = readUpdateRun(ctx.store);
+  const run = lastRun && (!lastRun.endedAt || now.getTime() - Date.parse(lastRun.endedAt) < UPDATE_RUN_SHOWN_MS) ? lastRun : undefined;
+  if (!enabled && !channel && !history.length && !pending && !run) return undefined;
   const last = history.at(-1);
   const problem = state.problem && !(last && state.problem === entryProblem(last)) ? state.problem : undefined;
+  // With a channel, a ready version that will be dropped instead of switched to is not told, nor a retry nothing will make.
+  const switches = ofChannel(state, channel) && (!channel || enabled || Boolean(state.onDemand));
+  const look = readSelfUpdateLook(ctx.store);
   return {
     ...(last && { last }),
     ...(problem && { problem }),
-    ...(state.status === "ready" && state.from && state.to && { ready: { from: state.from, to: state.to } }),
-    ...(state.retry && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
+    ...(state.status === "ready" && state.from && state.to && switches && { ready: { from: state.from, to: state.to } }),
+    ...(state.retry && (!channel || enabled) && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
+    ...(channel && { channel }),
+    ...(look && look.channel === channel && { look: { checkedAt: look.checkedAt, current: { commit: look.head, ...(look.version && { version: look.version }) }, ...(look.available && { available: look.available }) } }),
+    ...(pending && { pending }),
+    ...(run && { run }),
+    ...((enabled || channel) && { offer: true }),
   };
 }
 
@@ -978,7 +1003,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy && runsHere(ctx, s)).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
-    selfUpdate: selfUpdateStatus(ctx),
+    selfUpdate: selfUpdateStatus(ctx, now),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -2510,6 +2535,7 @@ export type RemoteAction =
   | { tool: "zero_discard"; args: { job: string; reason?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
+  | { tool: "zero_update"; args: Record<string, never> }
   /** `askedAt` ties it to the question it was asked for, when the job is on another machine. */
   | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string; askedAt?: string } };
 
@@ -2531,6 +2557,8 @@ export function describeRemoteAction(a: RemoteAction): string {
       return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
     case "zero_egress_block":
       return `bloquear ${a.args.site} para la caja`;
+    case "zero_update":
+      return "actualizar zero a la última versión de su canal";
     case "zero_answer":
       return `aprobar los archivos protegidos del trabajo ${a.args.job}`;
   }
@@ -2595,6 +2623,10 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
       return { ok: true, text: formatProposalDecision(held.args.id, await decideProposal(ctx, held.args.id, held.args.decision, held.args.note)) };
     case "zero_egress_block":
       return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
+    case "zero_update": {
+      const r = requestUpdate(ctx, now);
+      return r.ok ? { ok: true, text: r.text } : { ok: false, text: `No se pidió la actualización: ${r.reason}.` };
+    }
     case "zero_answer": {
       const r = await answerAnywhere(ctx, held.args.job, held.args.decision, held.args.note, held.args.askedAt);
       return { ok: true, text: "sent" in r ? r.sent : formatJob(r.job, { subscription: subscription() }) };
@@ -3303,9 +3335,6 @@ export function requestUpdate(ctx: FactoryContext, now = new Date()): StationRun
   return { ok: true, text: `Actualización pedida a la última versión del canal ${ctx.config.selfUpdate.channel ?? "ultimo"}: se busca en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
 }
 
-/** A version as the person in charge reads it: its release with the short commit, or only the commit. */
-const targetText = (t: SelfUpdateTarget) => (t.version ? `${releaseTag(t.version)} (${t.commit.slice(0, 12)})` : t.commit.slice(0, 12));
-
 /** Like `waitStationStart`, until the daemon says what the update asked for at `requestedAt` found; `ok` is false only when it failed. */
 export async function waitUpdate(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ ok: boolean; text: string }> {
   const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -3318,7 +3347,7 @@ export async function waitUpdate(ctx: FactoryContext, requestedAt: string, wait:
       if (run.outcome === "stopped") return { ok: true, text: `La actualización quedó sin terminar: ${run.reason ?? "sin motivo registrado"}. Volvé a pedirla.` };
       if (run.outcome === "up-to-date") return { ok: true, text: `No hay una versión nueva: ${run.reason ?? "la instalación ya está al día"}.` };
       if (run.target) {
-        const version = targetText(run.target);
+        const version = selfUpdateTargetText(run.target);
         return { ok: true, text: `${run.outcome === "ready" ? `La versión ${version} está lista` : `Preparando la versión ${version}`}: la fábrica cambia a ella cuando no haya trabajos corriendo.` };
       }
     }

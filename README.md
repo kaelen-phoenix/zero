@@ -113,6 +113,7 @@ The chat does the same with these tools:
 - `zero_package_run`: a package station on demand, with an optional `request`
 - `zero_package_upload`: a file for a package station that takes uploads
 - `zero_unjam`: the unjam station now, for one line or for all of them
+- `zero_update`: updates zero to the newest version of its channel, once no job is running
 - `zero_investigate`: web research now on the `topic` you give, for one line
 - `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
 - `zero_egress`: internet egress
@@ -468,7 +469,7 @@ zero mcp remote off            # turns it off
 - zero is its own OAuth 2.1 authorization server, with PKCE (S256) and dynamic client registration. Each new connection is approved by you on the panel's page, with your key; the chat never gets a password.
 - Access tokens last 1 hour and refresh tokens 7 days, rotating on every use. zero keeps only their SHA-256 hash.
 - Two permissions: read (status, traces, proposals, research, reports) and act (request work, answer).
-- Merging, stopping, discarding jobs, approving proposals or protected files and blocking sites from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
+- Merging, stopping, discarding jobs, approving proposals or protected files, blocking sites and updating zero from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
 - The "Chat remoto" tab lists the connected chats, revokes them (it asks for confirmation first) and confirms the held actions.
 - The quick tunnel's address changes every time it restarts, so the chat's connector has to be updated then.
 
