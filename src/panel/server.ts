@@ -11,7 +11,8 @@ import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { controlRoomFragment, controlRoomPage } from "./control-room.js";
-import { guestHomePage, guestNotFoundPage, guestTabPage, type GuestMenu } from "./guest-pages.js";
+import { guestRun, guestStations, guestUpload, type GuestAnswer } from "./guest-actions.js";
+import { guestHomePage, guestNotFoundPage, guestNotice, guestTabPage, guestTooLargePage, type GuestMenu } from "./guest-pages.js";
 import { findGuestByCookie, findGuestByKey, guestAccess, guestCookie, recordGuestEvent, touchGuest, type Guest } from "./guests.js";
 import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
@@ -94,6 +95,21 @@ function limitedBody(req: IncomingMessage, max: number): { body: ReadableStream<
     },
   });
   return { body, over: () => over, drained };
+}
+
+/** A multipart body with one file of up to `maxMb`; a larger one is dropped as it arrives, and with 0 all of it. */
+async function readUpload(req: IncomingMessage, maxMb: number): Promise<FormData | "too-large" | "unreadable"> {
+  const max = maxMb ? maxMb * 1024 * 1024 + UPLOAD_OVERHEAD : 0;
+  // Too large by its own word: nothing of it is kept, only read and dropped so the browser gets the answer.
+  const tooLarge = !max || Number(req.headers["content-length"] ?? 0) > max;
+  const reading = limitedBody(req, tooLarge ? 0 : max);
+  try {
+    if (!tooLarge) return await new Request("http://panel/packages/upload", { method: "POST", headers: { "content-type": String(req.headers["content-type"] ?? "") }, body: reading.body, duplex: "half" } as RequestInit).formData();
+  } catch {
+    // Read below as too large or unreadable.
+  }
+  await reading.drained;
+  return tooLarge || reading.over() ? "too-large" : "unreadable";
 }
 
 /** Came through https (the tunnel), so the cookie can be marked Secure. */
@@ -306,28 +322,13 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     const uploads = stationUploads(ctx);
     const asked = url.searchParams.get("station") ?? "";
     const limits = Object.hasOwn(uploads, asked) ? [uploads[asked]!] : Object.values(uploads);
-    const max = limits.length ? Math.max(...limits.map((u) => u.maxMb)) * 1024 * 1024 + UPLOAD_OVERHEAD : 0;
-    // Too large by its own word: nothing of it is kept, only read and dropped so the browser gets the answer.
-    const declared = Number(req.headers["content-length"] ?? 0);
-    const reading = limitedBody(req, declared > max ? 0 : max);
-    if (!limits.length || declared > max) {
-      await reading.drained;
-      if (!limits.length) return back(res, "/packages", "Ninguna estación acepta archivos.");
-    }
-    const tooLarge = async () => {
-      await reading.drained;
+    const form = await readUpload(req, limits.length ? Math.max(...limits.map((u) => u.maxMb)) : 0);
+    if (!limits.length) return back(res, "/packages", "Ninguna estación acepta archivos.");
+    if (form === "too-large") {
       res.writeHead(413, { ...headers(nonce), "Content-Type": "text/html; charset=utf-8" });
-      res.end(page("Archivo demasiado grande", `<div class="card bad">El archivo pasa del máximo de la estación. <a href="/packages">Volver</a></div>`, { nonce }));
-    };
-    if (declared > max) return tooLarge();
-    let form: FormData;
-    try {
-      form = await new Request("http://panel/packages/upload", { method: "POST", headers: { "content-type": String(req.headers["content-type"] ?? "") }, body: reading.body, duplex: "half" } as RequestInit).formData();
-    } catch {
-      if (reading.over()) return tooLarge();
-      await reading.drained;
-      return back(res, "/packages", "No se pudo leer el archivo subido.");
+      return void res.end(page("Archivo demasiado grande", `<div class="card bad">El archivo pasa del máximo de la estación. <a href="/packages">Volver</a></div>`, { nonce }));
     }
+    if (form === "unreadable") return back(res, "/packages", "No se pudo leer el archivo subido.");
     const file = form.get("file");
     const station = asked || String(form.get("station") ?? "");
     if (typeof file === "string" || !file?.name) return back(res, "/packages", "Elegí un archivo para subir.");
@@ -354,7 +355,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
   };
 
   /** Everything a guest's session reaches. It is an allow list: what is not named here does not exist for them. */
-  function handleGuest(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string, guest: Guest) {
+  async function handleGuest(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string, guest: Guest) {
     const path = url.pathname;
     touchGuest(ctx.store, guest, ctx.now?.());
     const access = guestAccess(guest, ctx.config.loadedPackages);
@@ -365,9 +366,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       return send(res, status, html, nonce);
     };
     const notFound = () => denied(404, guestNotFoundPage(menu, nonce));
+    const answered = (answer: GuestAnswer) => (answer === "cut" ? send(res, 401, loginPage(nonce), nonce) : back(res, `/?aviso=${answer}`));
 
     if (req.method === "GET") {
-      if (path === "/") return send(res, 200, guestHomePage({ menu, name: guest.name, access }, nonce), nonce);
+      if (path === "/") return send(res, 200, guestHomePage({ menu, name: guest.name, access: access.map((a) => ({ ...a, stations: guestStations(ctx, guest, a) })), notice: guestNotice(url.searchParams.get("aviso")) }, nonce), nonce);
       const [, pkg, name, file] = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)(?:\/files\/(.+))?$/.exec(path) ?? [];
       const granted = tabs.find((t) => t.package === pkg && t.name === name);
       if (!granted) return notFound();
@@ -386,6 +388,26 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (req.method !== "POST") return notFound();
     if (!sameOrigin(req)) return denied(403, page("No permitido", `<div class="card">Pedido de otro sitio rechazado.</div>`, { nonce, nav: false }));
     if (path === "/logout") return endSession(res);
+    if (path === "/packages/run") {
+      const form = await readForm(req);
+      return answered(await guestRun(ctx, guest, { station: form.get("station") ?? "", value: form.get("alcance") ?? undefined, request: form.get("pedido") ?? undefined }));
+    }
+    if (path === "/packages/upload") {
+      // The station comes in the address, so the body is read only up to its own size and not at all when it is not theirs.
+      const station = url.searchParams.get("station") ?? "";
+      const uploads = stationUploads(ctx);
+      const theirs = access.some((a) => a.upload.some((name) => `${a.package}/${name}` === station)) && Object.hasOwn(uploads, station);
+      const form = await readUpload(req, theirs ? uploads[station]!.maxMb : 0);
+      const field = (name: string) => {
+        const value = form instanceof FormData ? form.get(name) : undefined;
+        return typeof value === "string" ? value : undefined;
+      };
+      const file = form instanceof FormData ? form.get("file") : undefined;
+      const sent = file && typeof file !== "string" && file.name ? { name: file.name, content: new Uint8Array(await file.arrayBuffer()) } : undefined;
+      const answer = await guestUpload(ctx, guest, { station, value: field("alcance"), request: field("pedido"), file: sent });
+      if (form === "too-large" && theirs && answer !== "cut") return send(res, 413, guestTooLargePage(menu, nonce), nonce);
+      return answered(answer);
+    }
     return notFound();
   }
 

@@ -264,7 +264,7 @@ function packageStation(pkg: string, s: PackageList["packages"][number]["station
   const ref = `${pkg}/${s.name}`;
   const state = `${!s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
-    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
+    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandGuest ? `, la pidió ${esc(s.onDemandGuest)} (invitado)` : ""}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
   const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
   const form = onDemand

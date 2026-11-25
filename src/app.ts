@@ -35,7 +35,7 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
-import { onDemandRecord, readStationRun, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
+import { onDemandRecord, readStationGuest, readStationRun, stationLastKey, stationOnDemandGuestKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationGuest, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
@@ -448,7 +448,7 @@ export interface FactoryStatus {
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
-  onDemand: { station: string; since: string; request?: string }[];
+  onDemand: { station: string; since: string; request?: string; guest?: string }[];
   /** The last on-demand run of each station, when it started or ended in the last 24 hours or is still running. */
   onDemandRuns: OnDemandRun[];
   /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
@@ -534,7 +534,8 @@ function pendingOnDemand(ctx: FactoryContext): FactoryStatus["onDemand"] {
     const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
     if (since === undefined) return [];
     const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
-    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
+    const guest = readStationGuest(ctx, s.package, s.name)?.name;
+    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }), ...(guest && { guest }) }];
   });
 }
 
@@ -2706,6 +2707,8 @@ export interface PackageStationView {
   onDemandPendingSince?: string;
   /** The text sent with the pending on-demand run, when there is one. */
   onDemandRequest?: string;
+  /** The name of the panel guest who asked for the pending run, when it was one. */
+  onDemandGuest?: string;
   /** The station's last on-demand run: running, or how it ended. */
   lastOnDemand?: StationRunRecord;
   /** Whether its manifest declares `whenBusy`: its regular pass also runs with the factory busy. */
@@ -2812,6 +2815,7 @@ export function packageList(ctx: FactoryContext): PackageList {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
           const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
+          const pendingGuest = pendingSince !== undefined ? readStationGuest(ctx, p.name, name)?.name : undefined;
           const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
           return {
             name,
@@ -2820,6 +2824,7 @@ export function packageList(ctx: FactoryContext): PackageList {
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
             ...(pendingRequest && { onDemandRequest: pendingRequest }),
+            ...(pendingGuest && { onDemandGuest: pendingGuest }),
             ...(lastOnDemand && { lastOnDemand }),
             ...(station?.whenBusy && { whenBusy: true as const }),
           };
@@ -2829,16 +2834,28 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-/** `requestedAt` is the pending request's time, the one its run record will carry. */
-export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string };
+/** `requestedAt` is the pending request's time, the one its run record will carry; `aboutFile` when the uploaded file itself is what was refused. */
+export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string; aboutFile?: true };
+
+/** A panel guest asking for a run, already checked by zero; `allowed` is asked again when the request is written. */
+export interface StationAsker extends StationGuest {
+  allowed(): boolean;
+}
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
  * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
+ * Without `guest` it is the person in charge who asks.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
-  return askStationRun(ctx, ref, now, request);
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string, guest?: StationAsker): StationRunResult {
+  return askStationRun(ctx, ref, now, request, { guest });
+}
+
+/** Why a station cannot take another on-demand run: one is pending. */
+function pendingRunProblem(ctx: FactoryContext, pkg: string, name: string): { ok: false; reason: string } | undefined {
+  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
+  return pending === undefined ? undefined : { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
 }
 
 /** The station a run may be asked of right now, or why not; nothing is written. */
@@ -2853,15 +2870,17 @@ function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: 
   const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
-  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
-  if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
+  const pending = pendingRunProblem(ctx, pkg, name);
+  if (pending) return pending;
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
   return { station };
 }
 
+const GUEST_CUT = { ok: false, reason: "el acceso del invitado ya no lo permite" } as const;
+
 /** `requestStationRun`, plus the upload the run answers when it comes from `uploadToStation`. */
-function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: string, upload?: StationUpload): StationRunResult {
+function askStationRun(ctx: FactoryContext, ref: string, now: Date, request: string | undefined, { upload, guest }: { upload?: StationUpload; guest?: StationAsker } = {}): StationRunResult {
   const found = stationForRun(ctx, ref, now);
   if (!("station" in found)) return found;
   const { station } = found;
@@ -2870,15 +2889,21 @@ function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: st
   const key = stationOnDemandKey(pkg, name);
   // Cleaned like a station's own request: it reaches third-party code.
   const text = request === undefined ? "" : stationText(request, ctx, station);
-  const requestKey = stationOnDemandRequestKey(pkg, name);
-  // The text goes first: the daemon reads it only once the request itself is there.
-  if (text) ctx.store.setKv(requestKey, text);
-  else ctx.store.deleteKv(requestKey);
-  const uploadKey = stationUploadKey(pkg, name);
-  if (upload) ctx.store.setKv(uploadKey, JSON.stringify(upload));
-  else ctx.store.deleteKv(uploadKey);
   const requestedAt = now.toISOString();
-  ctx.store.setKv(key, requestedAt);
+  const put = (at: string, value: string | undefined) => (value ? ctx.store.setKv(at, value) : ctx.store.deleteKv(at));
+  const asker: StationGuest | undefined = guest && { id: guest.id, name: guest.name, ...(guest.scope !== undefined && { scope: guest.scope }) };
+  // In one write, so a request of another process can mix with neither its text nor who asked for it.
+  const refused = ctx.store.transaction(() => {
+    const pending = pendingRunProblem(ctx, pkg, name);
+    if (pending) return pending;
+    if (guest && !guest.allowed()) return GUEST_CUT;
+    put(stationOnDemandRequestKey(pkg, name), text);
+    put(stationUploadKey(pkg, name), upload && JSON.stringify(upload));
+    put(stationOnDemandGuestKey(pkg, name), asker && JSON.stringify(asker));
+    ctx.store.setKv(key, requestedAt);
+    return undefined;
+  });
+  if (refused) return refused;
   return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
 }
 
@@ -2897,12 +2922,12 @@ export function uploadName(name: string): string {
 }
 
 /**
- * Stores a file the person in charge uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
+ * Stores a file the person in charge, or `guest`, uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
  * for an on-demand run of that station that receives it as `ctx.upload`. Everything that can refuse is checked before
  * writing; past the station's `maxMb` or on any refusal after it, nothing is left behind. Third-party content: it is
  * never opened here beyond its first bytes.
  */
-export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string }, now = new Date()): Promise<StationRunResult> {
+export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string; guest?: StationAsker }, now = new Date()): Promise<StationRunResult> {
   const found = stationForRun(ctx, ref, now);
   if (!("station" in found)) return found;
   const { station } = found;
@@ -2910,7 +2935,7 @@ export async function uploadToStation(ctx: FactoryContext, ref: string, file: { 
   if (!station.uploads) return { ok: false, reason: `la estación ${label} no acepta archivos: su manifiesto no declara uploads` };
   const name = uploadName(file.name);
   const ext = extname(name).toLowerCase();
-  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}` };
+  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}`, aboutFile: true };
   const maxBytes = Math.floor(station.uploads.maxMb * 1024 * 1024);
   const dataDir = packageDataDir(ctx.home, station.package);
   const dir = join(dataDir, "uploads", station.name);
@@ -2941,14 +2966,19 @@ export async function uploadToStation(ctx: FactoryContext, ref: string, file: { 
     if (!refused && ext === ".zip" && !head.equals(ZIP_SIGNATURE)) refused = "el archivo no es un zip";
     if (refused) {
       await rm(temp, { force: true });
-      return { ok: false, reason: refused };
+      return { ok: false, reason: refused, aboutFile: true };
+    }
+    // Cut while the bytes were being written: they never become a file of the station.
+    if (file.guest && !file.guest.allowed()) {
+      await rm(temp, { force: true });
+      return GUEST_CUT;
     }
     await rename(temp, final);
   } catch (err) {
     await rm(temp, { force: true }).catch(() => undefined);
     return { ok: false, reason: `no se pudo guardar el archivo: ${err instanceof Error ? err.message : String(err)}` };
   }
-  const r = askStationRun(ctx, ref, now, file.request, { name, path: final, sizeBytes: size, at: now.toISOString() });
+  const r = askStationRun(ctx, ref, now, file.request, { upload: { name, path: final, sizeBytes: size, at: now.toISOString() }, guest: file.guest });
   if (!r.ok) {
     await rm(final, { force: true }).catch(() => undefined);
     return r;

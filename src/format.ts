@@ -325,7 +325,7 @@ export function describeStationRun(r: StationRunRecord, now = new Date()): strin
     r.state === "running"
       ? `en curso desde ${resetTime(r.startedAt ?? r.requestedAt, now)}`
       : `${RUN_OUTCOME[r.outcome ?? "failed"]}${r.finishedAt ? ` (${resetTime(r.finishedAt, now)})` : ""}${r.error ? `: ${r.error}` : ""}`;
-  return `${state}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
+  return `${state}${r.guest ? ` · la pidió ${r.guest.name} (invitado)` : ""}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
 }
 
 export function formatPackages(l: PackageList, now = new Date()): string {
@@ -341,7 +341,7 @@ export function formatPackages(l: PackageList, now = new Date()): string {
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
     for (const s of p.stations) {
       const state = !s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")} (\`zero secret set <NOMBRE>\`)` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió";
-      out.push(`- estación ${s.name}: ${state}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
+      out.push(`- estación ${s.name}: ${state}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}${s.onDemandPendingSince ? ` · corrida a demanda pendiente desde ${resetTime(s.onDemandPendingSince, now)}${s.onDemandGuest ? `, la pidió ${s.onDemandGuest} (invitado)` : ""}` : ""}${s.lastOnDemand ? ` · última corrida a demanda: ${describeStationRun(s.lastOnDemand, now)}` : ""}`);
     }
   }
   if (l.problems.length) out.push("", "Problemas:", ...l.problems.map((p) => `- ${packageProblem(p)}`));
@@ -548,7 +548,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
-  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
+  if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.guest ? `, la pidió ${d.guest} (invitado)` : ""}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
   if (s.unjam.pending) out.push(`Corrida a demanda del destrabador: ${unjamPendingText(s.unjam.pending, now)}`);

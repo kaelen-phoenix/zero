@@ -25,11 +25,11 @@
 
 ## 4. Etapa 4: Acciones del invitado
 
-- [ ] 4.1 src/line/packages.ts: `stationOnDemandGuestKey`, written by askStationRun with the request, cleared with it, kept in StationRunRecord as guest id and name, and passed as `guest: {name, scope?}` in the pass call; the owner's call stays exactly as it is.
-- [ ] 4.2 app.ts: requestStationRun and uploadToStation accept an optional trusted guest; scope value checked by zero.
-- [ ] 4.3 Guest router: POST /packages/run and POST /packages/upload for granted stations, generic refusals, the upload limited to that station's own size, guest and grant checked again after reading the body; forms with the scope selector and the state of their own runs in the guest home; events.
-- [ ] 4.4 Owner: guest's name in the packages page and in describeStationRun.
-- [ ] 4.5 Tests: new test/panel-guests-actions.test.ts; run test/package-on-demand.test.ts and test/panel-packages.test.ts.
+- [x] 4.1 src/line/packages.ts: `stationOnDemandGuestKey`, written by askStationRun with the request, cleared with it, kept in StationRunRecord as guest id and name, and passed as `guest: {name, scope?}` in the pass call; the owner's call stays exactly as it is.
+- [x] 4.2 app.ts: requestStationRun and uploadToStation accept an optional trusted guest; scope value checked by zero.
+- [x] 4.3 Guest router: POST /packages/run and POST /packages/upload for granted stations, generic refusals, the upload limited to that station's own size, guest and grant checked again after reading the body; forms with the scope selector and the state of their own runs in the guest home; events.
+- [x] 4.4 Owner: guest's name in the packages page and in describeStationRun.
+- [x] 4.5 Tests: new test/panel-guests-actions.test.ts; run test/package-on-demand.test.ts and test/panel-packages.test.ts.
 
 ## 5. Etapa 5: Sección Invitados y documentación
 

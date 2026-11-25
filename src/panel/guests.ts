@@ -194,7 +194,7 @@ export function guestView(guest: Guest, loaded: LoadedPackages | undefined): Gue
 }
 
 /** The text without the guest's own key or session token, wherever they typed or pasted it. */
-function withoutKey(text: string, guest: Pick<Guest, "keyHash" | "sessionHash">): string {
+export function withoutKey(text: string, guest: Pick<Guest, "keyHash" | "sessionHash">): string {
   const hide = (value: string, run: RegExp, size: number, hash: string) =>
     value.replace(run, (found) => {
       for (let i = 0; i + size <= found.length; i++) {
