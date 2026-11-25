@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { githubRepository } from "./line/integrate.js";
 import { log } from "./log.js";
 import { realGit, type GitRunner } from "./package-install.js";
-import { readSelfUpdate, type SelfUpdateEntry } from "./self-update.js";
+import { readSelfUpdate, type SelfUpdateChannel, type SelfUpdateEntry } from "./self-update.js";
 import type { Store } from "./state/store.js";
 
 /** Where the daemon keeps what it last saw of the installed copy of zero. */
@@ -17,7 +17,8 @@ const EVERY_MS = 60 * 60_000;
  * `staleBuild` says a file under src/ is newer than dist/cli.js, unless HEAD is
  * the commit the last self-update put in place and src/ has no local change
  * (the switch rewrites src/ after building dist/). A folder that
- * is not a git repository only carries a `problem`.
+ * is not a git repository only carries a `problem`. In the stable channel what was
+ * not released is not missing: those commits are `unreleased` instead of `behind`.
  */
 export interface InstallFreshness {
   checkedAt: string;
@@ -28,6 +29,10 @@ export interface InstallFreshness {
   /** The ref compared with HEAD, such as `origin/main`. */
   upstream?: string;
   problem?: string;
+  /** The channel configured when it was recorded; absent: none. */
+  channel?: SelfUpdateChannel;
+  /** In the stable channel, the commits of the upstream missing in HEAD, never told as a delay; absent: not known. */
+  unreleased?: number;
 }
 
 /** The folder holding the running dist/cli.js. */
@@ -45,6 +50,9 @@ export function readInstallFreshness(store: Store): InstallFreshness | undefined
 
 /** Whether the record says the installed copy misses merged work or a rebuild. */
 export const installBehind = (r: InstallFreshness | undefined): r is InstallFreshness => Boolean(r && !r.problem && ((r.behind ?? 0) > 0 || r.staleBuild));
+
+/** Whether the record says the installed copy has everything that was merged, released or not. */
+export const installHasMerged = (r: InstallFreshness): boolean => !r.problem && (r.channel === "estable" ? r.unreleased === 0 : !(r.behind ?? 0));
 
 const mtime = (file: string): number | undefined => {
   try {
@@ -76,7 +84,7 @@ const samePath = (a: string, b: string) => {
 };
 
 /** Looks at the installation now, from its own git checkout; a failed fetch leaves the local refs, and nothing is thrown. */
-async function lookAt(root: string, git: GitRunner, now: Date, updated?: SelfUpdateEntry): Promise<InstallFreshness> {
+async function lookAt(root: string, git: GitRunner, now: Date, stable: boolean, updated?: SelfUpdateEntry): Promise<InstallFreshness> {
   const checkedAt = now.toISOString();
   let top: string;
   try {
@@ -112,6 +120,7 @@ async function lookAt(root: string, git: GitRunner, now: Date, updated?: SelfUpd
   }
   const count = await git(["rev-list", "--count", `HEAD..${ref}`], { cwd: root }).catch(() => undefined);
   const behind = count === undefined ? undefined : Number.parseInt(count, 10);
+  if (stable) return { checkedAt, ...(behind !== undefined && Number.isFinite(behind) ? { unreleased: behind } : {}), staleBuild, upstream: ref, ...(repository && { repository }) };
   return {
     checkedAt,
     ...(behind !== undefined && Number.isFinite(behind) ? { behind } : { problem: `No pude comparar la instalación de zero con ${ref}.` }),
@@ -124,17 +133,18 @@ async function lookAt(root: string, git: GitRunner, now: Date, updated?: SelfUpd
 /**
  * The daemon's pass: at most once an hour, records in kv `install:freshness`
  * how far the installed copy of zero is from what was merged. Returns the new
- * record, or undefined when the last one is less than an hour old and no
- * self-update put a new version in place since.
+ * record, or undefined when the last one is less than an hour old, no
+ * self-update put a new version in place since and the channel is the same.
  */
-export async function checkInstall(store: Store, now: Date, opts: { root?: string; git?: GitRunner } = {}): Promise<InstallFreshness | undefined> {
+export async function checkInstall(store: Store, now: Date, opts: { root?: string; git?: GitRunner; channel?: SelfUpdateChannel } = {}): Promise<InstallFreshness | undefined> {
   const last = readInstallFreshness(store);
   const updated = readSelfUpdate(store).history.filter((e) => e.outcome === "updated").at(-1);
   const at = last ? Date.parse(last.checkedAt) : Number.NaN;
   const since = updated ? Date.parse(updated.at) : Number.NaN;
   const fresh = Number.isFinite(at) && now.getTime() - at < EVERY_MS && now.getTime() >= at;
-  if (fresh && !(Number.isFinite(since) && since > at)) return undefined;
-  const record = await lookAt(opts.root ?? installRoot(), opts.git ?? realGit, now, updated);
+  if (fresh && last?.channel === opts.channel && !(Number.isFinite(since) && since > at)) return undefined;
+  const { channel } = opts;
+  const record: InstallFreshness = { ...(await lookAt(opts.root ?? installRoot(), opts.git ?? realGit, now, channel === "estable", updated)), ...(channel && { channel }) };
   store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify(record));
   return record;
 }

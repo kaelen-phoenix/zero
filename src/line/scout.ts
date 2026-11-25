@@ -3,10 +3,11 @@ import type { AgentRunner } from "../agent.js";
 import { ANDON_KEY, proposalRequest, requestWork, type FactoryContext } from "../app.js";
 import { billedUsd, budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type Autonomy, type FactoryConfig, type LineConfig } from "../config.js";
+import { othersSpentSince } from "../coord/spend.js";
 import { lineRepository, TRUSTED, type Issue, type IssueApi } from "../intake/github.js";
 import { log } from "../log.js";
 import type { Job, Proposal, ResearchNote, Store } from "../state/store.js";
-import { AGENT_SPAN, startOfDay } from "../telemetry/metrics.js";
+import { AGENT_SPAN, isIdleCall, ON_DEMAND_ATTR, PACKAGE_AGENT_PREFIX, startOfDay } from "../telemetry/metrics.js";
 import { researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
 import { unjamJobsLeft } from "./unjam.js";
 import { ALWAYS_PROTECTED, protectedTouched } from "./verify.js";
@@ -74,22 +75,15 @@ export function periodStart(shift: NightShift, now: Date): Date {
   return start;
 }
 
-/** Stations that work while the factory is idle (scout, research, the unjam station and the recruiter); they share `limits.usdPerNight`. */
-const IDLE_STATIONS = new Set(["scout", "research", "unjam", "recruit"]);
+export { ON_DEMAND_ATTR, PACKAGE_AGENT_PREFIX };
 
-/** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
-export const PACKAGE_AGENT_PREFIX = "package:";
-
-/** On the span of a research call the person in charge asked for: it has its own cap (`research.usdPerRun`) and takes nothing from the night's. */
-export const ON_DEMAND_ATTR = "zero.on_demand";
-
-/** What the idle-time stations (scout, research and the packages' stations) were really charged since `since`, so together they never pass the night cap. */
-export function scoutSpent(store: Store, since: Date, now = new Date()): number {
-  const idle = store
-    .spansSince(AGENT_SPAN, since)
-    .filter((s) => IDLE_STATIONS.has(String(s.attrs["gen_ai.agent.name"])) || String(s.attrs["gen_ai.agent.name"]).startsWith(PACKAGE_AGENT_PREFIX))
-    .filter((s) => !(s.attrs["gen_ai.agent.name"] === "research" && s.attrs[ON_DEMAND_ATTR]));
-  return billedUsd(store, idle, now);
+/**
+ * What the idle-time stations (scout, research and the packages' stations) were really charged since `since`, so together they
+ * never pass the night cap; with the `config` of a distributed factory, what its other machines were charged counts too.
+ */
+export function scoutSpent(store: Store, since: Date, now = new Date(), config?: Pick<FactoryConfig, "distributed">): number {
+  const idle = store.spansSince(AGENT_SPAN, since).filter(isIdleCall);
+  return billedUsd(store, idle, now) + othersSpentSince(store, config, since, (s) => s.idle && s.billing !== "subscription");
 }
 
 /** Titles compared without case, accents or extra whitespace. */
@@ -319,7 +313,7 @@ export async function scoutPass(ctx: FactoryContext, runAgent: AgentRunner, now:
     if (!choice.available) return;
     let cap: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now, ctx.config);
       if (left <= 0) return;
       cap = Math.round(left * 1e6) / 1e6;
     }

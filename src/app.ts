@@ -13,20 +13,25 @@ import type { Access } from "./engines/index.js";
 import { CATALOG_STATUSES, type CatalogEntry } from "./catalog.js";
 import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView, type Skill, type SkillProblem, type SkillStation, type SkillView } from "./skills.js";
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
-import { githubStatus, type GithubStatus } from "./github-quota.js";
+import { githubHalt, githubMeter, githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
-import { isGitSource, parseGitSource } from "./package-source.js";
-import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, readManifest, withPackages, type PackageManifest } from "./packages.js";
+import { acquirePackageUpdateLock, attemptOf, isAutomaticUpdate, packageRunUnderWay, packagesToApplyByHand, recordAttempt, UNATTENDED_SHUTDOWN_MS } from "./package-auto-update.js";
+import { pidAlive } from "./leftovers.js";
+import { aheadText, installedVersion, lookForRelease, pinProblem, stableReleases, tagRef, type StableLook } from "./package-channel.js";
+import { isGitSource, parseGitSource, pinnedTo, stableChannelProblem } from "./package-source.js";
+import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, pinnedMachine, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { dataFile, readTabData, tabFile, visibleItems, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
+import { entryProblem, installFolder, ofChannel, readSelfUpdate, readSelfUpdateLook, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateChannel, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest, type UpdateRunRecord } from "./self-update.js";
+import { switchLockHeldAt } from "./self-update-switch.js";
+import { parseReleaseRequest, publishRelease, releaseTag, type ReleaseResult, type ReleaseTarget } from "./releases.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
@@ -35,15 +40,15 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
-import { onDemandRecord, readStationGuest, readStationRun, stationLastKey, stationOnDemandGuestKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationGuest, type StationRunRecord, type StationUpload } from "./line/packages.js";
+import { onDemandRecord, readStationGuest, readStationRun, runsHere, stationLastKey, stationOnDemandGuestKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationGuest, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
-import { FINAL_STATUSES, Store, type GuestEvent, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, guestAccessText, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
+import { FINAL_STATUSES, newId, Store, type GuestEvent, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, guestAccessText, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, selfUpdateTargetText, sentLine, sentState } from "./format.js";
 import { log } from "./log.js";
 import { createGuest, guestLabel, guestNameKey, guestView, listGuests, MAX_GUEST_NAME, MAX_SCOPE_VALUE, recordGuestEvent, removeGuest, type GuestGrant, type GuestView } from "./panel/guests.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
@@ -57,8 +62,13 @@ import { AGENT_SPAN, computeMetrics, startOfDay, summarizeEgress, type EgressSum
 import { renderTrace, spanEngineWhy, spanTime, Tracer, traceUsd } from "./telemetry/tracer.js";
 import { renderBriefing, type Briefing } from "./townhall/briefing.js";
 import { installBehind, readInstallFreshness, type InstallFreshness } from "./install-freshness.js";
-import { readMachines } from "./coord/pass.js";
-import type { MachineView } from "./coord/protocol.js";
+import { githubCoord } from "./coord/github.js";
+import { forgetTakenOut, lineProblem, linesAway, linesPass, publishedElsewhere, type LineAway, type LineCloner } from "./coord/lines.js";
+import { decisionOnItsWay, outbox, saveOutbox, type OutboxDecision, type OutboxEntry } from "./coord/outbox.js";
+import { coordReady, probeOnce, readMachines, readProbe } from "./coord/pass.js";
+import { finished as finishedClaim, MAX_DECISION_NOTE, MAX_QUEUED_REQUEST, queueRef, readQueueRecord, TEXT_CONTROL, type ClaimRecord, type CoordApi, type DecisionTarget, type LineRecord, type MachineView, type QueueRecord, type StatusJob, type StatusProposal } from "./coord/protocol.js";
+import { ownStatusJob, readStatus, STATUS_DAYS } from "./coord/status.js";
+import { machineIdentity } from "./machine.js";
 import { createTownhall, resilient, type Townhall } from "./townhall/index.js";
 import { createLocalStore } from "./townhall/store.js";
 
@@ -128,15 +138,6 @@ export interface DaemonInfo {
   state?: DaemonState;
   /** `stopped`: when the stop was recorded; `crashed`: the last heartbeat. */
   since?: string;
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e: any) {
-    return e.code === "EPERM";
-  }
 }
 
 export function daemonInfo(store: Store, now = new Date()): DaemonInfo {
@@ -306,10 +307,20 @@ function checkPriority(name: string): JobPriority {
   return name;
 }
 
-export function requestWork(
-  ctx: FactoryContext,
-  input: { text?: string; type?: string; title?: string; description?: string; line?: string; kind?: Job["kind"]; source?: JobSource; priority?: string; budgetUsd?: number },
-): RequestResult {
+export interface RequestInput {
+  text?: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  line?: string;
+  kind?: Job["kind"];
+  source?: JobSource;
+  priority?: string;
+  budgetUsd?: number;
+}
+
+/** A request's text, cap and priority, or why it is not one. */
+function checkRequest(ctx: FactoryContext, input: RequestInput): { text: string; budgetUsd: number; priority?: JobPriority } {
   const text = input.type !== undefined ? typedRequest(input.type, input.title, input.description) : (input.text ?? "").trim();
   if (!text) throw new Error("El pedido está vacío.");
   const cap = ctx.config.limits.usdPerJob;
@@ -320,6 +331,11 @@ export function requestWork(
   const priority = input.priority === undefined ? undefined : checkPriority(input.priority);
   // Urgent pauses other work, so only the person in charge, asking directly, may choose it.
   if (priority === "urgente" && input.source) throw new Error("Solo vos podés marcar un trabajo como urgente.");
+  return { text, budgetUsd, priority };
+}
+
+export function requestWork(ctx: FactoryContext, input: RequestInput): RequestResult {
+  const { text, budgetUsd, priority } = checkRequest(ctx, input);
   const line = findLine(ctx.config, input.line);
   const level = currentLevel(ctx);
   const job = ctx.store.createJob({ line: line.name, kind: input.kind ?? "request", request: text, budgetUsd, source: input.source, priority });
@@ -344,6 +360,50 @@ export function requestWork(
       ? "Primero armo la especificación y te la muestro para que la apruebes."
       : `La fábrica lo especifica, lo construye, lo verifica y ${integration} sola${level.level === "L2" ? "; solo te consulta si toca algo protegido o se agota el presupuesto" : ""}.`;
   return { job, level, next };
+}
+
+/** A request that went to the outbox: no local job, only the id its job will have on the machine that takes it. */
+export interface RequestSent {
+  id: string;
+  line: string;
+  sent: string;
+}
+
+/** The lines a request may name: this machine's, and the published ones that are not here. */
+export function requestLines(ctx: FactoryContext): string[] {
+  return [...ctx.config.lines.map((l) => l.name), ...publishedElsewhere(ctx).map((r) => r.name)];
+}
+
+/**
+ * The person in charge's request, also for a line another machine published and
+ * this one does not have: then it waits in the outbox for the coordination pass,
+ * which puts it on the shared queue with what the line needs.
+ */
+export function requestAnywhere(ctx: FactoryContext, input: RequestInput): RequestResult | RequestSent {
+  const { lines } = ctx.config;
+  const published = publishedElsewhere(ctx);
+  const name = input.line ?? (!lines.length && published.length === 1 ? published[0]!.name : undefined);
+  const away = published.find((r) => r.name === name);
+  if (!away) {
+    if (name && published.length && !lines.some((l) => l.name === name)) throw new Error(`No existe la línea "${name}". Líneas: ${requestLines(ctx).join(", ")}.`);
+    return requestWork(ctx, input);
+  }
+  const { text, priority } = checkRequest(ctx, input);
+  let id = newId();
+  while (ctx.store.getJob(id)) id = newId();
+  const record: QueueRecord = {
+    id,
+    line: away.name,
+    kind: input.kind ?? "request",
+    request: scrubLocal(text, { repo: ctx.home.root }),
+    priority: priority ?? "media",
+    createdAt: (ctx.now ?? (() => new Date()))().toISOString(),
+    needs: { box: false, engines: away.needs.engines },
+  };
+  // What the other machines would not accept would never be taken.
+  if (!readQueueRecord({ name: queueRef(id), sha: "", data: JSON.stringify(record) })) throw new Error(`El pedido para una línea de otra máquina no puede superar los ${MAX_QUEUED_REQUEST} caracteres.`);
+  saveOutbox(ctx.store, { kind: "request", state: "pending", at: record.createdAt, record });
+  return { id, line: away.name, sent: `Pedido anotado: trabajo ${id} en la línea "${away.name}", que no está en esta máquina. Sale a la cola de la fábrica en el próximo pase y lo toma una máquina que tenga la línea.` };
 }
 
 export function getJob(ctx: FactoryContext, id: string): Job {
@@ -394,6 +454,40 @@ export async function answer(ctx: FactoryContext, id: string, decision: Decision
   return answerJob(ctx, getJob(ctx, id), decision, note);
 }
 
+/** A decision for another machine goes to the outbox once: while one is on its way, there is nothing else to say. */
+function sendDecision(ctx: FactoryContext, target: DecisionTarget, to: JobMachine, decision: Decision, note?: string): OutboxDecision {
+  const own = machineIdentity(ctx.store, ctx.config);
+  const at = (ctx.now ?? (() => new Date()))().toISOString();
+  const said = scrubLocal((note ?? "").replace(/\r\n?/g, "\n").replace(TEXT_CONTROL, " "), { repo: ctx.home.root }).trim().slice(0, MAX_DECISION_NOTE);
+  const entry: OutboxDecision = { kind: "decision", state: "pending", at, toName: to.name, record: { target, to: to.id, machine: own.id, name: own.name, at, decision, ...(said && { note: said }) } };
+  return ctx.store.transaction(() => {
+    const before = decisionOnItsWay(ctx.store, target);
+    if (before) throw new Error(`Eso ya lo decidiste desde esta máquina: ${sentLine(before)}.`);
+    saveOutbox(ctx.store, entry);
+    return entry;
+  });
+}
+
+/** What the owner reads of a decision that was just sent. */
+const decisionSent = (entry: OutboxDecision, to: JobMachine): string =>
+  `Anotado: ${sentLine(entry)}.${to.alive ? " Se entrega en el próximo pase." : ` La máquina ${to.name} está apagada o caída: se entrega cuando vuelva, si para entonces todavía espera tu respuesta.`}`;
+
+/** What answering did: the local job as it is now, or what was sent to the machine that has it. */
+export type AnswerResult = { job: Job } | { sent: string };
+
+/**
+ * The owner's answer to a job wherever it is in the factory. With `askedAt`, only
+ * to the question that was asked then.
+ */
+export async function answerAnywhere(ctx: FactoryContext, id: string, decision: Decision, note?: string, askedAt?: string): Promise<AnswerResult> {
+  const away = jobElsewhere(ctx, id);
+  const { question, status } = away ?? getJob(ctx, id);
+  if (askedAt !== undefined && question?.askedAt !== askedAt) throw new Error(`La pregunta del trabajo ${id} ya no es la misma: no se respondió nada.`);
+  if (!away) return { job: await answer(ctx, id, decision, note) };
+  if (status !== "waiting" || !question) throw new Error(`El trabajo ${id} no está esperando una respuesta (estado: ${status}).`);
+  return { sent: decisionSent(sendDecision(ctx, { job: id, askedAt: question.askedAt }, away.machine, decision, note), away.machine) };
+}
+
 /** The andon cord: stops one job, or the whole factory when no job is given. */
 export async function stop(ctx: FactoryContext, id?: string): Promise<{ job?: Job; factory?: boolean }> {
   if (!id) {
@@ -440,6 +534,12 @@ export interface FactoryStatus {
   github?: GithubStatus;
   /** Every machine of a distributed factory as the last coordination pass saw them; absent without `distributed`. */
   machines?: MachineView[];
+  /** The unfinished and lately finished jobs of every machine, each once (see `factoryView`); absent while this machine is the only one. */
+  jobs?: FactoryJob[];
+  /** What was decided or asked for here for other machines, on its way or lately ended; absent with none. */
+  sent?: OutboxEntry[];
+  /** The lines the other machines published that are not on this one, and why; absent without `distributed`. */
+  linesAway?: LineAway[];
   box: { status?: BoxStatus; availability: BoxAvailability };
   /** Jobs wait for the box instead of running in local copies (see waitsForBox). */
   boxWait?: boolean;
@@ -457,8 +557,10 @@ export interface FactoryStatus {
   unjam: UnjamOnDemand;
   /** The research station on demand (see `requestInvestigation`). */
   research: ResearchOnDemand;
-  /** Loaded stations that declare `whenBusy`, as `<package>/<station>`: their regular pass also runs with the factory busy. */
+  /** Loaded stations that declare `whenBusy` and may run on this machine, as `<package>/<station>`: their regular pass also runs with the factory busy. */
   whenBusy: string[];
+  /** Packages on the stable channel whose new release the factory tried on its own and did not apply; absent with none. */
+  packagesByHand?: { package: string; version: string; at: string }[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
   /** The panel's tunnel health, only while kv `panel.remote` is on; `hostname` with a fixed subdomain configured. */
@@ -685,19 +787,44 @@ export interface SelfUpdateStatus {
   ready?: { from: string; to: string };
   /** A commit that failed for the machine and is tried again at `at`. */
   retry?: SelfUpdateRetry;
+  /** The configured channel. */
+  channel?: SelfUpdateChannel;
+  /** The last look on record at that channel; absent: it was not looked at yet. */
+  look?: { checkedAt: string; current: SelfUpdateTarget; available?: SelfUpdateTarget };
+  /** The update asked for that has not started yet. */
+  pending?: UpdateRequest;
+  /** The last update asked for, while it is recent. */
+  run?: UpdateRunRecord;
+  /** The panel offers to ask for an update. */
+  offer?: boolean;
 }
 
-/** What the self-update has to tell; nothing while it is off and never ran. */
-export function selfUpdateStatus(ctx: FactoryContext): SelfUpdateStatus | undefined {
+/** How long an update asked for is told once it ended. */
+export const UPDATE_RUN_SHOWN_MS = 7 * 86_400_000;
+
+/** What the self-update has to tell, only from what is on record; nothing while it is off, without a channel, and never ran nor was asked for. */
+export function selfUpdateStatus(ctx: FactoryContext, now = new Date()): SelfUpdateStatus | undefined {
   const { state, history } = readSelfUpdate(ctx.store);
-  if (!ctx.config.selfUpdate.enabled && !history.length) return undefined;
+  const { enabled, channel } = ctx.config.selfUpdate;
+  const pending = readUpdateRequest(ctx.store);
+  const lastRun = readUpdateRun(ctx.store);
+  const run = lastRun && (!lastRun.endedAt || now.getTime() - Date.parse(lastRun.endedAt) < UPDATE_RUN_SHOWN_MS) ? lastRun : undefined;
+  if (!enabled && !channel && !history.length && !pending && !run) return undefined;
   const last = history.at(-1);
   const problem = state.problem && !(last && state.problem === entryProblem(last)) ? state.problem : undefined;
+  // With a channel, a ready version that will be dropped instead of switched to is not told, nor a retry nothing will make.
+  const switches = ofChannel(state, channel) && (!channel || enabled || Boolean(state.onDemand));
+  const look = readSelfUpdateLook(ctx.store);
   return {
     ...(last && { last }),
     ...(problem && { problem }),
-    ...(state.status === "ready" && state.from && state.to && { ready: { from: state.from, to: state.to } }),
-    ...(state.retry && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
+    ...(state.status === "ready" && state.from && state.to && switches && { ready: { from: state.from, to: state.to } }),
+    ...(state.retry && (!channel || enabled) && { retry: { commit: state.retry.commit, at: state.retry.at, tries: state.retry.tries } }),
+    ...(channel && { channel }),
+    ...(look && look.channel === channel && { look: { checkedAt: look.checkedAt, current: { commit: look.head, ...(look.version && { version: look.version }) }, ...(look.available && { available: look.available }) } }),
+    ...(pending && { pending }),
+    ...(run && { run }),
+    ...((enabled || channel) && { offer: true }),
   };
 }
 
@@ -706,11 +833,141 @@ export function factoryStatus(ctx: FactoryContext): FactoryStatus {
   return storedStatus(ctx, (ctx.now ?? (() => new Date()))());
 }
 
+/** A machine of the factory as the owner sees it next to a job. */
+export interface JobMachine {
+  id: string;
+  name: string;
+  /** Within its lease when the last coordination pass looked; this machine always is. */
+  alive: boolean;
+}
+
+/** A job of the whole factory, as the machine that has it tells it. */
+export interface FactoryJob extends StatusJob {
+  machine: JobMachine;
+  /** The full record, when this machine's is the copy that counts; nothing else of another machine's job is here. */
+  local?: Job;
+  /** What was done about it here: the answer on its way to its machine, or the request no machine told of yet. */
+  note?: string;
+}
+
+/** A copy without a claim that decides: the one at work, then the one still to do. */
+const copyRank = (j: StatusJob): number => (j.status === "running" || j.status === "waiting" ? 0 : j.status === "queued" ? 1 : 2);
+
+/**
+ * The jobs of the whole factory by creation: `local` and what the other machines
+ * published, each job once, as told by the machine that holds its claim or left
+ * its closing record. undefined without the protocol, or while no other machine
+ * is known: everything shows as on a single machine.
+ */
+export function factoryView(ctx: FactoryContext, local: Job[]): FactoryJob[] | undefined {
+  if (!coordReady(ctx)) return undefined;
+  const own = machineIdentity(ctx.store, ctx.config);
+  const { records, claims } = readStatus(ctx.store);
+  const machines = readMachines(ctx.store) ?? [];
+  const asked = outbox(ctx.store).flatMap((e) => (e.kind === "request" ? [e] : []));
+  if (!records.length && !asked.length && !machines.some((m) => m.id !== own.id)) return undefined;
+  const machine = (id: string, name?: string): JobMachine => {
+    if (id === own.id) return { id, name: own.name, alive: true };
+    const known = machines.find((m) => m.id === id);
+    return { id, name: known?.name ?? name ?? id, alive: known?.alive ?? false };
+  };
+
+  // This machine's copies first, then the ones told most recently.
+  const copies = new Map<string, FactoryJob[]>();
+  const add = (copy: FactoryJob) => copies.set(copy.id, [...(copies.get(copy.id) ?? []), copy]);
+  const addLocal = (job: Job) => add({ ...ownStatusJob(job), machine: machine(own.id), local: job });
+  for (const job of local) addLocal(job);
+  for (const record of [...records].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))) {
+    for (const job of record.jobs) {
+      const here = copies.has(job.id) ? undefined : ctx.store.getJob(job.id);
+      if (here) addLocal(here);
+      add({ ...job, machine: machine(record.id) });
+    }
+  }
+  // Asked for here, on a line this machine does not have, and told by no machine yet.
+  for (const entry of asked) {
+    const { id, line, request, priority, createdAt } = entry.record;
+    if (copies.has(id) || ctx.store.getJob(id)) continue;
+    add({ id, line, title: jobName({ request }), status: "queued", priority: isPriority(priority) ? priority : "media", createdAt, machine: machine(own.id), note: sentState(entry) });
+  }
+  const claimOf = new Map(claims.map((c) => [c.job, c]));
+  const answered = (j: FactoryJob): FactoryJob => {
+    const entry = j.question && !j.local ? decisionOnItsWay(ctx.store, { job: j.id, askedAt: j.question.askedAt }) : undefined;
+    return entry ? { ...j, note: sentLine(entry) } : j;
+  };
+  return [...copies.values()].map((list) => answered(heldCopy(list, claimOf.get(list[0]!.id), machine))).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+/** A proposal that waits on another machine of the factory. */
+export interface FactoryProposal extends StatusProposal {
+  machine: JobMachine;
+  /** The decision on it that is on its way from here. */
+  note?: string;
+}
+
+/** The pending proposals of the other machines, as the last pass read them; none without the protocol. */
+export function proposalsElsewhere(ctx: FactoryContext): FactoryProposal[] {
+  if (!coordReady(ctx)) return [];
+  const machines = readMachines(ctx.store) ?? [];
+  return readStatus(ctx.store).records.flatMap((r) => {
+    const known = machines.find((m) => m.id === r.id);
+    return r.proposals
+      .filter((p) => !ctx.store.getProposal(p.id))
+      .map((p) => {
+        const entry = decisionOnItsWay(ctx.store, { proposal: p.id });
+        return { ...p, machine: { id: r.id, name: known?.name ?? r.id, alive: known?.alive ?? false }, ...(entry && { note: sentLine(entry) }) };
+      });
+  });
+}
+
+/** One of them. */
+export const proposalElsewhere = (ctx: FactoryContext, id: string): FactoryProposal | undefined => proposalsElsewhere(ctx).find((p) => p.id === id);
+
+/** Which of a job's copies counts, or the one at hand as its claim says it is when its machine told nothing of it yet. */
+function heldCopy(copies: FactoryJob[], claim: ClaimRecord | undefined, machine: (id: string, name?: string) => JobMachine): FactoryJob {
+  const ended = finishedClaim(claim) ? claim : undefined;
+  if (!claim || (claim.released && !ended)) return [...copies].sort((a, b) => copyRank(a) - copyRank(b))[0]!;
+  const told = copies.find((c) => c.machine.id === claim.machine);
+  if (told) return told;
+  const { id, line, title, priority, createdAt } = copies[0]!;
+  return { id, line, title, priority, createdAt, machine: machine(claim.machine, claim.name), ...(ended ? { status: ended.status, finishedAt: ended.at } : { status: "running" }) };
+}
+
+/** One job of the whole factory, when the copy that counts is not this machine's. */
+export function jobElsewhere(ctx: FactoryContext, id: string): FactoryJob | undefined {
+  const local = ctx.store.getJob(id);
+  const job = factoryView(ctx, local ? [local] : [])?.find((j) => j.id === id);
+  return job?.local ? undefined : job;
+}
+
+/** A job's details, wherever it is in the factory: what `zero status <id>` and the chat say. */
+export function jobText(ctx: FactoryContext, id: string): string {
+  const away = jobElsewhere(ctx, id);
+  if (away) {
+    // Also what came of an answer to a question that is over.
+    const told = outbox(ctx.store).flatMap((e) => (e.kind === "decision" && "job" in e.record.target && e.record.target.job === id ? [sentLine(e)] : []));
+    return formatFactoryJob(away, told.filter((t) => t !== away.note));
+  }
+  const job = getJob(ctx, id);
+  const machine = factoryView(ctx, [job])?.find((j) => j.id === id)?.machine;
+  return formatJob(job, { subscription: onSubscription(ctx.store, ctx.config.engine), machine });
+}
+
+/** The jobs `FactoryStatus.jobs` shows. */
+function factoryJobs(ctx: FactoryContext, now: Date): FactoryJob[] | undefined {
+  const since = new Date(now.getTime() - STATUS_DAYS * 86_400_000);
+  const open = ctx.store.listJobs({ status: ["queued", "running", "waiting"], limit: -1 });
+  return factoryView(ctx, [...open, ...ctx.store.finishedSince(since)])?.filter((j) => !FINAL_STATUSES.includes(j.status) || Date.parse(j.finishedAt ?? j.createdAt) >= since.getTime());
+}
+
 /** `factoryStatus` from the stored state alone: it does not move the gate's records into the store first. */
 function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
+  const jobs = factoryJobs(ctx, now);
+  const sent = coordReady(ctx) ? outbox(ctx.store) : [];
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
+  const byHand = packagesToApplyByHand(ctx, now);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -727,7 +984,9 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     trains: trainViews(ctx),
     ...(installBehind(installFreshness) && { install: installFreshness }),
     github: githubStatus(ctx.store, now),
-    ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [] }),
+    ...(ctx.config.distributed && { machines: readMachines(ctx.store) ?? [], linesAway: linesAway(ctx) }),
+    ...(jobs && { jobs }),
+    ...(sent.length && { sent }),
     box,
     boxWait: waitsForBox(ctx),
     skills: skillProblems(ctx.config, availableSkills(ctx.config)),
@@ -740,10 +999,11 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     }),
     unjam: unjamOnDemand(ctx),
     research: researchOnDemand(ctx),
-    whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy).map((s) => `${s.package}/${s.name}`),
+    whenBusy: (ctx.config.loadedPackages?.stations ?? []).filter((s) => s.whenBusy && runsHere(ctx, s)).map((s) => `${s.package}/${s.name}`),
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
-    selfUpdate: selfUpdateStatus(ctx),
+    selfUpdate: selfUpdateStatus(ctx, now),
+    ...(byHand.length && { packagesByHand: byHand }),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -1004,20 +1264,33 @@ export interface RequestsView {
   /** The filter as applied: an unknown line or estado is dropped. */
   line?: string;
   estado: RequestFilter;
-  rows: { job: Job; age: string }[];
+  /** `machine` only with other machines in the factory. */
+  rows: { job: Job; machine?: JobMachine; age: string }[];
+  /** The jobs of the factory's other machines, with the same filter and within the same limit. */
+  away: { job: FactoryJob; age: string }[];
 }
 
-/** The panel's "Pedidos" list: every job (not only the store's first 1000), filtered, newest first, at most 200. */
+/** The panel's "Pedidos" list: every job of the factory (not only the store's first 1000), filtered, newest first, at most 200. */
 export function requestsView(ctx: FactoryContext, filter: { line?: string; estado?: string } = {}, now = new Date()): RequestsView {
-  const lines = ctx.config.lines.map((l) => l.name);
+  const lines = requestLines(ctx);
   const line = filter.line && lines.includes(filter.line) ? filter.line : undefined;
   const estado: RequestFilter = filter.estado && Object.hasOwn(REQUEST_FILTERS, filter.estado) ? (filter.estado as RequestFilter) : "todos";
+  const all = factoryView(ctx, ctx.store.listJobs({ limit: -1 }));
+  if (all) {
+    const shown = all
+      .filter((j) => (!line || j.line === line) && (REQUEST_FILTERS[estado]?.includes(j.status) ?? true))
+      .reverse()
+      .slice(0, REQUESTS_VIEW_MAX);
+    const rows = shown.flatMap((j) => (j.local ? [{ job: j.local, machine: j.machine, age: ageText(j.createdAt, now) }] : []));
+    const away = shown.flatMap((j) => (j.local ? [] : [{ job: j, age: ageText(j.createdAt, now) }]));
+    return { lines, line, estado, rows, away };
+  }
   const rows = ctx.store
     .listJobs({ line, status: REQUEST_FILTERS[estado], limit: -1 })
     .reverse()
     .slice(0, REQUESTS_VIEW_MAX)
     .map((job) => ({ job, age: ageText(job.createdAt, now) }));
-  return { lines, line, estado, rows };
+  return { lines, line, estado, rows, away: [] };
 }
 
 /** Notes of the panel's "Investigación" tab, per line. */
@@ -1317,6 +1590,8 @@ export interface ControlRoomView {
     failed: number;
     spentUsd: number;
     estimatedUsd: number;
+    /** The amounts are the whole distributed factory's. */
+    shared?: true;
     daemon: DaemonState;
     daemonText: string;
     daemonTone: ControlTone;
@@ -1469,6 +1744,7 @@ export function controlRoomView(ctx: FactoryContext, now = new Date()): ControlR
       failed: s.today.failed,
       spentUsd: s.budget.spentUsd,
       estimatedUsd: s.budget.estimatedUsd,
+      ...(s.budget.shared && { shared: true as const }),
       daemon,
       daemonText: DAEMON_TEXT[daemon],
       daemonTone: DAEMON_TONE[daemon],
@@ -1531,7 +1807,8 @@ export interface ProposalLine {
 }
 
 /** Every proposal of every line, newest first, with the job it became and each line's night-shift autonomy. */
-export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"; lines: ProposalLine[] } {
+export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"; lines: ProposalLine[]; away?: FactoryProposal[] } {
+  const away = proposalsElsewhere(ctx);
   const all = ctx.store.listProposals().reverse();
   const view = (p: Proposal): ProposalView => {
     const job = p.jobId ? ctx.store.getJob(p.jobId) : undefined;
@@ -1546,6 +1823,7 @@ export function proposalsView(ctx: FactoryContext): { research: Autonomy | "off"
       const line = ctx.config.lines.find((l) => l.name === name);
       return { line: name, autonomy: line ? lineAutonomy(ctx.config, line) : "propose", proposals: all.filter((p) => p.line === name).map(view) };
     }),
+    ...(away.length && { away }),
   };
 }
 
@@ -1604,6 +1882,16 @@ export async function rejectProposal(ctx: FactoryContext, id: string, note?: str
     log.warn("cannot record the rejection in the townhall", { proposal: id, error: String(err) });
   }
   return proposal;
+}
+
+/** What deciding a proposal did, or what was sent to the machine that has it. */
+export type ProposalOutcome = { approved: RequestResult } | { rejected: Proposal } | { sent: string };
+
+/** The owner's decision on a proposal, wherever it is in the factory. */
+export async function decideProposal(ctx: FactoryContext, id: string, decision: Decision, note?: string): Promise<ProposalOutcome> {
+  const away = proposalElsewhere(ctx, id);
+  if (away) return { sent: decisionSent(sendDecision(ctx, { proposal: id }, away.machine, decision, note), away.machine) };
+  return decision === "reject" ? { rejected: await rejectProposal(ctx, id, note) } : { approved: approveProposal(ctx, id) };
 }
 
 /** Builds the GitHub adapter of a repository for a line, or nothing without access. */
@@ -2056,23 +2344,82 @@ export const githubRepoCheck =
 
 const COORD_REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
+/** How to create the coordination repository; zero itself never creates it. */
+const coordRepoHelp = (name = "<cuenta>/<nombre>") => `Para crear el repositorio privado de coordinación:
+
+  gh repo create ${name} --private --add-readme
+
+--add-readme le deja un primer commit: sin ninguno, GitHub no deja escribir la coordinación. Después corré zero unirse ${name} en cada máquina.`;
+
+/** What joining reaches besides the visibility check; tests inject a memory repository and a fake cloner. */
+export interface JoinDeps {
+  coord: (repository: string) => CoordApi | undefined;
+  /** Defaults to git. */
+  clone?: LineCloner;
+  platform?: NodeJS.Platform;
+  /** Cuts the clone under way. */
+  signal?: AbortSignal;
+}
+
+/** The real coordination repository, with the factory's GitHub token from zero's own process and counting its requests. */
+export const githubJoin = (ctx: FactoryContext): JoinDeps => ({
+  coord: (repository) => {
+    const token = githubToken(process.env, ctx.secrets);
+    return token ? githubCoord(githubMeter(ctx.store, ctx.now).client(token, "coord"), repository) : undefined;
+  },
+});
+
 /**
  * Joins this machine to a distributed factory: only the coordination repository's
- * name goes in the factory file, and only once GitHub says it is private.
+ * name goes in the factory file, and only once GitHub says it is private. Then its
+ * lines are cloned once; whatever happens there, the machine stays joined.
  * Secrets stay in each machine's own store; nothing here writes one.
  */
-export async function joinFactory(ctx: FactoryContext, repository: string, check: CoordRepoCheck = githubRepoCheck(ctx.secrets)): Promise<{ joined: boolean; text: string }> {
+export async function joinFactory(
+  ctx: FactoryContext,
+  repository: string,
+  check: CoordRepoCheck = githubRepoCheck(ctx.secrets),
+  deps: JoinDeps = githubJoin(ctx),
+): Promise<{ joined: boolean; text: string }> {
   const name = repository.trim();
-  if (!COORD_REPOSITORY.test(name)) return { joined: false, text: "El repositorio de coordinación tiene que tener la forma cuenta/nombre." };
+  if (!name) return { joined: false, text: `Indicá el repositorio de coordinación: zero unirse <cuenta/repo>.\n\n${coordRepoHelp()}` };
+  if (!COORD_REPOSITORY.test(name)) return { joined: false, text: `El repositorio de coordinación tiene que tener la forma cuenta/nombre.\n\n${coordRepoHelp()}` };
   let visibility: { private: boolean };
   try {
     visibility = await check(name);
   } catch {
-    return { joined: false, text: `No pude leer ${name} en GitHub: revisá que exista, que sea privado y que tu sesión de GitHub tenga acceso (zero setup).` };
+    return { joined: false, text: `No pude leer ${name} en GitHub: revisá que exista, que sea privado y que tu sesión de GitHub tenga acceso (zero setup).\n\n${coordRepoHelp(name)}` };
   }
-  if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.` };
+  if (!visibility.private) return { joined: false, text: `${name} es público: el repositorio de coordinación tiene que ser privado, porque guarda la cola y el avance de la fábrica.\n\n${coordRepoHelp()}` };
   ctx.config = await editConfig(ctx, (doc) => doc.setIn(["distributed", "repository"], name));
-  return { joined: true, text: `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.` };
+  const text = `Esta máquina se unió a la fábrica de ${name}. Reiniciá la fábrica (zero shutdown y zero start) para que empiece a latir.`;
+  const lines = await joinLines(ctx, name, deps).catch((err) => `No pude traer las líneas ahora (${lineProblem(ctx, err)}). ${JOIN_RETRY}`);
+  return { joined: true, text: `${text}\n${lines}` };
+}
+
+const JOIN_RETRY = "La fábrica lo vuelve a intentar cuando está encendida.";
+
+/** The lines pass of a machine that has just joined, and what it did in words. Joining again brings back the lines taken out by hand. */
+async function joinLines(ctx: FactoryContext, repository: string, deps: JoinDeps): Promise<string> {
+  const now = (ctx.now ?? (() => new Date()))();
+  forgetTakenOut(ctx);
+  if (githubHalt(ctx.store, now)) return `No traje las líneas todavía: GitHub está en pausa. ${JOIN_RETRY}`;
+  const api = deps.coord(repository);
+  if (!api) return `No traje las líneas todavía: no hay token de GitHub. ${JOIN_RETRY}`;
+  // Asked for by hand, a probe that failed a while ago is tried again.
+  await probeOnce(ctx, api, repository, machineIdentity(ctx.store, ctx.config).id, now, 0);
+  if (!coordReady(ctx)) {
+    const problem = readProbe(ctx.store)?.problem;
+    return `No traje las líneas todavía: el repositorio de coordinación no pasó la prueba${problem ? ` (${lineProblem(ctx, problem)})` : ""}. Si está vacío, agregale un primer commit. ${JOIN_RETRY}`;
+  }
+  const result = await linesPass(ctx, api, { clone: deps.clone, platform: deps.platform, signal: deps.signal });
+  if (!result) return `No traje las líneas todavía. ${JOIN_RETRY}`;
+  const out: string[] = [];
+  if (result.cloned.length) out.push(`Líneas clonadas: ${result.cloned.join(", ")}.`);
+  for (const l of result.unattended) out.push(`${l.name}: no se atiende en esta máquina ${l.why}.`);
+  for (const l of result.failed) out.push(`${l.name}: no se pudo clonar (${l.why}). Se vuelve a intentar pasada una hora, con la fábrica encendida.`);
+  if (deps.signal?.aborted) out.push(`El clonado se cortó. ${JOIN_RETRY}`);
+  return out.length ? out.join("\n") : "No hay líneas nuevas para clonar.";
 }
 
 export function lines(config: FactoryConfig) {
@@ -2318,7 +2665,9 @@ export type RemoteAction =
   | { tool: "zero_discard"; args: { job: string; reason?: string } }
   | { tool: "zero_proposal_decide"; args: { id: string; decision: "approve" | "reject"; note?: string } }
   | { tool: "zero_egress_block"; args: { site: string } }
-  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string } };
+  | { tool: "zero_update"; args: Record<string, never> }
+  /** `askedAt` ties it to the question it was asked for, when the job is on another machine. */
+  | { tool: "zero_answer"; args: { job: string; decision: "approve" | "reject"; note?: string; askedAt?: string } };
 
 export type PendingRemoteAction = RemoteAction & { id: string; client?: string; clientName?: string; createdAt: string; expiresAt: string; text: string };
 
@@ -2338,6 +2687,8 @@ export function describeRemoteAction(a: RemoteAction): string {
       return `${a.args.decision === "approve" ? "aprobar" : "rechazar"} la propuesta ${a.args.id}`;
     case "zero_egress_block":
       return `bloquear ${a.args.site} para la caja`;
+    case "zero_update":
+      return "actualizar zero a la última versión de su canal";
     case "zero_answer":
       return `aprobar los archivos protegidos del trabajo ${a.args.job}`;
   }
@@ -2399,12 +2750,17 @@ export async function confirmRemoteAction(ctx: FactoryContext, id: string, opts:
     case "zero_discard":
       return { ok: true, text: formatDiscard(await discardJob(ctx, held.args.job, { reason: held.args.reason, via: "chat", ...(opts.merges && { api: opts.merges }) })) };
     case "zero_proposal_decide":
-      if (held.args.decision === "reject") return { ok: true, text: `Propuesta ${(await rejectProposal(ctx, held.args.id, held.args.note)).id} rechazada y archivada.` };
-      return { ok: true, text: `Propuesta ${held.args.id} aprobada.\n${formatRequest(approveProposal(ctx, held.args.id))}` };
+      return { ok: true, text: formatProposalDecision(held.args.id, await decideProposal(ctx, held.args.id, held.args.decision, held.args.note)) };
     case "zero_egress_block":
       return { ok: true, text: await setEgressRule(ctx, held.args.site, "block") };
-    case "zero_answer":
-      return { ok: true, text: formatJob(await answer(ctx, held.args.job, held.args.decision, held.args.note), { subscription: subscription() }) };
+    case "zero_update": {
+      const r = requestUpdate(ctx, now);
+      return r.ok ? { ok: true, text: r.text } : { ok: false, text: `No se pidió la actualización: ${r.reason}.` };
+    }
+    case "zero_answer": {
+      const r = await answerAnywhere(ctx, held.args.job, held.args.decision, held.args.note, held.args.askedAt);
+      return { ok: true, text: "sent" in r ? r.sent : formatJob(r.job, { subscription: subscription() }) };
+    }
   }
 }
 
@@ -2500,10 +2856,28 @@ export interface PackageLineInput {
 /** Adds a package's line to the factory file; throws when the name is taken or the file refuses it. */
 export async function addPackageLine(ctx: FactoryContext, input: PackageLineInput): Promise<void> {
   if (ctx.config.lines.some((l) => l.name === input.name)) throw new Error(`ya existe la línea "${input.name}"`);
-  const entry = { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify };
+  await addLineEntry(ctx, { name: input.name, repo: input.repo, baseBranch: "main", integrate: "merge", package: input.package, setup: input.setup, verify: input.verify });
+}
+
+async function addLineEntry(ctx: FactoryContext, entry: LineEntry): Promise<void> {
   ctx.config = await editConfig(ctx, (doc) => {
     if (doc.hasIn(["lines"])) doc.addIn(["lines"], doc.createNode(entry));
     else doc.setIn(["lines"], doc.createNode([entry]));
+  });
+}
+
+/** Adds a line another machine of the factory published, cloned in `repo`, with what its record carries; a name taken meanwhile is refused by the file's own check. */
+export async function addSharedLine(ctx: FactoryContext, record: LineRecord, repo: string): Promise<void> {
+  await addLineEntry(ctx, {
+    name: record.name,
+    repo,
+    baseBranch: record.baseBranch,
+    setup: record.setup,
+    verify: record.verify,
+    ...(record.verifyTimeoutMinutes !== undefined && { verifyTimeoutMinutes: record.verifyTimeoutMinutes }),
+    integrate: record.integrate,
+    ...(record.autoMerge && { autoMerge: true }),
+    ...(record.needs.platforms.length && { platforms: record.needs.platforms }),
   });
 }
 
@@ -2760,6 +3134,10 @@ export interface PackageStationView {
   lastOnDemand?: StationRunRecord;
   /** Whether its manifest declares `whenBusy`: its regular pass also runs with the factory busy. */
   whenBusy?: true;
+  /** The only machine its entry lets it run on, as the file says it. */
+  machine?: string;
+  /** Whether that machine is another one, so it does not run here. */
+  elsewhere?: true;
 }
 
 /** A package's tab as the panel's menu links it. */
@@ -2823,10 +3201,20 @@ export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "d
   source: "path" | "npm" | "git";
   /** Where it comes from, as the factory file says it. */
   origin: string;
+  /** The channel of a git package that has one. */
+  channel?: NonNullable<PackageEntry["channel"]>;
+  /** The tag or branch its git source is pinned to. */
+  pin?: string;
   /** The commit or npm version installed; a folder has none. */
   installed?: string;
-  /** What was last seen on the remote, when it differs from `installed`. */
-  update?: { seen: string; at: string };
+  /** The released version `installed` is, on the stable channel and when it is on record. */
+  release?: string;
+  /** What was last seen on the remote, when it differs from `installed`; `version` on the stable channel. */
+  update?: { seen: string; version?: string; at: string };
+  /** The factory's own try at `update`: under way, or when it was made and not applied. */
+  attempt?: { at: string; running: boolean };
+  /** The newest released version, when what is installed is already past it. */
+  aheadOf?: string;
   /** The last look at the remote failed. */
   lookFailed?: { at: string; error: string };
   allowCode: boolean;
@@ -2841,11 +3229,20 @@ export interface PackageList {
 /** What is installed, what each package brings and what keeps part of it from working; never a secret's value. It only reads what is on record: no network, no git, no npm. */
 export function packageList(ctx: FactoryContext): PackageList {
   const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
+  const run = packageRunUnderWay(ctx, (ctx.now ?? (() => new Date()))());
   return {
     problems: loaded.problems,
     packages: loaded.packages.map((p) => {
       const installed = p.entry.git ? p.entry.commit : p.entry.npm ? (npmInstalledVersion(p.dir) ?? p.version) : undefined;
       const seen = installed ? readSeen(ctx.store, p.name) : undefined;
+      const { channel } = p.entry;
+      const source = p.entry.git ? parseGitSource(p.entry.git) : undefined;
+      const pin = source && !("error" in source) ? source.ref : undefined;
+      const release = channel && installed ? installedVersion(seen, installed) : undefined;
+      // What was seen before the channel changed is not what an update would take now.
+      const news = seen?.seen && seen.seen !== installed && Boolean(seen.version) === Boolean(channel) ? { seen: seen.seen, ...(seen.version && { version: seen.version }), at: seen.at } : undefined;
+      const ahead = news !== undefined && seen?.ahead === installed;
+      const attempt = news?.version && !ahead ? attemptOf(ctx.store, p.name, news.version) : undefined;
       return {
         name: p.name,
         version: p.version,
@@ -2854,8 +3251,13 @@ export function packageList(ctx: FactoryContext): PackageList {
         skills: p.skills,
         source: p.entry.git ? "git" : p.entry.npm ? "npm" : "path",
         origin: p.entry.git ?? p.entry.npm ?? p.entry.path!,
+        ...(channel && { channel }),
+        ...(pin && { pin }),
         ...(installed && { installed }),
-        ...(seen?.seen && seen.seen !== installed && { update: { seen: seen.seen, at: seen.at } }),
+        ...(release && { release }),
+        ...(news && !ahead && { update: news }),
+        ...(attempt && { attempt: { at: attempt.at, running: run?.package === p.name } }),
+        ...(ahead && news.version && { aheadOf: news.version }),
         ...(seen?.error && { lookFailed: { at: seen.at, error: seen.error } }),
         allowCode: p.entry.allowCode,
         stations: p.stations.map((name) => {
@@ -2864,6 +3266,7 @@ export function packageList(ctx: FactoryContext): PackageList {
           const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
           const pendingGuest = pendingSince !== undefined ? readStationGuest(ctx, p.name, name)?.name : undefined;
           const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
+          const machine = pinnedMachine(p.entry, name);
           return {
             name,
             allowed: Boolean(station),
@@ -2874,6 +3277,8 @@ export function packageList(ctx: FactoryContext): PackageList {
             ...(pendingGuest && { onDemandGuest: pendingGuest }),
             ...(lastOnDemand && { lastOnDemand }),
             ...(station?.whenBusy && { whenBusy: true as const }),
+            ...(machine !== undefined && { machine }),
+            ...(station && !runsHere(ctx, station) && { elsewhere: true as const }),
           };
         }),
       };
@@ -2916,6 +3321,7 @@ function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: 
   if (!known.stations.includes(name)) return { ok: false, reason: `el paquete ${pkg} no tiene una estación "${name}"` };
   const station = loaded.stations.find((s) => s.package === pkg && s.name === name);
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
+  if (!runsHere(ctx, station)) return { ok: false, reason: `la estación ${pkg}/${name} está fijada a la máquina ${pinnedMachine(station.entry, name)} y esta es ${machineIdentity(ctx.store, ctx.config).name}: pedila desde esa máquina` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
   const pending = pendingRunProblem(ctx, pkg, name);
   if (pending) return pending;
@@ -3100,6 +3506,43 @@ export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, w
   return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
 }
 
+/**
+ * Asks the daemon to move zero to the newest version of its channel (`ultimo` without one), whatever `selfUpdate.enabled`
+ * says. At most one pending; a refusal writes nothing.
+ */
+export function requestUpdate(ctx: FactoryContext, now = new Date()): StationRunResult {
+  const pending = readUpdateRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una actualización pendiente, pedida el ${pending.requestedAt}` };
+  if (readSelfUpdate(ctx.store).state.status === "switching" || switchLockHeldAt(ctx.home.root)) return { ok: false, reason: "ya hay un cambio de versión en curso; volvé a pedirla cuando termine" };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(UPDATE_REQUEST_KEY, JSON.stringify({ requestedAt } satisfies UpdateRequest));
+  return { ok: true, text: `Actualización pedida a la última versión del canal ${ctx.config.selfUpdate.channel ?? "ultimo"}: se busca en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** Like `waitStationStart`, until the daemon says what the update asked for at `requestedAt` found; `ok` is false only when it failed. */
+export async function waitUpdate(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ ok: boolean; text: string }> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readUpdateRun(ctx.store);
+    if (run?.asked === requestedAt) {
+      if (run.outcome === "failed") return { ok: false, text: `No se pudo actualizar: ${run.reason ?? "sin motivo registrado"}.` };
+      if (run.outcome === "stopped") return { ok: true, text: `La actualización quedó sin terminar: ${run.reason ?? "sin motivo registrado"}. Volvé a pedirla.` };
+      if (run.outcome === "up-to-date") return { ok: true, text: `No hay una versión nueva: ${run.reason ?? "la instalación ya está al día"}.` };
+      if (run.target) {
+        const version = selfUpdateTargetText(run.target);
+        return { ok: true, text: `${run.outcome === "ready" ? `La versión ${version} está lista` : `Preparando la versión ${version}`}: la fábrica cambia a ella cuando no haya trabajos corriendo.` };
+      }
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { ok: true, text: "La actualización sigue pendiente: se hace en la próxima pasada del daemon." };
+}
+
 /** Characters of the topic of an express research run. */
 export const RESEARCH_TOPIC_CHARS = 2000;
 
@@ -3203,11 +3646,11 @@ function fitProblem(ctx: FactoryContext, packages: PackageEntry[], index: number
 }
 
 /** What a package brings, for the owner to read before it comes in. */
-function packageSummary(manifest: PackageManifest, source: string, commit: string, dir: string): string {
+function packageSummary(manifest: PackageManifest, source: string, commit: string, dir: string, version?: string): string {
   const names = (items: { name: string }[]) => items.map((i) => cleanText(i.name)).join(", ");
   const secrets = declaredSecrets(manifest);
   return [
-    `${cleanText(manifest.name)} ${cleanText(manifest.version)}, de ${source} (commit ${shortSha(commit)}), en ${dir}:`,
+    `${cleanText(manifest.name)} ${cleanText(manifest.version)}, de ${source} (${version ? `${releaseTag(version)}, ` : ""}commit ${shortSha(commit)}), en ${dir}:`,
     `- agentes: ${names(manifest.agents) || "ninguno"}`,
     `- skills: ${manifest.skills.map(cleanText).join(", ") || "ninguna"}`,
     `- estaciones: ${names(manifest.stations) || "ninguna"}`,
@@ -3221,6 +3664,7 @@ function addedText(ctx: FactoryContext, name: string, source: string, already: b
   const added = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
   const stations = added?.stations ?? [];
   const lines = [`Paquete ${name}${added ? ` ${cleanText(added.version)}` : ""} ${already ? "ya estaba declarado" : "agregado"}.`];
+  if (added?.entry.channel) lines.push("Sigue el canal estable: solo pasa a versiones liberadas.");
   if (added?.agents.length) lines.push(`Agentes: ${added.agents.join(", ")}.`);
   if (added?.skills.length) lines.push(`Skills: ${added.skills.join(", ")}.`);
   if (stations.length && !allowCode && !added?.entry.allowCode) lines.push(`Sus estaciones (${stations.join(", ")}) no corren hasta que des el permiso: \`zero package add ${source} --permitir-codigo\`. Ese código corre con los permisos de tu usuario, así que dalo solo si confiás en el paquete.`);
@@ -3230,7 +3674,7 @@ function addedText(ctx: FactoryContext, name: string, source: string, already: b
 }
 
 /** A rename right after git and npm wrote in the folder; on Windows something may still hold it for a moment. */
-async function renameFolder(from: string, to: string): Promise<void> {
+export async function renameFolder(from: string, to: string): Promise<void> {
   for (let tries = 5; ; tries--) {
     try {
       return await rename(from, to);
@@ -3252,22 +3696,34 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
   const parsed = parseGitSource(source);
   if ("error" in parsed) throw new Error(`No se puede agregar esa fuente git: ${parsed.error}.`);
   const allowCode = input.allowCode ?? false;
+  const { channel } = input;
+  const refused = channel && stableChannelProblem(source);
+  if (refused) throw new Error(`No se puede agregar ${source}: ${refused}.`);
   const declared = ctx.config.packages.findIndex((p) => p.git === source);
   if (declared >= 0) {
     const name = entryName(ctx.config.packages[declared]!, ctx.home);
     ctx.config = await editConfig(ctx, (doc) => {
       if (allowCode) doc.setIn(["packages", declared, "allowCode"], true);
+      if (channel) doc.setIn(["packages", declared, "channel"], channel);
     });
     return addedText(ctx, name, source, true, allowCode);
   }
   const git = input.git ?? realGit;
+  let version: string | undefined;
+  if (channel) {
+    try {
+      version = (await stableReleases(git, parsed.url, ctx.home.root)).newest.version;
+    } catch (err) {
+      throw new Error(`No se puede agregar ${source}: ${errorText(err)}`);
+    }
+  }
   const root = join(ctx.home.packages, "git");
   await mkdir(root, { recursive: true });
   const temp = await mkdtemp(join(root, ".tmp-"));
   let target: string | undefined;
   try {
     await git(["clone", "--no-checkout", "--", parsed.url, temp], { cwd: root });
-    const commit = await resolveAndCheckout(git, temp, parsed.ref);
+    const commit = await resolveAndCheckout(git, temp, version ? tagRef(releaseTag(version)) : parsed.ref);
     if (await manifestNotAFile(git, temp, commit)) throw new Error(`No se puede agregar ${source}: ${MANIFEST_NOT_A_FILE}.`);
     let manifest: PackageManifest;
     try {
@@ -3280,20 +3736,21 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
     const dir = join(root, manifest.name);
     if (existsSync(dir)) throw new Error(`No se puede agregar ${source}: ya existe la carpeta ${dir} y ningún paquete la declara con esa fuente. Quitala o movela si ya no la usás.`);
     const others = ctx.config.packages;
-    const problem = fitProblem(ctx, [...others, { git: source, path: temp, commit, allowCode }], others.length, manifest.name);
+    const problem = fitProblem(ctx, [...others, { git: source, path: temp, commit, ...(channel && { channel }), allowCode }], others.length, manifest.name);
     if (problem) throw new Error(`No se puede agregar ${manifest.name}: ${problem}`);
-    input.say?.(packageSummary(manifest, source, commit, dir));
+    input.say?.(packageSummary(manifest, source, commit, dir, version));
     if (!(await (input.confirm ?? nobodyConsents)(`¿Instalo ${manifest.name}?`))) return "No instalé nada.";
     await renameFolder(temp, dir);
     target = dir;
     if (existsSync(join(dir, PACKAGE_LOCK))) await (input.deps ?? realDependencies)(dir);
     ctx.config = await editConfig(ctx, (doc) => {
-      const node = { git: source, path: dir, commit, ...(allowCode && { allowCode }) };
+      const node = { git: source, path: dir, commit, ...(channel && { channel }), ...(allowCode && { allowCode }) };
       if (doc.hasIn(["packages"])) doc.addIn(["packages"], doc.createNode(node));
       else doc.setIn(["packages"], doc.createNode([node]));
     });
     target = undefined;
-    ctx.store.deleteKv(updateKey(manifest.name));
+    if (version) recordSeen(ctx.store, manifest.name, commit, (ctx.now ?? (() => new Date()))(), { version });
+    else ctx.store.deleteKv(updateKey(manifest.name));
     return addedText(ctx, manifest.name, source, false, allowCode);
   } finally {
     await removeFolder(temp);
@@ -3304,6 +3761,8 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
 export interface PackageAddInput {
   source: string;
   allowCode?: boolean;
+  /** Only for a git source: it takes released versions only. */
+  channel?: PackageEntry["channel"];
   install?: PackageInstaller;
   git?: GitRunner;
   deps?: DependencyInstaller;
@@ -3315,12 +3774,13 @@ export interface PackageAddInput {
 /**
  * Adds a package to the factory file, keeping its comments. The manifest, and
  * whether it fits among the others, is checked before touching the file. Adding
- * one already declared only updates its permission.
+ * one already declared only updates its permission and, from git, its channel.
  */
 export async function packageAdd(ctx: FactoryContext, input: PackageAddInput): Promise<string> {
   const source = input.source.trim();
   if (!source) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
   if (isGitSource(source)) return packageAddGit(ctx, source, { ...input, source });
+  if (input.channel) throw new Error(`No se puede agregar ${source}: ${stableChannelProblem(undefined)}.`);
   const folder = looksLikePath(source) || (existsSync(source) && statSync(source).isDirectory());
   if (!folder && !NPM_NAME.test(source)) throw new Error(`"${source}" no es una carpeta ni un nombre válido de paquete npm.`);
   if (!folder) {
@@ -3372,6 +3832,8 @@ export async function packageRemove(ctx: FactoryContext, input: { name: string }
 export interface PackageUpdateInput {
   /** Absent: every package. */
   name?: string;
+  /** The tag to move a git package's pin to; only with `name`. */
+  tag?: string;
   git?: GitRunner;
   deps?: DependencyInstaller;
   install?: PackageInstaller;
@@ -3408,8 +3870,16 @@ async function gitFolderProblem(ctx: FactoryContext, git: GitRunner, dir: string
   return undefined;
 }
 
+/** Why a package's pin cannot be moved to a tag, before looking at its remote. */
+function pinRefusal(entry: PackageEntry, tag: string): string | undefined {
+  if (!entry.git) return "--etiqueta es solo para paquetes instalados desde git";
+  if (entry.channel) return "sigue el canal estable, así que no se fija a una etiqueta: quitale channel en el archivo de la fábrica para fijarlo";
+  const parsed = parseGitSource(pinnedTo(entry.git, tag));
+  return "error" in parsed ? `la etiqueta no es válida: ${parsed.error}` : undefined;
+}
+
 async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number, name: string): Promise<ApplyUpdate | undefined> {
-  const { git, deps, say } = steps;
+  const { git, deps, say, tag } = steps;
   const entry = ctx.config.packages[index]!;
   const dir = packageFolder(entry, ctx.home);
   const problem = await gitFolderProblem(ctx, git, dir);
@@ -3418,20 +3888,47 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
   if ("error" in source) throw new Error(source.error);
   const run = (args: string[]) => git(args, { cwd: dir });
   const now = (ctx.now ?? (() => new Date()))();
-  let to: string;
-  try {
-    to = await fetchRef(git, dir, source.ref);
-  } catch (err) {
-    recordLookFailed(ctx.store, name, errorText(err), now);
-    throw err;
-  }
-  recordSeen(ctx.store, name, to, now);
   const from = entry.commit!;
-  if (to === from && (await run(["rev-parse", "HEAD"])) === from) {
-    say(`${name}: está al día (${shortSha(from)}).`);
+  let to: string;
+  let release: StableLook | undefined;
+  if (tag !== undefined) {
+    const unpinnable = await pinProblem(git, dir, tag);
+    if (unpinnable) throw new Error(`${unpinnable}.`);
+    to = await fetchRef(git, dir, tagRef(tag));
+  } else {
+    try {
+      if (entry.channel) release = await lookForRelease(git, { remote: "origin", cwd: dir, dir, installed: from, last: readSeen(ctx.store, name) });
+      if (release?.ahead) to = release.seen;
+      else to = await fetchRef(git, dir, release ? tagRef(releaseTag(release.version)) : source.ref);
+      if (release && to !== release.seen) throw new Error(`${releaseTag(release.version)} cambió de commit mientras se miraba; probá de nuevo`);
+    } catch (err) {
+      recordLookFailed(ctx.store, name, errorText(err), now);
+      throw err;
+    }
+    recordSeen(ctx.store, name, to, now, release);
+    // A release newer than the one the daemon started this for is the one being tried.
+    if (release && isAutomaticUpdate(ctx.store)) recordAttempt(ctx.store, name, { version: release.version, at: now.toISOString() });
+  }
+  if (release?.ahead) {
+    say(`${name}: ${aheadText(release.version)}.`);
     return undefined;
   }
-  say(`${name}: de ${shortSha(from)} a ${shortSha(to)}.`);
+  const at = (sha: string, named: string | undefined) => (named ? `${named} (${shortSha(sha)})` : shortSha(sha));
+  const target = at(to, tag ?? (release && releaseTag(release.version)));
+  // The tag becomes the reference of its source along with the commit it brought.
+  const pin = tag === undefined ? undefined : pinnedTo(entry.git!, tag);
+  if (to === from && (await run(["rev-parse", "HEAD"])) === from) {
+    if (pin === undefined || pin === entry.git) {
+      say(`${name}: está al día (${target}).`);
+      return undefined;
+    }
+    ctx.config = await editConfig(ctx, (doc) => doc.setIn(["packages", index, "git"], pin));
+    recordSeen(ctx.store, name, to, now);
+    say(`${name}: fijado a ${target}; ya estaba en ese commit.`);
+    return undefined;
+  }
+  const version = release?.current?.version;
+  say(`${name}: de ${at(from, version && releaseTag(version))} a ${target}.`);
   const shown = 20;
   const commits = (await run(["log", "--format=%H%x09%s", "-n", String(shown + 1), `${from}..${to}`])).split("\n").filter(Boolean);
   for (const commit of commits.slice(0, shown)) {
@@ -3440,7 +3937,7 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
   }
   if (commits.length > shown) say(`- y más commits`);
   const ancestor = await run(["merge-base", "--is-ancestor", from, to]).then(() => true, () => false);
-  if (!ancestor) say(`Ojo: la historia cambió, ${shortSha(from)} ya no es parte de lo que trae el remoto.`);
+  if (!ancestor) say(tag === undefined ? `Ojo: la historia cambió, ${shortSha(from)} ya no es parte de lo que trae el remoto.` : `Ojo: ${target} no incluye lo instalado (${shortSha(from)}).`);
   // What it asks for can only be judged on a manifest that can be read: anything else stops here, before asking or touching anything.
   if (await manifestNotAFile(git, dir, to)) throw new Error(`no se aplicó ${shortSha(to)}: ${MANIFEST_NOT_A_FILE}.`);
   const before = await manifestAt(git, dir, from);
@@ -3470,8 +3967,13 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
       if (hasLock()) await deps(dir);
       const reason = fitProblem(ctx, ctx.config.packages, index, manifest.name);
       if (reason) throw new Error(reason);
-      ctx.config = await editConfig(ctx, (doc) => doc.setIn(["packages", index, "commit"], to));
-      say(`${name}: actualizado a ${shortSha(to)}.`);
+      ctx.config = await editConfig(ctx, (doc) => {
+        doc.setIn(["packages", index, "commit"], to);
+        if (pin !== undefined) doc.setIn(["packages", index, "git"], pin);
+      });
+      // What was on record is about the reference it had.
+      if (pin !== undefined) recordSeen(ctx.store, name, to, now);
+      say(`${name}: ${pin === undefined ? "actualizado" : "fijado"} a ${target}.`);
     } catch (err) {
       let back = `volvió a ${shortSha(from)}`;
       try {
@@ -3564,6 +4066,26 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
     failed = true;
     say(line);
   };
+  if (input.tag !== undefined && input.name === undefined) {
+    fail("Indicá qué paquete fijar: zero package update <nombre> --etiqueta <etiqueta>");
+    return { text: out.join("\n"), failed };
+  }
+  const lock = acquirePackageUpdateLock(ctx.home);
+  if (!lock) {
+    fail("Ya hay una actualización de paquetes en curso. Probá de nuevo cuando termine.");
+    return { text: out.join("\n"), failed };
+  }
+  try {
+    await updatePackages(ctx, input, say, fail);
+  } finally {
+    lock.release();
+  }
+  return { text: out.join("\n"), failed };
+}
+
+/** `packageUpdate` with its lock held. */
+async function updatePackages(ctx: FactoryContext, input: PackageUpdateInput, say: (line: string) => void, fail: (line: string) => void): Promise<void> {
+  const automatic = isAutomaticUpdate(ctx.store);
   const steps: UpdateSteps = { ...input, git: input.git ?? realGit, deps: input.deps ?? realDependencies, say };
   const entries = ctx.config.packages.map((entry, index) => ({ entry, index, name: entryName(entry, ctx.home) }));
   const chosen = input.name === undefined ? entries : entries.filter((e) => [e.name, e.entry.npm, e.entry.git, e.entry.path].includes(input.name));
@@ -3573,19 +4095,23 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
   const plans: { name: string; apply: ApplyUpdate }[] = [];
   for (const { entry, index, name } of chosen) {
     try {
+      // The file may have changed since the daemon started this, and nobody is there to agree to anything else.
+      if (automatic && !(ctx.config.selfUpdate.enabled && entry.channel)) throw new Error("no se actualiza sola: dejó de seguir el canal estable o la autoactualización se apagó.");
+      const refusal = input.tag === undefined ? undefined : pinRefusal(entry, input.tag);
+      if (refusal) throw new Error(`${refusal}.`);
       const apply = entry.git ? await planGitUpdate(ctx, steps, index, name) : entry.npm ? await planNpmUpdate(ctx, steps, index, name) : planFolderUpdate(ctx, steps, index, name);
       if (apply) plans.push({ name, apply });
     } catch (err) {
       fail(`${name}: ${errorText(err)}`);
     }
   }
-  if (!plans.length) return { text: out.join("\n"), failed };
+  if (!plans.length) return;
 
-  const daemon = input.daemon ?? { shutdown: () => shutdownFactory(ctx), start: () => ensureDaemon(ctx) };
+  const daemon = input.daemon ?? { shutdown: () => shutdownFactory(ctx, automatic ? { timeoutMs: UNATTENDED_SHUTDOWN_MS } : {}), start: () => ensureDaemon(ctx) };
   const stopped = await daemon.shutdown();
   if (stopped.status === "timeout") {
     fail(`La fábrica sigue en marcha (proceso ${stopped.pid ?? "desconocido"}) y no toqué ningún paquete. El pedido de apagado queda vigente: se va a apagar cuando termine, sin volver a encenderse. Entonces corré \`zero package update\` de nuevo y \`zero start\`.`);
-    return { text: out.join("\n"), failed };
+    return;
   }
   try {
     for (const { name, apply } of plans) {
@@ -3605,5 +4131,39 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
       }
     }
   }
-  return { text: out.join("\n"), failed };
+}
+
+export interface ReleaseInput {
+  /** A commit, a version, or both, as they came on the command line. */
+  args: string[];
+  /** Absent: zero's own install folder. */
+  line?: string;
+  confirm?: Confirm;
+  /** What the person in charge reads before answering. */
+  say?: (text: string) => void;
+  git?: GitRunner;
+  /** The install folder; absent: the running zero's. */
+  install?: string;
+}
+
+/** Releases a version of zero, or of a line's repository. Only the terminal calls it: no chat tool nor panel route does. */
+export async function releaseVersion(ctx: FactoryContext, input: ReleaseInput): Promise<ReleaseResult> {
+  const request = parseReleaseRequest(input.args);
+  const git = input.git ?? selfUpdateGit;
+  let target: ReleaseTarget;
+  if (input.line !== undefined) {
+    const line = findLine(ctx.config, input.line);
+    target = { repo: line.repo, remote: line.remote, branch: line.baseBranch };
+  } else {
+    const repo = input.install ?? installFolder();
+    const { remote, branch } = ctx.config.selfUpdate;
+    const refused = (why: string): ReleaseResult => ({ released: false, text: `No publiqué nada: ${why}` });
+    // A copy of zero inside another repository would release that one.
+    const root = await git(["rev-parse", "--show-cdup"], { cwd: repo }).then((up) => up === "", () => false);
+    if (!root) return refused(`${repo} no es la raíz de su propio repositorio de git.`);
+    const current = branch ?? (await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }).catch(() => "HEAD"));
+    if (current === "HEAD") return refused(`${repo} no está en una rama; indicá cuál con selfUpdate.branch.`);
+    target = { repo, remote, branch: current };
+  }
+  return publishRelease(target, request, { git, confirm: input.confirm ?? nobodyConsents, say: input.say ?? (() => {}) });
 }

@@ -44,9 +44,15 @@ describe("docs/adr/0007-fabrica-distribuida.md", () => {
     expect(file).not.toContain("no verificado contra GitHub real");
   });
 
+  it("records the third part: lines, the shared budget and control from any machine", () => {
+    const file = read(name);
+    for (const piece of ["lines/<nombre>", "spend/<id>", "status/<id>", "decisions/<clave>", "ZERO_HOME/lines", "platforms", "La única excepción es agregar una línea nueva", "--add-readme", "Tercera parte"]) expect(file).toContain(piece);
+    for (const gone of ["**Después:**", "En etapas siguientes", "en etapas siguientes", "todavía se cuenta en cada máquina"]) expect(file).not.toContain(gone);
+  });
+
   it("has one subsection per topic", () => {
     const headings = read(name).split("\n").filter((line) => line.startsWith("### "));
-    for (const topic of [/toma un trabajo/, /máquina caída/, /sin subir/, /Conflictos/, /Seguridad/, /Cuota de GitHub/, /Presupuesto/, /Unirse/, /una sola máquina/, /Etapas/]) {
+    for (const topic of [/toma un trabajo/, /máquina caída/, /sin subir/, /Conflictos/, /Seguridad/, /Cuota de GitHub/, /Presupuesto/, /Las líneas/, /Desde cualquier máquina/, /Unirse/, /una sola máquina/, /Etapas/]) {
       expect(headings.filter((h) => topic.test(h))).toHaveLength(1);
     }
   });

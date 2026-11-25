@@ -108,7 +108,9 @@ export function renderBriefing(metrics: Metrics, posts: Post[], egress?: EgressS
     sections.push(["## Alertas de seguridad", ...alerts.map((a) => `- (${a.line}) ${describeAlert(a)}`)].join("\n"));
   }
   if (installBehind(install)) {
-    sections.push(["## Instalación", `- ${installLine(install, new Date(metrics.to))}`, "Actualizar: `git pull` y `npm run build` en la carpeta de zero, y apagá la fábrica (`zero shutdown`) para que arranque con la versión nueva."].join("\n"));
+    // In the stable channel a pull would bring what was not released.
+    const how = install.channel === "estable" ? "Compilar: `npm run build`" : "Actualizar: `git pull` y `npm run build`";
+    sections.push(["## Instalación", `- ${installLine(install, new Date(metrics.to))}`, `${how} en la carpeta de zero, y apagá la fábrica (\`zero shutdown\`) para que arranque con la versión nueva.`].join("\n"));
   }
   if (jams.length) {
     sections.push(["## Trabas", ...jams.map((j) => `- ${jamLine(j)}`)].join("\n"));

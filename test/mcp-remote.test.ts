@@ -13,6 +13,7 @@ import { createZeroMcpServer, READ_TOOLS } from "../src/mcp/server.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
 import { REMOTE_URL_KEY } from "../src/panel/tunnel.js";
+import { readUpdateRequest } from "../src/self-update.js";
 import { cleanup, gitRepo, testFactory } from "./helpers.js";
 
 const TUNNEL = "https://ab-cd.trycloudflare.com";
@@ -357,6 +358,35 @@ describe("delicate actions from the remote chat", () => {
     await client.callTool({ name: "zero_answer", arguments: { job: other.id, decision: "approve" } });
     expect(p.ctx.store.getJob(other.id)!.status).not.toBe("waiting");
     expect(pendingRemoteActions(p.ctx)).toHaveLength(4);
+  });
+
+  it("holds an update of zero until it is confirmed, and then records the request", async () => {
+    const p = await panel();
+    const c = await connect(p);
+    const client = await mcpClient(p, c.access);
+    const answer = textOf(await client.callTool({ name: "zero_update", arguments: {} }));
+    expect(readUpdateRequest(p.ctx.store)).toBeUndefined();
+    const [held] = pendingRemoteActions(p.ctx);
+    expect(held).toMatchObject({ tool: "zero_update", args: {}, client: c.client, text: "actualizar zero a la última versión de su canal" });
+    expect(answer).toContain(`zero mcp confirmar ${held!.id}`);
+
+    const confirmed = await p.form(`/remote-chat/pending/${held!.id}/confirm`, { confirm: "1" }, { cookie: p.cookie, origin: p.base });
+    expect(confirmed.headers.get("location")).toContain("/remote-chat");
+    const asked = { requestedAt: p.ctx.now!().toISOString() };
+    expect(readUpdateRequest(p.ctx.store)).toEqual(asked);
+
+    // With one pending, confirming another one only tells why it is refused.
+    p.tick(60_000);
+    await client.callTool({ name: "zero_update", arguments: {} });
+    const [again] = pendingRemoteActions(p.ctx);
+    expect(await confirmRemoteAction(p.ctx, again!.id)).toEqual({ ok: false, text: expect.stringContaining("ya hay una actualización pendiente") });
+    expect(readUpdateRequest(p.ctx.store)).toEqual(asked);
+  });
+
+  it("does not list the update to a zero:read token", async () => {
+    const p = await panel();
+    const c = await connect(p, "zero:read");
+    expect((await (await mcpClient(p, c.access)).listTools()).tools.map((t) => t.name)).not.toContain("zero_update");
   });
 
   it("holds a discard until it is confirmed, and then closes its pull request and branch", async () => {

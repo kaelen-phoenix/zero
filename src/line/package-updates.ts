@@ -1,8 +1,9 @@
 import type { FactoryContext } from "../app.js";
 import { log } from "../log.js";
-import { realGit, realNpmLatest, recordLookFailed, recordSeen, type GitRunner, type NpmLatest } from "../package-install.js";
+import { lookForRelease } from "../package-channel.js";
+import { readSeen, realGit, realNpmLatest, recordLookFailed, recordSeen, type GitRunner, type NpmLatest } from "../package-install.js";
 import { parseGitSource } from "../package-source.js";
-import { entryName } from "../packages.js";
+import { entryName, packageFolder } from "../packages.js";
 
 const LAST_KEY = "package-updates:last";
 const EVERY_MS = 24 * 60 * 60_000;
@@ -44,6 +45,11 @@ export async function packageUpdatesPass(ctx: FactoryContext, now: Date, opts: {
       }
       const source = parseGitSource(entry.git!);
       if ("error" in source) throw new Error(source.error);
+      if (entry.channel) {
+        const { seen, ...release } = await lookForRelease(git, { remote: source.url, cwd: ctx.home.root, dir: packageFolder(entry, ctx.home), installed: entry.commit!, last: readSeen(ctx.store, name) });
+        recordSeen(ctx.store, name, seen, now, release);
+        continue;
+      }
       // Asked by name alone, git leaves out an annotated tag's peeled line and only the tag object's sha comes back.
       const output = await git(["ls-remote", "--", source.url, ...(source.ref ? [source.ref, `${source.ref}^{}`] : ["HEAD"])], { cwd: ctx.home.root });
       const seen = remoteCommit(output, source.ref);

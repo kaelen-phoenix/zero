@@ -7,7 +7,7 @@ import { log } from "../log.js";
 import type { MachineIdentity } from "../machine.js";
 import { isPriority } from "../priority.js";
 import type { Job, JobSource, Store } from "../state/store.js";
-import { claimSource, finished, listClaims, publishQueued, readQueueRecord, type CoordApi, type JobNeeds, type QueueRecord } from "./protocol.js";
+import { claimSource, finished, listClaims, publishQueued, readQueueRecord, type ClaimRecord, type CoordApi, type JobNeeds, type QueueRecord } from "./protocol.js";
 
 /** `coord:job:<id>`: a local job this machine already published on the shared queue, or imported from it, with what it needs. */
 export const queuedKey = (id: string) => `coord:job:${id}`;
@@ -89,8 +89,9 @@ type QueueCtx = LedgerDeps;
  * local copies of jobs another machine finished end here as that machine left
  * them; other machines' queued jobs whose line exists here come in with their
  * own id; and this machine's queued jobs go out, one job per request origin.
+ * Gives back the claims it read, the pass's only listing of them.
  */
-export async function queuePass(ctx: QueueCtx, api: CoordApi, machine: MachineIdentity, boxReady: boolean): Promise<void> {
+export async function queuePass(ctx: QueueCtx, api: CoordApi, machine: MachineIdentity, boxReady: boolean): Promise<Map<string, ClaimRecord>> {
   const { store, config } = ctx;
   const claims = await listClaims(api);
 
@@ -136,6 +137,7 @@ export async function queuePass(ctx: QueueCtx, api: CoordApi, machine: MachineId
     await publishQueued(api, record);
     store.setKv(queuedKey(job.id), JSON.stringify({ origin: "published", needs } satisfies QueuedState));
   }
+  return claims;
 }
 
 function importJob(ctx: QueueCtx, record: QueueRecord): void {

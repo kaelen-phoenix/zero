@@ -1,4 +1,9 @@
+import { LINE_PLATFORMS, type LineConfig } from "../config.js";
+import type { QuotaWindow } from "../engines/index.js";
 import type { MachineCapabilities, MachineIdentity } from "../machine.js";
+import { isPriority, type JobPriority } from "../priority.js";
+import { findSecret } from "../secrets.js";
+import type { JobStatus, Question } from "../state/store.js";
 
 /**
  * The distributed factory's coordination protocol (docs/adr/0007-fabrica-distribuida.md).
@@ -45,6 +50,11 @@ export const machineRef = (id: string): string => `machines/${id}`;
 export const probeRef = (id: string): string => `probe/${id}`;
 export const queueRef = (job: string): string => `queue/${job}`;
 export const progressRef = (job: string): string => `progress/${job}`;
+export const lineRef = (name: string): string => `lines/${name}`;
+export const spendRef = (id: string): string => `spend/${id}`;
+export const statusRef = (id: string): string => `status/${id}`;
+/** One ref per question or proposal, so the first decision published is the only one. */
+export const decisionRef = (target: DecisionTarget): string => `decisions/${decisionKey(target)}`;
 /** `key` comes from sourceKey: one ref per request origin, naming the one job that serves it. */
 export const sourceRef = (key: string): string => `sources/${key}`;
 
@@ -235,7 +245,7 @@ export interface QueueRecord {
 }
 
 /** The longest request a queue record may carry. */
-const MAX_QUEUED_REQUEST = 100_000;
+export const MAX_QUEUED_REQUEST = 100_000;
 const SOURCE_KINDS = ["github-issue", "linear-issue", "jira-issue", "night-shift", "research", "package", "security-alert", "pull-request"];
 
 /** Only plain fields: strings, finite numbers, booleans and lists of them, as every JobSource is. */
@@ -267,6 +277,292 @@ export function readQueueRecord(ref: CoordRef): QueueRecord | undefined {
       isNeeds(v.needs),
   );
   return record && ref.name === queueRef(record.id) ? record : undefined;
+}
+
+/** A branch or base name read back from the coordination repository: plain ref characters only, never an option or a path out. */
+export const REF_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}$/;
+
+/** A line of the factory as the machine that has it published it: what another machine needs to clone it, no local paths, no secrets. */
+export interface LineRecord {
+  name: string;
+  /** `account/name` on GitHub. */
+  repository: string;
+  baseBranch: string;
+  setup: string[];
+  verify: string[];
+  verifyTimeoutMinutes?: number;
+  integrate: LineConfig["integrate"];
+  autoMerge: boolean;
+  /** Engines a machine must have in its chains, and platforms the line runs on (none: any). */
+  needs: { engines: string[]; platforms: NonNullable<LineConfig["platforms"]> };
+  machine: string;
+  at: string;
+}
+
+/** A line's name also names its clone's folder: nothing that leaves it, nor a device name of Windows. */
+const LINE_NAME = /^(?!(?:con|prn|aux|nul|com\d|lpt\d)$)[a-z0-9][a-z0-9-]{0,63}$/;
+const GITHUB_REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)(?!.*\.git$)[A-Za-z0-9._-]{1,100}$/;
+
+const isCommands = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.length <= 50 && v.every((c) => typeof c === "string" && c.trim().length > 0 && c.length <= 2000 && !/[\u0000-\u001f\u007f]/.test(c));
+
+const isLineNeeds = (v: unknown): v is LineRecord["needs"] => {
+  const platforms = (v as LineRecord["needs"] | null)?.platforms;
+  return isNeeds({ ...(v as object), box: false }) && Array.isArray(platforms) && platforms.length <= LINE_PLATFORMS.length && platforms.every((p) => LINE_PLATFORMS.includes(p));
+};
+
+/** A line record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readLineRecord(ref: CoordRef): LineRecord | undefined {
+  if (findSecret(ref.data)) return undefined;
+  const v = parse<LineRecord>(
+    ref,
+    (v) =>
+      typeof v.name === "string" &&
+      LINE_NAME.test(v.name) &&
+      typeof v.repository === "string" &&
+      GITHUB_REPOSITORY.test(v.repository) &&
+      typeof v.baseBranch === "string" &&
+      REF_NAME.test(v.baseBranch) &&
+      isCommands(v.setup) &&
+      isCommands(v.verify) &&
+      (v.verifyTimeoutMinutes === undefined || (typeof v.verifyTimeoutMinutes === "number" && v.verifyTimeoutMinutes > 0 && v.verifyTimeoutMinutes <= 24 * 60)) &&
+      (v.integrate === "merge" || v.integrate === "branch" || v.integrate === "pull-request") &&
+      typeof v.autoMerge === "boolean" &&
+      (!v.autoMerge || v.integrate === "pull-request") &&
+      isLineNeeds(v.needs) &&
+      isId(v.machine) &&
+      isTime(v.at),
+  );
+  if (!v || ref.name !== lineRef(v.name)) return undefined;
+  return {
+    name: v.name,
+    repository: v.repository,
+    baseBranch: v.baseBranch,
+    setup: v.setup,
+    verify: v.verify,
+    ...(v.verifyTimeoutMinutes !== undefined && { verifyTimeoutMinutes: v.verifyTimeoutMinutes }),
+    integrate: v.integrate,
+    autoMerge: v.autoMerge,
+    needs: { engines: v.needs.engines, platforms: v.needs.platforms },
+    machine: v.machine,
+    at: v.at,
+  };
+}
+
+export const SPEND_SLOT_MS = 15 * 60_000;
+
+/** What the agent calls that started within one slot cost, as the engines estimate it. */
+export interface SpendSlot {
+  /** When the slot starts (ISO); it lasts SPEND_SLOT_MS. */
+  at: string;
+  engine: string;
+  /** How they were billed on the machine that made them. */
+  billing: "api" | "subscription" | "unknown";
+  /** Whether they count against `limits.usdPerNight`. */
+  idle: boolean;
+  usd: number;
+}
+
+/** A machine's latest reading of an engine's subscription: one plan per account, so it says where every machine stands. */
+export interface PlanReading {
+  engine: string;
+  /** When the call that told it ended (ISO). */
+  at: string;
+  /** Whether that call was refused. */
+  limited: boolean;
+  windows: QuotaWindow[];
+}
+
+/** What a machine spent lately, for the other machines' caps: amounts and plan windows only, no prompts, paths or texts. */
+export interface SpendRecord {
+  id: string;
+  at: string;
+  slots: SpendSlot[];
+  /** What that machine was charged for each job it has or had lately, whenever it was. */
+  jobs: { id: string; usd: number }[];
+  /** Its latest plan readings; absent on a machine with no subscription. */
+  plans?: PlanReading[];
+}
+
+/** The most slots or jobs a spend record may carry. */
+const MAX_SPEND_ITEMS = 20_000;
+
+const isUsd = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const isItems = (v: unknown, check: (item: Record<string, unknown>) => boolean): boolean =>
+  Array.isArray(v) && v.length <= MAX_SPEND_ITEMS && v.every((item) => !!item && typeof item === "object" && check(item as Record<string, unknown>));
+const isSpendSlot = (v: Record<string, unknown>): boolean =>
+  isTime(v.at) && isName(v.engine) && (v.billing === "api" || v.billing === "subscription" || v.billing === "unknown") && typeof v.idle === "boolean" && isUsd(v.usd);
+
+const isPlanWindow = (v: Record<string, unknown>): boolean =>
+  isName(v.name) && isName(v.label) && (v.utilization === undefined || isUsd(v.utilization)) && (v.status === "ok" || v.status === "warning" || v.status === "exhausted") && (v.resetsAt === undefined || isTime(v.resetsAt));
+const isPlanReading = (v: Record<string, unknown>): boolean => isName(v.engine) && isTime(v.at) && typeof v.limited === "boolean" && isItems(v.windows, isPlanWindow);
+
+/** The windows of a reading that may go into a record, with only the known fields. */
+export function planWindows(windows: unknown): QuotaWindow[] {
+  const valid = (Array.isArray(windows) ? windows : []).filter((w) => isItems([w], isPlanWindow)) as QuotaWindow[];
+  return valid.map(({ name, label, utilization, status, resetsAt }) => ({ name, label, ...(utilization !== undefined && { utilization }), status, ...(resetsAt !== undefined && { resetsAt }) }));
+}
+
+/** A spend record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readSpendRecord(ref: CoordRef): SpendRecord | undefined {
+  const v = parse<SpendRecord>(ref, (v) => isId(v.id) && isTime(v.at) && isItems(v.slots, isSpendSlot) && isItems(v.jobs, (j) => isId(j.id) && isUsd(j.usd)) && (v.plans === undefined || isItems(v.plans, isPlanReading)));
+  if (!v || ref.name !== spendRef(v.id)) return undefined;
+  return {
+    id: v.id,
+    at: v.at,
+    slots: v.slots.map(({ at, engine, billing, idle, usd }) => ({ at, engine, billing, idle, usd })),
+    jobs: v.jobs.map(({ id, usd }) => ({ id, usd })),
+    ...(v.plans?.length && { plans: v.plans.map(({ engine, at, limited, windows }) => ({ engine, at, limited, windows: planWindows(windows) })) }),
+  };
+}
+
+/** A job as its machine tells the others about it: no local paths, no secrets. */
+export interface StatusJob {
+  id: string;
+  line: string;
+  title: string;
+  status: JobStatus;
+  station?: string;
+  attempt?: number;
+  stage?: { n: number; total: number; title: string };
+  priority: JobPriority;
+  createdAt: string;
+  finishedAt?: string;
+  /** Only while it waits. */
+  question?: Pick<Question, "kind" | "text" | "askedAt" | "expiresAt" | "onTimeout">;
+}
+
+/** A scout proposal that waits to be decided on its machine. */
+export interface StatusProposal {
+  id: string;
+  line: string;
+  title: string;
+  why: string;
+  change: string;
+  estimatedUsd: number;
+  createdAt: string;
+}
+
+/** Where a machine's jobs and proposals stand, for the view of the whole factory. */
+export interface StatusRecord {
+  id: string;
+  at: string;
+  jobs: StatusJob[];
+  proposals: StatusProposal[];
+}
+
+/** The most jobs or proposals a status record may carry, and how long its texts may be. */
+export const MAX_STATUS_ITEMS = 1000;
+export const MAX_STATUS_TITLE = 300;
+export const MAX_STATUS_TEXT = 20_000;
+
+const JOB_STATUSES: readonly JobStatus[] = ["queued", "running", "waiting", "delivered", "failed", "stopped"];
+const QUESTION_KINDS: readonly Question["kind"][] = ["spec-ready", "before-integrate", "protected-path", "budget-exceeded", "integration-blocked", "egress-suspicious"];
+
+/** Characters a terminal would obey instead of showing; a text of several lines keeps its line breaks and tabs. */
+export const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const TEXT_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/g;
+
+const isTitle = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= MAX_STATUS_TITLE && v.search(CONTROL) < 0;
+const isText = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_STATUS_TEXT && v.search(TEXT_CONTROL) < 0;
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 10_000;
+const isStage = (v: Partial<NonNullable<StatusJob["stage"]>> | null): boolean => !!v && isCount(v.n) && isCount(v.total) && (v.title === "" || isTitle(v.title));
+const isAsked = (v: Partial<NonNullable<StatusJob["question"]>> | null): boolean =>
+  !!v && QUESTION_KINDS.includes(v.kind!) && isText(v.text) && isTime(v.askedAt) && isTime(v.expiresAt) && (v.onTimeout === "approve" || v.onTimeout === "reject");
+
+/** A job fit for a status record, with only the known fields; undefined when anything is off. */
+export function statusJob(value: unknown): StatusJob | undefined {
+  const v = value as StatusJob | null;
+  const valid =
+    !!v &&
+    typeof v === "object" &&
+    isId(v.id) &&
+    isName(v.line) &&
+    isTitle(v.title) &&
+    JOB_STATUSES.includes(v.status) &&
+    (v.station === undefined || isTitle(v.station)) &&
+    (v.attempt === undefined || isCount(v.attempt)) &&
+    (v.stage === undefined || isStage(v.stage)) &&
+    isPriority(v.priority) &&
+    isTime(v.createdAt) &&
+    (v.finishedAt === undefined || isTime(v.finishedAt)) &&
+    (v.question === undefined || (v.status === "waiting" && isAsked(v.question)));
+  if (!valid) return undefined;
+  const { stage, question } = v;
+  return {
+    id: v.id,
+    line: v.line,
+    title: v.title,
+    status: v.status,
+    ...(v.station !== undefined && { station: v.station }),
+    ...(v.attempt !== undefined && { attempt: v.attempt }),
+    ...(stage && { stage: { n: stage.n, total: stage.total, title: stage.title } }),
+    priority: v.priority,
+    createdAt: v.createdAt,
+    ...(v.finishedAt !== undefined && { finishedAt: v.finishedAt }),
+    ...(question && { question: { kind: question.kind, text: question.text, askedAt: question.askedAt, expiresAt: question.expiresAt, onTimeout: question.onTimeout } }),
+  };
+}
+
+/** A proposal fit for a status record, with only the known fields; undefined when anything is off. */
+export function statusProposal(value: unknown): StatusProposal | undefined {
+  const v = value as StatusProposal | null;
+  if (!v || typeof v !== "object" || !isId(v.id) || !isName(v.line) || !isTitle(v.title) || !isText(v.why) || !isText(v.change) || !isUsd(v.estimatedUsd) || !isTime(v.createdAt)) return undefined;
+  return { id: v.id, line: v.line, title: v.title, why: v.why, change: v.change, estimatedUsd: v.estimatedUsd, createdAt: v.createdAt };
+}
+
+/** A status record that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readStatusRecord(ref: CoordRef): StatusRecord | undefined {
+  const fits = (v: unknown) => Array.isArray(v) && v.length <= MAX_STATUS_ITEMS;
+  const v = parse<StatusRecord>(ref, (v) => isId(v.id) && isTime(v.at) && fits(v.jobs) && fits(v.proposals));
+  if (!v || ref.name !== statusRef(v.id)) return undefined;
+  const jobs = v.jobs.map(statusJob).filter((j) => j !== undefined);
+  const proposals = v.proposals.map(statusProposal).filter((p) => p !== undefined);
+  if (jobs.length !== v.jobs.length || proposals.length !== v.proposals.length) return undefined;
+  return { id: v.id, at: v.at, jobs, proposals };
+}
+
+/** What a decision is about: a job's question, told apart by when it was asked, or a proposal. */
+export type DecisionTarget = { job: string; askedAt: string } | { proposal: string };
+
+export const decisionKey = (t: DecisionTarget): string => ("job" in t ? `job-${t.job}-${Date.parse(t.askedAt)}` : `proposal-${t.proposal}`);
+
+/** A decision taken on one machine for a job or a proposal of another: it answers that, and nothing else. */
+export interface DecisionRecord {
+  target: DecisionTarget;
+  /** The machine that has the job or the proposal, the one that applies it. */
+  to: string;
+  machine: string;
+  name: string;
+  at: string;
+  decision: "approve" | "reject";
+  note?: string;
+}
+
+export const MAX_DECISION_NOTE = 4000;
+
+function decisionTarget(v: unknown): DecisionTarget | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const { job, askedAt, proposal } = v as Record<string, unknown>;
+  if (proposal === undefined) return isId(job) && isTime(askedAt) ? { job, askedAt } : undefined;
+  return job === undefined && askedAt === undefined && isId(proposal) ? { proposal } : undefined;
+}
+
+/** A decision that reads strictly, and only under its own ref; only the known fields come back, anything off is undefined. */
+export function readDecisionRecord(ref: CoordRef): DecisionRecord | undefined {
+  const v = parse<DecisionRecord>(
+    ref,
+    (v) =>
+      isId(v.to) &&
+      isId(v.machine) &&
+      isName(v.name) &&
+      isTime(v.at) &&
+      (v.decision === "approve" || v.decision === "reject") &&
+      (v.note === undefined || (isText(v.note) && v.note.length <= MAX_DECISION_NOTE)),
+  );
+  const target = v && decisionTarget(v.target);
+  if (!v || !target || ref.name !== decisionRef(target)) return undefined;
+  return { target, to: v.to, machine: v.machine, name: v.name, at: v.at, decision: v.decision, ...(v.note !== undefined && { note: v.note }) };
 }
 
 /** Publishes the job on the shared queue; false when it was already there. */
