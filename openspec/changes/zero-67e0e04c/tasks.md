@@ -17,11 +17,11 @@
 
 ## 3. Etapa 3: Sesión de invitado y panel de solo lectura
 
-- [ ] 3.1 src/panel/server.ts: POST /login also accepts a guest's key (same cookie name, a value that identifies the guest; owner's key compared first); read the guest record on every request with no cache; pass `authed: false` to the remote MCP for guests.
-- [ ] 3.2 Separate handleGuest with an allow list (home, granted tabs, listed files, logout), 404 identical to a missing page for the rest, same-origin check on POST, its own error handling with generic texts, before every owner route and stream.
-- [ ] 3.3 New src/panel/guest-pages.ts with the guest layout, reusing `page()` with its own menu and without NAV or TABS_MARK, usable on a phone; make the tab page renderer reusable.
-- [ ] 3.4 Record sign-in, view, download and denial events.
-- [ ] 3.5 Tests: new test/panel-guests-session.test.ts covering every owner GET and POST route, scope filtering, files, https cookie, owner rotation and immediate revocation; run the existing panel and remote-chat tests.
+- [x] 3.1 src/panel/server.ts: POST /login also accepts a guest's key (same cookie name, a value that identifies the guest; owner's key compared first); read the guest record on every request with no cache; pass `authed: false` to the remote MCP for guests.
+- [x] 3.2 Separate handleGuest with an allow list (home, granted tabs, listed files, logout), 404 identical to a missing page for the rest, same-origin check on POST, its own error handling with generic texts, before every owner route and stream.
+- [x] 3.3 New src/panel/guest-pages.ts with the guest layout, reusing `page()` with its own menu and without NAV or TABS_MARK, usable on a phone; make the tab page renderer reusable.
+- [x] 3.4 Record sign-in, view, download and denial events.
+- [x] 3.5 Tests: new test/panel-guests-session.test.ts covering every owner GET and POST route, scope filtering, files, https cookie, owner rotation and immediate revocation; run the existing panel and remote-chat tests.
 
 ## 4. Etapa 4: Acciones del invitado
 

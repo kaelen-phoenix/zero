@@ -11,6 +11,8 @@ import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { controlRoomFragment, controlRoomPage } from "./control-room.js";
+import { guestHomePage, guestNotFoundPage, guestTabPage, type GuestMenu } from "./guest-pages.js";
+import { findGuestByCookie, findGuestByKey, guestAccess, guestCookie, recordGuestEvent, touchGuest, type Guest } from "./guests.js";
 import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
@@ -128,6 +130,18 @@ function returnTo(path: string): string {
   return path.startsWith("/egress") ? "/egress" : "/";
 }
 
+/** A request's address; one that does not parse, or that would name another host, is no page. */
+function requestUrl(req: IncomingMessage): URL {
+  const raw = req.url ?? "/";
+  return new URL(!raw.startsWith("//") && URL.canParse(raw, "http://panel") ? raw : "http://panel//", "http://panel");
+}
+
+/** Whose session a request comes with: the person in charge's, a guest's or nobody's. */
+interface Visitor {
+  owner: boolean;
+  guest?: Guest;
+}
+
 export interface PanelOptions {
   /** Reads the current key; the server caches it briefly. */
   key: () => string;
@@ -185,15 +199,15 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx), shown)) : html);
   };
 
-  /** Hands out a file a package tab lists, as an attachment; false (nothing sent) for anything else. */
-  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string): boolean => {
+  /** Hands out a file a package tab lists (within `scopes` when given), as an attachment; false (nothing sent) for anything else. */
+  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string, scopes?: readonly string[]): boolean => {
     let file: string;
     try {
       file = encoded.split("/").map(decodeURIComponent).join("/");
     } catch {
       return false;
     }
-    const real = packageTabFile(ctx, pkg, tab, file);
+    const real = packageTabFile(ctx, pkg, tab, file, scopes);
     if (!real) return false;
     let fd: number;
     try {
@@ -322,29 +336,86 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return back(res, "/packages", r.ok ? r.text : r.reason);
   }
 
-  async function handle(req: IncomingMessage, res: ServerResponse) {
+  /** The guest's record is read every time, so a revocation from any process counts on the next request. */
+  function visitorOf(req: IncomingMessage): Visitor {
+    const cookie = cookies(req)[COOKIE] ?? "";
+    if (same(cookie, sessionFor(currentKey()))) return { owner: true };
+    return { owner: false, guest: findGuestByCookie(ctx.store, cookie) };
+  }
+
+  const startSession = (req: IncomingMessage, res: ServerResponse, value: string, to = "/") => {
+    const cookie = `${COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86_400}${viaHttps(req) ? "; Secure" : ""}`;
+    res.writeHead(303, { Location: to, "Set-Cookie": cookie, "Cache-Control": "no-store" });
+    res.end();
+  };
+  const endSession = (res: ServerResponse) => {
+    res.writeHead(303, { Location: "/", "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+    res.end();
+  };
+
+  /** Everything a guest's session reaches. It is an allow list: what is not named here does not exist for them. */
+  function handleGuest(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string, guest: Guest) {
+    const path = url.pathname;
+    touchGuest(ctx.store, guest, ctx.now?.());
+    const access = guestAccess(guest, ctx.config.loadedPackages);
+    const tabs = packageTabs(ctx).filter((t) => access.some((a) => a.package === t.package && a.tabs.some((x) => x.name === t.name)));
+    const menu: GuestMenu = { tabs };
+    const denied = (status: number, html: string) => {
+      recordGuestEvent(ctx.store, guest, { kind: "denied", target: path });
+      return send(res, status, html, nonce);
+    };
+    const notFound = () => denied(404, guestNotFoundPage(menu, nonce));
+
+    if (req.method === "GET") {
+      if (path === "/") return send(res, 200, guestHomePage({ menu, name: guest.name, access }, nonce), nonce);
+      const [, pkg, name, file] = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)(?:\/files\/(.+))?$/.exec(path) ?? [];
+      const granted = tabs.find((t) => t.package === pkg && t.name === name);
+      if (!granted) return notFound();
+      const values = access.find((a) => a.package === granted.package)?.values;
+      const target = `${granted.package}/${granted.name}`;
+      if (file !== undefined) {
+        if (!sendTabFile(res, granted.package, granted.name, file, nonce, values)) return notFound();
+        return recordGuestEvent(ctx.store, guest, { kind: "download", target: `${target}/${decodeURIComponent(file)}` });
+      }
+      const view = packageTabView(ctx, granted.package, granted.name, url.searchParams.get("categoria") || undefined, values);
+      if (!view) return notFound();
+      const html = guestTabPage(view, { ...menu, active: granted.href }, nonce);
+      recordGuestEvent(ctx.store, guest, { kind: "view", target });
+      return send(res, 200, html, nonce);
+    }
+    if (req.method !== "POST") return notFound();
+    if (!sameOrigin(req)) return denied(403, page("No permitido", `<div class="card">Pedido de otro sitio rechazado.</div>`, { nonce, nav: false }));
+    if (path === "/logout") return endSession(res);
+    return notFound();
+  }
+
+  async function handle(req: IncomingMessage, res: ServerResponse, visitor: Visitor) {
     const nonce = randomBytes(16).toString("base64");
-    const url = new URL(req.url ?? "/", "http://panel");
+    const url = requestUrl(req);
     const path = url.pathname;
     const flash = url.searchParams.get("msg")?.slice(0, 500) || undefined;
     const key = currentKey();
-    const authed = same(cookies(req)[COOKIE] ?? "", sessionFor(key));
+    const authed = visitor.owner;
 
     // The remote chat's routes answer machines with their own tokens; only its approval page looks at the session.
+    if (visitor.guest && path === "/oauth/authorize") recordGuestEvent(ctx.store, visitor.guest, { kind: "denied", target: path });
     if (isRemoteMcpPath(path)) return remoteMcp(req, res, url, { authed, sameOrigin: sameOrigin(req), nonce, page: (status, html, targets) => send(res, status, html, nonce, {}, targets) });
 
     if (req.method === "POST" && path === "/login") {
       const form = await readForm(req);
       const given = form.get("k") ?? "";
       const to = safeBack(form.get("back"));
-      if (!same(given, key)) {
+      if (same(given, key)) return startSession(req, res, sessionFor(key), to);
+      const guest = findGuestByKey(ctx.store, given);
+      if (!guest) {
         await new Promise((r) => setTimeout(r, 500));
         return send(res, 401, loginPage(nonce, true, to), nonce);
       }
-      const cookie = `${COOKIE}=${sessionFor(key)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86_400}${viaHttps(req) ? "; Secure" : ""}`;
-      res.writeHead(303, { Location: to ?? "/", "Set-Cookie": cookie, "Cache-Control": "no-store" });
-      return void res.end();
+      touchGuest(ctx.store, guest, ctx.now?.());
+      recordGuestEvent(ctx.store, guest, { kind: "sign-in" });
+      return startSession(req, res, guestCookie(guest, given), to);
     }
+    if (visitor.guest) return handleGuest(req, res, url, nonce, visitor.guest);
     if (!authed) return send(res, 401, loginPage(nonce), nonce);
 
     if (req.method === "GET") {
@@ -430,10 +501,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (path === "/packages/upload") return upload(req, res, url, nonce);
     const form = await readForm(req);
 
-    if (path === "/logout") {
-      res.writeHead(303, { Location: "/", "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
-      return void res.end();
-    }
+    if (path === "/logout") return endSession(res);
     if (path === "/request") {
       const r = requestWork(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined });
       return back(res, `/job/${r.job.id}`, `Pedido anotado. ${r.next}`);
@@ -559,8 +627,21 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
   }
 
   const server = createServer((req, res) => {
-    handle(req, res).catch((err: unknown) => {
+    let owner = false;
+    const answering = async () => {
+      const visitor = visitorOf(req);
+      owner = visitor.owner;
+      await handle(req, res, visitor);
+    };
+    answering().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
+      // Only the person in charge reads the error's text and gets a page with the menu.
+      if (!owner) {
+        log.warn("panel error", { path: requestUrl(req).pathname, error: message });
+        if (res.headersSent) return void res.end();
+        const nonce = randomBytes(16).toString("base64");
+        return send(res, 500, page("Error", `<div class="card bad">Algo falló. Probá de nuevo en un rato.</div><p><a href="/">Volver</a></p>`, { nonce, nav: false }), nonce);
+      }
       if (res.headersSent) return void res.end();
       // Owner-facing errors (a bad site, a job that is not waiting) go back to the page the action belongs to.
       if (req.method === "POST") return back(res, returnTo(req.url ?? "/"), message);
