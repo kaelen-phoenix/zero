@@ -13,7 +13,7 @@ import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/st
 import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
 import { pendingCleanups } from "./cleanup.js";
-import { discardResolved } from "./discard.js";
+import { discardResolved, type ResolvedClosure } from "./discard.js";
 import { scrubLocal } from "./research.js";
 import { SPEC_REFUSAL } from "./runner.js";
 import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
@@ -673,6 +673,8 @@ export interface UnjamRunRecord {
   outcome?: "ok" | "failed" | "stopped" | "not-run";
   reason?: string;
   lines: UnjamLineResult[];
+  /** The failed jobs the run's `discardResolved` closed because their work was already in, from every line; absent when none. */
+  closed?: ResolvedClosure[];
 }
 
 // Outside the `unjam:` prefix: a line's diagnosis is kept at `unjam:<line>`, whatever the line is called.
@@ -708,6 +710,8 @@ export interface UnjamDemand {
   line?: string;
   /** Called once for each line looked at. */
   looked: (result: UnjamLineResult) => void;
+  /** Called once for each failed job closed because its work was already in, from any line. */
+  closed?: (closed: ResolvedClosure) => void;
 }
 
 /** Owner work queued or running: the unjam station steps aside. */
@@ -724,7 +728,7 @@ export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now:
   if (ctx.config.unjam === "off" || (!demand && (shift === "off" || !insideHours(shift, now)))) return undefined;
   const period = periodStart(shift, now);
   const logs: LogCache = new Map();
-  await discardResolved(ctx, now, merges);
+  await discardResolved(ctx, now, merges, demand?.closed);
   for (const line of ctx.config.lines) {
     if (line.package || (demand?.line !== undefined && line.name !== demand.line)) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
@@ -807,15 +811,22 @@ export async function unjamOnDemandPass(ctx: FactoryContext, runAgent: AgentRunn
   const startedAt = clock();
   write({ ...base, startedAt });
   log.info("unjam runs on demand", { line: request.line, asked: request.requestedAt });
+  const closed: ResolvedClosure[] = [];
+  const closures = () => (closed.length ? { closed } : {});
+  // Written again on each closure, so a crash keeps them.
+  const onClosed = (c: ResolvedClosure) => {
+    closed.push(c);
+    write({ ...base, startedAt, closed });
+  };
   let end: Pick<UnjamRunRecord, "outcome" | "reason">;
   try {
-    const cut = await unjamPass(ctx, runAgent, now, opts.signal, opts.merges, { line: request.line, looked: (r) => lines.push(r) });
+    const cut = await unjamPass(ctx, runAgent, now, opts.signal, opts.merges, { line: request.line, looked: (r) => lines.push(r), closed: onClosed });
     end = cut ? { outcome: "stopped", reason: cut } : demandEnd(lines);
   } catch (err) {
     log.warn("on-demand unjam failed", { line: request.line, error: String(err) });
     end = { outcome: "failed", reason: "el destrabador falló antes de terminar; el detalle está en el log de la fábrica" };
   }
-  write({ ...base, startedAt, endedAt: clock(), ...end });
+  write({ ...base, startedAt, endedAt: clock(), ...end, ...closures() });
 }
 
 /** An on-demand run a crashed daemon left without an end, closed when the next one starts. */

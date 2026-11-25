@@ -8,7 +8,7 @@ import { stringify } from "yaml";
 import { agentName, quotaAttrs } from "../src/agent.js";
 import { ANDON_KEY, briefing, factoryStatus, requestUnjam, waitUnjamStart } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
-import { formatStatus } from "../src/format.js";
+import { describeUnjamRun, formatStatus } from "../src/format.js";
 import { mergeKey } from "../src/line/automerge.js";
 import { closeInterruptedUnjam, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, UNJAM_RUN_KEY, unjamKey, unjamOnDemandPass, unjamPass, unjamPassKey, unjamUrgentKey, type UnjamRunRecord } from "../src/line/unjam.js";
 import { createZeroMcpServer, type ZeroMcpOptions } from "../src/mcp/server.js";
@@ -610,6 +610,35 @@ describe("seeing it", () => {
     expect(shown(recorded({ line: undefined, outcome: "failed", reason: "no hubo un diagnóstico válido de blog", lines }))[0]).toContain("pedida para todas las líneas 13:00, empezó 13:05, falló (13:07): no hubo un diagnóstico válido de blog · tienda: sin trabas · blog: 1 traba, sin diagnóstico válido");
     expect(shown(recorded({ outcome: "stopped", reason: "la fábrica se detuvo (andon)", lines: [] }))[0]).toContain("se cortó (13:07): la fábrica se detuvo (andon)");
     expect(shown(recorded({ startedAt: undefined, outcome: "not-run", reason: "no existe la línea", lines: [] }))[0]).toContain("pedida para tienda 13:00, no pudo correr (13:07): no existe la línea");
+  });
+
+  it("zero status says which jobs it closed because they were already resolved", () => {
+    const one = shown(recorded({ closed: [{ line: "demo", job: "a1b2c3d4" }], lines: [{ line: "demo", jams: 0, causes: 0 }] }))[0];
+    expect(one).toContain("terminó bien (13:07) · cerró 1 trabajo que ya estaba resuelto (demo: a1b2c3d4) · demo: sin trabas");
+    const closed = [
+      { line: "demo", job: "a1b2c3d4" },
+      { line: "demo", job: "e5f6a7b8" },
+      { line: "blog", job: "c9d0e1f2" },
+    ];
+    expect(describeUnjamRun(stored({ closed }), at(14))).toContain("terminó bien (13:07) · cerró 3 trabajos que ya estaban resueltos (demo: a1b2c3d4, e5f6a7b8; blog: c9d0e1f2) · tienda: 2 trabas, 1 causa");
+    const many = Array.from({ length: 7 }, (_, i) => ({ line: "demo", job: `job0000${i}` }));
+    expect(describeUnjamRun(stored({ closed: many }), at(14))).toContain("cerró 7 trabajos que ya estaban resueltos (demo: job00000, job00001, job00002, job00003, job00004, y 2 más) · ");
+    const stopped = stored({ outcome: "stopped", reason: "la fábrica se detuvo (andon)", lines: [], closed: closed.slice(0, 1) });
+    expect(describeUnjamRun(stopped, at(14))).toContain("se cortó (13:07): la fábrica se detuvo (andon) · cerró 1 trabajo");
+    expect(describeUnjamRun(stored({ endedAt: undefined, outcome: undefined, lines: [], closed: closed.slice(0, 1) }), at(14))).toBe("pedida para tienda 13:00, corriendo desde 13:05 · cerró 1 trabajo que ya estaba resuelto (demo: a1b2c3d4)");
+  });
+
+  it("an old record without closures reads and shows as before, and a malformed one shows none", () => {
+    const ctx = recorded();
+    expect(readUnjamRun(ctx.store)).toEqual(stored());
+    expect(describeUnjamRun(stored(), at(14))).toBe("pedida para tienda 13:00, empezó 13:05, terminó bien (13:07) · tienda: 2 trabas, 1 causa");
+    const malformed = { ...stored(), closed: "a1b2c3d4" } as unknown as UnjamRunRecord;
+    expect(describeUnjamRun(malformed, at(14))).toBe(describeUnjamRun(stored(), at(14)));
+  });
+
+  it("the briefing says which jobs it closed", async () => {
+    const body = (await briefing(recorded({ closed: [{ line: "tienda", job: "a1b2c3d4" }] }), 1)).body;
+    expect(body).toMatch(/^- destrabador: .*cerró 1 trabajo que ya estaba resuelto \(tienda: a1b2c3d4\)/m);
   });
 
   it("zero status dates a run of more than a few days ago", () => {
