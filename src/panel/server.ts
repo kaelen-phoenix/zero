@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answerAnywhere, confirmRemoteAction, decideProposal, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, requestAnywhere, requestFromResearchNote, requestInvestigation, requestLines, requestStationRun, requestsView, requestUnjam, requestUpdate, uploadToStation, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type RequestResult, type RequestSent } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answerAnywhere, confirmRemoteAction, decideProposal, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, guestList, guestsView, inviteGuest, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, requestAnywhere, requestFromResearchNote, requestInvestigation, requestLines, requestStationRun, requestsView, requestUnjam, requestUpdate, uploadToStation, researchOnDemand, researchView, resume, revokeGuest, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type RequestResult, type RequestSent } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatMerge, formatProposalDecision } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -11,6 +11,10 @@ import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { controlRoomFragment, controlRoomPage } from "./control-room.js";
+import { confirmGuestRevokePage, guestInvitedPage, guestsPage } from "./guest-admin.js";
+import { guestRun, guestStations, guestUpload, type GuestAnswer } from "./guest-actions.js";
+import { guestHomePage, guestNotFoundPage, guestNotice, guestTabPage, guestTooLargePage, type GuestMenu } from "./guest-pages.js";
+import { findGuestByCookie, findGuestByKey, guestAccess, guestCookie, recordGuestEvent, touchGuest, type Guest } from "./guests.js";
 import { aboutPage, agentsPage, briefingPage, confirmCatalogPage, confirmMergePage, confirmProposalPage, confirmResearchPage, confirmRevokePage, confirmStopPage, egressPage, esc, factoryJobPage, jobPage, linePage, lineView, loginPage, monitorPage, safeBack, overviewPage, packagesPage, packageTabPage, page, proposalsPage, remoteChatPage, reportPage, requestsPage, researchPage, tabLinks, TABS_MARK, type StationUploads } from "./html.js";
 import { sessionFor } from "./key.js";
 
@@ -94,6 +98,21 @@ function limitedBody(req: IncomingMessage, max: number): { body: ReadableStream<
   return { body, over: () => over, drained };
 }
 
+/** A multipart body with one file of up to `maxMb`; a larger one is dropped as it arrives, and with 0 all of it. */
+async function readUpload(req: IncomingMessage, maxMb: number): Promise<FormData | "too-large" | "unreadable"> {
+  const max = maxMb ? maxMb * 1024 * 1024 + UPLOAD_OVERHEAD : 0;
+  // Too large by its own word: nothing of it is kept, only read and dropped so the browser gets the answer.
+  const tooLarge = !max || Number(req.headers["content-length"] ?? 0) > max;
+  const reading = limitedBody(req, tooLarge ? 0 : max);
+  try {
+    if (!tooLarge) return await new Request("http://panel/packages/upload", { method: "POST", headers: { "content-type": String(req.headers["content-type"] ?? "") }, body: reading.body, duplex: "half" } as RequestInit).formData();
+  } catch {
+    // Read below as too large or unreadable.
+  }
+  await reading.drained;
+  return tooLarge || reading.over() ? "too-large" : "unreadable";
+}
+
 /** Came through https (the tunnel), so the cookie can be marked Secure. */
 const viaHttps = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https" || String(req.headers["cf-visitor"] ?? "").includes("https");
 
@@ -123,9 +142,22 @@ function returnTo(path: string): string {
   if (path.startsWith("/research")) return "/research";
   if (path.startsWith("/packages")) return "/packages";
   if (path.startsWith("/remote-chat")) return "/remote-chat";
+  if (path.startsWith("/guests")) return "/guests";
   if (path.startsWith("/agents")) return "/agents";
   if (path.startsWith("/control-room")) return "/control-room";
   return path.startsWith("/egress") ? "/egress" : "/";
+}
+
+/** A request's address; one that does not parse, or that would name another host, is no page. */
+function requestUrl(req: IncomingMessage): URL {
+  const raw = req.url ?? "/";
+  return new URL(!raw.startsWith("//") && URL.canParse(raw, "http://panel") ? raw : "http://panel//", "http://panel");
+}
+
+/** Whose session a request comes with: the person in charge's, a guest's or nobody's. */
+interface Visitor {
+  owner: boolean;
+  guest?: Guest;
 }
 
 export interface PanelOptions {
@@ -185,15 +217,15 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     res.end(html.includes(TABS_MARK) ? html.replace(TABS_MARK, () => tabLinks(packageTabs(ctx), shown)) : html);
   };
 
-  /** Hands out a file a package tab lists, as an attachment; false (nothing sent) for anything else. */
-  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string): boolean => {
+  /** Hands out a file a package tab lists (within `scopes` when given), as an attachment; false (nothing sent) for anything else. */
+  const sendTabFile = (res: ServerResponse, pkg: string, tab: string, encoded: string, nonce: string, scopes?: readonly string[]): boolean => {
     let file: string;
     try {
       file = encoded.split("/").map(decodeURIComponent).join("/");
     } catch {
       return false;
     }
-    const real = packageTabFile(ctx, pkg, tab, file);
+    const real = packageTabFile(ctx, pkg, tab, file, scopes);
     if (!real) return false;
     let fd: number;
     try {
@@ -295,28 +327,13 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     const uploads = stationUploads(ctx);
     const asked = url.searchParams.get("station") ?? "";
     const limits = Object.hasOwn(uploads, asked) ? [uploads[asked]!] : Object.values(uploads);
-    const max = limits.length ? Math.max(...limits.map((u) => u.maxMb)) * 1024 * 1024 + UPLOAD_OVERHEAD : 0;
-    // Too large by its own word: nothing of it is kept, only read and dropped so the browser gets the answer.
-    const declared = Number(req.headers["content-length"] ?? 0);
-    const reading = limitedBody(req, declared > max ? 0 : max);
-    if (!limits.length || declared > max) {
-      await reading.drained;
-      if (!limits.length) return back(res, "/packages", "Ninguna estación acepta archivos.");
-    }
-    const tooLarge = async () => {
-      await reading.drained;
+    const form = await readUpload(req, limits.length ? Math.max(...limits.map((u) => u.maxMb)) : 0);
+    if (!limits.length) return back(res, "/packages", "Ninguna estación acepta archivos.");
+    if (form === "too-large") {
       res.writeHead(413, { ...headers(nonce), "Content-Type": "text/html; charset=utf-8" });
-      res.end(page("Archivo demasiado grande", `<div class="card bad">El archivo pasa del máximo de la estación. <a href="/packages">Volver</a></div>`, { nonce }));
-    };
-    if (declared > max) return tooLarge();
-    let form: FormData;
-    try {
-      form = await new Request("http://panel/packages/upload", { method: "POST", headers: { "content-type": String(req.headers["content-type"] ?? "") }, body: reading.body, duplex: "half" } as RequestInit).formData();
-    } catch {
-      if (reading.over()) return tooLarge();
-      await reading.drained;
-      return back(res, "/packages", "No se pudo leer el archivo subido.");
+      return void res.end(page("Archivo demasiado grande", `<div class="card bad">El archivo pasa del máximo de la estación. <a href="/packages">Volver</a></div>`, { nonce }));
     }
+    if (form === "unreadable") return back(res, "/packages", "No se pudo leer el archivo subido.");
     const file = form.get("file");
     const station = asked || String(form.get("station") ?? "");
     if (typeof file === "string" || !file?.name) return back(res, "/packages", "Elegí un archivo para subir.");
@@ -325,29 +342,107 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     return back(res, "/packages", r.ok ? r.text : r.reason);
   }
 
-  async function handle(req: IncomingMessage, res: ServerResponse) {
+  /** The guest's record is read every time, so a revocation from any process counts on the next request. */
+  function visitorOf(req: IncomingMessage): Visitor {
+    const cookie = cookies(req)[COOKIE] ?? "";
+    if (same(cookie, sessionFor(currentKey()))) return { owner: true };
+    return { owner: false, guest: findGuestByCookie(ctx.store, cookie) };
+  }
+
+  const startSession = (req: IncomingMessage, res: ServerResponse, value: string, to = "/") => {
+    const cookie = `${COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86_400}${viaHttps(req) ? "; Secure" : ""}`;
+    res.writeHead(303, { Location: to, "Set-Cookie": cookie, "Cache-Control": "no-store" });
+    res.end();
+  };
+  const endSession = (res: ServerResponse) => {
+    res.writeHead(303, { Location: "/", "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+    res.end();
+  };
+
+  /** Everything a guest's session reaches. It is an allow list: what is not named here does not exist for them. */
+  async function handleGuest(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string, guest: Guest) {
+    const path = url.pathname;
+    touchGuest(ctx.store, guest, ctx.now?.());
+    const access = guestAccess(guest, ctx.config.loadedPackages);
+    const tabs = packageTabs(ctx).filter((t) => access.some((a) => a.package === t.package && a.tabs.some((x) => x.name === t.name)));
+    const menu: GuestMenu = { tabs };
+    const denied = (status: number, html: string) => {
+      recordGuestEvent(ctx.store, guest, { kind: "denied", target: path });
+      return send(res, status, html, nonce);
+    };
+    const notFound = () => denied(404, guestNotFoundPage(menu, nonce));
+    const answered = (answer: GuestAnswer) => (answer === "cut" ? send(res, 401, loginPage(nonce), nonce) : back(res, `/?aviso=${answer}`));
+
+    if (req.method === "GET") {
+      if (path === "/") return send(res, 200, guestHomePage({ menu, name: guest.name, access: access.map((a) => ({ ...a, stations: guestStations(ctx, guest, a) })), notice: guestNotice(url.searchParams.get("aviso")) }, nonce), nonce);
+      const [, pkg, name, file] = /^\/packages\/([a-z0-9][a-z0-9-]*)\/([a-z0-9][a-z0-9-]*)(?:\/files\/(.+))?$/.exec(path) ?? [];
+      const granted = tabs.find((t) => t.package === pkg && t.name === name);
+      if (!granted) return notFound();
+      const values = access.find((a) => a.package === granted.package)?.values;
+      const target = `${granted.package}/${granted.name}`;
+      if (file !== undefined) {
+        if (!sendTabFile(res, granted.package, granted.name, file, nonce, values)) return notFound();
+        return recordGuestEvent(ctx.store, guest, { kind: "download", target: `${target}/${decodeURIComponent(file)}` });
+      }
+      const view = packageTabView(ctx, granted.package, granted.name, url.searchParams.get("categoria") || undefined, values);
+      if (!view) return notFound();
+      const html = guestTabPage(view, { ...menu, active: granted.href }, nonce);
+      recordGuestEvent(ctx.store, guest, { kind: "view", target });
+      return send(res, 200, html, nonce);
+    }
+    if (req.method !== "POST") return notFound();
+    if (!sameOrigin(req)) return denied(403, page("No permitido", `<div class="card">Pedido de otro sitio rechazado.</div>`, { nonce, nav: false }));
+    if (path === "/logout") return endSession(res);
+    if (path === "/packages/run") {
+      const form = await readForm(req);
+      return answered(await guestRun(ctx, guest, { station: form.get("station") ?? "", value: form.get("alcance") ?? undefined, request: form.get("pedido") ?? undefined }));
+    }
+    if (path === "/packages/upload") {
+      // The station comes in the address, so the body is read only up to its own size and not at all when it is not theirs.
+      const station = url.searchParams.get("station") ?? "";
+      const uploads = stationUploads(ctx);
+      const theirs = access.some((a) => a.upload.some((name) => `${a.package}/${name}` === station)) && Object.hasOwn(uploads, station);
+      const form = await readUpload(req, theirs ? uploads[station]!.maxMb : 0);
+      const field = (name: string) => {
+        const value = form instanceof FormData ? form.get(name) : undefined;
+        return typeof value === "string" ? value : undefined;
+      };
+      const file = form instanceof FormData ? form.get("file") : undefined;
+      const sent = file && typeof file !== "string" && file.name ? { name: file.name, content: new Uint8Array(await file.arrayBuffer()) } : undefined;
+      const answer = await guestUpload(ctx, guest, { station, value: field("alcance"), request: field("pedido"), file: sent });
+      if (form === "too-large" && theirs && answer !== "cut") return send(res, 413, guestTooLargePage(menu, nonce), nonce);
+      return answered(answer);
+    }
+    return notFound();
+  }
+
+  async function handle(req: IncomingMessage, res: ServerResponse, visitor: Visitor) {
     const nonce = randomBytes(16).toString("base64");
-    const url = new URL(req.url ?? "/", "http://panel");
+    const url = requestUrl(req);
     const path = url.pathname;
     const flash = url.searchParams.get("msg")?.slice(0, 500) || undefined;
     const key = currentKey();
-    const authed = same(cookies(req)[COOKIE] ?? "", sessionFor(key));
+    const authed = visitor.owner;
 
     // The remote chat's routes answer machines with their own tokens; only its approval page looks at the session.
+    if (visitor.guest && path === "/oauth/authorize") recordGuestEvent(ctx.store, visitor.guest, { kind: "denied", target: path });
     if (isRemoteMcpPath(path)) return remoteMcp(req, res, url, { authed, sameOrigin: sameOrigin(req), nonce, page: (status, html, targets) => send(res, status, html, nonce, {}, targets) });
 
     if (req.method === "POST" && path === "/login") {
       const form = await readForm(req);
       const given = form.get("k") ?? "";
       const to = safeBack(form.get("back"));
-      if (!same(given, key)) {
+      if (same(given, key)) return startSession(req, res, sessionFor(key), to);
+      const guest = findGuestByKey(ctx.store, given);
+      if (!guest) {
         await new Promise((r) => setTimeout(r, 500));
         return send(res, 401, loginPage(nonce, true, to), nonce);
       }
-      const cookie = `${COOKIE}=${sessionFor(key)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86_400}${viaHttps(req) ? "; Secure" : ""}`;
-      res.writeHead(303, { Location: to ?? "/", "Set-Cookie": cookie, "Cache-Control": "no-store" });
-      return void res.end();
+      touchGuest(ctx.store, guest, ctx.now?.());
+      recordGuestEvent(ctx.store, guest, { kind: "sign-in" });
+      return startSession(req, res, guestCookie(guest, given), to);
     }
+    if (visitor.guest) return handleGuest(req, res, url, nonce, visitor.guest);
     if (!authed) return send(res, 401, loginPage(nonce), nonce);
 
     if (req.method === "GET") {
@@ -378,6 +473,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/remote-chat") return send(res, 200, remoteChatPage(remoteChatView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/guests") return send(res, 200, guestsPage(guestsView(ctx, Number(url.searchParams.get("antes")) || undefined), nonce, flash, ctx.now?.()), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), researchOnDemand(ctx), nonce, flash), nonce);
       if (path === "/control-room") {
         // Read-only: the fragment is what the page refreshes its modules with.
@@ -437,10 +533,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     if (path === "/packages/upload") return upload(req, res, url, nonce);
     const form = await readForm(req);
 
-    if (path === "/logout") {
-      res.writeHead(303, { Location: "/", "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
-      return void res.end();
-    }
+    if (path === "/logout") return endSession(res);
     if (path === "/request") {
       return requested(res, requestAnywhere(ctx, { text: form.get("text") ?? "", line: form.get("line") || undefined }));
     }
@@ -528,6 +621,21 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       return back(res, "/remote-chat", revokeRemoteChatClient(ctx, id) ? "Chat revocado: sus tokens dejaron de servir." : `No hay ningún chat conectado ${id}.`);
     }
+    if (path === "/guests") {
+      // One scope value per line; a form sends each line break as two characters.
+      const values = (form.get("alcance") ?? "").split(/\r?\n/).filter((v) => v.trim());
+      const r = inviteGuest(ctx, { name: form.get("nombre") ?? "", only: form.getAll("solo"), values, all: form.get("todo") === "1", via: "panel" });
+      // The link goes in this answer and never in a redirect, whose address would carry the key.
+      return r.ok ? send(res, 200, guestInvitedPage(r, nonce), nonce) : back(res, "/guests", `No se creó el acceso: ${r.reason}.`);
+    }
+    const guestRevoke = /^\/guests\/([0-9a-f]{8})\/revoke$/.exec(path)?.[1];
+    if (guestRevoke) {
+      const guest = guestList(ctx).find((g) => g.id === guestRevoke);
+      if (!guest) throw new Error("Ese invitado ya no tiene acceso.");
+      // Revoking cuts the guest off at once, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") return send(res, 200, confirmGuestRevokePage(guest, nonce), nonce);
+      return back(res, "/guests", revokeGuest(ctx, guest.name).text);
+    }
     const pendingAction = /^\/remote-chat\/pending\/([0-9a-f]{8})\/confirm$/.exec(path);
     if (pendingAction) {
       if (form.get("confirm") !== "1") return back(res, "/remote-chat");
@@ -569,8 +677,21 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
   }
 
   const server = createServer((req, res) => {
-    handle(req, res).catch((err: unknown) => {
+    let owner = false;
+    const answering = async () => {
+      const visitor = visitorOf(req);
+      owner = visitor.owner;
+      await handle(req, res, visitor);
+    };
+    answering().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
+      // Only the person in charge reads the error's text and gets a page with the menu.
+      if (!owner) {
+        log.warn("panel error", { path: requestUrl(req).pathname, error: message });
+        if (res.headersSent) return void res.end();
+        const nonce = randomBytes(16).toString("base64");
+        return send(res, 500, page("Error", `<div class="card bad">Algo falló. Probá de nuevo en un rato.</div><p><a href="/">Volver</a></p>`, { nonce, nav: false }), nonce);
+      }
       if (res.headersSent) return void res.end();
       // Owner-facing errors (a bad site, a job that is not waiting) go back to the page the action belongs to.
       if (req.method === "POST") return back(res, returnTo(req.url ?? "/"), message);

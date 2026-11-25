@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, guestList, guestLog, inviteGuest, revokeGuest, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -16,7 +16,7 @@ import { githubIssues, lineRepository } from "./intake/github.js";
 import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatGuestLog, formatGuests, formatInvitation, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -98,6 +98,13 @@ Panel en el navegador:
   zero panel                     Muestra el link del panel (con tu clave) y enciende la fábrica si hace falta
   zero panel remote on|off       Abre o cierra el acceso desde afuera (celular) con un túnel temporal   [--yes]
   zero panel rotate              Cambia la clave: los links anteriores dejan de funcionar
+  zero panel invitar <nombre> --solo <paquete | paquete/nombre>... [--alcance <valor>]... [--todo]
+                                 Le da a otra persona su propio link al panel, solo con las pestañas y acciones que esos
+                                 paquetes ofrecen a invitados; si se reparten por un alcance, con --alcance accede solo
+                                 a esos valores y con --todo a todos. El link se muestra una sola vez
+  zero panel invitados           Invitados activos: qué ven y qué pueden pedir, desde cuándo y su último uso
+  zero panel revocar <nombre>    Corta el acceso de un invitado en el momento
+  zero panel registro [<nombre>]   Qué hizo cada invitado, lo más nuevo primero
 
 Fábrica:
   zero line add [ruta]           Agrega un repositorio como línea   [--name <nombre>]
@@ -183,6 +190,9 @@ async function main(argv: string[]): Promise<number> {
       conservar: { type: "boolean" },
       label: { type: "string" },
       station: { type: "string" },
+      solo: { type: "string", multiple: true },
+      alcance: { type: "string", multiple: true },
+      todo: { type: "boolean" },
       pedido: { type: "string" },
       esperar: { type: "boolean" },
       detach: { type: "boolean" },
@@ -533,6 +543,31 @@ Informe: ${r.report}`);
           if (!links) console.log("El túnel todavía no respondió; probá `zero panel` en un minuto (mirá daemon.log si no aparece).");
           printPanel(panelLinks(ctx));
           return 0;
+        }
+        if (action === "invitar") {
+          if (rest.length > 2) throw new Error('Sobran palabras: poné el nombre entre comillas si tiene espacios y repetí --solo por cada paquete: zero panel invitar "<nombre>" --solo <paquete> --solo <paquete/nombre>');
+          const r = inviteGuest(ctx, { name: arg ?? "", only: values.solo ?? [], values: values.alcance, all: values.todo });
+          if (!r.ok) {
+            console.log(`No creé el acceso: ${r.reason}.`);
+            return 1;
+          }
+          console.log(formatInvitation(r, daemonInfo(ctx.store).alive));
+          return 0;
+        }
+        if (action === "invitados" && !arg) {
+          console.log(formatGuests(guestList(ctx)));
+          return 0;
+        }
+        if (action === "revocar") {
+          if (rest.length !== 2) throw new Error('Indicá el invitado (entre comillas si tiene espacios): zero panel revocar "<nombre>"');
+          const r = revokeGuest(ctx, arg!);
+          console.log(r.ok ? r.text : `${r.text} Mirá la lista con \`zero panel invitados\`.`);
+          return r.ok ? 0 : 1;
+        }
+        if (action === "registro" && rest.length <= 2) {
+          const events = guestLog(ctx, arg);
+          console.log(events ? formatGuestLog(events) : `Nunca hubo un invitado con el nombre "${arg}".`);
+          return events ? 0 : 1;
         }
         if (action && action !== "rotate") break;
         const started = await ensureDaemon(ctx);

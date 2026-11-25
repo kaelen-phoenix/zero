@@ -215,6 +215,28 @@ export interface EgressRow extends EgressEvent {
   seq: number;
 }
 
+export type GuestEventKind = "invited" | "sign-in" | "view" | "download" | "run" | "upload" | "denied" | "revoked";
+
+/** What a panel guest did, or what was done with their access. */
+export interface GuestEvent {
+  seq: number;
+  at: string;
+  /** The guest's id; the name is kept with it, so it outlives the access. */
+  guest: string;
+  name: string;
+  kind: GuestEventKind;
+  /** The tab, file, station or path it was about; for an invitation, what it allows. */
+  target?: string;
+  scope?: string;
+  /** The text of the run or upload asked for. */
+  text?: string;
+  /** Only for a run or an upload. */
+  accepted?: boolean;
+}
+
+/** How many sign-ins, views, downloads, denials and refused actions are kept per guest. */
+export const GUEST_EVENTS_KEPT = 500;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -333,6 +355,19 @@ CREATE TABLE IF NOT EXISTS agent_catalog (
   created_at TEXT NOT NULL,
   decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS guest_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  guest_id TEXT NOT NULL,
+  guest_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target TEXT,
+  scope TEXT,
+  text TEXT,
+  accepted INTEGER,
+  prunable INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS guest_events_guest ON guest_events(guest_id, prunable, seq);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -472,6 +507,20 @@ function toEgress(r: Row): EgressRow {
     bytesDown: Number(r.bytes_down),
     durationMs: Number(r.duration_ms),
     ...(r.error != null && { error: String(r.error) }),
+  };
+}
+
+function toGuestEvent(r: Row): GuestEvent {
+  return {
+    seq: Number(r.seq),
+    at: String(r.at),
+    guest: String(r.guest_id),
+    name: String(r.guest_name),
+    kind: r.kind as GuestEventKind,
+    ...(r.target != null && { target: String(r.target) }),
+    ...(r.scope != null && { scope: String(r.scope) }),
+    ...(r.text != null && { text: String(r.text) }),
+    ...(r.accepted != null && { accepted: Number(r.accepted) === 1 }),
   };
 }
 
@@ -842,6 +891,29 @@ export class Store {
       .prepare(`UPDATE agent_catalog SET status = ?, decided_at = ?, line = COALESCE(?, line), note = COALESCE(?, note) WHERE id = ? AND status IN (${patch.from.map(() => "?").join(", ")})`)
       .run(patch.status, this.stamp(), patch.line ?? null, patch.note ?? null, id, ...patch.from);
     return Number(result.changes) > 0;
+  }
+
+  /** Adds an event and drops the guest's oldest ones past `GUEST_EVENTS_KEPT`; invitations, accepted runs and uploads and revocations always stay. */
+  addGuestEvent(e: Omit<GuestEvent, "seq" | "at">) {
+    const prunable = !(e.kind === "invited" || e.kind === "revoked" || ((e.kind === "run" || e.kind === "upload") && e.accepted));
+    this.db
+      .prepare("INSERT INTO guest_events (at, guest_id, guest_name, kind, target, scope, text, accepted, prunable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(this.stamp(), e.guest, e.name, e.kind, e.target ?? null, e.scope ?? null, e.text ?? null, e.accepted === undefined ? null : e.accepted ? 1 : 0, prunable ? 1 : 0);
+    if (!prunable) return;
+    this.db
+      .prepare("DELETE FROM guest_events WHERE guest_id = ? AND prunable = 1 AND seq <= (SELECT seq FROM guest_events WHERE guest_id = ? AND prunable = 1 ORDER BY seq DESC LIMIT 1 OFFSET ?)")
+      .run(e.guest, e.guest, GUEST_EVENTS_KEPT);
+  }
+
+  /** Newest first, of every guest or only of those ids. */
+  listGuestEvents(guests?: string[]): GuestEvent[] {
+    const where = guests ? `WHERE guest_id IN (${guests.map(() => "?").join(", ")})` : "";
+    return (this.db.prepare(`SELECT * FROM guest_events ${where} ORDER BY seq DESC`).all(...(guests ?? [])) as Row[]).map(toGuestEvent);
+  }
+
+  /** Every guest with an event, also those already revoked. */
+  guestsWithEvents(): { id: string; name: string }[] {
+    return (this.db.prepare("SELECT DISTINCT guest_id, guest_name FROM guest_events").all() as Row[]).map((r) => ({ id: String(r.guest_id), name: String(r.guest_name) }));
   }
 
   getKv(key: string): string | undefined {

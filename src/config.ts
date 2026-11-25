@@ -618,6 +618,17 @@ export interface PackageTab {
   categories?: string[];
 }
 
+/** What a package lets the person in charge offer to a panel guest; every name is one of its own tabs or stations. */
+export interface PackageGuests {
+  /** What its guests are told apart by; absent: whoever gets in sees every item. */
+  scope?: { name: string; title: string };
+  tabs: string[];
+  /** Stations with `onDemand`, whose run a guest may ask for. */
+  run: string[];
+  /** Stations with `uploads`, to which a guest may send a file. */
+  upload: string[];
+}
+
 export interface LoadedPackage {
   name: string;
   version: string;
@@ -631,6 +642,8 @@ export interface LoadedPackage {
   stations: string[];
   /** Its panel tabs; they show data only, so they need no `allowCode`. */
   tabs: PackageTab[];
+  /** Absent: it offers nothing to guests. */
+  guests?: PackageGuests;
 }
 
 export interface PackageProblem {

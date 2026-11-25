@@ -39,7 +39,7 @@ a { color:var(--accent); text-underline-offset:.2em; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
 code, pre { font-family:var(--mono); }
 :not(pre) > code { background:var(--code-bg); padding:.1em .35em; border-radius:4px; font-size:.9em; }
-.brand { display:inline-flex; align-items:center; gap:10px; font:600 1.2rem/1 var(--mono); letter-spacing:-.02em; color:var(--fg); }
+.brand { display:inline-flex; align-items:center; gap:10px; font:600 1.2rem/1 var(--mono); letter-spacing:-.02em; color:var(--fg); text-decoration:none; }
 .brand .logo { width:26px; height:26px; flex:none; }
 header.top { padding:14px 20px; border-bottom:1px solid var(--rule); background:var(--surface); }
 .nav-toggle { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
@@ -50,6 +50,7 @@ header.top { padding:14px 20px; border-bottom:1px solid var(--rule); background:
 #nav-toggle:focus-visible ~ .side .toggle { outline:2px solid var(--accent); }
 .side ul.links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
 .side ul.links a { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:8px; color:var(--muted); text-decoration:none; font-weight:500; white-space:nowrap; }
+.side ul.links button { display:flex; align-items:center; gap:12px; padding:8px 10px; margin:8px 0 0; color:var(--muted); }
 .side ul.links a:hover { background:var(--surface-2); color:var(--fg); }
 .side ul.links a[aria-current="page"] { background:var(--surface-2); color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
 .side svg, .ic svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
@@ -151,10 +152,10 @@ details.ins summary { cursor:pointer; color:var(--accent); margin-top:8px; }
 `;
 
 /** Draws an icon from its inline SVG paths, so the panel's policy needs no outside resource. */
-const icon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+export const icon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 
 /** The site's symbol (site/favicon.svg): a ring and an orange dot, next to the word in the mono font. */
-const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="25" cy="7" r="3.5" fill="#ff8a5c"/></svg><span class="word">zero</span>`;
+export const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="25" cy="7" r="3.5" fill="#ff8a5c"/></svg><span class="word">zero</span>`;
 
 const MENU_ICON = `<path d="M4 6h16M4 12h16M4 18h16"/>`;
 
@@ -173,6 +174,7 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
   ["/remote-chat", "Chat remoto", `<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>`],
+  ["/guests", "Invitados", `<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6.5 7-6.5s7 2.5 7 6.5M19 8v6M16 11h6"/>`],
   ["/packages", "Paquetes", `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`],
 ];
 
@@ -185,10 +187,14 @@ const TAB_ICON = `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.
 export const tabLinks = (tabs: PackageTabLink[], active?: string) =>
   tabs.map((t) => `<li><a href="${esc(t.href)}"${t.href === active ? ` aria-current="page"` : ""} title="${esc(t.title)}">${icon(TAB_ICON)}<span class="lb">${esc(t.title)}</span></a></li>`).join("");
 
-/** The side menu: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
+/** The side menu's frame: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
+export const menu = (links: string, brand = `<span class="brand">${LOGO}</span>`) =>
+  `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row">${brand}<label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}</ul></nav>`;
+
+/** The menu of the person in charge: every section and the packages' tabs. */
 function sideMenu(active?: string): string {
   const links = NAV.map(([href, label, paths]) => `<li><a href="${href}"${href === active ? ` aria-current="page"` : ""} title="${esc(label)}">${icon(paths)}<span class="lb">${esc(label)}</span></a></li>`).join("");
-  return `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row"><span class="brand">${LOGO}</span><label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}${TABS_MARK}</ul></nav>`;
+  return menu(`${links}${TABS_MARK}`);
 }
 
 /** Reloads the page every 15 s while nobody is typing, so the phone shows live state without a framework. */
@@ -199,9 +205,9 @@ const REFRESH = `setInterval(() => {
   if (document.visibilityState === "visible" && !typing && !drafted) location.reload();
 }, 15000);`;
 
-/** `active` is the side menu's section of the page; `nav: false` is the login page, which shows only the logo. */
-export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean; active?: string } = { nonce: "" }): string {
-  const chrome = opts.nav === false ? `<header class="top"><span class="brand">${LOGO}</span></header>` : sideMenu(opts.active);
+/** `active` is the side menu's section of the page; `nav: false` is the login page, which shows only the logo; `menu` replaces the menu of the person in charge. */
+export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean; active?: string; menu?: string } = { nonce: "" }): string {
+  const chrome = opts.nav === false ? `<header class="top"><span class="brand">${LOGO}</span></header>` : (opts.menu ?? sideMenu(opts.active));
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body class="${opts.nav === false ? "plain" : "shell"}">${chrome}<main>
@@ -225,8 +231,8 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
-/** A package's read-only tab: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
-export function packageTabPage(view: PackageTabView, nonce: string): string {
+/** What a package's read-only tab shows: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
+export function packageTabBody(view: PackageTabView): string {
   const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
   const filter = view.categories.length
     ? `<form method="get" action="${esc(view.href)}"><label for="t-cat">Categoría</label><select id="t-cat" name="categoria"><option value="">Todas</option>${options}</select><button>Filtrar</button></form>`
@@ -246,8 +252,10 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
         : view.items.length
           ? `<div class="card"><ul class="jobs">${view.items.map(item).join("")}</ul></div>`
           : `<div class="card muted">No hay elementos${view.category ? " en esa categoría" : ""}.</div>`;
-  return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
+  return `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`;
 }
+
+export const packageTabPage = (view: PackageTabView, nonce: string): string => page(view.title, packageTabBody(view), { nonce });
 
 /** What a station takes as uploads, by `<package>/<station>`. */
 export type StationUploads = Record<string, { maxMb: number; extensions: string[] }>;
@@ -257,7 +265,7 @@ function packageStation(pkg: string, s: PackageList["packages"][number]["station
   const ref = `${pkg}/${s.name}`;
   const state = `${!s.allowed ? "no corre" : s.elsewhere ? "no corre en esta máquina" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.machine !== undefined ? ` · fijada a la máquina ${s.machine}` : ""}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
-    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
+    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandGuest ? `, la pidió ${esc(s.onDemandGuest)} (invitado)` : ""}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
   const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
   const form = onDemand && !s.elsewhere

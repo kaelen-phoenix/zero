@@ -25,7 +25,7 @@ import { pidAlive } from "./leftovers.js";
 import { aheadText, installedVersion, lookForRelease, pinProblem, stableReleases, tagRef, type StableLook } from "./package-channel.js";
 import { isGitSource, parseGitSource, pinnedTo, stableChannelProblem } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, pinnedMachine, readManifest, withPackages, type PackageManifest } from "./packages.js";
-import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./package-tabs.js";
+import { dataFile, readTabData, tabFile, visibleItems, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
@@ -40,16 +40,17 @@ import type { AlertEntry } from "./intake/security-alerts.js";
 import { checksOutageKey, githubMerges, type ChecksBilling, mergeForeignRequested, mergeKey, mergeRequested, pullRequestOf, watchedJobs, type ChecksOutage, type MergeApi, type MergeOutcome, type MergeState, type MergeVia, type PullRequestState } from "./line/automerge.js";
 import { githubToken } from "./line/integrate.js";
 import { signedMerges } from "./signature.js";
-import { onDemandRecord, readStationRun, runsHere, stationLastKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationRunRecord, type StationUpload } from "./line/packages.js";
+import { onDemandRecord, readStationGuest, readStationRun, runsHere, stationLastKey, stationOnDemandGuestKey, stationOnDemandKey, stationOnDemandRequestKey, stationText, stationUploadKey, type OnDemandRecord, type StationGuest, type StationRunRecord, type StationUpload } from "./line/packages.js";
 import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from "./line/drill.js";
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
-import { FINAL_STATUSES, newId, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, selfUpdateTargetText, sentLine, sentState } from "./format.js";
+import { FINAL_STATUSES, newId, Store, type GuestEvent, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatFactoryJob, formatJob, formatMerge, formatProposalDecision, formatRequest, formatResearchNotes, guestAccessText, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END, selfUpdateTargetText, sentLine, sentState } from "./format.js";
 import { log } from "./log.js";
+import { createGuest, guestLabel, guestNameKey, guestView, listGuests, MAX_GUEST_NAME, MAX_SCOPE_VALUE, recordGuestEvent, removeGuest, type GuestGrant, type GuestView } from "./panel/guests.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
 import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
@@ -547,7 +548,7 @@ export interface FactoryStatus {
   /** Packages left out, whole or only their stations; the factory works without them. */
   packages: PackageProblem[];
   /** On-demand station runs asked for and not run yet, as `<package>/<station>`. */
-  onDemand: { station: string; since: string; request?: string }[];
+  onDemand: { station: string; since: string; request?: string; guest?: string }[];
   /** The last on-demand run of each station, when it started or ended in the last 24 hours or is still running. */
   onDemandRuns: OnDemandRun[];
   /** The last on-demand run of each onDemand station that has one: running, or how it ended. */
@@ -635,7 +636,8 @@ function pendingOnDemand(ctx: FactoryContext): FactoryStatus["onDemand"] {
     const since = s.onDemand ? ctx.store.getKv(stationOnDemandKey(s.package, s.name)) : undefined;
     if (since === undefined) return [];
     const request = ctx.store.getKv(stationOnDemandRequestKey(s.package, s.name));
-    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }) }];
+    const guest = readStationGuest(ctx, s.package, s.name)?.name;
+    return [{ station: `${s.package}/${s.name}`, since, ...(request && { request }), ...(guest && { guest }) }];
   });
 }
 
@@ -2465,13 +2467,143 @@ export interface PanelLinks {
 
 /** The panel's links, each carrying the key. Whoever has one gets into the factory. */
 export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {}): PanelLinks {
-  const key = opts.rotate ? rotatePanelKey(ctx.secrets) : panelKey(ctx.secrets);
+  return linksWithKey(ctx, opts.rotate ? rotatePanelKey(ctx.secrets) : panelKey(ctx.secrets));
+}
+
+function linksWithKey(ctx: Pick<FactoryContext, "store" | "config">, key: string): PanelLinks {
   const remoteUrl = ctx.store.getKv(REMOTE_URL_KEY);
   return {
     local: ctx.config.panel.port ? panelLink(`http://127.0.0.1:${ctx.config.panel.port}`, key) : undefined,
     remote: remoteUrl ? panelLink(remoteUrl, key) : undefined,
     remoteOn: ctx.store.getKv(REMOTE_KEY) === "on",
   };
+}
+
+export interface GuestInvitation {
+  name: string;
+  /** `<package>` or `<package>/<tab or station>`, as the packages offer them to guests. */
+  only: string[];
+  /** The scope values the guest is limited to. */
+  values?: string[];
+  /** Every scope value, those to come included. */
+  all?: boolean;
+  /** Where it was asked from, so a refusal names the options as they are called there; the terminal by default. */
+  via?: "panel";
+}
+
+/** How a refusal names the options of an invitation. */
+const INVITE_OPTIONS = {
+  cli: { only: "--solo <paquete> o --solo <paquete>/<pestaña o estación>", values: "--alcance <valor>", all: "--todo" },
+  panel: { only: "marcá al menos una pestaña o acción", values: "«Alcance»", all: "«Todo»" },
+};
+
+/** `key` and the links exist only here, since only a hash is kept; `stable` when the tunnel's address survives restarts. */
+export type GuestInvitationResult = { ok: true; guest: GuestView; key: string; links: PanelLinks; stable: boolean } | { ok: false; reason: string };
+
+/** What an invitation grants, or why it is refused. */
+function guestGrants(ctx: Pick<FactoryContext, "config">, input: GuestInvitation): { grants: GuestGrant[] } | { reason: string } {
+  const option = INVITE_OPTIONS[input.via ?? "cli"];
+  const only = input.only.map((ref) => cleanText(ref)).filter(Boolean);
+  if (!only.length) return { reason: `indicá a qué accede: ${option.only}` };
+  const asked = new Map<LoadedPackage, Set<string>>();
+  for (const ref of only) {
+    const [name, part, ...rest] = ref.split("/");
+    if (!name || part === "" || rest.length) return { reason: `"${ref}" no es <paquete> ni <paquete>/<pestaña o estación>` };
+    const pkg = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
+    if (!pkg) return { reason: `no hay un paquete instalado que se llame "${name}"` };
+    if (!pkg.guests) return { reason: `el paquete ${name} no ofrece nada a invitados` };
+    const offered = [...new Set([...pkg.guests.tabs, ...pkg.guests.run, ...pkg.guests.upload])];
+    if (part !== undefined && !offered.includes(part)) return { reason: `el paquete ${name} no ofrece "${part}" a invitados; ofrece: ${offered.join(", ")}` };
+    asked.set(pkg, new Set([...(asked.get(pkg) ?? []), ...(part === undefined ? offered : [part])]));
+  }
+  const values = [...new Set((input.values ?? []).map((v) => v.trim()))];
+  if (values.length && input.all) return { reason: `elegí ${option.values} o ${option.all}, no los dos` };
+  const scoped = [...asked.keys()].filter((p) => p.guests!.scope);
+  if (!scoped.length && (values.length || input.all)) return { reason: `${values.length ? option.values.replace(" <valor>", "") : option.all} no corresponde: ${[...asked.keys()].map((p) => p.name).join(", ")} no declara un alcance para invitados` };
+  if (scoped.length && !values.length && !input.all) {
+    const what = scoped.map((p) => `${p.name} (${p.guests!.scope!.title})`).join(", ");
+    return { reason: `falta el alcance de ${what}: indicá ${option.values} (uno o más) para limitar el acceso, o ${option.all} para darlo entero` };
+  }
+  if (values.some((v) => v.length < 1 || v.length > MAX_SCOPE_VALUE)) return { reason: `cada valor del alcance tiene que tener entre 1 y ${MAX_SCOPE_VALUE} caracteres` };
+  return {
+    grants: [...asked].map(([p, parts]) => {
+      const { scope, tabs, run, upload } = p.guests!;
+      const granted = (names: string[]) => names.filter((n) => parts.has(n));
+      return { package: p.name, tabs: granted(tabs), run: granted(run), upload: granted(upload), ...(scope && { scope: { name: scope.name, values: input.all ? ("all" as const) : values } }) };
+    }),
+  };
+}
+
+/** Creates a guest's access to the panel, limited to what those packages offer to guests now; only the terminal and the owner's panel call it. */
+export function inviteGuest(ctx: FactoryContext, input: GuestInvitation): GuestInvitationResult {
+  const name = guestLabel(input.name);
+  if (!name) return { ok: false, reason: "falta el nombre del invitado" };
+  if (name.length > MAX_GUEST_NAME) return { ok: false, reason: `el nombre pasa de ${MAX_GUEST_NAME} caracteres` };
+  const r = guestGrants(ctx, input);
+  if ("reason" in r) return { ok: false, reason: r.reason };
+  const created = createGuest(ctx.store, { name, grants: r.grants }, ctx.now?.());
+  if (!created) return { ok: false, reason: `ya hay un invitado activo con el nombre "${name}": revocá su acceso o usá otro nombre` };
+  const guest = guestView(created.guest, ctx.config.loadedPackages);
+  recordGuestEvent(ctx.store, created.guest, { kind: "invited", target: guestAccessText(guest).join("; ") });
+  return { ok: true, guest, key: created.key, links: linksWithKey(ctx, created.key), stable: remoteChatView(ctx).stable };
+}
+
+/** The active guests, by name, never with a key. */
+export function guestList(ctx: Pick<FactoryContext, "store" | "config">): GuestView[] {
+  return listGuests(ctx.store).map((g) => guestView(g, ctx.config.loadedPackages));
+}
+
+/** Removes a guest's access: from then on their key and sessions are worth nothing. */
+export function revokeGuest(ctx: Pick<FactoryContext, "store">, name: string): { ok: boolean; text: string } {
+  const guest = listGuests(ctx.store).find((g) => guestNameKey(g.name) === guestNameKey(name));
+  if (!guest || !removeGuest(ctx.store, guest.id)) return { ok: false, text: `No hay ningún invitado activo con el nombre "${guestLabel(name)}".` };
+  recordGuestEvent(ctx.store, guest, { kind: "revoked" });
+  return { ok: true, text: `Acceso de ${guest.name} revocado: su clave y sus sesiones dejaron de servir.` };
+}
+
+/** What every guest did, or only those called `name` (revoked ones too), newest first; undefined when nobody had that name. */
+export function guestLog(ctx: Pick<FactoryContext, "store">, name?: string): GuestEvent[] | undefined {
+  if (name === undefined) return ctx.store.listGuestEvents();
+  const ids = new Set([...listGuests(ctx.store), ...ctx.store.guestsWithEvents()].filter((g) => guestNameKey(g.name) === guestNameKey(name)).map((g) => g.id));
+  return ids.size ? ctx.store.listGuestEvents([...ids]) : undefined;
+}
+
+/** What a package offers to guests, for the form that invites. */
+export interface GuestOffer {
+  package: string;
+  /** The title of its scope, when it declares one. */
+  scope?: string;
+  /** `<package>/<name>` and what it lets a guest do: a tab and a station with the same name are one part. */
+  parts: { ref: string; allows: string }[];
+}
+
+export interface GuestsView {
+  offers: GuestOffer[];
+  guests: GuestView[];
+  /** A page of the log, newest first. */
+  log: GuestEvent[];
+  /** Where the next page starts, when there are older events. */
+  older?: number;
+}
+
+/** How many events of the guests' log the panel shows at once. */
+const GUEST_LOG_PAGE = 200;
+
+/** The panel's guests section; with `before`, only the events older than that one. */
+export function guestsView(ctx: Pick<FactoryContext, "store" | "config">, before = Infinity): GuestsView {
+  const offers = (ctx.config.loadedPackages?.packages ?? []).flatMap((p): GuestOffer[] => {
+    if (!p.guests) return [];
+    const { scope, tabs, run, upload } = p.guests;
+    const parts = [...new Set([...tabs, ...run, ...upload])].map((name) => {
+      const tab = tabs.includes(name) && p.tabs.find((t) => t.name === name);
+      const allows = [tab && `ver la pestaña «${tab.title}» (${name})`, run.includes(name) && `pedir corridas de ${name}`, upload.includes(name) && `subir archivos a ${name}`];
+      return { ref: `${p.name}/${name}`, allows: allows.filter(Boolean).join(", ") };
+    });
+    return [{ package: p.name, ...(scope && { scope: scope.title }), parts }];
+  });
+  const events = ctx.store.listGuestEvents().filter((e) => e.seq < before);
+  const log = events.slice(0, GUEST_LOG_PAGE);
+  return { offers, guests: guestList(ctx), log, ...(events.length > log.length && { older: log.at(-1)!.seq }) };
 }
 
 /** Asks the daemon to open or close the tunnel to the panel. */
@@ -2996,6 +3128,8 @@ export interface PackageStationView {
   onDemandPendingSince?: string;
   /** The text sent with the pending on-demand run, when there is one. */
   onDemandRequest?: string;
+  /** The name of the panel guest who asked for the pending run, when it was one. */
+  onDemandGuest?: string;
   /** The station's last on-demand run: running, or how it ended. */
   lastOnDemand?: StationRunRecord;
   /** Whether its manifest declares `whenBusy`: its regular pass also runs with the factory busy. */
@@ -3024,7 +3158,7 @@ export function packageTabs(ctx: FactoryContext): PackageTabLink[] {
 export interface PackageTabView extends PackageTabLink {
   /** `missing`: the package wrote nothing yet; `invalid`: what it wrote does not pass the schema or the folder's limits. */
   state: TabData["state"];
-  /** The manifest's categories, or else those of the items. */
+  /** The manifest's categories, or else those of the items; with a limit of scope values, only those of the visible items. */
   categories: string[];
   /** The chosen category; absent: all of them. */
   category?: string;
@@ -3032,8 +3166,8 @@ export interface PackageTabView extends PackageTabLink {
   items: (TabItem & { download?: string })[];
 }
 
-/** A package tab's data, read only through its schema; undefined when the package did not load or does not declare it. */
-export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, category?: string): PackageTabView | undefined {
+/** A package tab's data, read only through its schema; undefined when the package did not load or does not declare it. `scopes` limits it to the items of those scope values. */
+export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, category?: string, scopes?: readonly string[]): PackageTabView | undefined {
   const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
   const t = p?.tabs.find((x) => x.name === tab);
   if (!p || !t) return undefined;
@@ -3041,8 +3175,9 @@ export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, ca
   const data = readTabData(dir, t);
   const href = `/packages/${encodeURIComponent(p.name)}/${encodeURIComponent(t.name)}`;
   const download = (file: string) => `${href}/files/${file.split("/").map(encodeURIComponent).join("/")}`;
-  const items = (category ? data.items.filter((i) => i.category === category) : data.items).map((i) => (i.file && dataFile(dir, i.file) ? { ...i, download: download(i.file) } : i));
-  const categories = t.categories ?? [...new Set(data.items.flatMap((i) => (i.category ? [i.category] : [])))];
+  const visible = visibleItems(data.items, scopes);
+  const items = (category ? visible.filter((i) => i.category === category) : visible).map((i) => (i.file && dataFile(dir, i.file) ? { ...i, download: download(i.file) } : i));
+  const categories = (!scopes && t.categories) || [...new Set(visible.flatMap((i) => (i.category ? [i.category] : [])))];
   return {
     package: p.name,
     name: t.name,
@@ -3055,11 +3190,11 @@ export function packageTabView(ctx: FactoryContext, pkg: string, tab: string, ca
   };
 }
 
-/** The real path of a file a package tab offers, only when the tab's current data lists exactly that `file` and it stays a regular file inside the package's data folder. */
-export function packageTabFile(ctx: FactoryContext, pkg: string, tab: string, file: string): string | undefined {
+/** The real path of a file a package tab offers, only when the tab's current data lists exactly that `file` and it stays a regular file inside the package's data folder; with `scopes`, only a file of an item of those scope values. */
+export function packageTabFile(ctx: FactoryContext, pkg: string, tab: string, file: string, scopes?: readonly string[]): string | undefined {
   const p = ctx.config.loadedPackages?.packages.find((x) => x.name === pkg);
   const t = p?.tabs.find((x) => x.name === tab);
-  return p && t ? tabFile(packageDataDir(ctx.home, p.name), t, file) : undefined;
+  return p && t ? tabFile(packageDataDir(ctx.home, p.name), t, file, scopes) : undefined;
 }
 
 export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "dir" | "agents" | "skills"> {
@@ -3129,6 +3264,7 @@ export function packageList(ctx: FactoryContext): PackageList {
           const station = loaded.stations.find((s) => s.package === p.name && s.name === name);
           const pendingSince = station?.onDemand ? ctx.store.getKv(stationOnDemandKey(p.name, name)) : undefined;
           const pendingRequest = pendingSince !== undefined ? ctx.store.getKv(stationOnDemandRequestKey(p.name, name)) : undefined;
+          const pendingGuest = pendingSince !== undefined ? readStationGuest(ctx, p.name, name)?.name : undefined;
           const lastOnDemand = station?.onDemand ? readStationRun(ctx, p.name, name) : undefined;
           const machine = pinnedMachine(p.entry, name);
           return {
@@ -3138,6 +3274,7 @@ export function packageList(ctx: FactoryContext): PackageList {
             lastRun: station && ctx.store.getKv(stationLastKey(p.name, name)),
             ...(pendingSince !== undefined && { onDemandPendingSince: pendingSince }),
             ...(pendingRequest && { onDemandRequest: pendingRequest }),
+            ...(pendingGuest && { onDemandGuest: pendingGuest }),
             ...(lastOnDemand && { lastOnDemand }),
             ...(station?.whenBusy && { whenBusy: true as const }),
             ...(machine !== undefined && { machine }),
@@ -3149,16 +3286,28 @@ export function packageList(ctx: FactoryContext): PackageList {
   };
 }
 
-/** `requestedAt` is the pending request's time, the one its run record will carry. */
-export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string };
+/** `requestedAt` is the pending request's time, the one its run record will carry; `aboutFile` when the uploaded file itself is what was refused. */
+export type StationRunResult = { ok: true; text: string; requestedAt: string } | { ok: false; reason: string; aboutFile?: true };
+
+/** A panel guest asking for a run, already checked by zero; `allowed` is asked again when the request is written. */
+export interface StationAsker extends StationGuest {
+  allowed(): boolean;
+}
 
 /**
  * Asks the daemon for one run of a station's `pass` as soon as it can, outside its
  * period. Only for stations that declare `onDemand: true`, at most one pending per
  * station; the daemon runs it in its own pass, whatever the line is doing, and keeps every gate.
+ * Without `guest` it is the person in charge who asks.
  */
-export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string): StationRunResult {
-  return askStationRun(ctx, ref, now, request);
+export function requestStationRun(ctx: FactoryContext, ref: string, now = new Date(), request?: string, guest?: StationAsker): StationRunResult {
+  return askStationRun(ctx, ref, now, request, { guest });
+}
+
+/** Why a station cannot take another on-demand run: one is pending. */
+function pendingRunProblem(ctx: FactoryContext, pkg: string, name: string): { ok: false; reason: string } | undefined {
+  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
+  return pending === undefined ? undefined : { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
 }
 
 /** The station a run may be asked of right now, or why not; nothing is written. */
@@ -3174,15 +3323,17 @@ function stationForRun(ctx: FactoryContext, ref: string, now: Date): { station: 
   if (!station) return { ok: false, reason: `la estación ${pkg}/${name} no puede correr: mirá los problemas en zero package list` };
   if (!runsHere(ctx, station)) return { ok: false, reason: `la estación ${pkg}/${name} está fijada a la máquina ${pinnedMachine(station.entry, name)} y esta es ${machineIdentity(ctx.store, ctx.config).name}: pedila desde esa máquina` };
   if (!station.onDemand) return { ok: false, reason: `la estación ${pkg}/${name} no acepta corridas a demanda: su manifiesto no declara onDemand: true` };
-  const pending = ctx.store.getKv(stationOnDemandKey(pkg, name));
-  if (pending !== undefined) return { ok: false, reason: `ya hay una corrida a demanda pendiente de ${pkg}/${name}, pedida el ${pending}` };
+  const pending = pendingRunProblem(ctx, pkg, name);
+  if (pending) return pending;
   if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
   if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
   return { station };
 }
 
+const GUEST_CUT = { ok: false, reason: "el acceso del invitado ya no lo permite" } as const;
+
 /** `requestStationRun`, plus the upload the run answers when it comes from `uploadToStation`. */
-function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: string, upload?: StationUpload): StationRunResult {
+function askStationRun(ctx: FactoryContext, ref: string, now: Date, request: string | undefined, { upload, guest }: { upload?: StationUpload; guest?: StationAsker } = {}): StationRunResult {
   const found = stationForRun(ctx, ref, now);
   if (!("station" in found)) return found;
   const { station } = found;
@@ -3191,15 +3342,21 @@ function askStationRun(ctx: FactoryContext, ref: string, now: Date, request?: st
   const key = stationOnDemandKey(pkg, name);
   // Cleaned like a station's own request: it reaches third-party code.
   const text = request === undefined ? "" : stationText(request, ctx, station);
-  const requestKey = stationOnDemandRequestKey(pkg, name);
-  // The text goes first: the daemon reads it only once the request itself is there.
-  if (text) ctx.store.setKv(requestKey, text);
-  else ctx.store.deleteKv(requestKey);
-  const uploadKey = stationUploadKey(pkg, name);
-  if (upload) ctx.store.setKv(uploadKey, JSON.stringify(upload));
-  else ctx.store.deleteKv(uploadKey);
   const requestedAt = now.toISOString();
-  ctx.store.setKv(key, requestedAt);
+  const put = (at: string, value: string | undefined) => (value ? ctx.store.setKv(at, value) : ctx.store.deleteKv(at));
+  const asker: StationGuest | undefined = guest && { id: guest.id, name: guest.name, ...(guest.scope !== undefined && { scope: guest.scope }) };
+  // In one write, so a request of another process can mix with neither its text nor who asked for it.
+  const refused = ctx.store.transaction(() => {
+    const pending = pendingRunProblem(ctx, pkg, name);
+    if (pending) return pending;
+    if (guest && !guest.allowed()) return GUEST_CUT;
+    put(stationOnDemandRequestKey(pkg, name), text);
+    put(stationUploadKey(pkg, name), upload && JSON.stringify(upload));
+    put(stationOnDemandGuestKey(pkg, name), asker && JSON.stringify(asker));
+    ctx.store.setKv(key, requestedAt);
+    return undefined;
+  });
+  if (refused) return refused;
   return { ok: true, text: `Corrida a demanda de ${pkg}/${name} pedida: corre una vez en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
 }
 
@@ -3218,12 +3375,12 @@ export function uploadName(name: string): string {
 }
 
 /**
- * Stores a file the person in charge uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
+ * Stores a file the person in charge, or `guest`, uploaded to a station, in `<package-data>/<package>/uploads/<station>/`, and asks
  * for an on-demand run of that station that receives it as `ctx.upload`. Everything that can refuse is checked before
  * writing; past the station's `maxMb` or on any refusal after it, nothing is left behind. Third-party content: it is
  * never opened here beyond its first bytes.
  */
-export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string }, now = new Date()): Promise<StationRunResult> {
+export async function uploadToStation(ctx: FactoryContext, ref: string, file: { name: string; content: UploadContent; request?: string; guest?: StationAsker }, now = new Date()): Promise<StationRunResult> {
   const found = stationForRun(ctx, ref, now);
   if (!("station" in found)) return found;
   const { station } = found;
@@ -3231,7 +3388,7 @@ export async function uploadToStation(ctx: FactoryContext, ref: string, file: { 
   if (!station.uploads) return { ok: false, reason: `la estación ${label} no acepta archivos: su manifiesto no declara uploads` };
   const name = uploadName(file.name);
   const ext = extname(name).toLowerCase();
-  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}` };
+  if (!station.uploads.extensions.includes(ext)) return { ok: false, reason: `la estación ${label} acepta solo archivos ${station.uploads.extensions.join(", ")}`, aboutFile: true };
   const maxBytes = Math.floor(station.uploads.maxMb * 1024 * 1024);
   const dataDir = packageDataDir(ctx.home, station.package);
   const dir = join(dataDir, "uploads", station.name);
@@ -3262,14 +3419,19 @@ export async function uploadToStation(ctx: FactoryContext, ref: string, file: { 
     if (!refused && ext === ".zip" && !head.equals(ZIP_SIGNATURE)) refused = "el archivo no es un zip";
     if (refused) {
       await rm(temp, { force: true });
-      return { ok: false, reason: refused };
+      return { ok: false, reason: refused, aboutFile: true };
+    }
+    // Cut while the bytes were being written: they never become a file of the station.
+    if (file.guest && !file.guest.allowed()) {
+      await rm(temp, { force: true });
+      return GUEST_CUT;
     }
     await rename(temp, final);
   } catch (err) {
     await rm(temp, { force: true }).catch(() => undefined);
     return { ok: false, reason: `no se pudo guardar el archivo: ${err instanceof Error ? err.message : String(err)}` };
   }
-  const r = askStationRun(ctx, ref, now, file.request, { name, path: final, sizeBytes: size, at: now.toISOString() });
+  const r = askStationRun(ctx, ref, now, file.request, { upload: { name, path: final, sizeBytes: size, at: now.toISOString() }, guest: file.guest });
   if (!r.ok) {
     await rm(final, { force: true }).catch(() => undefined);
     return r;

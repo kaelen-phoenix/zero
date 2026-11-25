@@ -126,14 +126,14 @@ export interface StationRepos {
 export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
-  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for. */
+  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for, plus `guest: { name, scope? }` when a panel guest did. */
   pass?: unknown;
   scheduled?: unknown;
   parseConfig?: unknown;
 }
 
-/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus the person in charge's `request` when there is one. */
-type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string }) => unknown;
+/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus the `request` of whoever asked when there is one and who the panel guest was when it was one. */
+type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string; guest?: Omit<StationGuest, "id"> }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
@@ -174,6 +174,29 @@ export function onDemandRecord(ctx: FactoryContext, pkg: string, name: string): 
 /** The text the person in charge sent with a pending on-demand run, already cleaned; absent without one. */
 export const stationOnDemandRequestKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:request`;
 
+/** The panel guest who asked for an on-demand run, all of it set by zero; `scope` is absent when they are not limited to one. */
+export interface StationGuest {
+  id: string;
+  name: string;
+  scope?: string;
+}
+
+/** Who asked for a pending on-demand run when it was a panel guest, as a `StationGuest`; written only with the request itself. */
+export const stationOnDemandGuestKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:guest`;
+
+/** The guest who asked for a pending on-demand run; null when one did and the record does not read, undefined when none did. */
+export function readStationGuest(ctx: Pick<FactoryContext, "store">, pkg: string, name: string): StationGuest | null | undefined {
+  const raw = ctx.store.getKv(stationOnDemandGuestKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    const g = JSON.parse(raw) as StationGuest;
+    if (typeof g?.id !== "string" || typeof g.name !== "string" || !(g.scope === undefined || typeof g.scope === "string")) return null;
+    return { id: g.id, name: g.name, ...(g.scope !== undefined && { scope: g.scope }) };
+  } catch {
+    return null;
+  }
+}
+
 /** How an on-demand run ended. */
 export type StationRunOutcome = "done" | "failed" | "timeout" | "stopped";
 
@@ -182,6 +205,8 @@ export interface StationRunRecord {
   /** The `stationOnDemandKey` value it answered. */
   requestedAt: string;
   request?: string;
+  /** The panel guest who asked for it; absent when it was the person in charge. */
+  guest?: Pick<StationGuest, "id" | "name">;
   startedAt?: string;
   state: "running" | "ended";
   outcome?: StationRunOutcome;
@@ -760,13 +785,21 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
   const request = ctx.store.getKv(requestKey) || undefined;
   const uploadKey = stationUploadKey(station.package, station.name);
   const upload = readStationUpload(ctx, station.package, station.name);
-  const base = { requestedAt: asked, ...(request && { request }) };
+  const guestKey = stationOnDemandGuestKey(station.package, station.name);
+  const guest = readStationGuest(ctx, station.package, station.name);
+  const base = { requestedAt: asked, ...(request && { request }), ...(guest && { guest: { id: guest.id, name: guest.name } }) };
   let startedAt: string | undefined;
   const clear = () => {
     ctx.store.deleteKv(onDemandKey);
     ctx.store.deleteKv(requestKey);
     ctx.store.deleteKv(uploadKey);
+    ctx.store.deleteKv(guestKey);
   };
+  // Without knowing their scope it would run as if the person in charge had asked for it.
+  if (guest === null) {
+    log.warn(`${stationKey(station)} a demanda: se descarta, no se pudo leer qué invitado la pidió`);
+    return clear();
+  }
   const write = (record: OnDemandRecord) => ctx.store.setKv(recordKey, JSON.stringify(record));
   await runTurn(
     ctx,
@@ -795,7 +828,7 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
         if (error) record.error = stationText(error, ctx, station, CHARS_PER_TEXT);
         ctx.store.setKv(runKey, JSON.stringify(record));
       },
-      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal, upload), { onDemand: true, ...(request && { request }) }),
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal, upload), { onDemand: true, ...(request && { request }), ...(guest && { guest: { name: guest.name, ...(guest.scope !== undefined && { scope: guest.scope }) } }) }),
     },
     outer,
   );
