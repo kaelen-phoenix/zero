@@ -32,8 +32,8 @@
 
 ## 6. Etapa 6: Actualización automática de los paquetes estables
 
-- [ ] 6.1 Add the daemon's automatic update of stable packages: an injectable launcher that starts `cli.js package update <name>` detached without a terminal, a kv record per package with the release attempted, and no job starts while it runs.
-- [ ] 6.2 Tell in packageList and status the release that was attempted and not applied.
+- [x] 6.1 Add the daemon's automatic update of stable packages: an injectable launcher that starts `cli.js package update <name>` detached without a terminal, a kv record per package with the release attempted, and no job starts while it runs.
+- [x] 6.2 Tell in packageList and status the release that was attempted and not applied.
 
 ## 7. Etapa 7: Documentación
 

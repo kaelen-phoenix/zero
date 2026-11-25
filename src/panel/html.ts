@@ -3,7 +3,7 @@ import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, packageInstalled, packageNews, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, packageByHandLine, packageInstalled, packageNews, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -431,7 +431,7 @@ ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma lo
 ${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.onDemand.map((d) => `<p class="muted">Corrida a demanda de <b>${esc(d.station)}</b>: pendiente desde ${esc(resetTime(d.since))}.</p>`).join("")}
 ${s.onDemandRuns.map((r) => `<p class="muted">Corrida a demanda de <b>${esc(r.station)}</b>, pedida ${esc(resetTime(r.asked))}: ${r.outcome === "failed" || r.outcome === "timeout" || r.outcome === "not-run" || r.stale ? `<span class="bad">${esc(onDemandState(r))}</span>` : esc(onDemandState(r))}.</p>`).join("")}
-${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
+${(s.packagesByHand ?? []).map((p) => `<p class="muted"><span class="bad">${esc(packageByHandLine(p)).replace(/`([^`]*)`/g, "<code>$1</code>")}</span></p>`).join("")}${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}

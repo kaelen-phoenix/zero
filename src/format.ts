@@ -330,10 +330,14 @@ export function packageNews(p: PackageView): string[] {
   const out: string[] = [];
   if (p.channel) out.push(`canal: ${p.channel}`);
   else if (p.pin) out.push(`fijado a ${p.pin}`);
-  if (p.update) out.push(`hay una actualización: ${p.update.version ? releaseTag(p.update.version) : shortInstalled(p.update.seen)} (revisado ${p.update.at.slice(0, 10)}); aplicala con \`zero package update ${p.name}\``);
+  const tried = p.attempt && (p.attempt.running ? "; se está aplicando sola" : `; se intentó sola el ${p.attempt.at.slice(0, 10)} y no se aplicó: aplicala a mano con \`zero package update ${p.name}\``);
+  if (p.update) out.push(`hay una actualización: ${p.update.version ? releaseTag(p.update.version) : shortInstalled(p.update.seen)} (revisado ${p.update.at.slice(0, 10)})${tried ?? `; aplicala con \`zero package update ${p.name}\``}`);
   if (p.aheadOf) out.push(`más adelante que la última versión liberada (${releaseTag(p.aheadOf)}): espera a una posterior`);
   return out;
 }
+
+/** A package's release the factory tried on its own and did not apply. */
+export const packageByHandLine = (p: { package: string; version: string; at: string }) => `Paquete ${p.package}: se intentó pasar solo a ${releaseTag(p.version)} el ${p.at.slice(0, 10)} y no se aplicó: aplicá la versión a mano con \`zero package update ${p.package}\``;
 
 export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
@@ -564,6 +568,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
+  for (const p of s.packagesByHand ?? []) out.push(packageByHandLine(p));
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);

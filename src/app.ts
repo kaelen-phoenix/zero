@@ -20,6 +20,8 @@ import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
+import { acquirePackageUpdateLock, attemptOf, isAutomaticUpdate, packageRunUnderWay, packagesToApplyByHand, recordAttempt, UNATTENDED_SHUTDOWN_MS } from "./package-auto-update.js";
+import { pidAlive } from "./leftovers.js";
 import { aheadText, installedVersion, lookForRelease, pinProblem, stableReleases, tagRef, type StableLook } from "./package-channel.js";
 import { isGitSource, parseGitSource, pinnedTo, stableChannelProblem } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, pinnedMachine, readManifest, withPackages, type PackageManifest } from "./packages.js";
@@ -135,15 +137,6 @@ export interface DaemonInfo {
   state?: DaemonState;
   /** `stopped`: when the stop was recorded; `crashed`: the last heartbeat. */
   since?: string;
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e: any) {
-    return e.code === "EPERM";
-  }
 }
 
 export function daemonInfo(store: Store, now = new Date()): DaemonInfo {
@@ -565,6 +558,8 @@ export interface FactoryStatus {
   research: ResearchOnDemand;
   /** Loaded stations that declare `whenBusy` and may run on this machine, as `<package>/<station>`: their regular pass also runs with the factory busy. */
   whenBusy: string[];
+  /** Packages on the stable channel whose new release the factory tried on its own and did not apply; absent with none. */
+  packagesByHand?: { package: string; version: string; at: string }[];
   /** Work copies of finished jobs that could not be removed yet; the daemon retries them. */
   cleanups: { job: string; path: string; since: string }[];
   /** The panel's tunnel health, only while kv `panel.remote` is on; `hostname` with a fixed subdomain configured. */
@@ -970,6 +965,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
   const box = currentBox(ctx);
   const { merges, outages, billing } = mergeViews(ctx);
   const installFreshness = readInstallFreshness(ctx.store);
+  const byHand = packagesToApplyByHand(ctx, now);
   return {
     level: effectiveLevel(ctx.config, box.availability),
     isolation: ctx.config.isolation,
@@ -1005,6 +1001,7 @@ function storedStatus(ctx: FactoryContext, now: Date): FactoryStatus {
     cleanups: pendingCleanups(ctx.store).map(({ job, cleanup }) => ({ job, path: cleanup.path, since: cleanup.since })),
     ...(ctx.store.getKv(REMOTE_KEY) === "on" && { tunnel: tunnelStatus(ctx) }),
     selfUpdate: selfUpdateStatus(ctx, now),
+    ...(byHand.length && { packagesByHand: byHand }),
     daemon: daemonStatus(ctx, now),
     andon: ctx.store.getKv(ANDON_KEY) === "on",
     budget: budgetState(ctx.store, ctx.config, now),
@@ -3079,6 +3076,8 @@ export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "d
   release?: string;
   /** What was last seen on the remote, when it differs from `installed`; `version` on the stable channel. */
   update?: { seen: string; version?: string; at: string };
+  /** The factory's own try at `update`: under way, or when it was made and not applied. */
+  attempt?: { at: string; running: boolean };
   /** The newest released version, when what is installed is already past it. */
   aheadOf?: string;
   /** The last look at the remote failed. */
@@ -3095,6 +3094,7 @@ export interface PackageList {
 /** What is installed, what each package brings and what keeps part of it from working; never a secret's value. It only reads what is on record: no network, no git, no npm. */
 export function packageList(ctx: FactoryContext): PackageList {
   const loaded = ctx.config.loadedPackages ?? { packages: [], stations: [], problems: [] };
+  const run = packageRunUnderWay(ctx, (ctx.now ?? (() => new Date()))());
   return {
     problems: loaded.problems,
     packages: loaded.packages.map((p) => {
@@ -3107,6 +3107,7 @@ export function packageList(ctx: FactoryContext): PackageList {
       // What was seen before the channel changed is not what an update would take now.
       const news = seen?.seen && seen.seen !== installed && Boolean(seen.version) === Boolean(channel) ? { seen: seen.seen, ...(seen.version && { version: seen.version }), at: seen.at } : undefined;
       const ahead = news !== undefined && seen?.ahead === installed;
+      const attempt = news?.version && !ahead ? attemptOf(ctx.store, p.name, news.version) : undefined;
       return {
         name: p.name,
         version: p.version,
@@ -3120,6 +3121,7 @@ export function packageList(ctx: FactoryContext): PackageList {
         ...(installed && { installed }),
         ...(release && { release }),
         ...(news && !ahead && { update: news }),
+        ...(attempt && { attempt: { at: attempt.at, running: run?.package === p.name } }),
         ...(ahead && news.version && { aheadOf: news.version }),
         ...(seen?.error && { lookFailed: { at: seen.at, error: seen.error } }),
         allowCode: p.entry.allowCode,
@@ -3742,6 +3744,8 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
       throw err;
     }
     recordSeen(ctx.store, name, to, now, release);
+    // A release newer than the one the daemon started this for is the one being tried.
+    if (release && isAutomaticUpdate(ctx.store)) recordAttempt(ctx.store, name, { version: release.version, at: now.toISOString() });
   }
   if (release?.ahead) {
     say(`${name}: ${aheadText(release.version)}.`);
@@ -3904,6 +3908,22 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
     fail("Indicá qué paquete fijar: zero package update <nombre> --etiqueta <etiqueta>");
     return { text: out.join("\n"), failed };
   }
+  const lock = acquirePackageUpdateLock(ctx.home);
+  if (!lock) {
+    fail("Ya hay una actualización de paquetes en curso. Probá de nuevo cuando termine.");
+    return { text: out.join("\n"), failed };
+  }
+  try {
+    await updatePackages(ctx, input, say, fail);
+  } finally {
+    lock.release();
+  }
+  return { text: out.join("\n"), failed };
+}
+
+/** `packageUpdate` with its lock held. */
+async function updatePackages(ctx: FactoryContext, input: PackageUpdateInput, say: (line: string) => void, fail: (line: string) => void): Promise<void> {
+  const automatic = isAutomaticUpdate(ctx.store);
   const steps: UpdateSteps = { ...input, git: input.git ?? realGit, deps: input.deps ?? realDependencies, say };
   const entries = ctx.config.packages.map((entry, index) => ({ entry, index, name: entryName(entry, ctx.home) }));
   const chosen = input.name === undefined ? entries : entries.filter((e) => [e.name, e.entry.npm, e.entry.git, e.entry.path].includes(input.name));
@@ -3913,6 +3933,8 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
   const plans: { name: string; apply: ApplyUpdate }[] = [];
   for (const { entry, index, name } of chosen) {
     try {
+      // The file may have changed since the daemon started this, and nobody is there to agree to anything else.
+      if (automatic && !(ctx.config.selfUpdate.enabled && entry.channel)) throw new Error("no se actualiza sola: dejó de seguir el canal estable o la autoactualización se apagó.");
       const refusal = input.tag === undefined ? undefined : pinRefusal(entry, input.tag);
       if (refusal) throw new Error(`${refusal}.`);
       const apply = entry.git ? await planGitUpdate(ctx, steps, index, name) : entry.npm ? await planNpmUpdate(ctx, steps, index, name) : planFolderUpdate(ctx, steps, index, name);
@@ -3921,13 +3943,13 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
       fail(`${name}: ${errorText(err)}`);
     }
   }
-  if (!plans.length) return { text: out.join("\n"), failed };
+  if (!plans.length) return;
 
-  const daemon = input.daemon ?? { shutdown: () => shutdownFactory(ctx), start: () => ensureDaemon(ctx) };
+  const daemon = input.daemon ?? { shutdown: () => shutdownFactory(ctx, automatic ? { timeoutMs: UNATTENDED_SHUTDOWN_MS } : {}), start: () => ensureDaemon(ctx) };
   const stopped = await daemon.shutdown();
   if (stopped.status === "timeout") {
     fail(`La fábrica sigue en marcha (proceso ${stopped.pid ?? "desconocido"}) y no toqué ningún paquete. El pedido de apagado queda vigente: se va a apagar cuando termine, sin volver a encenderse. Entonces corré \`zero package update\` de nuevo y \`zero start\`.`);
-    return { text: out.join("\n"), failed };
+    return;
   }
   try {
     for (const { name, apply } of plans) {
@@ -3947,7 +3969,6 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
       }
     }
   }
-  return { text: out.join("\n"), failed };
 }
 
 export interface ReleaseInput {

@@ -40,6 +40,7 @@ import { killLeftovers } from "./leftovers.js";
 import { endedOn, finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
+import { duePackageUpdate, launchPackage, launchPackageUpdate, PACKAGE_RUN_KEY, packageRunUnderWay, packageUpdateLockHeld, readPackageRun, type PackageUpdateLauncher } from "./package-auto-update.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
 import { closeInterruptedResearch, researchOnDemandPass, researchOnDemandReady, researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
@@ -112,6 +113,8 @@ export interface DaemonOptions {
   selfUpdate?: SelfUpdateDeps;
   /** Starts the switch to a prepared version; tests inject a fake. Without it, `once` runs never switch. */
   launchSwitch?: SwitchLauncher;
+  /** Starts the update of a package on the stable channel; tests inject a fake. Without it, `once` runs update none. */
+  launchPackageUpdate?: PackageUpdateLauncher;
   /** The coordination repository of a distributed factory; tests inject a memory one. Without it, `once` runs do not beat. */
   coord?: (repository: string) => CoordApi | undefined;
   /** Clones a line another machine published; tests inject a fake. Defaults to git. */
@@ -534,6 +537,32 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     store.setKv(SHUTDOWN_KEY, now().toISOString());
   };
 
+  // A package on the stable channel with a newer release on record is updated by a process of its own, which turns this daemon off and on again.
+  const packageUpdating = () => {
+    const run = readPackageRun(store);
+    if (!run) return false;
+    if (packageRunUnderWay(ctx, now())) return true;
+    log.info("automatic package update ended", { package: run.package, version: run.version });
+    store.deleteKv(PACKAGE_RUN_KEY);
+    return false;
+  };
+  const updatePackage = async (): Promise<boolean> => {
+    if (opts.once && !opts.launchPackageUpdate) return false;
+    // What it would cut, or what would keep it waiting for this daemon to end.
+    if (running.size || idle || urgent || unjamming || investigating || demanding || busyRunning || scheduling || looking || selfChecking) return false;
+    const { status } = readSelfUpdate(store).state;
+    if (status === "ready" || status === "switching") return false;
+    const due = duePackageUpdate(ctx);
+    if (!due || switchLockHeldAt(ctx.home.root) || packageUpdateLockHeld(ctx.home)) return false;
+    log.info("updating a package to its new release: not starting new jobs until it ends", { package: due.name, version: due.version });
+    try {
+      await launchPackage(ctx, due, opts.launchPackageUpdate ?? launchPackageUpdate, now());
+    } catch (err) {
+      log.warn("package update not started; it is left to be applied by hand", { package: due.name, version: due.version, error: String(err) });
+    }
+    return packageUpdating();
+  };
+
   // The night shift: while the factory is idle, scout proposes work, the unjam station diagnoses what holds the lines up, research reads the web (once a day per line), the recruiter looks for public agents for the catalog and the
   // packages' stations do their own work, one idle run at a time and never holding up the owner's jobs. They run one after the other because they share
   // limits.usdPerNight: each computes what is left only after the others' spans are recorded. The packages' stations go last. Shutdown cuts them all but scout short.
@@ -697,14 +726,18 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       resendRefused();
       closeResolved();
       exportTraces();
-      runSchedules();
-      runOnDemand();
-      runBusyStations();
-      runUnjamOnDemand();
-      runUrgentUnjam();
-      runResearchOnDemand();
-      lookForPackageUpdates();
-      checkSelfUpdate();
+      // A package update under way is about to turn this daemon off: what it would cut waits for the next one.
+      let packageBusy = packageUpdating();
+      if (!packageBusy) {
+        runSchedules();
+        runOnDemand();
+        runBusyStations();
+        runUnjamOnDemand();
+        runUrgentUnjam();
+        runResearchOnDemand();
+        lookForPackageUpdates();
+        checkSelfUpdate();
+      }
       await importSwitchResult(ctx);
       await expireQuestions(ctx);
 
@@ -728,13 +761,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       const switchBusy = selfReady && !running.size && switchLockHeldAt(ctx.home.root);
       if (switchBusy && !switchBusyLogged) log.warn("self-update ready but another switch is still at work; waiting for it");
       switchBusyLogged = switchBusy;
-      if (selfReady && !running.size && !switchBusy) {
+      if (selfReady && !running.size && !switchBusy && !packageBusy) {
         await switchVersion();
         continue;
       }
 
+      if (!selfReady && !packageBusy) packageBusy = await updatePackage();
+
       let startable = false;
-      if (!selfReady && !andon && !budgetState(store, ctx.config, now()).reached) {
+      if (!selfReady && !packageBusy && !andon && !budgetState(store, ctx.config, now()).reached) {
         const at = now();
         const queued = ownerFirst(store.listJobs({ status: ["queued"] }), at);
         for (const job of queued) {
@@ -808,7 +843,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         }
       }
 
-      if (!selfReady && !andon && !startable && !boxWait) {
+      if (!selfReady && !packageBusy && !andon && !startable && !boxWait) {
         idlePasses();
       }
 
