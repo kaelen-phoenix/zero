@@ -569,11 +569,28 @@ export const unjamPendingText = (r: UnjamRequest, now = new Date()) => `pendient
 /** The last on-demand unjam run: "pedida para tienda 10:00, empezó 10:05, terminó bien (10:07) · tienda: 2 trabas, 1 causa". */
 export function describeUnjamRun(r: UnjamRunRecord, now = new Date()): string {
   const asked = `pedida para ${r.line ?? "todas las líneas"} ${pastTime(r.asked, now)}`;
-  if (!r.endedAt) return `${asked}, corriendo${r.startedAt ? ` desde ${pastTime(r.startedAt, now)}` : ""}`;
+  const closed = unjamClosedText(r.closed);
+  if (!r.endedAt) return [`${asked}, corriendo${r.startedAt ? ` desde ${pastTime(r.startedAt, now)}` : ""}`, ...closed].join(" · ");
   const started = r.startedAt ? `, empezó ${pastTime(r.startedAt, now)}` : "";
   // A run that ended well needs no reason: its lines tell it.
   const reason = r.reason && r.outcome !== "ok" ? `: ${r.reason}` : "";
-  return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...r.lines.map(unjamLineText)].join(" · ");
+  return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...closed, ...r.lines.map(unjamLineText)].join(" · ");
+}
+
+/** Ids of the jobs an on-demand unjam run closed that are named; the rest are counted. */
+const UNJAM_CLOSED_SHOWN = 5;
+
+/** The jobs an on-demand unjam run closed, grouped by line: `cerró 2 trabajos que ya estaban resueltos (demo: a1, b2)`. */
+function unjamClosedText(closed: unknown): string[] {
+  // A record of an older shape, or a field that cannot be read, says nothing.
+  const jobs = Array.isArray(closed) ? closed.filter((c): c is { line: string; job: string } => typeof c?.line === "string" && typeof c?.job === "string") : [];
+  if (!jobs.length) return [];
+  const groups = new Map<string, string[]>();
+  for (const c of jobs.slice(0, UNJAM_CLOSED_SHOWN)) groups.set(c.line, [...(groups.get(c.line) ?? []), c.job]);
+  const rest = jobs.length - UNJAM_CLOSED_SHOWN;
+  const list = [...groups].map(([line, ids]) => `${line}: ${ids.join(", ")}`).join("; ") + (rest > 0 ? `, y ${rest} más` : "");
+  const what = jobs.length === 1 ? "1 trabajo que ya estaba resuelto" : `${jobs.length} trabajos que ya estaban resueltos`;
+  return [`cerró ${what} (${list})`];
 }
 
 /** How an express research run ended, as the person in charge reads it. */
