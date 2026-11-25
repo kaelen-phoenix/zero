@@ -490,6 +490,8 @@ export const FactorySchema = z
         /** Absent: the install folder's checked-out branch. */
         branch: z.string().min(1).optional(),
         startTimeoutSeconds: z.number().int().min(10).default(120),
+        /** Only released versions, or whatever enters the branch. Absent: the latter, and nothing of it is shown. */
+        channel: z.enum(["estable", "ultimo"]).optional(),
       })
       .strict()
       .prefault({}),

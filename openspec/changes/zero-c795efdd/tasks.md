@@ -8,10 +8,10 @@
 
 ## 2. Etapa 2: Canal en el archivo y comprobación por canal
 
-- [ ] 2.1 Add optional `channel` to selfUpdate in src/config.ts.
-- [ ] 2.2 Make selfUpdateCheck resolve its target by channel (branch tip, or the newest release inside the tracked branch), record `channel` in the state only when set, drop a ready version of another channel, and record the look in a kv of its own, refreshed by importSwitchResult; split looking from preparing for `enabled: false`; hourly due in estable.
-- [ ] 2.3 Make the daemon's checkSelfUpdate run when `enabled` or `channel` is set, and selfReady require the state's channel to match the configured one.
-- [ ] 2.4 Make checkInstall leave out `behind` with channel estable, record the channel and look again when it changes; check status, briefing and unjam.
+- [x] 2.1 Add optional `channel` to selfUpdate in src/config.ts.
+- [x] 2.2 Make selfUpdateCheck resolve its target by channel (branch tip, or the newest release inside the tracked branch), record `channel` in the state only when set, drop a ready version of another channel, and record the look in a kv of its own, refreshed by importSwitchResult; split looking from preparing for `enabled: false`; hourly due in estable.
+- [x] 2.3 Make the daemon's checkSelfUpdate run when `enabled` or `channel` is set, and selfReady require the state's channel to match the configured one.
+- [x] 2.4 Make checkInstall leave out `behind` with channel estable, record the channel and look again when it changes; check status, briefing and unjam.
 
 ## 3. Etapa 3: Actualización a pedido: daemon y `zero actualizar`
 

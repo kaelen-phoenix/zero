@@ -48,7 +48,7 @@ import { recruitPass } from "./line/recruit.js";
 import { discardResolved } from "./line/discard.js";
 import { closeInterruptedUnjam, resendAfterCapability, unjamOnDemandPass, unjamOnDemandReady, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
-import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
+import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, ofChannel, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -463,7 +463,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const lookAtInstall = () => {
     if (checkingInstall || (opts.once && !opts.install) || Date.now() - installAt < (opts.once ? 0 : INTAKE_MS)) return;
     installAt = Date.now();
-    checkingInstall = checkInstall(store, now(), opts.install)
+    checkingInstall = checkInstall(store, now(), { ...opts.install, channel: ctx.config.selfUpdate.channel })
       .catch((err) => log.warn("installation check failed", { error: String(err) }))
       .finally(() => (checkingInstall = undefined));
   };
@@ -499,11 +499,11 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
-  // zero's own new version, prepared off to the side when the person in charge turned it on; the check itself keeps to once a day or after an own merge.
+  // zero's own new version, prepared off to the side when the person in charge turned it on, or only looked for when they chose a channel; the check itself keeps to when it is due.
   let selfCheckedAt = 0;
   let selfChecking: Promise<void> | undefined;
   const checkSelfUpdate = () => {
-    if (selfChecking || (opts.once && !opts.selfUpdate) || !ctx.config.selfUpdate.enabled || Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    if (selfChecking || (opts.once && !opts.selfUpdate) || (!ctx.config.selfUpdate.enabled && !ctx.config.selfUpdate.channel) || Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS)) return;
     selfCheckedAt = Date.now();
     selfChecking = selfUpdateCheck(ctx, opts.selfUpdate ?? realSelfUpdateDeps())
       .catch((err) => log.warn("self-update check failed", { error: String(err) }))
@@ -717,7 +717,9 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       if (boxWait && !boxWaitLogged) log.warn("waiting for the box: not starting jobs", { problems: currentBox(ctx).availability.problems.join("; ") });
       boxWaitLogged = boxWait;
 
-      const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && readSelfUpdate(store).state.status === "ready";
+      const { state: selfState } = readSelfUpdate(store);
+      // A version prepared for another channel holds nothing up: the next check drops it.
+      const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && selfState.status === "ready" && ofChannel(selfState, ctx.config.selfUpdate.channel);
       if (selfReady && !selfReadyLogged) log.info("self-update ready: not starting new jobs until the switch", { running: running.size });
       selfReadyLogged = selfReady;
       // A switch still at work (an earlier one taken for dead) is never doubled: the ready version waits for it to end.
