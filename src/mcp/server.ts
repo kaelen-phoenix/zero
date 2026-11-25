@@ -3,7 +3,7 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answerAnywhere, decideProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, jobElsewhere, jobText, linesWithSkills, mergePullRequest, monthlyReport, openFactory, proposalsElsewhere, requestAnywhere, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answerAnywhere, decideProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, requestStationRun, requestUnjam, requestUpdate, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, jobElsewhere, jobText, linesWithSkills, mergePullRequest, monthlyReport, openFactory, proposalsElsewhere, requestAnywhere, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposalDecision, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
 import type { FactoryHome } from "../home.js";
@@ -122,7 +122,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
   const ensureDaemon = opts.start ?? startDaemon;
-  // How long zero_package_run, zero_unjam and zero_investigate wait for the run to start; shorter than the CLI's, since a chat waits on it.
+  // How long zero_package_run, zero_unjam, zero_investigate and zero_update wait for the daemon to take what was asked; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
   const remote = opts.remote;
   const canAct = !remote || remote.scope.includes("zero:act");
@@ -352,6 +352,25 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
         const wait = await waitResearchStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
         return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
       }),
+  );
+
+  tool(
+    "zero_update",
+    {
+      title: "Actualizar zero",
+      description: "Ask the factory to update zero itself to the newest version of its update channel, now and whether or not automatic updates are on. It prepares that version apart and switches once no job is running, going back if it does not start. At most one pending update. Only when the owner asks for it.",
+      inputSchema: {},
+    },
+    () =>
+      withFactory(home, (ctx) =>
+        delicate(ctx, { tool: "zero_update", args: {} }, async () => {
+          const r = requestUpdate(ctx);
+          if (!r.ok) return r.reason;
+          const started = autoStart && (await ensureDaemon(ctx));
+          const wait = await waitUpdate(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
+          return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+        }),
+      ),
   );
 
   tool(

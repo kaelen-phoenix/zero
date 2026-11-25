@@ -47,6 +47,15 @@ function parseUrl(url: string): { error: string } | undefined {
   return undefined;
 }
 
+/** Why a package from this source cannot follow the stable channel; undefined when it can. A source that is not git is absent here. */
+export function stableChannelProblem(git: string | undefined): string | undefined {
+  if (git === undefined) return "el canal estable es solo para paquetes instalados desde git";
+  return git.includes("#") ? "el canal estable no va junto a una #referencia: un paquete sigue las versiones liberadas o queda fijado, no las dos cosas" : undefined;
+}
+
+/** The same source pinned to a tag. */
+export const pinnedTo = (source: string, tag: string) => `${source.split("#")[0]!}#${tag}`;
+
 /**
  * A git source as the URL and reference to hand to git, or why not. Errors never
  * repeat the source, which may hold a credential.

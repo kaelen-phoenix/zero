@@ -495,6 +495,18 @@ describe("an installed copy behind", () => {
     expect(collectJams(ctx, line, at(3))).toEqual([]);
   });
 
+  it("is no jam for unreleased commits in the stable channel, only for a stale build", () => {
+    const { ctx } = factory({ selfUpdate: { channel: "estable" }, lines: [{ name: "zero", repo: withRemote("https://github.com/owner/zero.git") }] });
+    const line = ctx.config.lines[0]!;
+    const stable = { behind: undefined, channel: "estable", unreleased: 3 };
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, record(stable));
+    expect(collectJams(ctx, line, at(3))).toEqual([]);
+    ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ ...stable, staleBuild: true }));
+    const [jam] = collectJams(ctx, line, at(3));
+    expect(jam!.text).toContain("older than its code");
+    expect(jam!.text).not.toContain("merged commit");
+  });
+
   it("tells the real selfUpdate setting", () => {
     const repo = withRemote("https://github.com/owner/zero.git");
     const on = factory({ selfUpdate: { enabled: true }, lines: [{ name: "zero", repo }] }).ctx;
@@ -825,6 +837,11 @@ describe("missing capabilities", () => {
       ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ checkedAt: at(1).toISOString() }));
       await resendAfterCapability(ctx, at(3));
       ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ staleBuild: true }));
+      await resendAfterCapability(ctx, at(3));
+      // In the stable channel unreleased work is not a delay, but the copy does not have it yet.
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: undefined, channel: "estable", unreleased: 1 }));
+      await resendAfterCapability(ctx, at(3));
+      ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({ behind: undefined, channel: "estable" }));
       await resendAfterCapability(ctx, at(3));
       expect(queuedOn(ctx, "tienda")).toHaveLength(0);
       ctx.store.setKv(INSTALL_FRESHNESS_KEY, record({}));

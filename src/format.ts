@@ -1,4 +1,4 @@
-import type { Adoption, DaemonInfo, EgressReport, FactoryJob, FactoryProposal, FactoryStatus, JobMachine, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, ProposalOutcome, RemoteChatView, RequestResult, RequestSent, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryJob, FactoryProposal, FactoryStatus, JobMachine, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PackageView, PendingRemoteAction, ProposalOutcome, RemoteChatView, RequestResult, RequestSent, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -15,7 +15,8 @@ import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import type { ResearchRequest, ResearchRunRecord } from "./line/research.js";
 import type { UnjamLineResult, UnjamRequest, UnjamRunRecord } from "./line/unjam.js";
 import { jobStage } from "./line/spec.js";
-import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
+import { releaseTag } from "./releases.js";
+import type { SelfUpdateEntry, SelfUpdateRetry, SelfUpdateTarget, UpdateRunRecord } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { CatalogEntry, CatalogStatus, CatalogType } from "./catalog.js";
 import { FINAL_STATUSES, type AlertSeverity, type Job, type Proposal, type ResearchNote } from "./state/store.js";
@@ -319,14 +320,32 @@ export function describeStationRun(r: StationRunRecord, now = new Date()): strin
   return `${state}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
 }
 
+const shortInstalled = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
+
+/** What a package has installed: its released version with the commit, or the commit or npm version alone. */
+export const packageInstalled = (p: PackageView) => (p.installed ? (p.release ? `${releaseTag(p.release)} (${shortInstalled(p.installed)})` : shortInstalled(p.installed)) : undefined);
+
+/** A package's channel or pin and what is newer, from what is on record; what goes between backticks is a command. */
+export function packageNews(p: PackageView): string[] {
+  const out: string[] = [];
+  if (p.channel) out.push(`canal: ${p.channel}`);
+  else if (p.pin) out.push(`fijado a ${p.pin}`);
+  const tried = p.attempt && (p.attempt.running ? "; se está aplicando sola" : `; se intentó sola el ${p.attempt.at.slice(0, 10)} y no se aplicó: aplicala a mano con \`zero package update ${p.name}\``);
+  if (p.update) out.push(`hay una actualización: ${p.update.version ? releaseTag(p.update.version) : shortInstalled(p.update.seen)} (revisado ${p.update.at.slice(0, 10)})${tried ?? `; aplicala con \`zero package update ${p.name}\``}`);
+  if (p.aheadOf) out.push(`más adelante que la última versión liberada (${releaseTag(p.aheadOf)}): espera a una posterior`);
+  return out;
+}
+
+/** A package's release the factory tried on its own and did not apply. */
+export const packageByHandLine = (p: { package: string; version: string; at: string }) => `Paquete ${p.package}: se intentó pasar solo a ${releaseTag(p.version)} el ${p.at.slice(0, 10)} y no se aplicó: aplicá la versión a mano con \`zero package update ${p.package}\``;
+
 export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
-  const short = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
   for (const p of l.packages) {
     out.push(`${p.name} ${p.version} (${p.source === "path" ? "carpeta" : p.source}): ${p.dir}`);
-    if (p.source !== "path") out.push(`- fuente: ${p.origin}${p.installed ? `, instalado ${short(p.installed)}` : ""}`);
-    if (p.update) out.push(`- hay una actualización: ${short(p.update.seen)} (revisado ${p.update.at.slice(0, 10)}); aplicala con \`zero package update ${p.name}\``);
+    if (p.source !== "path") out.push(`- fuente: ${p.origin}${p.installed ? `, instalado ${packageInstalled(p)}` : ""}`);
+    for (const news of packageNews(p)) out.push(`- ${news}`);
     if (p.lookFailed) out.push(`- no se pudo revisar si hay novedades (${p.lookFailed.at.slice(0, 10)}): ${p.lookFailed.error}`);
     if (p.agents.length) out.push(`- agentes: ${p.agents.join(", ")}`);
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);
@@ -549,6 +568,7 @@ export function formatStatus(s: FactoryStatus, now = new Date()): string {
   }
   for (const p of s.skills) out.push(skillWarning(p));
   for (const p of s.packages) out.push(packageProblem(p));
+  for (const p of s.packagesByHand ?? []) out.push(packageByHandLine(p));
   if (s.onDemand.length) out.push(`Corridas a demanda pendientes: ${s.onDemand.map((d) => `${d.station} (desde ${resetTime(d.since, now)}${d.request ? `, pedido: "${d.request.slice(0, 120)}"` : ""})`).join(", ")}`);
   if (s.onDemandRuns.length) out.push(`Corridas a demanda recientes: ${s.onDemandRuns.map((r) => describeOnDemandRun(r, now)).join(", ")}`);
   for (const r of s.stationRuns) out.push(`Corrida a demanda de ${r.station}: ${describeStationRun(r, now)}`);
@@ -687,9 +707,43 @@ export function selfUpdateRetryText(r: SelfUpdateRetry, now = new Date()): strin
   return `vuelve a intentar pasar a ${commit(r.commit)} a las ${resetTime(r.at, now)} (intento ${r.tries + 1})`;
 }
 
-/** The «Autoactualización:» lines of status and the panel (a version waiting to switch, the last update, a pending retry and a problem), `bad` when they warn. */
+/** A version as the person in charge reads it: its release with the short commit, or only the commit. */
+export const selfUpdateTargetText = (t: SelfUpdateTarget) => (t.version ? `${releaseTag(t.version)} (${commit(t.commit)})` : commit(t.commit));
+
+/** The «Canal:» line: the channel, the installed version and whether there is a newer one, as the last look left it. */
+function channelLine(s: SelfUpdateStatus, now: Date): string {
+  if (!s.look) return `Canal: ${s.channel} · todavía no se comprobó si hay una versión nueva`;
+  const { current, available, checkedAt } = s.look;
+  const unreleased = s.channel === "estable" && !current.version ? " (no es una versión liberada)" : "";
+  // A version already prepared has a line of its own, which says when it goes in.
+  const how = available && s.ready?.to !== available.commit ? "; para pasar a ella: zero actualizar" : "";
+  const news = available ? `hay una versión nueva: ${selfUpdateTargetText(available)}${how}` : "no hay una versión nueva";
+  return `Canal: ${s.channel} · versión actual: ${selfUpdateTargetText(current)}${unreleased} · ${news} (comprobado ${pastTime(checkedAt, now)})`;
+}
+
+/** The last update asked for: «pedida 10:00, preparando v1.1.0 (…) desde 10:01», or how it ended, with what its switch did. */
+export function describeUpdateRun(r: UpdateRunRecord, last?: SelfUpdateEntry, now = new Date()): string {
+  const asked = `pedida ${pastTime(r.asked, now)}`;
+  const version = r.target ? selfUpdateTargetText(r.target) : "la versión nueva";
+  if (!r.endedAt) return `${asked}, ${r.target ? "preparando" : "buscando"} ${version} desde ${pastTime(r.startedAt, now)}`;
+  if (r.outcome === "ready") {
+    const switched = last && last.to === r.target?.commit && last.at >= r.startedAt ? last : undefined;
+    if (!switched) return `${asked}, ${version} quedó lista (${pastTime(r.endedAt, now)})`;
+    return `${asked}, ${switched.outcome === "updated" ? "pasó" : "no pudo pasar"} a ${version} (${pastTime(switched.at, now)})`;
+  }
+  const how = r.outcome === "up-to-date" ? "no había una versión nueva" : r.outcome === "stopped" ? "quedó sin terminar" : "falló";
+  return `${asked}, ${how} (${pastTime(r.endedAt, now)})${r.reason ? `: ${r.reason}` : ""}`;
+}
+
+/**
+ * The lines of status and the panel about zero's own version, `bad` when they warn: «Canal:» with a channel, the update
+ * asked for, and the «Autoactualización:» ones (a version waiting to switch, the last update, a pending retry and a problem).
+ */
 export function selfUpdateLines(s: SelfUpdateStatus, now = new Date()): { text: string; bad: boolean }[] {
   return [
+    ...(s.channel ? [{ text: channelLine(s, now), bad: false }] : []),
+    ...(s.pending ? [{ text: `Actualización a pedido: pendiente desde ${pastTime(s.pending.requestedAt, now)}`, bad: false }] : []),
+    ...(s.run ? [{ text: `Última actualización a pedido: ${describeUpdateRun(s.run, s.last, now)}`, bad: s.run.outcome === "failed" || s.run.outcome === "stopped" }] : []),
     ...(s.ready ? [{ text: `Autoactualización: ${commit(s.ready.to)} está lista; cambia de versión cuando no haya trabajos corriendo (ahora ${commit(s.ready.from)})`, bad: false }] : []),
     ...(s.last ? [{ text: `Autoactualización: ${selfUpdateEntryText(s.last, now)}`, bad: s.last.outcome !== "updated" }] : []),
     ...(s.retry ? [{ text: `Autoactualización: ${selfUpdateRetryText(s.retry, now)}`, bad: false }] : []),

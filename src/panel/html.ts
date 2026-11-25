@@ -3,7 +3,7 @@ import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport
 import type { CatalogAddPlan, ProjectPlan, ProjectResult } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, packageByHandLine, packageInstalled, packageNews, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -269,10 +269,17 @@ function packageStation(pkg: string, s: PackageList["packages"][number]["station
   return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;
 }
 
-/** The "Paquetes" tab: each loaded package's stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
+/** What a git package has installed, its channel or pin and what is newer: third parties' texts, escaped before the commands get their own tag. */
+function packageVersion(p: PackageList["packages"][number]): string {
+  if (p.source !== "git") return "";
+  const lines = [`instalado ${packageInstalled(p) ?? "(desconocido)"}`, ...packageNews(p)].map((line) => esc(line).replace(/`([^`]*)`/g, "<code>$1</code>"));
+  return `<p class="muted">${lines.join("<br>")}</p>`;
+}
+
+/** The "Paquetes" tab: each loaded package's version, stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
 export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string, uploads: StationUploads = {}): string {
   const packages = list.packages
-    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
+    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${packageVersion(p)}${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
     .join("");
   const problems = list.problems.length ? `<div class="card bad"><h2>Problemas</h2><ul>${list.problems.map((p) => `<li>${esc(p.package)}: ${esc(p.reason)}</li>`).join("")}</ul></div>` : "";
   return page(
@@ -418,13 +425,13 @@ ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))
 ${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}${s.linesAway?.length ? `<p class="muted">Líneas que no están en esta máquina:</p><ul>${s.linesAway.map((l) => `<li class="muted">${l.state === "failed" ? `<span class="bad">${esc(lineAwayLine(l))}</span>` : esc(lineAwayLine(l))}</li>`).join("")}</ul>` : ""}
 ${s.sent?.length ? `<p class="muted">Para otras máquinas:</p><ul>${s.sent.map((e) => `<li class="muted">${esc(sentLine(e))}</li>`).join("")}</ul>` : ""}${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
-${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}
+${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}${s.selfUpdate?.offer ? `<form method="post" action="/update"><button>Actualizar ahora</button></form>` : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
 ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma los issues con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.onDemand.map((d) => `<p class="muted">Corrida a demanda de <b>${esc(d.station)}</b>: pendiente desde ${esc(resetTime(d.since))}.</p>`).join("")}
 ${s.onDemandRuns.map((r) => `<p class="muted">Corrida a demanda de <b>${esc(r.station)}</b>, pedida ${esc(resetTime(r.asked))}: ${r.outcome === "failed" || r.outcome === "timeout" || r.outcome === "not-run" || r.stale ? `<span class="bad">${esc(onDemandState(r))}</span>` : esc(onDemandState(r))}.</p>`).join("")}
-${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
+${(s.packagesByHand ?? []).map((p) => `<p class="muted"><span class="bad">${esc(packageByHandLine(p)).replace(/`([^`]*)`/g, "<code>$1</code>")}</span></p>`).join("")}${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}

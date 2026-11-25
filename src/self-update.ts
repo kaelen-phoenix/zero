@@ -4,9 +4,11 @@ import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FactoryContext } from "./app.js";
+import type { FactoryConfig } from "./config.js";
 import { mergeKey, type MergeState } from "./line/automerge.js";
 import { log } from "./log.js";
 import { findGit, gitEnv, lockProblemAt, npmCiArgs, runNpm, runProcess, type GitRunner } from "./package-install.js";
+import { listReleases, newestRelease, releaseTag, type Release } from "./releases.js";
 import { resultPath, switchLockHeldAt, type SwitchPlan, type SwitchResult } from "./self-update-switch.js";
 import { tryGit } from "./shell.js";
 import type { Store } from "./state/store.js";
@@ -30,8 +32,16 @@ export function versionText(install: string = installFolder()): string {
 
 export const SELF_UPDATE_STATE_KEY = "self-update:state";
 export const SELF_UPDATE_HISTORY_KEY = "self-update:history";
+/** What the last look at a configured channel found. */
+export const SELF_UPDATE_LOOK_KEY = "self-update:look";
+/** The update the person in charge asked for and that has not started yet, as an `UpdateRequest`. */
+export const UPDATE_REQUEST_KEY = "self-update:request";
+/** The last update asked for, as an `UpdateRunRecord`. */
+export const UPDATE_RUN_KEY = "self-update:run";
 /** How many past updates the history keeps. */
 export const HISTORY_LIMIT = 20;
+
+export type SelfUpdateChannel = NonNullable<FactoryConfig["selfUpdate"]["channel"]>;
 
 /** Where the self-update stands: idle, a prepared version waiting for a free factory, or a switch under way. */
 export interface SelfUpdateState {
@@ -54,6 +64,52 @@ export interface SelfUpdateState {
   head?: string;
   /** When the switch process was launched (ISO). */
   switchingAt?: string;
+  /** The channel configured at the last check, and so the one a version was prepared for; absent: none, which is `ultimo`. */
+  channel?: SelfUpdateChannel;
+  /** The version ready or being switched to was asked for, so it goes in whatever `enabled` says. */
+  onDemand?: boolean;
+}
+
+/** Whether what a state holds is of the channel configured now. */
+export const ofChannel = (state: SelfUpdateState, channel: SelfUpdateChannel | undefined) => (state.channel ?? "ultimo") === (channel ?? "ultimo");
+
+/** A version to move to, with its release version when it is one. */
+export interface SelfUpdateTarget {
+  commit: string;
+  version?: string;
+}
+
+/** The last look that could tell the channel's newest version; kept only while a channel is configured. */
+export interface SelfUpdateLook {
+  channel: SelfUpdateChannel;
+  checkedAt: string;
+  /** The commit installed at the look, with its release version when it is one. */
+  head: string;
+  version?: string;
+  /** A newer version the installation can move to. */
+  available?: SelfUpdateTarget;
+}
+
+/** An update the person in charge asked for; at most one pending. */
+export interface UpdateRequest {
+  /** When it was asked, ISO 8601. */
+  requestedAt: string;
+}
+
+/** How an update asked for ended; `ready` once its version is prepared, since the switch tells its own result. */
+export interface UpdateEnd {
+  outcome: "ready" | "up-to-date" | "failed" | "stopped";
+  reason?: string;
+}
+
+/** The last update asked for; times in ISO 8601. */
+export interface UpdateRunRecord extends Partial<UpdateEnd> {
+  /** The `requestedAt` of the request it answers. */
+  asked: string;
+  startedAt: string;
+  /** The version it found, known before it is prepared. */
+  target?: SelfUpdateTarget;
+  endedAt?: string;
 }
 
 export interface SelfUpdateRetry {
@@ -90,10 +146,11 @@ export function machineRetry(state: SelfUpdateState, commit: string, at: Date): 
 
 /**
  * Where a failed commit goes: a machine failure only waits for a retry, any other failure is kept among the failed
- * ones for good. A retry of that commit is dropped in the latter case.
+ * ones for good. A retry of that commit is dropped in the latter case. Without `retries` (nothing would try it again on its
+ * own) a machine failure leaves both as they were.
  */
-export function afterFailure(state: SelfUpdateState, commit: string, machine: boolean, at: Date): Pick<SelfUpdateState, "failed" | "retry"> {
-  if (!commit) return { failed: state.failed, retry: state.retry };
+export function afterFailure(state: SelfUpdateState, commit: string, machine: boolean, at: Date, retries = true): Pick<SelfUpdateState, "failed" | "retry"> {
+  if (!commit || (machine && !retries)) return { failed: state.failed, retry: state.retry };
   if (machine) return { failed: state.failed, retry: machineRetry(state, commit, at) };
   const failed = state.failed?.includes(commit) ? state.failed : [...(state.failed ?? []), commit].slice(-HISTORY_LIMIT);
   return { failed, retry: state.retry?.commit === commit ? undefined : state.retry };
@@ -146,6 +203,64 @@ export function recordSelfUpdate(store: Store, change: { state?: SelfUpdateState
   }
 }
 
+/** The last look on record; a store failure or a broken record reads as none. */
+export function readSelfUpdateLook(store: Store): SelfUpdateLook | undefined {
+  try {
+    const raw = store.getKv(SELF_UPDATE_LOOK_KEY);
+    const look = raw ? (JSON.parse(raw) as SelfUpdateLook) : undefined;
+    if (look && typeof look === "object" && typeof look.channel === "string" && typeof look.checkedAt === "string" && typeof look.head === "string") return look;
+  } catch (err) {
+    log.warn("cannot read the self-update look", { error: String(err) });
+  }
+  return undefined;
+}
+
+function recordLook(store: Store, look: SelfUpdateLook): void {
+  try {
+    store.setKv(SELF_UPDATE_LOOK_KEY, JSON.stringify(look));
+  } catch (err) {
+    log.warn("cannot record the self-update look", { error: String(err) });
+  }
+}
+
+/** A version put in place since the look is the current one, and no longer something new. */
+function lookAfterInstall(store: Store, from: string, to: string): void {
+  const look = readSelfUpdateLook(store);
+  if (!look) return;
+  const { channel, checkedAt, available } = look;
+  if (available?.commit === to) recordLook(store, { channel, checkedAt, head: to, ...(available.version && { version: available.version }) });
+  else if (look.head === from && from !== to) recordLook(store, { channel, checkedAt, head: to, ...(available && { available }) });
+}
+
+function readUpdateJson<T>(store: Store, key: string): T | undefined {
+  try {
+    const raw = store.getKv(key);
+    return raw ? (JSON.parse(raw) as T) : undefined;
+  } catch (err) {
+    log.warn("cannot read the update asked for", { key, error: String(err) });
+    return undefined;
+  }
+}
+
+/** The update asked for that has not started yet, if there is one and it can be read. */
+export function readUpdateRequest(store: Store): UpdateRequest | undefined {
+  const request = readUpdateJson<UpdateRequest>(store, UPDATE_REQUEST_KEY);
+  return typeof request?.requestedAt === "string" ? request : undefined;
+}
+
+/** The last update asked for, if one was recorded and can be read. */
+export function readUpdateRun(store: Store): UpdateRunRecord | undefined {
+  const run = readUpdateJson<UpdateRunRecord>(store, UPDATE_RUN_KEY);
+  return typeof run?.asked === "string" && typeof run.startedAt === "string" ? run : undefined;
+}
+
+/** An update asked for that a closed daemon left without an end, closed when the next one starts; it is not repeated. */
+export function closeInterruptedUpdate(ctx: FactoryContext, now: Date): void {
+  const run = readUpdateRun(ctx.store);
+  if (!run || run.endedAt) return;
+  ctx.store.setKv(UPDATE_RUN_KEY, JSON.stringify({ ...run, endedAt: now.toISOString(), outcome: "stopped", reason: "la fábrica se cerró antes de que terminara" } satisfies UpdateRunRecord));
+}
+
 /** What the self-update runs; tests inject fakes, the daemon `realSelfUpdateDeps`. */
 export interface SelfUpdateDeps {
   git: GitRunner;
@@ -160,6 +275,8 @@ export interface SelfUpdateDeps {
 
 /** Without a merge of its own, the install folder's remote is looked at once a day. */
 export const CHECK_EVERY_MS = 24 * 60 * 60_000;
+/** Nothing the factory sees announces a release, so in the stable channel the remote is looked at once an hour. */
+export const STABLE_CHECK_EVERY_MS = 60 * 60_000;
 const STEP_TIMEOUT_MS = 10 * 60_000;
 
 /** Where prepared versions (and later the switch's files) live, never in a repository. */
@@ -176,12 +293,16 @@ const samePath = (a: string, b: string) => {
 
 /**
  * Due when it was never checked, a day has passed, a machine retry's time came, the install folder's HEAD moved (an
- * update by hand) or a pull request of a line working on the install folder merged since.
+ * update by hand) or a pull request of a line working on the install folder merged since. Also when the channel changed;
+ * in the stable one every hour, and merges say nothing since only releases count.
  */
 function due(ctx: FactoryContext, state: SelfUpdateState, install: string, at: Date, head: string | undefined): boolean {
-  if (!state.checkedAt || at.getTime() - Date.parse(state.checkedAt) >= CHECK_EVERY_MS) return true;
-  if (state.retry && at.getTime() >= Date.parse(state.retry.at)) return true;
+  const { channel, enabled } = ctx.config.selfUpdate;
+  if (!state.checkedAt || at.getTime() - Date.parse(state.checkedAt) >= (channel === "estable" ? STABLE_CHECK_EVERY_MS : CHECK_EVERY_MS)) return true;
+  if (state.channel !== channel) return true;
+  if (enabled && state.retry && at.getTime() >= Date.parse(state.retry.at)) return true;
   if (head && state.head && head !== state.head) return true;
+  if (channel === "estable") return false;
   const lines = new Set(ctx.config.lines.filter((l) => samePath(l.repo, install)).map((l) => l.name));
   if (!lines.size) return false;
   for (const job of ctx.store.listJobs({ status: ["delivered"], limit: -1 })) {
@@ -201,42 +322,109 @@ function due(ctx: FactoryContext, state: SelfUpdateState, install: string, at: D
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 500);
 
+/** Whether the self-update has anything to do: it is on, a channel is configured, an update was asked for, or a ready version of one of those is left. */
+export function selfUpdateWanted(ctx: FactoryContext): boolean {
+  const { enabled, channel } = ctx.config.selfUpdate;
+  if (enabled || channel || readUpdateRequest(ctx.store)) return true;
+  const { state } = readSelfUpdate(ctx.store);
+  return state.status === "ready" && Boolean(state.onDemand || state.channel);
+}
+
 /**
- * Looks at whether the install folder's branch moved on its remote and, when it is a clean fast-forward,
- * prepares that commit off to the side. Never touches the install folder's files; the switch happens later.
+ * The self-update's pass. An update the person in charge asked for is served here, once and whatever `enabled` says: the
+ * request goes right before its run, and the run's record is written with it and again as it finds its version and ends.
  */
 export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps): Promise<void> {
-  const settings = ctx.config.selfUpdate;
-  if (!settings?.enabled) return;
-  const at = (deps.now ?? ctx.now ?? (() => new Date()))();
-  const { state } = readSelfUpdate(ctx.store);
+  if (!selfUpdateWanted(ctx)) return;
   // A switch under way is the next daemon's to tell.
-  if (state.status === "switching") return;
+  if (readSelfUpdate(ctx.store).state.status === "switching") return;
   // A switch still at work (even one taken for dead) owns the install folder and the prepared folders.
   if (switchLockHeldAt(ctx.home.root)) return;
-  const install = deps.install ?? installFolder();
-  const git = (args: string[]) => deps.git(args, { cwd: install });
-  const installed = await git(["rev-parse", "HEAD"]).catch(() => undefined);
-  const clean = (head: string): SelfUpdateState => ({ status: "idle", checkedAt: at.toISOString(), head });
-  if (state.status === "ready") {
-    // A prepared version waits for its switch, unless that commit was already put in place by hand.
-    if (!installed || installed !== state.to) return;
-    log.info("self-update target already installed; dropping the prepared version", { to: state.to, dir: state.dir });
-    recordSelfUpdate(ctx.store, { state: clean(installed) });
-    if (state.dir) await rm(state.dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir: state.dir, error: String(err) }));
+  const request = readUpdateRequest(ctx.store);
+  if (!request) {
+    await checkForUpdate(ctx, deps);
     return;
   }
-  if (!due(ctx, state, install, at, installed)) return;
-  const checked: SelfUpdateState = { ...state, checkedAt: at.toISOString(), ...(installed ? { head: installed } : {}) };
+  const clock = () => (deps.now ?? ctx.now ?? (() => new Date()))().toISOString();
+  let run: UpdateRunRecord = { asked: request.requestedAt, startedAt: clock() };
+  const write = (more: Partial<UpdateRunRecord>) => {
+    run = { ...run, ...more };
+    ctx.store.setKv(UPDATE_RUN_KEY, JSON.stringify(run));
+  };
+  ctx.store.deleteKv(UPDATE_REQUEST_KEY);
+  write({});
+  log.info("self-update runs on demand", { asked: request.requestedAt });
+  let end: UpdateEnd;
+  try {
+    end = (await checkForUpdate(ctx, deps, (target) => write({ target }))) ?? { outcome: "up-to-date" };
+  } catch (err) {
+    log.warn("on-demand self-update failed", { error: String(err) });
+    end = { outcome: "failed", reason: "la actualización falló antes de terminar; el detalle está en el log de la fábrica" };
+  }
+  write({ ...end, endedAt: clock() });
+}
+
+/**
+ * Looks at whether the install folder's branch moved on its remote (in the stable channel, whether a newer version was
+ * released from it) and, when it is a clean fast-forward, prepares that commit off to the side. Never touches the install
+ * folder's files; the switch happens later. With a channel it keeps what it found, and without automatic updates that is
+ * all it does. `demand` makes it the update the person in charge asked for, and is told the version found: it neither waits
+ * to be due nor minds `enabled` or an earlier failure, and says how it ended.
+ */
+async function checkForUpdate(ctx: FactoryContext, deps: SelfUpdateDeps, demand?: (target: SelfUpdateTarget) => void): Promise<UpdateEnd | undefined> {
+  const settings = ctx.config.selfUpdate;
+  const { channel } = settings;
+  const at = (deps.now ?? ctx.now ?? (() => new Date()))();
+  let { state } = readSelfUpdate(ctx.store);
+  const drop = async () => {
+    const { dir, to, failed, retry } = state;
+    log.info("dropping a prepared version that is no longer wanted", { to, dir, channel: channel ?? "ultimo", enabled: settings.enabled });
+    state = { status: "idle", ...(failed && { failed }), ...(retry && { retry }) };
+    recordSelfUpdate(ctx.store, { state });
+    await removePrepared(dir);
+  };
+  // A version prepared for another channel, or left by automatic updates since turned off, is never switched to. It goes
+  // before anything is awaited, so the daemon cannot be launching its switch meanwhile.
+  if (state.status === "ready" && (!ofChannel(state, channel) || !(settings.enabled || state.onDemand || demand))) await drop();
+  // Only a version left behind brought it here.
+  if (!settings.enabled && !channel && !demand && state.status !== "ready") return undefined;
+  const install = deps.install ?? installFolder();
+  const git = (args: string[]) => deps.git(args, { cwd: install });
+  const isAncestor = (a: string, b: string) => git(["merge-base", "--is-ancestor", a, b]).then(() => true, () => false);
+  const installed = await git(["rev-parse", "HEAD"]).catch(() => undefined);
+  const clean = (head: string): SelfUpdateState => ({ status: "idle", checkedAt: at.toISOString(), head, ...(channel && { channel }) });
+  if (state.status === "ready") {
+    // A prepared version waits for its switch, unless that commit was already put in place by hand.
+    if (installed && installed === state.to) {
+      const { from, to, dir } = state;
+      log.info("self-update target already installed; dropping the prepared version", { to, dir });
+      state = clean(installed);
+      recordSelfUpdate(ctx.store, { state });
+      lookAfterInstall(ctx.store, from ?? "", installed);
+      await removePrepared(dir);
+      if (!demand) return undefined;
+    } else if (!demand) return undefined;
+    // One that automatic updates left when they were turned off is of use only while the installation is the one it was prepared for.
+    else if (settings.enabled || state.onDemand || (installed === state.from && existsSync(state.dir ?? ""))) return askedReady(ctx, state, demand);
+    else await drop();
+  }
+  if (!demand && !due(ctx, state, install, at, installed)) return undefined;
+  const checked: SelfUpdateState = { ...state, checkedAt: at.toISOString(), ...(installed ? { head: installed } : {}), channel };
   const save = (next: SelfUpdateState) => recordSelfUpdate(ctx.store, { state: next });
   // Each distinct problem is said once; the check time moves on either way.
-  const problem = (text: string) => {
+  const problem = (text: string): UpdateEnd => {
     if (text !== state.problem) log.warn("self-update held back", { problem: text });
-    save({ ...checked, problem: text });
+    // Where nothing looks again on its own only the run asked for tells it: in the state it would stay for good.
+    save({ ...checked, problem: settings.enabled || channel ? text : undefined });
+    return { outcome: "failed", reason: text };
   };
 
   let head: string;
   let tip: string;
+  let branch: string;
+  let localChanges: boolean;
+  let releases: Release[] = [];
+  const dirty = `cambios locales en ${install}: no actualizo`;
   const notRoot = `${install} no es la raíz de su propio repositorio de git`;
   try {
     if ((await git(["rev-parse", "--show-cdup"])) !== "") return problem(notRoot);
@@ -245,26 +433,68 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
   }
   try {
     const current = await git(["rev-parse", "--abbrev-ref", "HEAD"]);
-    const branch = settings.branch ?? current;
+    branch = settings.branch ?? current;
     if (current === "HEAD" || current !== branch) return problem(`${install} no está en la rama ${branch === "HEAD" ? "de trabajo" : branch}`);
-    if ((await git(["status", "--porcelain", "--untracked-files=no"])) !== "") return problem(`cambios locales en ${install}: no actualizo`);
+    localChanges = (await git(["status", "--porcelain", "--untracked-files=no"])) !== "";
+    // With a channel they hold back the update, not the look.
+    if (localChanges && !channel) return problem(dirty);
+    // Before the fetch, so that what was released meanwhile is never missing from the branch. In `ultimo` releases only name what is found.
+    if (channel === "estable") releases = await listReleases(deps.git, settings.remote, { cwd: install });
+    else if (channel) releases = await listReleases(deps.git, settings.remote, { cwd: install }).catch(() => []);
     await git(["fetch", settings.remote, branch]);
     tip = await git(["rev-parse", "FETCH_HEAD"]);
     head = await git(["rev-parse", "HEAD"]);
   } catch (err) {
     return problem(`no pude mirar ${settings.remote}: ${reason(err)}`);
   }
-  // Up to date, by an update or by hand: nothing of earlier failures is left to tell.
-  if (tip === head) return save(clean(head));
-  // A commit that already failed is never prepared again; its failure was already told.
-  if (state.failed?.includes(tip)) return save(checked);
-  // A commit that failed for the machine waits for its retry.
-  if (state.retry?.commit === tip && at.getTime() < Date.parse(state.retry.at)) return save(checked);
-  try {
-    await git(["merge-base", "--is-ancestor", "HEAD", tip]);
-  } catch {
-    return problem(`${tip.slice(0, 12)} no es un avance rápido desde ${head.slice(0, 12)}`);
+  const releaseAt = (commit: string) => releases.filter((r) => r.commit === commit).at(-1)?.version;
+  const found = (available?: SelfUpdateTarget) => {
+    if (!channel) return;
+    const version = releaseAt(head);
+    recordLook(ctx.store, { channel, checkedAt: at.toISOString(), head, ...(version && { version }), ...(available && { available }) });
+  };
+  if (channel === "estable") {
+    const newest = newestRelease(releases);
+    if (newest && !(await isAncestor(newest.commit, tip))) {
+      found();
+      return problem(`la versión ${releaseTag(newest.version)} (${newest.commit.slice(0, 12)}) no está en ${branch} de ${settings.remote}`);
+    }
+    // Without releases, or already past them, it stays where it is: installations only move forward.
+    if (!newest || (newest.commit !== head && (await isAncestor(newest.commit, head)))) {
+      found();
+      save({ ...checked, problem: undefined, retry: undefined });
+      return { outcome: "up-to-date", reason: newest ? `la instalación ya contiene ${releaseTag(newest.version)}, la última versión liberada` : "todavía no hay versiones liberadas" };
+    }
+    tip = newest.commit;
   }
+  // Up to date, by an update or by hand: nothing of earlier failures is left to tell.
+  if (tip === head) {
+    found();
+    save(clean(head));
+    return { outcome: "up-to-date" };
+  }
+  const version = releaseAt(tip);
+  const notForward = `${version ? `${releaseTag(version)} (${tip.slice(0, 12)})` : tip.slice(0, 12)} no es un avance rápido desde ${head.slice(0, 12)}`;
+  if (channel) {
+    const forward = await isAncestor(head, tip);
+    found(forward ? { commit: tip, ...(version && { version }) } : undefined);
+    // A commit that is no longer the target must not keep making the check due.
+    if (checked.retry && checked.retry.commit !== tip) delete checked.retry;
+    if (!forward) return problem(notForward);
+    if (!settings.enabled && !demand) {
+      save({ ...checked, problem: undefined });
+      return undefined;
+    }
+    if (localChanges) return problem(dirty);
+  }
+  // Unless asked for, a commit that already failed is never prepared again (its failure was already told), and one that
+  // failed for the machine waits for its retry.
+  if (!demand && (state.failed?.includes(tip) || (state.retry?.commit === tip && at.getTime() < Date.parse(state.retry.at)))) {
+    save(checked);
+    return undefined;
+  }
+  if (!(await isAncestor("HEAD", tip))) return problem(notForward);
+  demand?.({ commit: tip, ...(version && { version }) });
 
   const dir = join(selfUpdateDir(ctx), tip.slice(0, 12));
   try {
@@ -275,13 +505,29 @@ export async function selfUpdateCheck(ctx: FactoryContext, deps: SelfUpdateDeps)
     log.warn("self-update preparation failed; staying on the current version", { from: head, to: tip, error: why, machine });
     await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((e) => log.warn("cannot remove a failed self-update folder", { dir, error: String(e) }));
     recordSelfUpdate(ctx.store, {
-      state: { ...checked, problem: why, ...afterFailure(state, tip, machine, at) },
+      state: { ...checked, problem: why, ...afterFailure(checked, tip, machine, at, settings.enabled) },
       entry: { from: head, to: tip, at: at.toISOString(), outcome: "failed", reason: why },
     });
-    return;
+    return { outcome: "failed", reason: why };
   }
   log.info("self-update ready; switching once the factory is free", { from: head, to: tip, dir });
-  save({ ...checked, status: "ready", from: head, to: tip, dir, problem: undefined, retry: state.retry?.commit === tip ? undefined : state.retry });
+  save({ ...checked, status: "ready", from: head, to: tip, dir, problem: undefined, retry: checked.retry?.commit === tip ? undefined : checked.retry, ...(demand && { onDemand: true }) });
+  return { outcome: "ready" };
+}
+
+/** A version that was already prepared when an update was asked for: it is the one switched to. */
+function askedReady(ctx: FactoryContext, asked: SelfUpdateState, demand: (target: SelfUpdateTarget) => void): UpdateEnd {
+  const available = readSelfUpdateLook(ctx.store)?.available;
+  demand(available && available.commit === asked.to ? available : { commit: asked.to ?? "" });
+  // Automatic updates may have launched its switch meanwhile; that state is not touched.
+  const { state } = readSelfUpdate(ctx.store);
+  if (state.status === "ready") recordSelfUpdate(ctx.store, { state: { ...state, onDemand: true } });
+  else if (state.status === "idle") return { outcome: "failed", reason: state.problem ?? "el cambio de versión no se inició" };
+  return { outcome: "ready" };
+}
+
+async function removePrepared(dir: string | undefined): Promise<void> {
+  if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir, error: String(err) }));
 }
 
 /** The target commit in a fresh folder of its own, built and tried; throws on the first step that fails. */
@@ -302,8 +548,8 @@ async function prepare(deps: SelfUpdateDeps, install: string, tip: string, dir: 
   await deps.node(["dist/cli.js", "self-update", "check"], dir);
 }
 
-/** git with the local protocol allowed too: the prepared copy is cloned from the install folder. */
-const selfUpdateGit: GitRunner = async (args, opts = {}) => {
+/** git with the local protocol allowed too: the prepared copy is cloned from the install folder, and a repository of the person in charge may have a folder as its remote. */
+export const selfUpdateGit: GitRunner = async (args, opts = {}) => {
   const git = findGit();
   if (!git) throw new Error("No encontré git en el PATH.");
   return runProcess(`git ${args[0]}`, git, [...(opts.cwd ? ["-C", opts.cwd] : []), ...args], { env: { ...gitEnv(), GIT_ALLOW_PROTOCOL: "https:ssh:file" }, timeout: STEP_TIMEOUT_MS });
@@ -371,6 +617,7 @@ export async function importSwitchResult(ctx: FactoryContext, opts: ImportOption
   const file = resultPath(ctx.home.root);
   const at = (ctx.now ?? (() => new Date()))();
   const { state } = readSelfUpdate(ctx.store);
+  const retries = retriesAlone(ctx, state);
   if (!existsSync(file)) {
     // A switch that died without a word must not hold the factory forever; it says nothing of the commit, so it is tried again later.
     const since = state.switchingAt ? Date.parse(state.switchingAt) : NaN;
@@ -378,7 +625,7 @@ export async function importSwitchResult(ctx: FactoryContext, opts: ImportOption
     if ((opts.switchRunning ?? (() => switchLockHeldAt(ctx.home.root)))()) return undefined;
     const entry: SelfUpdateEntry = { from: state.from ?? "", to: state.to ?? "", at: at.toISOString(), outcome: "failed", reason: "el cambio de versión no dejó resultado" };
     log.warn("self-update switch left no result; staying on what runs", { from: entry.from, to: entry.to });
-    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, true, at), entry });
+    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, true, at, retries), entry });
     return entry;
   }
   let result: SwitchResult | undefined;
@@ -391,12 +638,14 @@ export async function importSwitchResult(ctx: FactoryContext, opts: ImportOption
   await rm(file, { force: true }).catch((err) => log.warn("cannot remove the self-update result", { error: String(err) }));
   if (!result) return undefined;
   const entry: SelfUpdateEntry = { from: result.from, to: result.to, at: result.at, outcome: result.outcome, ...(result.reason ? { reason: result.reason } : {}) };
-  if (entry.outcome === "updated") log.info("self-update done", { from: entry.from, to: entry.to });
-  else log.warn("self-update did not go through; running the previous version", { from: entry.from, to: entry.to, outcome: entry.outcome, reason: entry.reason });
+  if (entry.outcome === "updated") {
+    log.info("self-update done", { from: entry.from, to: entry.to });
+    lookAfterInstall(ctx.store, entry.from, entry.to);
+  } else log.warn("self-update did not go through; running the previous version", { from: entry.from, to: entry.to, outcome: entry.outcome, reason: entry.reason });
   const own = state.status === "switching" && Boolean(entry.to) && entry.to === state.to;
   let dir: string | undefined;
   if (own) {
-    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, result.machine === true, at), entry });
+    recordSelfUpdate(ctx.store, { state: idleAfter(state, entry, result.machine === true, at, retries), entry });
     dir = state.dir;
   } else {
     // A result of an earlier switch, arriving late: it goes to the history and touches nothing of the current target,
@@ -407,9 +656,12 @@ export async function importSwitchResult(ctx: FactoryContext, opts: ImportOption
     if (entry.to && entry.to !== state.to) dir = join(selfUpdateDir(ctx), entry.to.slice(0, 12));
   }
   // What is left of that result's prepared folder is no longer needed: its build is in place or was given up.
-  if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((err) => log.warn("cannot remove the prepared self-update folder", { dir, error: String(err) }));
+  await removePrepared(dir);
   return entry;
 }
+
+/** Whether a version that failed for the machine is tried again without being asked for once more. */
+export const retriesAlone = (ctx: FactoryContext, state: SelfUpdateState) => ctx.config.selfUpdate.enabled || !state.onDemand;
 
 /** The state without a commit among the failed ones or its retry, when it holds either; else undefined. */
 function withoutCommit(state: SelfUpdateState, commit: string): SelfUpdateState | undefined {
@@ -422,15 +674,16 @@ function withoutCommit(state: SelfUpdateState, commit: string): SelfUpdateState 
   return next;
 }
 
-function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry, machine: boolean, at: Date): SelfUpdateState {
+function idleAfter(state: SelfUpdateState, entry: SelfUpdateEntry, machine: boolean, at: Date, retries: boolean): SelfUpdateState {
   const { failed, retry } =
     entry.outcome === "updated"
       ? { failed: state.failed?.filter((c) => c !== entry.to), retry: state.retry?.commit === entry.to ? undefined : state.retry }
-      : afterFailure(state, entry.to, machine, at);
+      : afterFailure(state, entry.to, machine, at, retries);
   return {
     status: "idle",
     ...(state.checkedAt ? { checkedAt: state.checkedAt } : {}),
     ...(state.head ? { head: state.head } : {}),
+    ...(state.channel ? { channel: state.channel } : {}),
     ...(failed?.length ? { failed } : {}),
     ...(retry ? { retry } : {}),
     ...(entry.outcome === "updated" ? {} : { problem: entryProblem(entry) }),

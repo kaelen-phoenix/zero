@@ -6,7 +6,7 @@ import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
-import { parseGitSource } from "./package-source.js";
+import { parseGitSource, stableChannelProblem } from "./package-source.js";
 import { findSecret } from "./secrets.js";
 import type { Skill } from "./skills.js";
 
@@ -275,6 +275,8 @@ export const PackageEntrySchema = z
       .refine((s) => !("error" in parseGitSource(s)), "usá una fuente git válida, https o ssh y sin credenciales en la URL")
       .optional(),
     commit: z.string().regex(/^[0-9a-f]{40,64}$/, "va el SHA completo del commit instalado").optional(),
+    /** `estable`: it only takes the released versions of its remote; absent: the reference of its source. */
+    channel: z.enum(["estable"]).optional(),
     /** True: zero may import the package's stations, which run with the owner's permissions. */
     allowCode: z.boolean().default(false),
     /** What its stations receive as `ctx.config`. */
@@ -288,7 +290,12 @@ export const PackageEntrySchema = z
   })
   .strict()
   .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm")
-  .refine((p) => (p.git === undefined ? p.commit === undefined : p.path !== undefined && p.commit !== undefined && p.npm === undefined), "git va junto a path y commit, y sin npm");
+  .refine((p) => (p.git === undefined ? p.commit === undefined : p.path !== undefined && p.commit !== undefined && p.npm === undefined), "git va junto a path y commit, y sin npm")
+  .superRefine((p, ctx) => {
+    if (p.channel === undefined) return;
+    const problem = stableChannelProblem(p.git);
+    if (problem) ctx.addIssue({ code: "custom", path: ["channel"], message: problem });
+  });
 export type PackageEntry = z.output<typeof PackageEntrySchema>;
 
 /** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
@@ -490,6 +497,8 @@ export const FactorySchema = z
         /** Absent: the install folder's checked-out branch. */
         branch: z.string().min(1).optional(),
         startTimeoutSeconds: z.number().int().min(10).default(120),
+        /** Only released versions, or whatever enters the branch. Absent: the latter, and nothing of it is shown. */
+        channel: z.enum(["estable", "ultimo"]).optional(),
       })
       .strict()
       .prefault({}),

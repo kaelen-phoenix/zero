@@ -3,7 +3,7 @@ import type { AgentRunner } from "../agent.js";
 import { ANDON_KEY, currentBox, requestWork, retryJob, startTrain, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type LineConfig } from "../config.js";
-import { installBehind, readInstallFreshness } from "../install-freshness.js";
+import { installBehind, installHasMerged, readInstallFreshness } from "../install-freshness.js";
 import { readSelfUpdate } from "../self-update.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
@@ -529,7 +529,7 @@ export async function resendAfterCapability(ctx: FactoryContext, now: Date): Pro
     const install = readInstallFreshness(ctx.store);
     if (install?.repository && ownRepository(target) === install.repository) {
       // A record from before the job finished cannot have seen its merge.
-      const fresh = !install.problem && !(install.behind ?? 0) && !install.staleBuild && install.checkedAt > (job.finishedAt ?? job.updatedAt);
+      const fresh = installHasMerged(install) && !install.staleBuild && install.checkedAt > (job.finishedAt ?? job.updatedAt);
       if (!fresh) continue;
     }
     for (const id of pending) {
