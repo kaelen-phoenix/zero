@@ -114,11 +114,13 @@ Fábrica:
   zero agent catalog reject <id> [--motivo "<texto>"]   Lo rechaza: no se suma ni se vuelve a proponer
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero package list              Paquetes de agentes instalados: fuente, versión, qué traen, si hay novedades y qué problema tienen
-  zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--yes]
+  zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--canal estable] [--yes]
                                  Instala un paquete; sus estaciones solo corren con --permitir-codigo (con los permisos de tu usuario).
-                                 git: github:cuenta/repo[#tag-o-rama] o una URL https o ssh; muestra qué trae y pide confirmación
-  zero package update [nombre] [--yes]
-                                 Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
+                                 git: github:cuenta/repo[#tag-o-rama] o una URL https o ssh; muestra qué trae y pide confirmación;
+                                 con --canal estable solo toma versiones liberadas (etiquetas vX.Y.Z)
+  zero package update [nombre] [--etiqueta <etiqueta>] [--yes]
+                                 Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender;
+                                 con --etiqueta fija uno de git en esa etiqueta de su repositorio
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero package run <paquete>/<estación> [--pedido "<texto>"]
                                  Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
@@ -170,6 +172,8 @@ async function main(argv: string[]): Promise<number> {
       tipo: { type: "string" },
       archivos: { type: "string", multiple: true },
       "permitir-codigo": { type: "boolean" },
+      canal: { type: "string" },
+      etiqueta: { type: "string" },
       note: { type: "string" },
       motivo: { type: "string" },
       days: { type: "string" },
@@ -544,14 +548,16 @@ Informe: ${r.report}`);
         }
         if (action === "add" || action === "update") {
           if (action === "add" && !name) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
+          if (values.canal !== undefined && (action !== "add" || values.canal !== "estable")) throw new Error("El canal de un paquete se elige al agregarlo, y solo puede ser estable: zero package add <git> --canal estable");
+          if (action === "add" && values.etiqueta !== undefined) throw new Error("Para agregarlo fijado a una etiqueta, ponela en la fuente: zero package add <git>#<etiqueta>");
           const ask = interactiveConfirm();
           const confirm = values.yes ? async () => true : ask.confirm;
           try {
             if (action === "add") {
-              console.log(await packageAdd(ctx, { source: name!, allowCode: values["permitir-codigo"], confirm, say: (text) => console.log(text) }));
+              console.log(await packageAdd(ctx, { source: name!, allowCode: values["permitir-codigo"], ...(values.canal && { channel: "estable" as const }), confirm, say: (text) => console.log(text) }));
               return 0;
             }
-            return (await packageUpdate(ctx, { name, confirm, say: (text) => console.log(text) })).failed ? 1 : 0;
+            return (await packageUpdate(ctx, { name, ...(values.etiqueta !== undefined && { tag: values.etiqueta }), confirm, say: (text) => console.log(text) })).failed ? 1 : 0;
           } finally {
             ask.close();
           }

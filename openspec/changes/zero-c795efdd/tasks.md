@@ -26,9 +26,9 @@
 
 ## 5. Etapa 5: Paquetes de git en el canal estable o fijados a una etiqueta
 
-- [ ] 5.1 Add `channel: estable` to PackageEntrySchema with its refusals; resolve the newest release in packageAddGit, planGitUpdate and packageUpdatesPass; record the release version next to the seen commit; never move a package back.
-- [ ] 5.2 Add `--canal estable` to `zero package add` and `--etiqueta` to `zero package update`, writing channel, source reference and commit through editConfig.
-- [ ] 5.3 Show channel, pin, current and available version in packageList, formatPackages and packagesPage.
+- [x] 5.1 Add `channel: estable` to PackageEntrySchema with its refusals; resolve the newest release in packageAddGit, planGitUpdate and packageUpdatesPass; record the release version next to the seen commit; never move a package back.
+- [x] 5.2 Add `--canal estable` to `zero package add` and `--etiqueta` to `zero package update`, writing channel, source reference and commit through editConfig.
+- [x] 5.3 Show channel, pin, current and available version in packageList, formatPackages and packagesPage.
 
 ## 6. Etapa 6: Actualización automática de los paquetes estables
 

@@ -1,4 +1,4 @@
-import type { Adoption, DaemonInfo, EgressReport, FactoryJob, FactoryProposal, FactoryStatus, JobMachine, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, ProposalOutcome, RemoteChatView, RequestResult, RequestSent, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryJob, FactoryProposal, FactoryStatus, JobMachine, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PackageView, PendingRemoteAction, ProposalOutcome, RemoteChatView, RequestResult, RequestSent, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -320,14 +320,28 @@ export function describeStationRun(r: StationRunRecord, now = new Date()): strin
   return `${state}${r.request ? ` · pedido: "${r.request.slice(0, 120)}"` : ""}`;
 }
 
+const shortInstalled = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
+
+/** What a package has installed: its released version with the commit, or the commit or npm version alone. */
+export const packageInstalled = (p: PackageView) => (p.installed ? (p.release ? `${releaseTag(p.release)} (${shortInstalled(p.installed)})` : shortInstalled(p.installed)) : undefined);
+
+/** A package's channel or pin and what is newer, from what is on record; what goes between backticks is a command. */
+export function packageNews(p: PackageView): string[] {
+  const out: string[] = [];
+  if (p.channel) out.push(`canal: ${p.channel}`);
+  else if (p.pin) out.push(`fijado a ${p.pin}`);
+  if (p.update) out.push(`hay una actualización: ${p.update.version ? releaseTag(p.update.version) : shortInstalled(p.update.seen)} (revisado ${p.update.at.slice(0, 10)}); aplicala con \`zero package update ${p.name}\``);
+  if (p.aheadOf) out.push(`más adelante que la última versión liberada (${releaseTag(p.aheadOf)}): espera a una posterior`);
+  return out;
+}
+
 export function formatPackages(l: PackageList, now = new Date()): string {
   if (!l.packages.length && !l.problems.length) return "No hay paquetes instalados: agregá uno con `zero package add <carpeta|paquete-npm|git>`.";
   const out: string[] = [];
-  const short = (installed: string) => (/^[0-9a-f]{40,64}$/.test(installed) ? installed.slice(0, 7) : installed);
   for (const p of l.packages) {
     out.push(`${p.name} ${p.version} (${p.source === "path" ? "carpeta" : p.source}): ${p.dir}`);
-    if (p.source !== "path") out.push(`- fuente: ${p.origin}${p.installed ? `, instalado ${short(p.installed)}` : ""}`);
-    if (p.update) out.push(`- hay una actualización: ${short(p.update.seen)} (revisado ${p.update.at.slice(0, 10)}); aplicala con \`zero package update ${p.name}\``);
+    if (p.source !== "path") out.push(`- fuente: ${p.origin}${p.installed ? `, instalado ${packageInstalled(p)}` : ""}`);
+    for (const news of packageNews(p)) out.push(`- ${news}`);
     if (p.lookFailed) out.push(`- no se pudo revisar si hay novedades (${p.lookFailed.at.slice(0, 10)}): ${p.lookFailed.error}`);
     if (p.agents.length) out.push(`- agentes: ${p.agents.join(", ")}`);
     if (p.skills.length) out.push(`- skills: ${p.skills.join(", ")}`);

@@ -20,7 +20,8 @@ import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
 import { cleanText, declaredSecrets, fetchRef, folderLockProblem, lockKey, lockPrint, lockProblemAt, MANIFEST_NOT_A_FILE, manifestAt, manifestNotAFile, npmInstalledVersion, npmSpecProblem, PACKAGE_LOCK, readSeen, realDependencies, realGit, realNpmLatest, recordLookFailed, recordSeen, resolveAndCheckout, runNpm, updateKey, validVersion, widening, widens, type DependencyInstaller, type GitRunner, type NpmLatest } from "./package-install.js";
-import { isGitSource, parseGitSource } from "./package-source.js";
+import { aheadText, installedVersion, lookForRelease, pinProblem, stableReleases, tagRef, type StableLook } from "./package-channel.js";
+import { isGitSource, parseGitSource, pinnedTo, stableChannelProblem } from "./package-source.js";
 import { entryName, factoryConfig, isInside, loadPackages, MANIFEST, packageDataDir, packageFolder, pinnedMachine, readManifest, withPackages, type PackageManifest } from "./packages.js";
 import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./package-tabs.js";
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
@@ -28,7 +29,7 @@ import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js"
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
 import { entryProblem, installFolder, ofChannel, readSelfUpdate, readSelfUpdateLook, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateChannel, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest, type UpdateRunRecord } from "./self-update.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
-import { parseReleaseRequest, publishRelease, type ReleaseResult, type ReleaseTarget } from "./releases.js";
+import { parseReleaseRequest, publishRelease, releaseTag, type ReleaseResult, type ReleaseTarget } from "./releases.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
@@ -3068,10 +3069,18 @@ export interface PackageView extends Pick<LoadedPackage, "name" | "version" | "d
   source: "path" | "npm" | "git";
   /** Where it comes from, as the factory file says it. */
   origin: string;
+  /** The channel of a git package that has one. */
+  channel?: NonNullable<PackageEntry["channel"]>;
+  /** The tag or branch its git source is pinned to. */
+  pin?: string;
   /** The commit or npm version installed; a folder has none. */
   installed?: string;
-  /** What was last seen on the remote, when it differs from `installed`. */
-  update?: { seen: string; at: string };
+  /** The released version `installed` is, on the stable channel and when it is on record. */
+  release?: string;
+  /** What was last seen on the remote, when it differs from `installed`; `version` on the stable channel. */
+  update?: { seen: string; version?: string; at: string };
+  /** The newest released version, when what is installed is already past it. */
+  aheadOf?: string;
   /** The last look at the remote failed. */
   lookFailed?: { at: string; error: string };
   allowCode: boolean;
@@ -3091,6 +3100,13 @@ export function packageList(ctx: FactoryContext): PackageList {
     packages: loaded.packages.map((p) => {
       const installed = p.entry.git ? p.entry.commit : p.entry.npm ? (npmInstalledVersion(p.dir) ?? p.version) : undefined;
       const seen = installed ? readSeen(ctx.store, p.name) : undefined;
+      const { channel } = p.entry;
+      const source = p.entry.git ? parseGitSource(p.entry.git) : undefined;
+      const pin = source && !("error" in source) ? source.ref : undefined;
+      const release = channel && installed ? installedVersion(seen, installed) : undefined;
+      // What was seen before the channel changed is not what an update would take now.
+      const news = seen?.seen && seen.seen !== installed && Boolean(seen.version) === Boolean(channel) ? { seen: seen.seen, ...(seen.version && { version: seen.version }), at: seen.at } : undefined;
+      const ahead = news !== undefined && seen?.ahead === installed;
       return {
         name: p.name,
         version: p.version,
@@ -3099,8 +3115,12 @@ export function packageList(ctx: FactoryContext): PackageList {
         skills: p.skills,
         source: p.entry.git ? "git" : p.entry.npm ? "npm" : "path",
         origin: p.entry.git ?? p.entry.npm ?? p.entry.path!,
+        ...(channel && { channel }),
+        ...(pin && { pin }),
         ...(installed && { installed }),
-        ...(seen?.seen && seen.seen !== installed && { update: { seen: seen.seen, at: seen.at } }),
+        ...(release && { release }),
+        ...(news && !ahead && { update: news }),
+        ...(ahead && news.version && { aheadOf: news.version }),
         ...(seen?.error && { lookFailed: { at: seen.at, error: seen.error } }),
         allowCode: p.entry.allowCode,
         stations: p.stations.map((name) => {
@@ -3462,11 +3482,11 @@ function fitProblem(ctx: FactoryContext, packages: PackageEntry[], index: number
 }
 
 /** What a package brings, for the owner to read before it comes in. */
-function packageSummary(manifest: PackageManifest, source: string, commit: string, dir: string): string {
+function packageSummary(manifest: PackageManifest, source: string, commit: string, dir: string, version?: string): string {
   const names = (items: { name: string }[]) => items.map((i) => cleanText(i.name)).join(", ");
   const secrets = declaredSecrets(manifest);
   return [
-    `${cleanText(manifest.name)} ${cleanText(manifest.version)}, de ${source} (commit ${shortSha(commit)}), en ${dir}:`,
+    `${cleanText(manifest.name)} ${cleanText(manifest.version)}, de ${source} (${version ? `${releaseTag(version)}, ` : ""}commit ${shortSha(commit)}), en ${dir}:`,
     `- agentes: ${names(manifest.agents) || "ninguno"}`,
     `- skills: ${manifest.skills.map(cleanText).join(", ") || "ninguna"}`,
     `- estaciones: ${names(manifest.stations) || "ninguna"}`,
@@ -3480,6 +3500,7 @@ function addedText(ctx: FactoryContext, name: string, source: string, already: b
   const added = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
   const stations = added?.stations ?? [];
   const lines = [`Paquete ${name}${added ? ` ${cleanText(added.version)}` : ""} ${already ? "ya estaba declarado" : "agregado"}.`];
+  if (added?.entry.channel) lines.push("Sigue el canal estable: solo pasa a versiones liberadas.");
   if (added?.agents.length) lines.push(`Agentes: ${added.agents.join(", ")}.`);
   if (added?.skills.length) lines.push(`Skills: ${added.skills.join(", ")}.`);
   if (stations.length && !allowCode && !added?.entry.allowCode) lines.push(`Sus estaciones (${stations.join(", ")}) no corren hasta que des el permiso: \`zero package add ${source} --permitir-codigo\`. Ese código corre con los permisos de tu usuario, así que dalo solo si confiás en el paquete.`);
@@ -3511,22 +3532,34 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
   const parsed = parseGitSource(source);
   if ("error" in parsed) throw new Error(`No se puede agregar esa fuente git: ${parsed.error}.`);
   const allowCode = input.allowCode ?? false;
+  const { channel } = input;
+  const refused = channel && stableChannelProblem(source);
+  if (refused) throw new Error(`No se puede agregar ${source}: ${refused}.`);
   const declared = ctx.config.packages.findIndex((p) => p.git === source);
   if (declared >= 0) {
     const name = entryName(ctx.config.packages[declared]!, ctx.home);
     ctx.config = await editConfig(ctx, (doc) => {
       if (allowCode) doc.setIn(["packages", declared, "allowCode"], true);
+      if (channel) doc.setIn(["packages", declared, "channel"], channel);
     });
     return addedText(ctx, name, source, true, allowCode);
   }
   const git = input.git ?? realGit;
+  let version: string | undefined;
+  if (channel) {
+    try {
+      version = (await stableReleases(git, parsed.url, ctx.home.root)).newest.version;
+    } catch (err) {
+      throw new Error(`No se puede agregar ${source}: ${errorText(err)}`);
+    }
+  }
   const root = join(ctx.home.packages, "git");
   await mkdir(root, { recursive: true });
   const temp = await mkdtemp(join(root, ".tmp-"));
   let target: string | undefined;
   try {
     await git(["clone", "--no-checkout", "--", parsed.url, temp], { cwd: root });
-    const commit = await resolveAndCheckout(git, temp, parsed.ref);
+    const commit = await resolveAndCheckout(git, temp, version ? tagRef(releaseTag(version)) : parsed.ref);
     if (await manifestNotAFile(git, temp, commit)) throw new Error(`No se puede agregar ${source}: ${MANIFEST_NOT_A_FILE}.`);
     let manifest: PackageManifest;
     try {
@@ -3539,20 +3572,21 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
     const dir = join(root, manifest.name);
     if (existsSync(dir)) throw new Error(`No se puede agregar ${source}: ya existe la carpeta ${dir} y ningún paquete la declara con esa fuente. Quitala o movela si ya no la usás.`);
     const others = ctx.config.packages;
-    const problem = fitProblem(ctx, [...others, { git: source, path: temp, commit, allowCode }], others.length, manifest.name);
+    const problem = fitProblem(ctx, [...others, { git: source, path: temp, commit, ...(channel && { channel }), allowCode }], others.length, manifest.name);
     if (problem) throw new Error(`No se puede agregar ${manifest.name}: ${problem}`);
-    input.say?.(packageSummary(manifest, source, commit, dir));
+    input.say?.(packageSummary(manifest, source, commit, dir, version));
     if (!(await (input.confirm ?? nobodyConsents)(`¿Instalo ${manifest.name}?`))) return "No instalé nada.";
     await renameFolder(temp, dir);
     target = dir;
     if (existsSync(join(dir, PACKAGE_LOCK))) await (input.deps ?? realDependencies)(dir);
     ctx.config = await editConfig(ctx, (doc) => {
-      const node = { git: source, path: dir, commit, ...(allowCode && { allowCode }) };
+      const node = { git: source, path: dir, commit, ...(channel && { channel }), ...(allowCode && { allowCode }) };
       if (doc.hasIn(["packages"])) doc.addIn(["packages"], doc.createNode(node));
       else doc.setIn(["packages"], doc.createNode([node]));
     });
     target = undefined;
-    ctx.store.deleteKv(updateKey(manifest.name));
+    if (version) recordSeen(ctx.store, manifest.name, commit, (ctx.now ?? (() => new Date()))(), { version });
+    else ctx.store.deleteKv(updateKey(manifest.name));
     return addedText(ctx, manifest.name, source, false, allowCode);
   } finally {
     await removeFolder(temp);
@@ -3563,6 +3597,8 @@ async function packageAddGit(ctx: FactoryContext, source: string, input: Package
 export interface PackageAddInput {
   source: string;
   allowCode?: boolean;
+  /** Only for a git source: it takes released versions only. */
+  channel?: PackageEntry["channel"];
   install?: PackageInstaller;
   git?: GitRunner;
   deps?: DependencyInstaller;
@@ -3574,12 +3610,13 @@ export interface PackageAddInput {
 /**
  * Adds a package to the factory file, keeping its comments. The manifest, and
  * whether it fits among the others, is checked before touching the file. Adding
- * one already declared only updates its permission.
+ * one already declared only updates its permission and, from git, its channel.
  */
 export async function packageAdd(ctx: FactoryContext, input: PackageAddInput): Promise<string> {
   const source = input.source.trim();
   if (!source) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
   if (isGitSource(source)) return packageAddGit(ctx, source, { ...input, source });
+  if (input.channel) throw new Error(`No se puede agregar ${source}: ${stableChannelProblem(undefined)}.`);
   const folder = looksLikePath(source) || (existsSync(source) && statSync(source).isDirectory());
   if (!folder && !NPM_NAME.test(source)) throw new Error(`"${source}" no es una carpeta ni un nombre válido de paquete npm.`);
   if (!folder) {
@@ -3631,6 +3668,8 @@ export async function packageRemove(ctx: FactoryContext, input: { name: string }
 export interface PackageUpdateInput {
   /** Absent: every package. */
   name?: string;
+  /** The tag to move a git package's pin to; only with `name`. */
+  tag?: string;
   git?: GitRunner;
   deps?: DependencyInstaller;
   install?: PackageInstaller;
@@ -3667,8 +3706,16 @@ async function gitFolderProblem(ctx: FactoryContext, git: GitRunner, dir: string
   return undefined;
 }
 
+/** Why a package's pin cannot be moved to a tag, before looking at its remote. */
+function pinRefusal(entry: PackageEntry, tag: string): string | undefined {
+  if (!entry.git) return "--etiqueta es solo para paquetes instalados desde git";
+  if (entry.channel) return "sigue el canal estable, así que no se fija a una etiqueta: quitale channel en el archivo de la fábrica para fijarlo";
+  const parsed = parseGitSource(pinnedTo(entry.git, tag));
+  return "error" in parsed ? `la etiqueta no es válida: ${parsed.error}` : undefined;
+}
+
 async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: number, name: string): Promise<ApplyUpdate | undefined> {
-  const { git, deps, say } = steps;
+  const { git, deps, say, tag } = steps;
   const entry = ctx.config.packages[index]!;
   const dir = packageFolder(entry, ctx.home);
   const problem = await gitFolderProblem(ctx, git, dir);
@@ -3677,20 +3724,45 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
   if ("error" in source) throw new Error(source.error);
   const run = (args: string[]) => git(args, { cwd: dir });
   const now = (ctx.now ?? (() => new Date()))();
-  let to: string;
-  try {
-    to = await fetchRef(git, dir, source.ref);
-  } catch (err) {
-    recordLookFailed(ctx.store, name, errorText(err), now);
-    throw err;
-  }
-  recordSeen(ctx.store, name, to, now);
   const from = entry.commit!;
-  if (to === from && (await run(["rev-parse", "HEAD"])) === from) {
-    say(`${name}: está al día (${shortSha(from)}).`);
+  let to: string;
+  let release: StableLook | undefined;
+  if (tag !== undefined) {
+    const unpinnable = await pinProblem(git, dir, tag);
+    if (unpinnable) throw new Error(`${unpinnable}.`);
+    to = await fetchRef(git, dir, tagRef(tag));
+  } else {
+    try {
+      if (entry.channel) release = await lookForRelease(git, { remote: "origin", cwd: dir, dir, installed: from, last: readSeen(ctx.store, name) });
+      if (release?.ahead) to = release.seen;
+      else to = await fetchRef(git, dir, release ? tagRef(releaseTag(release.version)) : source.ref);
+      if (release && to !== release.seen) throw new Error(`${releaseTag(release.version)} cambió de commit mientras se miraba; probá de nuevo`);
+    } catch (err) {
+      recordLookFailed(ctx.store, name, errorText(err), now);
+      throw err;
+    }
+    recordSeen(ctx.store, name, to, now, release);
+  }
+  if (release?.ahead) {
+    say(`${name}: ${aheadText(release.version)}.`);
     return undefined;
   }
-  say(`${name}: de ${shortSha(from)} a ${shortSha(to)}.`);
+  const at = (sha: string, named: string | undefined) => (named ? `${named} (${shortSha(sha)})` : shortSha(sha));
+  const target = at(to, tag ?? (release && releaseTag(release.version)));
+  // The tag becomes the reference of its source along with the commit it brought.
+  const pin = tag === undefined ? undefined : pinnedTo(entry.git!, tag);
+  if (to === from && (await run(["rev-parse", "HEAD"])) === from) {
+    if (pin === undefined || pin === entry.git) {
+      say(`${name}: está al día (${target}).`);
+      return undefined;
+    }
+    ctx.config = await editConfig(ctx, (doc) => doc.setIn(["packages", index, "git"], pin));
+    recordSeen(ctx.store, name, to, now);
+    say(`${name}: fijado a ${target}; ya estaba en ese commit.`);
+    return undefined;
+  }
+  const version = release?.current?.version;
+  say(`${name}: de ${at(from, version && releaseTag(version))} a ${target}.`);
   const shown = 20;
   const commits = (await run(["log", "--format=%H%x09%s", "-n", String(shown + 1), `${from}..${to}`])).split("\n").filter(Boolean);
   for (const commit of commits.slice(0, shown)) {
@@ -3699,7 +3771,7 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
   }
   if (commits.length > shown) say(`- y más commits`);
   const ancestor = await run(["merge-base", "--is-ancestor", from, to]).then(() => true, () => false);
-  if (!ancestor) say(`Ojo: la historia cambió, ${shortSha(from)} ya no es parte de lo que trae el remoto.`);
+  if (!ancestor) say(tag === undefined ? `Ojo: la historia cambió, ${shortSha(from)} ya no es parte de lo que trae el remoto.` : `Ojo: ${target} no incluye lo instalado (${shortSha(from)}).`);
   // What it asks for can only be judged on a manifest that can be read: anything else stops here, before asking or touching anything.
   if (await manifestNotAFile(git, dir, to)) throw new Error(`no se aplicó ${shortSha(to)}: ${MANIFEST_NOT_A_FILE}.`);
   const before = await manifestAt(git, dir, from);
@@ -3729,8 +3801,13 @@ async function planGitUpdate(ctx: FactoryContext, steps: UpdateSteps, index: num
       if (hasLock()) await deps(dir);
       const reason = fitProblem(ctx, ctx.config.packages, index, manifest.name);
       if (reason) throw new Error(reason);
-      ctx.config = await editConfig(ctx, (doc) => doc.setIn(["packages", index, "commit"], to));
-      say(`${name}: actualizado a ${shortSha(to)}.`);
+      ctx.config = await editConfig(ctx, (doc) => {
+        doc.setIn(["packages", index, "commit"], to);
+        if (pin !== undefined) doc.setIn(["packages", index, "git"], pin);
+      });
+      // What was on record is about the reference it had.
+      if (pin !== undefined) recordSeen(ctx.store, name, to, now);
+      say(`${name}: ${pin === undefined ? "actualizado" : "fijado"} a ${target}.`);
     } catch (err) {
       let back = `volvió a ${shortSha(from)}`;
       try {
@@ -3823,6 +3900,10 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
     failed = true;
     say(line);
   };
+  if (input.tag !== undefined && input.name === undefined) {
+    fail("Indicá qué paquete fijar: zero package update <nombre> --etiqueta <etiqueta>");
+    return { text: out.join("\n"), failed };
+  }
   const steps: UpdateSteps = { ...input, git: input.git ?? realGit, deps: input.deps ?? realDependencies, say };
   const entries = ctx.config.packages.map((entry, index) => ({ entry, index, name: entryName(entry, ctx.home) }));
   const chosen = input.name === undefined ? entries : entries.filter((e) => [e.name, e.entry.npm, e.entry.git, e.entry.path].includes(input.name));
@@ -3832,6 +3913,8 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
   const plans: { name: string; apply: ApplyUpdate }[] = [];
   for (const { entry, index, name } of chosen) {
     try {
+      const refusal = input.tag === undefined ? undefined : pinRefusal(entry, input.tag);
+      if (refusal) throw new Error(`${refusal}.`);
       const apply = entry.git ? await planGitUpdate(ctx, steps, index, name) : entry.npm ? await planNpmUpdate(ctx, steps, index, name) : planFolderUpdate(ctx, steps, index, name);
       if (apply) plans.push({ name, apply });
     } catch (err) {

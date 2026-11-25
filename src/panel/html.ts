@@ -3,7 +3,7 @@ import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, packageInstalled, packageNews, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -269,10 +269,17 @@ function packageStation(pkg: string, s: PackageList["packages"][number]["station
   return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;
 }
 
-/** The "Paquetes" tab: each loaded package's stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
+/** What a git package has installed, its channel or pin and what is newer: third parties' texts, escaped before the commands get their own tag. */
+function packageVersion(p: PackageList["packages"][number]): string {
+  if (p.source !== "git") return "";
+  const lines = [`instalado ${packageInstalled(p) ?? "(desconocido)"}`, ...packageNews(p)].map((line) => esc(line).replace(/`([^`]*)`/g, "<code>$1</code>"));
+  return `<p class="muted">${lines.join("<br>")}</p>`;
+}
+
+/** The "Paquetes" tab: each loaded package's version, stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
 export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string, uploads: StationUploads = {}): string {
   const packages = list.packages
-    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
+    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${packageVersion(p)}${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
     .join("");
   const problems = list.problems.length ? `<div class="card bad"><h2>Problemas</h2><ul>${list.problems.map((p) => `<li>${esc(p.package)}: ${esc(p.reason)}</li>`).join("")}</ul></div>` : "";
   return page(
