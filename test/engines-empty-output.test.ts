@@ -434,6 +434,12 @@ describe("other failures keep their message", () => {
 
   it("a run out of time", async () => {
     const result = await custom("sleeper", "setTimeout(() => {}, 60000)").run(req({ timeoutMs: 300 }));
-    expect(result).toEqual({ ok: false, text: `sleeper timed out after ${300 / 60_000} min` });
+    expect(result).toEqual({ ok: false, text: `sleeper timed out after ${300 / 60_000} min`, timedOut: true });
+  });
+
+  it("a built-in engine out of time", async () => {
+    fake.script = "setTimeout(() => {}, 60000)";
+    expect(await antigravityEngine.run(req({ timeoutMs: 300 }))).toEqual({ ok: false, text: `antigravity timed out after ${300 / 60_000} min`, timedOut: true });
+    expect(await codexEngine.run(req({ timeoutMs: 300 }))).toEqual({ ok: false, text: `codex timed out after ${300 / 60_000} min`, timedOut: true });
   });
 });

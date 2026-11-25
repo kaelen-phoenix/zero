@@ -37,7 +37,7 @@ import {
 import { baseCommits, conflictBlocks, ConflictSchema, diff3Markers, resolveSimply, type ConflictAnswer } from "./conflicts.js";
 import { pinTrainHead } from "./train.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
-import { localCommands, verifyTimeoutMs } from "./pace.js";
+import { localCommands, slowestPassMs, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
@@ -831,6 +831,21 @@ function budgetStop(deps: RunnerDeps, job: Job, level: Level, spec: Spec, billed
   });
 }
 
+/**
+ * What build is told about the line's verify commands: how long each takes, when its passing runs say so, and
+ * not to run whole one that would use up more than a third of build's own time.
+ */
+function verifyRequest(deps: RunnerDeps, line: LineConfig): string {
+  const buildMs = deps.config.stations.build.timeoutMinutes * 60_000;
+  const commands = line.verify.map((command) => {
+    const ms = slowestPassMs(deps.store, line.name, command, nowOf(deps));
+    if (ms === undefined) return command;
+    const minutes = `takes up to ${Math.ceil(ms / 60_000)} min`;
+    return 3 * ms > buildMs ? `${command} (${minutes}: do not run it whole, run only the tests of the files you touch; zero runs it whole in verify)` : `${command} (${minutes})`;
+  });
+  return `Implement the specification. Verification commands that must pass: ${commands.join(", ") || "none configured"}.`;
+}
+
 /** The build → the agents that write → verify → review → security → the reviewing agents loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
 async function buildLoop(
   deps: RunnerDeps,
@@ -926,7 +941,7 @@ async function buildLoop(
               // A checks fix keeps what the checks said even once an attempt's own feedback replaces it.
               mark?.checks && mark.checks !== job.feedback && `## Failed checks of the pull request (fix them)\n${mark.checks}`,
               job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
-              `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
+              verifyRequest(deps, line),
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -956,7 +971,11 @@ async function buildLoop(
         return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
       }
       if (!run.ok) {
-        failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
+        // In a conflict the merge starts again before the next call, so only outside one does the work stay in the copy.
+        const problem = run.timedOut
+          ? `La ejecución de build llegó al límite de ${config.stations.build.timeoutMinutes} minutos y se cortó ahí.${conflicted ? " zero vuelve a empezar la mezcla." : " Lo hecho sigue sin commitear en la copia de trabajo: miralo con `git status` y `git diff`, y continuá desde ahí en lugar de empezar de nuevo."}`
+          : `La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`;
+        failAttempt(`${problem}${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
         continue;
       }
       if (conflicted) {

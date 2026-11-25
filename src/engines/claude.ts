@@ -104,10 +104,20 @@ export const claudeEngine: Engine = {
   hosts: ["api.anthropic.com"],
   async run(req) {
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), req.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, req.timeoutMs);
     const cancel = () => abort.abort();
     req.signal?.addEventListener("abort", cancel, { once: true });
     const options = claudeOptions(req, abort);
+    // One controller stops the SDK for both reasons, so which one it was is kept apart.
+    const cut = (): EngineResult | undefined => {
+      if (req.signal?.aborted) return { ok: false, text: "cancelled" };
+      if (timedOut) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
+      return undefined;
+    };
 
     let result: SDKResultMessage | undefined;
     let apiKeySource: string | undefined;
@@ -119,17 +129,17 @@ export const claudeEngine: Engine = {
         else if (message.type === "rate_limit_event") rateLimit = message.rate_limit_info;
       }
     } catch (err) {
-      if (req.signal?.aborted) return { ok: false, text: "cancelled" };
-      if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min` };
-      return claudeThrown(err);
+      return cut() ?? claudeThrown(err);
     } finally {
       clearTimeout(timer);
       req.signal?.removeEventListener("abort", cancel);
     }
 
     const quota = claudeQuota(apiKeySource, rateLimit);
-    if (!result) return { ok: false, text: "ended without a result message", ...(quota && { quota }) };
-    return claudeResult(result, quota);
+    if (!result) return { ...(cut() ?? { ok: false, text: "ended without a result message" }), ...(quota && { quota }) };
+    const answer = claudeResult(result, quota);
+    // A cut call may still end with an error message of its own: the cut is what explains it.
+    return answer.ok ? answer : { ...answer, ...cut() };
   },
 };
 
