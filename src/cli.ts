@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -132,6 +132,10 @@ Fábrica:
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
+  zero liberar [<commit>] [<versión>] [--line <nombre>] [--yes]
+                                 Libera una versión: publica la etiqueta vX.Y.Z de un commit que ya está en la rama base del
+                                 remoto (sin commit, su punta; sin versión, el siguiente parche), de zero o del repositorio
+                                 de una línea; muestra qué publica y pide confirmación
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado) y clona
                                  sus líneas; sin repositorio, explica cómo crearlo
@@ -638,6 +642,16 @@ Informe: ${r.report}`);
         }
         console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
         return 0;
+      }
+      case "liberar": {
+        const ask = interactiveConfirm();
+        try {
+          const r = await releaseVersion(ctx, { args: rest, line: values.line, confirm: values.yes ? async () => true : ask.confirm, say: (text) => console.log(text) });
+          console.log(r.text);
+          return r.released ? 0 : 1;
+        } finally {
+          ask.close();
+        }
       }
       case "autostart": {
         if (rest[0] !== "on" && rest[0] !== "off") throw new Error("Indicá on u off: zero autostart on|off");

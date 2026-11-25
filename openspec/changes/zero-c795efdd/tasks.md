@@ -2,9 +2,9 @@
 
 ## 1. Etapa 1: Versiones liberadas y `zero liberar`
 
-- [ ] 1.1 Add src/releases.ts (RELEASE_TAG, parsing and numeric ordering of `ls-remote --tags` output with peeled lines, newest release, next patch, listReleases through a GitRunner) and the OpenSpec change; unit tests.
-- [ ] 1.2 Add the release operation: fetch the remote's base branch with --no-tags, resolve commit and version, run every refusal, then `git push --no-verify <remote> <sha>:refs/tags/vX.Y.Z` without force; injectable git and confirm; tests against real bare repositories.
-- [ ] 1.3 Add `zero liberar [<commit>] [<versión>] [--line] [--yes]` to src/cli.ts with its usage text.
+- [x] 1.1 Add src/releases.ts (RELEASE_TAG, parsing and numeric ordering of `ls-remote --tags` output with peeled lines, newest release, next patch, listReleases through a GitRunner) and the OpenSpec change; unit tests.
+- [x] 1.2 Add the release operation: fetch the remote's base branch with --no-tags, resolve commit and version, run every refusal, then `git push --no-verify <remote> <sha>:refs/tags/vX.Y.Z` without force; injectable git and confirm; tests against real bare repositories.
+- [x] 1.3 Add `zero liberar [<commit>] [<versión>] [--line] [--yes]` to src/cli.ts with its usage text.
 
 ## 2. Etapa 2: Canal en el archivo y comprobación por canal
 

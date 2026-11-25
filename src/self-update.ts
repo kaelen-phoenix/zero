@@ -302,8 +302,8 @@ async function prepare(deps: SelfUpdateDeps, install: string, tip: string, dir: 
   await deps.node(["dist/cli.js", "self-update", "check"], dir);
 }
 
-/** git with the local protocol allowed too: the prepared copy is cloned from the install folder. */
-const selfUpdateGit: GitRunner = async (args, opts = {}) => {
+/** git with the local protocol allowed too: the prepared copy is cloned from the install folder, and a repository of the person in charge may have a folder as its remote. */
+export const selfUpdateGit: GitRunner = async (args, opts = {}) => {
   const git = findGit();
   if (!git) throw new Error("No encontré git en el PATH.");
   return runProcess(`git ${args[0]}`, git, [...(opts.cwd ? ["-C", opts.cwd] : []), ...args], { env: { ...gitEnv(), GIT_ALLOW_PROTOCOL: "https:ssh:file" }, timeout: STEP_TIMEOUT_MS });

@@ -26,7 +26,8 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, readSelfUpdate, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
+import { entryProblem, installFolder, readSelfUpdate, selfUpdateGit, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
+import { parseReleaseRequest, publishRelease, type ReleaseResult, type ReleaseTarget } from "./releases.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
@@ -3794,4 +3795,39 @@ export async function packageUpdate(ctx: FactoryContext, input: PackageUpdateInp
     }
   }
   return { text: out.join("\n"), failed };
+}
+
+export interface ReleaseInput {
+  /** A commit, a version, or both, as they came on the command line. */
+  args: string[];
+  /** Absent: zero's own install folder. */
+  line?: string;
+  confirm?: Confirm;
+  /** What the person in charge reads before answering. */
+  say?: (text: string) => void;
+  git?: GitRunner;
+  /** The install folder; absent: the running zero's. */
+  install?: string;
+}
+
+/** Releases a version of zero, or of a line's repository. Only the terminal calls it: no chat tool nor panel route does. */
+export async function releaseVersion(ctx: FactoryContext, input: ReleaseInput): Promise<ReleaseResult> {
+  const request = parseReleaseRequest(input.args);
+  const git = input.git ?? selfUpdateGit;
+  let target: ReleaseTarget;
+  if (input.line !== undefined) {
+    const line = findLine(ctx.config, input.line);
+    target = { repo: line.repo, remote: line.remote, branch: line.baseBranch };
+  } else {
+    const repo = input.install ?? installFolder();
+    const { remote, branch } = ctx.config.selfUpdate;
+    const refused = (why: string): ReleaseResult => ({ released: false, text: `No publiqué nada: ${why}` });
+    // A copy of zero inside another repository would release that one.
+    const root = await git(["rev-parse", "--show-cdup"], { cwd: repo }).then((up) => up === "", () => false);
+    if (!root) return refused(`${repo} no es la raíz de su propio repositorio de git.`);
+    const current = branch ?? (await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }).catch(() => "HEAD"));
+    if (current === "HEAD") return refused(`${repo} no está en una rama; indicá cuál con selfUpdate.branch.`);
+    target = { repo, remote, branch: current };
+  }
+  return publishRelease(target, request, { git, confirm: input.confirm ?? nobodyConsents, say: input.say ?? (() => {}) });
 }
