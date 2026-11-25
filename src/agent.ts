@@ -31,6 +31,8 @@ export interface AgentRun<T = unknown> {
   quota?: QuotaReport;
   /** True when the engine stopped the call at its `maxBudgetUsd`. */
   budgetLimited?: boolean;
+  /** True when the engine stopped the call at its time limit. */
+  timedOut?: boolean;
 }
 
 export interface AgentRequest<T = unknown> {
@@ -265,6 +267,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       model,
       ...(result.quota && { quota: result.quota }),
       ...(result.budgetLimited && { budgetLimited: true }),
+      ...(result.timedOut && { timedOut: true }),
     };
     if (run.ok && schema) {
       const parsed = schema.safeParse(result.output ?? extractJson(result.text));

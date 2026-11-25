@@ -55,6 +55,7 @@ export function permissionOutcome(params: unknown, access: EngineRequest["access
 }
 
 class RpcError extends Error {}
+class TimeLimitError extends Error {}
 
 async function runAcp(name: string, def: CustomEngine, req: EngineRequest): Promise<EngineResult> {
   const inv = acpInvocation(def, req);
@@ -149,7 +150,7 @@ async function runAcp(name: string, def: CustomEngine, req: EngineRequest): Prom
   child.on("error", (err) => end(new Error(`cannot start "${inv.bin}": ${err.message}. Is it installed and on PATH?`)));
   closed.then((code) => end(new Error(`${name} exited with ${code}: ${stderr.trim().slice(-STDERR_TAIL)}`)));
 
-  const timer = setTimeout(() => end(new Error(`${name} timed out after ${req.timeoutMs / 60_000} min`)), req.timeoutMs);
+  const timer = setTimeout(() => end(new TimeLimitError(`${name} timed out after ${req.timeoutMs / 60_000} min`)), req.timeoutMs);
   const cancel = () => end(new Error(`${name} cancelled`));
   if (req.signal?.aborted) cancel();
   req.signal?.addEventListener("abort", cancel, { once: true });
@@ -177,7 +178,7 @@ async function runAcp(name: string, def: CustomEngine, req: EngineRequest): Prom
   } catch (err) {
     // A start failure is thrown, as for every other engine; everything else is a failed call.
     if (!(err instanceof RpcError) && (err as Error).message.startsWith("cannot start")) throw err;
-    result = { ok: false, text: (err as Error).message };
+    result = { ok: false, text: (err as Error).message, ...(err instanceof TimeLimitError && { timedOut: true }) };
   } finally {
     clearTimeout(timer);
     req.signal?.removeEventListener("abort", cancel);
