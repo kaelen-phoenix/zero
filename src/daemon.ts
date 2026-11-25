@@ -48,7 +48,7 @@ import { recruitPass } from "./line/recruit.js";
 import { discardResolved } from "./line/discard.js";
 import { closeInterruptedUnjam, resendAfterCapability, unjamOnDemandPass, unjamOnDemandReady, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
-import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, ofChannel, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
+import { afterFailure, closeInterruptedUpdate, importSwitchResult, isMachineFailure, launchSwitch, ofChannel, readSelfUpdate, readUpdateRequest, realSelfUpdateDeps, recordSelfUpdate, retriesAlone, selfUpdateCheck, selfUpdateWanted, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
@@ -230,6 +230,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   closeInterruptedUnjam(ctx, now());
   closeInterruptedResearch(ctx, now());
+  closeInterruptedUpdate(ctx, now());
 
   const running = new Map<string, Running>();
   // One gate host per runtime and image, shared by every job so only one of them starts the gate.
@@ -499,11 +500,12 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (looking = undefined));
   };
 
-  // zero's own new version, prepared off to the side when the person in charge turned it on, or only looked for when they chose a channel; the check itself keeps to when it is due.
+  // zero's own new version, prepared off to the side when the person in charge turned it on, or only looked for when they chose a channel; the check itself keeps to when it is due. An update they asked for starts at once.
   let selfCheckedAt = 0;
   let selfChecking: Promise<void> | undefined;
   const checkSelfUpdate = () => {
-    if (selfChecking || (opts.once && !opts.selfUpdate) || (!ctx.config.selfUpdate.enabled && !ctx.config.selfUpdate.channel) || Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    if (selfChecking || (opts.once && !opts.selfUpdate) || !selfUpdateWanted(ctx)) return;
+    if (Date.now() - selfCheckedAt < (opts.once ? 0 : INTAKE_MS) && !readUpdateRequest(store)) return;
     selfCheckedAt = Date.now();
     selfChecking = selfUpdateCheck(ctx, opts.selfUpdate ?? realSelfUpdateDeps())
       .catch((err) => log.warn("self-update check failed", { error: String(err) }))
@@ -523,7 +525,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       const machine = isMachineFailure(err);
       log.warn("self-update switch not started; staying on the current version", { error: why, machine });
       recordSelfUpdate(store, {
-        state: { ...state, status: "idle", problem: why, ...afterFailure(state, state.to ?? "", machine, now()) },
+        state: { ...state, status: "idle", onDemand: undefined, problem: why, ...afterFailure(state, state.to ?? "", machine, now(), retriesAlone(ctx, state)) },
         entry: { from: state.from ?? "", to: state.to ?? "", at: now().toISOString(), outcome: "failed", reason: why },
       });
       return;
@@ -719,7 +721,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
       const { state: selfState } = readSelfUpdate(store);
       // A version prepared for another channel holds nothing up: the next check drops it.
-      const selfReady = ctx.config.selfUpdate.enabled && (!opts.once || Boolean(opts.launchSwitch)) && selfState.status === "ready" && ofChannel(selfState, ctx.config.selfUpdate.channel);
+      const selfReady = (ctx.config.selfUpdate.enabled || selfState.onDemand === true) && (!opts.once || Boolean(opts.launchSwitch)) && selfState.status === "ready" && ofChannel(selfState, ctx.config.selfUpdate.channel);
       if (selfReady && !selfReadyLogged) log.info("self-update ready: not starting new jobs until the switch", { running: running.size });
       selfReadyLogged = selfReady;
       // A switch still at work (an earlier one taken for dead) is never doubled: the ready version waits for it to end.

@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -136,6 +136,9 @@ Fábrica:
                                  Libera una versión: publica la etiqueta vX.Y.Z de un commit que ya está en la rama base del
                                  remoto (sin commit, su punta; sin versión, el siguiente parche), de zero o del repositorio
                                  de una línea; muestra qué publica y pide confirmación
+  zero actualizar                Pasa ahora a la última versión del canal (selfUpdate.channel), aunque la autoactualización
+                                 esté apagada: la prepara aparte, cambia cuando no haya trabajos corriendo y vuelve atrás si
+                                 falla; responde qué encontró (o, pasados 2 minutos, que sigue pendiente)
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado) y clona
                                  sus líneas; sin repositorio, explica cómo crearlo
@@ -150,7 +153,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run`, `zero destrabar` and `zero investigar` wait for the daemon to start the run before saying it is still pending. */
+/** How long `zero package run`, `zero destrabar`, `zero investigar` and `zero actualizar` wait for the daemon to take what was asked before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -642,6 +645,18 @@ Informe: ${r.report}`);
         }
         console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
         return 0;
+      }
+      case "actualizar": {
+        const r = requestUpdate(ctx);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        const found = await waitUpdate(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS });
+        console.log(found.text);
+        return found.ok ? 0 : 1;
       }
       case "liberar": {
         const ask = interactiveConfirm();

@@ -26,8 +26,9 @@ import { dataFile, readTabData, tabFile, type TabData, type TabItem } from "./pa
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
-import { entryProblem, installFolder, readSelfUpdate, selfUpdateGit, type SelfUpdateEntry, type SelfUpdateRetry } from "./self-update.js";
-import { parseReleaseRequest, publishRelease, type ReleaseResult, type ReleaseTarget } from "./releases.js";
+import { entryProblem, installFolder, readSelfUpdate, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest } from "./self-update.js";
+import { switchLockHeldAt } from "./self-update-switch.js";
+import { parseReleaseRequest, publishRelease, releaseTag, type ReleaseResult, type ReleaseTarget } from "./releases.js";
 import { describeDelivery, finalizeJob, prRefreshKey, rejectedByYou, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./line/finish.js";
 import { lineRepository } from "./intake/github.js";
 import { allTrains, readTrain, trainKey, verifiedHead, type Train, type TrainEntry } from "./line/train.js";
@@ -3287,6 +3288,46 @@ export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, w
     waited += step;
   }
   return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
+}
+
+/**
+ * Asks the daemon to move zero to the newest version of its channel (`ultimo` without one), whatever `selfUpdate.enabled`
+ * says. At most one pending; a refusal writes nothing.
+ */
+export function requestUpdate(ctx: FactoryContext, now = new Date()): StationRunResult {
+  const pending = readUpdateRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una actualización pendiente, pedida el ${pending.requestedAt}` };
+  if (readSelfUpdate(ctx.store).state.status === "switching" || switchLockHeldAt(ctx.home.root)) return { ok: false, reason: "ya hay un cambio de versión en curso; volvé a pedirla cuando termine" };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(UPDATE_REQUEST_KEY, JSON.stringify({ requestedAt } satisfies UpdateRequest));
+  return { ok: true, text: `Actualización pedida a la última versión del canal ${ctx.config.selfUpdate.channel ?? "ultimo"}: se busca en la próxima pasada, sin esperar a los trabajos en cola.`, requestedAt };
+}
+
+/** A version as the person in charge reads it: its release with the short commit, or only the commit. */
+const targetText = (t: SelfUpdateTarget) => (t.version ? `${releaseTag(t.version)} (${t.commit.slice(0, 12)})` : t.commit.slice(0, 12));
+
+/** Like `waitStationStart`, until the daemon says what the update asked for at `requestedAt` found; `ok` is false only when it failed. */
+export async function waitUpdate(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ ok: boolean; text: string }> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readUpdateRun(ctx.store);
+    if (run?.asked === requestedAt) {
+      if (run.outcome === "failed") return { ok: false, text: `No se pudo actualizar: ${run.reason ?? "sin motivo registrado"}.` };
+      if (run.outcome === "stopped") return { ok: true, text: `La actualización quedó sin terminar: ${run.reason ?? "sin motivo registrado"}. Volvé a pedirla.` };
+      if (run.outcome === "up-to-date") return { ok: true, text: `No hay una versión nueva: ${run.reason ?? "la instalación ya está al día"}.` };
+      if (run.target) {
+        const version = targetText(run.target);
+        return { ok: true, text: `${run.outcome === "ready" ? `La versión ${version} está lista` : `Preparando la versión ${version}`}: la fábrica cambia a ella cuando no haya trabajos corriendo.` };
+      }
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { ok: true, text: "La actualización sigue pendiente: se hace en la próxima pasada del daemon." };
 }
 
 /** Characters of the topic of an express research run. */

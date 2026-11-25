@@ -15,8 +15,8 @@
 
 ## 3. Etapa 3: Actualización a pedido: daemon y `zero actualizar`
 
-- [ ] 3.1 Add the request and run record (kv) to src/self-update.ts, requestUpdate and waitUpdate in src/app.ts, an on-demand path in selfUpdateCheck that ignores `enabled`, `failed` and `retry`, an `onDemand` mark on the state so selfReady works with `enabled: false`, and closeInterruptedUpdate at daemon start; a pending request skips the INTAKE_MS throttle.
-- [ ] 3.2 Add `zero actualizar` to src/cli.ts with its usage text.
+- [x] 3.1 Add the request and run record (kv) to src/self-update.ts, requestUpdate and waitUpdate in src/app.ts, an on-demand path in selfUpdateCheck that ignores `enabled`, `failed` and `retry`, an `onDemand` mark on the state so selfReady works with `enabled: false`, and closeInterruptedUpdate at daemon start; a pending request skips the INTAKE_MS throttle.
+- [x] 3.2 Add `zero actualizar` to src/cli.ts with its usage text.
 
 ## 4. Etapa 4: Estado, panel y chat
 
