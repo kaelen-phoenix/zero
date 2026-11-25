@@ -42,9 +42,10 @@ import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
-import { FINAL_STATUSES, Store, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
-import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
+import { FINAL_STATUSES, Store, type GuestEvent, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
+import { ageText, billingLine, formatDiscard, formatEgressSites, formatJob, formatMerge, formatRequest, formatResearchNotes, guestAccessText, jamLine, jobName, jobOrigin, outageLine, RESEARCH_END } from "./format.js";
 import { log } from "./log.js";
+import { createGuest, guestLabel, guestNameKey, guestView, listGuests, MAX_GUEST_NAME, MAX_SCOPE_VALUE, recordGuestEvent, removeGuest, type GuestGrant, type GuestView } from "./panel/guests.js";
 import { panelKey, panelLink, rotatePanelKey } from "./panel/key.js";
 import { readTunnelState, REMOTE_KEY, REMOTE_URL_KEY, type TunnelState } from "./panel/tunnel.js";
 import { connectedClients, getClient, REMOTE_MCP_KEY, revokeClient, type ConnectedClient } from "./mcp/oauth.js";
@@ -2118,13 +2119,96 @@ export interface PanelLinks {
 
 /** The panel's links, each carrying the key. Whoever has one gets into the factory. */
 export function panelLinks(ctx: FactoryContext, opts: { rotate?: boolean } = {}): PanelLinks {
-  const key = opts.rotate ? rotatePanelKey(ctx.secrets) : panelKey(ctx.secrets);
+  return linksWithKey(ctx, opts.rotate ? rotatePanelKey(ctx.secrets) : panelKey(ctx.secrets));
+}
+
+function linksWithKey(ctx: Pick<FactoryContext, "store" | "config">, key: string): PanelLinks {
   const remoteUrl = ctx.store.getKv(REMOTE_URL_KEY);
   return {
     local: ctx.config.panel.port ? panelLink(`http://127.0.0.1:${ctx.config.panel.port}`, key) : undefined,
     remote: remoteUrl ? panelLink(remoteUrl, key) : undefined,
     remoteOn: ctx.store.getKv(REMOTE_KEY) === "on",
   };
+}
+
+export interface GuestInvitation {
+  name: string;
+  /** `<package>` or `<package>/<tab or station>`, as the packages offer them to guests. */
+  only: string[];
+  /** The scope values the guest is limited to. */
+  values?: string[];
+  /** Every scope value, those to come included. */
+  all?: boolean;
+}
+
+/** `key` and the links exist only here, since only a hash is kept; `stable` when the tunnel's address survives restarts. */
+export type GuestInvitationResult = { ok: true; guest: GuestView; key: string; links: PanelLinks; stable: boolean } | { ok: false; reason: string };
+
+/** What an invitation grants, or why it is refused. */
+function guestGrants(ctx: Pick<FactoryContext, "config">, input: GuestInvitation): { grants: GuestGrant[] } | { reason: string } {
+  const only = input.only.map((ref) => cleanText(ref)).filter(Boolean);
+  if (!only.length) return { reason: "indicá a qué accede: --solo <paquete> o --solo <paquete>/<pestaña o estación>" };
+  const asked = new Map<LoadedPackage, Set<string>>();
+  for (const ref of only) {
+    const [name, part, ...rest] = ref.split("/");
+    if (!name || part === "" || rest.length) return { reason: `"${ref}" no es <paquete> ni <paquete>/<pestaña o estación>` };
+    const pkg = ctx.config.loadedPackages?.packages.find((p) => p.name === name);
+    if (!pkg) return { reason: `no hay un paquete instalado que se llame "${name}"` };
+    if (!pkg.guests) return { reason: `el paquete ${name} no ofrece nada a invitados` };
+    const offered = [...new Set([...pkg.guests.tabs, ...pkg.guests.run, ...pkg.guests.upload])];
+    if (part !== undefined && !offered.includes(part)) return { reason: `el paquete ${name} no ofrece "${part}" a invitados; ofrece: ${offered.join(", ")}` };
+    asked.set(pkg, new Set([...(asked.get(pkg) ?? []), ...(part === undefined ? offered : [part])]));
+  }
+  const values = [...new Set((input.values ?? []).map((v) => v.trim()))];
+  if (values.length && input.all) return { reason: "elegí --alcance <valor> o --todo, no los dos" };
+  const scoped = [...asked.keys()].filter((p) => p.guests!.scope);
+  if (!scoped.length && (values.length || input.all)) return { reason: `${values.length ? "--alcance" : "--todo"} no corresponde: ${[...asked.keys()].map((p) => p.name).join(", ")} no declara un alcance para invitados` };
+  if (scoped.length && !values.length && !input.all) {
+    const what = scoped.map((p) => `${p.name} (${p.guests!.scope!.title})`).join(", ");
+    return { reason: `falta el alcance de ${what}: indicá --alcance <valor> (uno o más) para limitar el acceso, o --todo para darlo entero` };
+  }
+  if (values.some((v) => v.length < 1 || v.length > MAX_SCOPE_VALUE)) return { reason: `cada valor de --alcance tiene que tener entre 1 y ${MAX_SCOPE_VALUE} caracteres` };
+  return {
+    grants: [...asked].map(([p, parts]) => {
+      const { scope, tabs, run, upload } = p.guests!;
+      const granted = (names: string[]) => names.filter((n) => parts.has(n));
+      return { package: p.name, tabs: granted(tabs), run: granted(run), upload: granted(upload), ...(scope && { scope: { name: scope.name, values: input.all ? ("all" as const) : values } }) };
+    }),
+  };
+}
+
+/** Creates a guest's access to the panel, limited to what those packages offer to guests now; only the terminal and the owner's panel call it. */
+export function inviteGuest(ctx: FactoryContext, input: GuestInvitation): GuestInvitationResult {
+  const name = guestLabel(input.name);
+  if (!name) return { ok: false, reason: "falta el nombre del invitado" };
+  if (name.length > MAX_GUEST_NAME) return { ok: false, reason: `el nombre pasa de ${MAX_GUEST_NAME} caracteres` };
+  const r = guestGrants(ctx, input);
+  if ("reason" in r) return { ok: false, reason: r.reason };
+  const created = createGuest(ctx.store, { name, grants: r.grants }, ctx.now?.());
+  if (!created) return { ok: false, reason: `ya hay un invitado activo con el nombre "${name}": revocá su acceso o usá otro nombre` };
+  const guest = guestView(created.guest, ctx.config.loadedPackages);
+  recordGuestEvent(ctx.store, created.guest, { kind: "invited", target: guestAccessText(guest).join("; ") });
+  return { ok: true, guest, key: created.key, links: linksWithKey(ctx, created.key), stable: remoteChatView(ctx).stable };
+}
+
+/** The active guests, by name, never with a key. */
+export function guestList(ctx: Pick<FactoryContext, "store" | "config">): GuestView[] {
+  return listGuests(ctx.store).map((g) => guestView(g, ctx.config.loadedPackages));
+}
+
+/** Removes a guest's access: from then on their key and sessions are worth nothing. */
+export function revokeGuest(ctx: Pick<FactoryContext, "store">, name: string): { ok: boolean; text: string } {
+  const guest = listGuests(ctx.store).find((g) => guestNameKey(g.name) === guestNameKey(name));
+  if (!guest || !removeGuest(ctx.store, guest.id)) return { ok: false, text: `No hay ningún invitado activo con el nombre "${guestLabel(name)}".` };
+  recordGuestEvent(ctx.store, guest, { kind: "revoked" });
+  return { ok: true, text: `Acceso de ${guest.name} revocado: su clave y sus sesiones dejaron de servir.` };
+}
+
+/** What every guest did, or only those called `name` (revoked ones too), newest first; undefined when nobody had that name. */
+export function guestLog(ctx: Pick<FactoryContext, "store">, name?: string): GuestEvent[] | undefined {
+  if (name === undefined) return ctx.store.listGuestEvents();
+  const ids = new Set([...listGuests(ctx.store), ...ctx.store.guestsWithEvents()].filter((g) => guestNameKey(g.name) === guestNameKey(name)).map((g) => g.id));
+  return ids.size ? ctx.store.listGuestEvents([...ids]) : undefined;
 }
 
 /** Asks the daemon to open or close the tunnel to the panel. */

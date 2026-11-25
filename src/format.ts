@@ -1,4 +1,4 @@
-import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
+import type { Adoption, DaemonInfo, EgressReport, FactoryStatus, GuestInvitationResult, SelfUpdateStatus, LineAgentList, OnDemandRun, PackageList, PendingRemoteAction, RemoteChatView, RequestResult, ShutdownResult, SkillList } from "./app.js";
 import type { PackageProblem } from "./config.js";
 import type { SkillProblem } from "./skills.js";
 import { pausedText, resetTime, type BudgetState } from "./budget.js";
@@ -13,10 +13,12 @@ import type { StationRunOutcome, StationRunRecord } from "./line/packages.js";
 import type { ResearchRequest, ResearchRunRecord } from "./line/research.js";
 import type { UnjamLineResult, UnjamRequest, UnjamRunRecord } from "./line/unjam.js";
 import { jobStage } from "./line/spec.js";
+import { cleanText } from "./package-install.js";
+import type { GuestPart, GuestView } from "./panel/guests.js";
 import type { SelfUpdateEntry, SelfUpdateRetry } from "./self-update.js";
 import { effectivePriority, storedPriority } from "./priority.js";
 import type { CatalogEntry, CatalogStatus, CatalogType } from "./catalog.js";
-import type { AlertSeverity, Job, Proposal, ResearchNote } from "./state/store.js";
+import type { AlertSeverity, GuestEvent, Job, Proposal, ResearchNote } from "./state/store.js";
 import type { EgressSite, EgressSummary } from "./telemetry/metrics.js";
 
 /** Owner-facing text, shared by the CLI and the chat so both say the same thing. */
@@ -149,6 +151,71 @@ export function formatPendingActions(list: PendingRemoteAction[]): string {
   if (!list.length) return "No hay acciones del chat remoto esperando tu confirmación.";
   const rows = list.map((a) => `${a.id} · ${a.text} · pedido por ${a.clientName ?? a.client ?? "un chat remoto"} · vence ${a.expiresAt.slice(11, 16)} UTC`);
   return ["Acciones del chat remoto para confirmar (con `zero mcp confirmar <id>`):", ...rows].join("\n");
+}
+
+/** What a guest's access allows, a line per package: «hello: ve novedades · pide corridas de nota · Cuenta: norte»; what its package no longer offers is marked. */
+export function guestAccessText(g: GuestView): string[] {
+  const names = (parts: GuestPart[]) => parts.map((p) => `${p.name}${p.offered ? "" : " (ya no se ofrece)"}`).join(", ");
+  return g.grants.map((a) => {
+    const parts = [
+      a.tabs.length && `ve ${names(a.tabs)}`,
+      a.run.length && `pide corridas de ${names(a.run)}`,
+      a.upload.length && `sube archivos a ${names(a.upload)}`,
+      a.scope && `${a.scope.title}: ${a.scope.values === "all" ? "todo" : a.scope.values.join(", ")}`,
+    ];
+    return cleanText(`${a.package}: ${parts.filter(Boolean).join(" · ")}`);
+  });
+}
+
+/** The active guests for `zero panel invitados`. */
+export function formatGuests(guests: GuestView[], now = new Date()): string {
+  if (!guests.length) return "No hay invitados al panel.";
+  const rows = guests.flatMap((g) => [
+    `${g.name} · acceso creado ${ageText(g.createdAt, now)} · ${g.lastUsedAt ? `último uso ${ageText(g.lastUsedAt, now)}` : "sin uso todavía"}`,
+    ...guestAccessText(g).map((line) => `  ${line}`),
+  ]);
+  return ["Invitados al panel (cortá el acceso de uno con `zero panel revocar <nombre>`):", ...rows].join("\n");
+}
+
+/** A new guest's access, with the link that is shown only here. */
+export function formatInvitation(r: Extract<GuestInvitationResult, { ok: true }>, running: boolean): string {
+  const { local, remote, remoteOn } = r.links;
+  const outside = remote ?? (remoteOn ? "el túnel todavía no está abierto." : "cerrado; se abre con `zero panel remote on`.");
+  return [
+    `Acceso creado para ${r.guest.name}:`,
+    ...guestAccessText(r.guest).map((line) => `  ${line}`),
+    "",
+    local ? `En esta PC:   ${local}` : "El panel está desactivado (panel.port: 0).",
+    `Desde afuera: ${outside}`,
+    ...(remote ? [] : [`Su clave, para pegarla en la dirección de afuera cuando esté abierta: ${r.key}`]),
+    "",
+    "El link se muestra una sola vez y lleva la clave del invitado: pasáselo solo a esa persona. Si se pierde, revocá el acceso e invitá de nuevo.",
+    ...(r.stable ? [] : ["La dirección de un túnel temporal cambia cada vez que se reinicia: en la nueva sirve la misma clave (lo que sigue a #k=). Con panel.tunnel.hostname queda fija."]),
+    ...(running ? [] : ["La fábrica está apagada: el link responde cuando la enciendas con `zero start --detach`."]),
+  ].join("\n");
+}
+
+/** What a guest did, as the person in charge reads it, on one line. */
+export function guestEventText(e: GuestEvent): string {
+  const target = e.target ?? "";
+  const asked = (what: string) => [`${what} ${target}`, e.scope && `alcance: ${e.scope}`, e.text && `«${e.text}»`, !e.accepted && "no se aceptó"].filter(Boolean).join(" · ");
+  const text: Record<GuestEvent["kind"], string> = {
+    invited: `acceso creado · ${target}`,
+    "sign-in": "entró al panel",
+    view: `abrió ${target}`,
+    download: `descargó ${target}`,
+    run: asked("pidió una corrida de"),
+    upload: asked("subió un archivo a"),
+    denied: `acceso denegado · ${target}`,
+    revoked: "acceso revocado",
+  };
+  return cleanText(text[e.kind]).replace(/\s+/g, " ");
+}
+
+/** The guests' log for `zero panel registro`, in the order given (newest first). */
+export function formatGuestLog(events: GuestEvent[]): string {
+  if (!events.length) return "No hay nada en el registro de invitados.";
+  return events.map((e) => `${e.at.slice(0, 19).replace("T", " ")} UTC · ${e.name} · ${guestEventText(e)}`).join("\n");
 }
 
 /** Proposals of the night shift waiting for the owner; `detail` adds why and what would change. */

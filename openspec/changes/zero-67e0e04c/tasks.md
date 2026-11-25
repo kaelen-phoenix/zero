@@ -9,11 +9,11 @@
 
 ## 2. Etapa 2: Accesos, registro y comandos
 
-- [ ] 2.1 src/state/store.ts: table for guest events (CREATE TABLE IF NOT EXISTS) with append, list by guest and pruning to the newest 500 prunable events per guest, keeping invitations, accepted runs and uploads and revocations.
-- [ ] 2.2 src/panel/guests.ts: records in kv `panel-guest:<id>` (name, explicit grants per package with scope name and values or all, sha256 of key and of session token, createdAt, lastUsedAt written at most once a minute), create, list, revoke, find by key, find by cookie, resolve grants against ctx.config.loadedPackages; event writing that never throws.
-- [ ] 2.3 app.ts: inviteGuest, guestList, revokeGuest, guestLog, guest links built as panelLink with the open tunnel's address; refusals with reason.
-- [ ] 2.4 src/cli.ts: options `solo`, `alcance` (multiple) and `todo`; `zero panel invitar|invitados|revocar|registro`, USAGE and formatters in src/format.ts; invitar does not start the factory, it says how when it is off, and warns that a quick tunnel's address changes. No MCP tool.
-- [ ] 2.5 Tests: new test/panel-guests.test.ts (refusals, hashes only, log, pruning, CLI list and revoke).
+- [x] 2.1 src/state/store.ts: table for guest events (CREATE TABLE IF NOT EXISTS) with append, list by guest and pruning to the newest 500 prunable events per guest, keeping invitations, accepted runs and uploads and revocations.
+- [x] 2.2 src/panel/guests.ts: records in kv `panel-guest:<id>` (name, explicit grants per package with scope name and values or all, sha256 of key and of session token, createdAt, lastUsedAt written at most once a minute), create, list, revoke, find by key, find by cookie, resolve grants against ctx.config.loadedPackages; event writing that never throws.
+- [x] 2.3 app.ts: inviteGuest, guestList, revokeGuest, guestLog, guest links built as panelLink with the open tunnel's address; refusals with reason.
+- [x] 2.4 src/cli.ts: options `solo`, `alcance` (multiple) and `todo`; `zero panel invitar|invitados|revocar|registro`, USAGE and formatters in src/format.ts; invitar does not start the factory, it says how when it is off, and warns that a quick tunnel's address changes. No MCP tool.
+- [x] 2.5 Tests: new test/panel-guests.test.ts (refusals, hashes only, log, pruning, CLI list and revoke).
 
 ## 3. Etapa 3: Sesión de invitado y panel de solo lectura
 
