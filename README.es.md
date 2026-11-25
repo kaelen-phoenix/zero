@@ -87,6 +87,8 @@ zero informe [line] [--mes AAAA-MM] [--html]   # informe mensual por línea, par
 zero descartar <job> [--motivo "<text>"]   # cierra un trabajo que ya no hace falta, con su pull request y su rama
 zero fusionar <job | url>      # funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 zero actualizar-pr <line> <number>...   # actualiza con su base pull requests abiertos de la línea, en ese orden
+zero actualizar                # pasa zero ahora a la última versión de su canal (ver Canales de actualización)
+zero liberar [<commit>] [<version>] [--line <line>]   # publica una versión para las instalaciones del canal estable
 zero tren <line> [<number>...]   # funde de a uno los pull requests trabados de la línea, el más viejo primero
 zero investigar "<topic>" [--line <line>]   # una investigación en la web ahora sobre un tema, sin esperar a la noche
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
@@ -435,7 +437,7 @@ Con la fábrica en marcha, el panel muestra:
 - la pestaña "Sala de control": una consola de operaciones en tonos oscuros y letra monoespaciada chica, en vivo y solo lectura, con el reloj, los contadores del día, el costo y el estado del daemon, una cinta que se desplaza con los eventos de las últimas 24 horas, cada trabajo como un punto que viaja por las estaciones hasta una columna de decisiones, series de 24 horas por línea, el bus de agentes, los últimos spans, el uso del plan y las pausas de los motores, y las trabas y alertas en rojo, todo con datos reales de la fábrica y en una sola columna en el celular;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
-Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)), se pide investigar un tema ("Investigar ahora" en la pestaña "Investigación", ver [Investigación](#investigación)) y se bloquean o permiten sitios. Está pensado para el celular.
+Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)), se actualiza zero ("Actualizar ahora" en el resumen, ver [Canales de actualización](#canales-de-actualización-channel)), se pide investigar un tema ("Investigar ahora" en la pestaña "Investigación", ver [Investigación](#investigación)) y se bloquean o permiten sitios. Está pensado para el celular.
 
 ```sh
 zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
@@ -667,7 +669,33 @@ zero puede actualizarse solo después de que se fusionan sus propios cambios, as
 selfUpdate: { enabled: true }   # remote: origin, branch: la de la carpeta de instalación, startTimeoutSeconds: 120
 ```
 
-El daemon mira la rama de la carpeta de instalación en su remoto una vez por día y otra vez cuando se fusiona un pull request de una línea que trabaja sobre esa carpeta. Solo toma un avance rápido, y nunca con cambios locales ni en otra rama: en ese caso avisa una vez y no cambia nada. Prepara el commit nuevo aparte, en `~/.zero/self-update/`, sin tocar la versión que corre: las mismas reglas de lock que los paquetes, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` y una carga del archivo de la fábrica. Si falla un paso, sigue con la versión actual, avisa una vez y no vuelve a preparar ese commit. Con la versión nueva lista no empieza más trabajos, y cuando no corre ninguno le pasa la posta a un proceso aparte (solo módulos propios de Node) y se apaga como siempre: ese proceso pone en su lugar la compilación nueva, arranca el daemon desprendido como `zero start --detach` y espera a que tome el candado del daemon. Si no lo toma dentro de `startTimeoutSeconds`, lo detiene, vuelve a poner la compilación y el commit anteriores y arranca la versión anterior. Los trabajos interrumpidos y los de la cola siguen desde su punto de control. `zero status`, el panel y el resumen cuentan cada actualización (de qué commit a cuál), una vuelta atrás o una falla; `zero --version` muestra la versión y el commit. Los paquetes se actualizan con `zero package update`.
+El daemon mira la rama de la carpeta de instalación en su remoto una vez por día y otra vez cuando se fusiona un pull request de una línea que trabaja sobre esa carpeta. Solo toma un avance rápido, y nunca con cambios locales ni en otra rama: en ese caso avisa una vez y no cambia nada. Prepara el commit nuevo aparte, en `~/.zero/self-update/`, sin tocar la versión que corre: las mismas reglas de lock que los paquetes, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` y una carga del archivo de la fábrica. Si falla un paso, sigue con la versión actual, avisa una vez y no vuelve a preparar ese commit por su cuenta. Con la versión nueva lista no empieza más trabajos, y cuando no corre ninguno le pasa la posta a un proceso aparte (solo módulos propios de Node) y se apaga como siempre: ese proceso pone en su lugar la compilación nueva, arranca el daemon desprendido como `zero start --detach` y espera a que tome el candado del daemon. Si no lo toma dentro de `startTimeoutSeconds`, lo detiene, vuelve a poner la compilación y el commit anteriores y arranca la versión anterior. Los trabajos interrumpidos y los de la cola siguen desde su punto de control. `zero status`, el panel y el resumen cuentan cada actualización (de qué commit a cuál), una vuelta atrás o una falla; `zero --version` muestra la versión y el commit. Los paquetes se actualizan con `zero package update`; los del canal estable también pueden actualizarse solos (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+### Canales de actualización (`channel`)
+
+`channel` elige hacia dónde se actualiza una instalación y `enabled`, si lo hace sola. Con `ultimo` toma todo lo que entra en la rama, que es lo indicado para la fábrica principal. Con `estable` solo pasa a versiones que liberaste, que es lo indicado para una instalación de producción, por ejemplo una que solo corre un paquete para clientes y no tiene líneas. Sin `channel` todo sigue como se describe arriba y el estado no muestra ningún canal.
+
+```yaml
+selfUpdate: { channel: estable }   # solo mira y te espera; con enabled: true además se actualiza sola, de versión liberada en versión liberada
+```
+
+```sh
+zero liberar 1.3.0                    # libera la punta de la rama base del remoto como v1.3.0
+zero liberar <commit>                 # libera ese commit con el siguiente número de parche
+zero liberar <commit> 1.3.0 --yes     # las dos cosas, sin preguntar
+zero liberar 0.2.0 --line <line>      # libera el repositorio de esa línea, por ejemplo el de un paquete
+zero actualizar                       # pasa esta instalación a la última versión de su canal, ahora
+```
+
+- **Una versión liberada es una etiqueta.** `zero liberar` publica una etiqueta `vX.Y.Z` con las credenciales de git que ya tenés, y no crea una página de release en GitHub. Toda etiqueta `vX.Y.Z` del remoto cuenta como versión liberada, sin importar quién la publicó; cualquier otra se ignora. Cuando todavía no hay versiones liberadas, un commit sin versión toma la `version` de su package.json, o 0.1.0.
+- **Liberar pregunta antes.** Muestra la versión, el commit y el remoto, y no publica nada sin tu sí (`--yes` responde por vos; sin terminal ni `--yes` la respuesta es no). Se niega con una versión que ya existe o que no es mayor que la última, con un commit que no está en la rama base y con uno que no es posterior a la última versión liberada. Nunca mueve una etiqueta, y tus ramas, etiquetas y archivos quedan como estaban. Solo se libera desde la terminal: ni el chat ni el panel pueden.
+- **Las instalaciones solo avanzan.** Con `estable`, la última versión liberada tiene que estar en la rama que sigue la instalación y ser un avance rápido; si no, se muestra el problema y no cambia nada. Una instalación que está más adelante que la última versión liberada espera a una que la contenga. Lo que todavía no se liberó de la rama no cuenta como atraso.
+- **Mirar sin actualizar.** Con `channel` y sin `enabled`, la fábrica busca la última versión (como mucho una vez por hora con `estable`) y la registra, sin preparar nada.
+- **Actualizar cuando vos lo decidís.** `zero actualizar`, el `zero_update` del chat y el botón "Actualizar ahora" del panel hacen lo mismo, esté o no encendida la actualización automática: preparan la última versión del canal (`ultimo` si no hay uno) y cambian cuando no corre ningún trabajo, con vuelta atrás si no arranca. El comando espera hasta 2 minutos para decirte qué se encontró. Una actualización que pedís vuelve a probar, una vez, una versión que falló antes. Desde el chat remoto espera tu confirmación. El cambio espera a los trabajos y no a las estaciones de los paquetes, así que pedilo cuando no estén publicando nada.
+- **Qué ves.** Con un canal, `zero status` y el resumen del panel lo muestran, con la versión actual, si hay una más nueva y cómo terminó la última actualización que pediste, según la última vez que se miró y sin usar la red.
+- **En Docker** la instalación no es un repositorio de git: `zero actualizar` lo dice y no cambia nada. Ahí se actualiza la imagen.
+
+Las razones están en [`docs/adr/0010-canales-de-actualizacion.md`](docs/adr/0010-canales-de-actualizacion.md).
 
 ## Agentes a medida
 
@@ -942,9 +970,11 @@ zero package add ./hello --permitir-codigo   # allowCode: true, para que corran 
 zero package add github:acme/hello-zero#v1   # de git, en ~/.zero/packages/git/hello, en ese tag o rama
 zero package add https://example.com/acme/hello-zero.git
 zero package add git@example.com:acme/hello-zero.git#main
+zero package add github:acme/hello-zero --canal estable   # de git, solo versiones liberadas (etiquetas vX.Y.Z)
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # muestra el cambio y lo aplica; sin nombre, todos los paquetes
+zero package update hello --etiqueta v1.1.0  # pasa un paquete de git, fijado o no, a esa etiqueta
 zero package run hello/note                  # una pasada de esa estación en la próxima pasada, sin esperar la cola (onDemand: true)
 zero package run hello/note --pedido "revisá los precios de esta semana"   # lo mismo, con un pedido para esa corrida
 zero package upload hello/note ./site.zip    # le manda ese archivo a la estación y pide una corrida a demanda (uploads)
@@ -964,6 +994,10 @@ zero package remove hello                    # lo saca del archivo; sus archivos
 Con algo para aplicar, zero apaga la fábrica y espera a que termine su proceso, porque en Windows los módulos nativos quedan tomados mientras corre. Después actualiza y reinstala dependencias, y si un paquete git falla (dependencias, manifiesto, nombre o encaje con los demás) vuelve al commit anterior. Al final enciende una sola fábrica, solo si había una en marcha. Si la fábrica no se apaga a tiempo, no se toca ningún paquete: el pedido de apagado queda vigente, así que la fábrica se apaga más tarde y nadie la vuelve a encender.
 
 Mientras está en marcha, la fábrica mira una vez por día qué tienen los remotos de los paquetes git y npm, sin tocar sus carpetas. `zero package list` muestra la fuente, el commit o la versión instalada y si hay una actualización disponible, según lo último que se vio y sin usar la red.
+
+**Canal y etiqueta de un paquete de git.** Con `--canal estable` (`channel: estable` en su entrada), `zero package add`, `zero package update` y la revisión diaria toman solo la última versión liberada `vX.Y.Z` de su remoto, nunca la punta de una rama, y dicen por qué cuando no hay ninguna o cuando lo instalado ya está más adelante: un paquete así nunca vuelve atrás. Sobre una fuente ya declarada, `zero package add <fuente> --canal estable` solo le pone el canal. Una fuente con `#etiqueta` queda fija en esa etiqueta y `--etiqueta` la cambia, con los mismos resguardos, confirmación y vuelta atrás que cualquier actualización; canal y etiqueta no van juntos. `zero package list` y la pestaña "Paquetes" del panel muestran el canal o la etiqueta, la versión instalada y la más nueva.
+
+Con `selfUpdate: { enabled: true }`, un paquete con `channel: estable` se actualiza solo cuando se vio una versión liberada más nueva, cuando no corre ningún trabajo: la fábrica lanza `zero package update <nombre>` como un proceso aparte, que la apaga y la vuelve a encender. Cada versión se intenta una sola vez, y una que pide más que antes (un secreto, una estación, un permiso) no se aplica; una versión que no se aplicó se ve en `zero status` y en `zero package list`, para que la apliques a mano. Sin `enabled`, o sin el canal del paquete, ningún paquete se actualiza solo; en Docker, ninguno.
 
 **Un paquete roto nunca frena la fábrica.** Queda afuera entero, los demás paquetes siguen y el motivo se ve en `zero status`, en `zero package list` y una vez en el registro. Eso vale también para los revisores bloqueantes de un paquete: si queda afuera, los trabajos siguen sin esa revisión, así que mirá `zero status` después de actualizar uno.
 

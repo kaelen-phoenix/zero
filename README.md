@@ -87,6 +87,8 @@ zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to sha
 zero descartar <job> [--motivo "<text>"]   # closes a job you no longer need, with its pull request and its branch
 zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero actualizar-pr <line> <number>...   # updates open pull requests of the line with its base, in that order
+zero actualizar                # moves zero to the newest version of its channel now (see Update channels)
+zero liberar [<commit>] [<version>] [--line <line>]   # publishes a release for the installations on the stable channel
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
 zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
@@ -436,7 +438,7 @@ With the factory running, the panel shows:
 - the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
-From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
+From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), update zero ("Actualizar ahora" in the summary, see [Update channels](#update-channels-channel)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
 
 ```sh
 zero panel                     # the panel link, with your key (starts the factory if needed)
@@ -668,7 +670,33 @@ zero can update itself after its own changes merge, so the person in charge does
 selfUpdate: { enabled: true }   # remote: origin, branch: the install folder's, startTimeoutSeconds: 120
 ```
 
-The daemon looks at the install folder's branch on its remote once a day and again after a pull request of a line working on that folder merges. It only takes a fast-forward, and never with local changes or on another branch: then it warns once and changes nothing. It prepares the new commit apart, under `~/.zero/self-update/`, without touching the version that runs: the same lock rules as the packages, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` and a load of the factory file. If a step fails it stays on the current version, warns once and never prepares that commit again. With the new version ready it starts no more jobs, and once none is running it hands over to a separate process (Node built-ins only) and shuts down as usual: that process puts the new build in place, starts the daemon detached like `zero start --detach` and waits for it to take the daemon lock. If it does not within `startTimeoutSeconds`, it stops it, puts the previous build and commit back and starts the previous version. Interrupted and queued jobs resume from their checkpoint. `zero status`, the panel and the briefing tell each update (from which commit to which), a rollback or a failure; `zero --version` prints the version and the commit. Packages update with `zero package update`.
+The daemon looks at the install folder's branch on its remote once a day and again after a pull request of a line working on that folder merges. It only takes a fast-forward, and never with local changes or on another branch: then it warns once and changes nothing. It prepares the new commit apart, under `~/.zero/self-update/`, without touching the version that runs: the same lock rules as the packages, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` and a load of the factory file. If a step fails it stays on the current version, warns once and never prepares that commit again on its own. With the new version ready it starts no more jobs, and once none is running it hands over to a separate process (Node built-ins only) and shuts down as usual: that process puts the new build in place, starts the daemon detached like `zero start --detach` and waits for it to take the daemon lock. If it does not within `startTimeoutSeconds`, it stops it, puts the previous build and commit back and starts the previous version. Interrupted and queued jobs resume from their checkpoint. `zero status`, the panel and the briefing tell each update (from which commit to which), a rollback or a failure; `zero --version` prints the version and the commit. Packages update with `zero package update`; those on the stable channel can also update themselves (see [Agent packages](#agent-packages)).
+
+### Update channels (`channel`)
+
+`channel` chooses where an installation updates to and `enabled` whether it does so on its own. With `ultimo` it takes whatever enters the branch, which suits the main factory. With `estable` it only moves to versions you released, which suits a production installation, such as one that only runs a package for clients and has no lines. Without `channel` everything stays as described above and status shows no channel.
+
+```yaml
+selfUpdate: { channel: estable }   # only looks and waits for you; with enabled: true it also updates itself, release by release
+```
+
+```sh
+zero liberar 1.3.0                    # releases the tip of the remote's base branch as v1.3.0
+zero liberar <commit>                 # releases that commit with the next patch number
+zero liberar <commit> 1.3.0 --yes     # both, without asking
+zero liberar 0.2.0 --line <line>      # releases that line's repository, for example a package's
+zero actualizar                       # moves this installation to the newest version of its channel, now
+```
+
+- **A release is a tag.** `zero liberar` pushes a tag named `vX.Y.Z` with the git credentials you already have, and creates no release page on GitHub. Any `vX.Y.Z` tag on the remote counts as a release, whoever published it; any other tag is ignored. When there are no releases yet, a commit without a version takes the `version` of its package.json, or 0.1.0.
+- **Releasing asks first.** It shows the version, the commit and the remote, and publishes nothing without your yes (`--yes` answers for you; with no terminal and no `--yes` the answer is no). It refuses a version that exists or is not higher than the newest one, a commit outside the base branch, and one that is not later than the newest release. It never moves a tag, and your branches, tags and files stay as they were. Only the terminal releases: neither the chat nor the panel can.
+- **Installations only move forward.** With `estable`, the newest release must be in the branch the installation follows and be a fast-forward; otherwise the problem shows and nothing changes. An installation ahead of the newest release waits for one that contains it. Unreleased work in the branch does not count as being behind.
+- **Looking without updating.** With `channel` and without `enabled`, the factory looks for the newest version (at most once an hour with `estable`) and records it, without preparing anything.
+- **Updating when you decide.** `zero actualizar`, the chat's `zero_update` and the panel's "Actualizar ahora" button do the same, whether or not automatic updates are on: they prepare the newest version of the channel (`ultimo` without one) and switch once no job is running, going back if it does not start. The command waits up to 2 minutes to tell you what was found. An update you ask for tries again, once, a version that failed before. From the remote chat it waits for your confirmation. The switch waits for jobs and not for packages' stations, so ask for it when they are not publishing anything.
+- **What you see.** With a channel, `zero status` and the panel's summary show it, the current version, whether there is a newer one and how the last update you asked for ended, from the last look and without using the network.
+- **In Docker** the installation is not a git repository: `zero actualizar` says so and changes nothing. Update the image instead.
+
+The reasons are in [`docs/adr/0010-canales-de-actualizacion.md`](docs/adr/0010-canales-de-actualizacion.md).
 
 ## Custom agents
 
@@ -943,9 +971,11 @@ zero package add ./hello --permitir-codigo   # allowCode: true, so its stations 
 zero package add github:acme/hello-zero#v1   # from git, into ~/.zero/packages/git/hello, at that tag or branch
 zero package add https://example.com/acme/hello-zero.git
 zero package add git@example.com:acme/hello-zero.git#main
+zero package add github:acme/hello-zero --canal estable   # from git, only released versions (vX.Y.Z tags)
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # shows the change and applies it; without a name, every package
+zero package update hello --etiqueta v1.1.0  # moves a package from git, pinned or not, to that tag
 zero package run hello/note                  # one pass of that station on the next pass, without waiting for the queue (onDemand: true)
 zero package run hello/note --pedido "check this week's prices"   # the same, with a request for that run
 zero package upload hello/note ./site.zip    # sends that file to the station and asks for an on-demand run (uploads)
@@ -965,6 +995,10 @@ zero package remove hello                    # takes it out of the file; its fil
 With something to apply, zero shuts the factory down and waits for its process to end, because on Windows native modules stay held while it runs. Then it updates and reinstalls dependencies, and if a git package fails (dependencies, manifest, name or fit with the others) it returns to the previous commit. At the end it starts a single factory, only if one was running. If the factory does not stop in time, no package is touched: the shutdown request stays in place, so the factory stops later and nothing starts it again.
 
 While it runs, the factory looks once a day at what the remotes of git and npm packages have, without touching their folders. `zero package list` shows the source, the installed commit or version and whether an update is available, from what was last seen and without using the network.
+
+**Channel and pin of a package from git.** With `--canal estable` (`channel: estable` in its entry), `zero package add`, `zero package update` and the daily look take only the newest `vX.Y.Z` release of its remote, never the tip of a branch, and say why when there is none or when what is installed is already past it: such a package is never moved back. On a source already declared, `zero package add <source> --canal estable` only sets the channel. A source with `#tag` stays pinned to that tag and `--etiqueta` moves it, with the same guards, confirmation and way back as any update; channel and pin do not go together. `zero package list` and the panel's "Paquetes" tab show the channel or the pin, the installed version and the newer one.
+
+With `selfUpdate: { enabled: true }`, a package with `channel: estable` updates itself when a newer release was seen, once no job is running: the factory starts `zero package update <name>` as a process of its own, which turns it off and on again. Each release is tried only once, and one that asks for more than before (a secret, a station, a permission) is not applied; a release that was not applied shows in `zero status` and `zero package list`, for you to apply by hand. Without `enabled`, or without the package's channel, no package updates on its own; in Docker none does.
 
 **A broken package never stops the factory.** It stays out whole, the other packages go on and the reason shows in `zero status`, in `zero package list` and once in the log. That also applies to a package's blocking reviewers: if it stays out, jobs go on without that review, so check `zero status` after updating one.
 

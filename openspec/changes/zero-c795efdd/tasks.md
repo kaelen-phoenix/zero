@@ -37,4 +37,4 @@
 
 ## 7. Etapa 7: Documentación
 
-- [ ] 7.1 Write the README sections in both languages, ADR 0010, docs/agents/self-update.md, packages.md, panel.md and daemon.md, and extend test/docs.test.ts.
+- [x] 7.1 Write the README sections in both languages, ADR 0010, docs/agents/self-update.md, packages.md, panel.md and daemon.md, and extend test/docs.test.ts.
