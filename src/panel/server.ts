@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answerAnywhere, confirmRemoteAction, decideProposal, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, requestAnywhere, requestFromResearchNote, requestInvestigation, requestLines, requestStationRun, requestsView, requestUnjam, uploadToStation, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type RequestResult, type RequestSent } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answerAnywhere, confirmRemoteAction, decideProposal, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, factoryView, getJob, jobElsewhere, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, requestAnywhere, requestFromResearchNote, requestInvestigation, requestLines, requestStationRun, requestsView, requestUnjam, requestUpdate, uploadToStation, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory, type RequestResult, type RequestSent } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatMerge, formatProposalDecision } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -467,6 +467,10 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
     }
     if (path === "/unjam") {
       const r = requestUnjam(ctx, form.get("line") || undefined, ctx.now?.());
+      return back(res, "/", r.ok ? r.text : r.reason);
+    }
+    if (path === "/update") {
+      const r = requestUpdate(ctx, ctx.now?.());
       return back(res, "/", r.ok ? r.text : r.reason);
     }
     if (path === "/research") {

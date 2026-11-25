@@ -68,6 +68,34 @@ describe("README in English and Spanish", () => {
     }
   });
 
+  it("document the update channels in the code blocks of both languages", () => {
+    const missing = (text: string, pieces: string[]) => pieces.filter((p) => !text.includes(p));
+    for (const [text, heading] of [[en, "### Update channels (`channel`)"], [es, "### Canales de actualización (`channel`)"]] as const) {
+      const part = section(text, heading).split(/^### /m)[0]!;
+      const commands = blocks(part).map((b) => b.body).join("\n");
+      expect(missing(commands, ["selfUpdate: { channel: estable }", "zero liberar 1.3.0", "zero liberar 0.2.0 --line <line>"]), heading).toEqual([]);
+      // Not zero actualizar-pr, which updates pull requests.
+      expect(commands).toMatch(/^zero actualizar\s/m);
+      expect(missing(part, ["ultimo", "`zero_update`", "Actualizar ahora", "vX.Y.Z", "0010-canales-de-actualizacion.md"]), heading).toEqual([]);
+      const all = blocks(text).map((b) => b.body).join("\n");
+      expect(missing(all, ["zero package add github:acme/hello-zero --canal estable", "zero package update hello --etiqueta v1.1.0"]), heading).toEqual([]);
+      expect(text).toContain("`channel: estable`");
+    }
+  });
+
+  it("describe the update channels in the guide for agents and in an ADR", () => {
+    for (const [file, pieces] of [
+      ["docs/agents/self-update.md", ["src/releases.ts", "requestUpdate", "zero_update", "0010-canales-de-actualizacion.md"]],
+      ["docs/agents/packages.md", ["src/package-channel.ts", "src/package-auto-update.ts", "channel: estable", "--etiqueta"]],
+      ["docs/agents/panel.md", ["POST /update", "packageVersion"]],
+      ["docs/agents/daemon.md", ["selfUpdateWanted", "updatePackage"]],
+      ["docs/adr/0010-canales-de-actualizacion.md", ["# ADR 0010", "vX.Y.Z", "zero liberar", "zero actualizar", "`estable`", "`ultimo`", "--etiqueta"]],
+    ] as const) {
+      const text = read(file);
+      for (const piece of pieces) expect(text, `${file}: ${piece}`).toContain(piece);
+    }
+  });
+
   it("document Codex without its sandbox in both languages", () => {
     for (const text of [en, es]) {
       expect(blocks(text).map((b) => b.body).join("\n")).toContain("codex: { sandbox: off }");

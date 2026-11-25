@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -114,11 +114,13 @@ Fábrica:
   zero agent catalog reject <id> [--motivo "<texto>"]   Lo rechaza: no se suma ni se vuelve a proponer
   zero agent remove <nombre> --line <línea>   Lo quita de la configuración (el archivo queda)
   zero package list              Paquetes de agentes instalados: fuente, versión, qué traen, si hay novedades y qué problema tienen
-  zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--yes]
+  zero package add <carpeta|paquete-npm|git> [--permitir-codigo] [--canal estable] [--yes]
                                  Instala un paquete; sus estaciones solo corren con --permitir-codigo (con los permisos de tu usuario).
-                                 git: github:cuenta/repo[#tag-o-rama] o una URL https o ssh; muestra qué trae y pide confirmación
-  zero package update [nombre] [--yes]
-                                 Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender
+                                 git: github:cuenta/repo[#tag-o-rama] o una URL https o ssh; muestra qué trae y pide confirmación;
+                                 con --canal estable solo toma versiones liberadas (etiquetas vX.Y.Z)
+  zero package update [nombre] [--etiqueta <etiqueta>] [--yes]
+                                 Actualiza uno o todos: muestra el cambio, apaga la fábrica, aplica (si falla vuelve atrás) y la vuelve a encender;
+                                 con --etiqueta fija uno de git en esa etiqueta de su repositorio
   zero package remove <nombre>   Lo quita de la fábrica (sus archivos quedan)
   zero package run <paquete>/<estación> [--pedido "<texto>"]
                                  Pide correr una vez la estación en la próxima pasada, sin esperar su período ni la cola
@@ -132,6 +134,13 @@ Fábrica:
                                  Asigna o quita una skill (agentes: spec, build, review, security, reply, scout, research)
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
+  zero liberar [<commit>] [<versión>] [--line <nombre>] [--yes]
+                                 Libera una versión: publica la etiqueta vX.Y.Z de un commit que ya está en la rama base del
+                                 remoto (sin commit, su punta; sin versión, el siguiente parche), de zero o del repositorio
+                                 de una línea; muestra qué publica y pide confirmación
+  zero actualizar                Pasa ahora a la última versión del canal (selfUpdate.channel), aunque la autoactualización
+                                 esté apagada: la prepara aparte, cambia cuando no haya trabajos corriendo y vuelve atrás si
+                                 falla; responde qué encontró (o, pasados 2 minutos, que sigue pendiente)
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
   zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado) y clona
                                  sus líneas; sin repositorio, explica cómo crearlo
@@ -146,7 +155,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run`, `zero destrabar` and `zero investigar` wait for the daemon to start the run before saying it is still pending. */
+/** How long `zero package run`, `zero destrabar`, `zero investigar` and `zero actualizar` wait for the daemon to take what was asked before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -163,6 +172,8 @@ async function main(argv: string[]): Promise<number> {
       tipo: { type: "string" },
       archivos: { type: "string", multiple: true },
       "permitir-codigo": { type: "boolean" },
+      canal: { type: "string" },
+      etiqueta: { type: "string" },
       note: { type: "string" },
       motivo: { type: "string" },
       days: { type: "string" },
@@ -537,14 +548,16 @@ Informe: ${r.report}`);
         }
         if (action === "add" || action === "update") {
           if (action === "add" && !name) throw new Error("Indicá la carpeta, el paquete o el repositorio: zero package add <carpeta|paquete-npm|git>");
+          if (values.canal !== undefined && (action !== "add" || values.canal !== "estable")) throw new Error("El canal de un paquete se elige al agregarlo, y solo puede ser estable: zero package add <git> --canal estable");
+          if (action === "add" && values.etiqueta !== undefined) throw new Error("Para agregarlo fijado a una etiqueta, ponela en la fuente: zero package add <git>#<etiqueta>");
           const ask = interactiveConfirm();
           const confirm = values.yes ? async () => true : ask.confirm;
           try {
             if (action === "add") {
-              console.log(await packageAdd(ctx, { source: name!, allowCode: values["permitir-codigo"], confirm, say: (text) => console.log(text) }));
+              console.log(await packageAdd(ctx, { source: name!, allowCode: values["permitir-codigo"], ...(values.canal && { channel: "estable" as const }), confirm, say: (text) => console.log(text) }));
               return 0;
             }
-            return (await packageUpdate(ctx, { name, confirm, say: (text) => console.log(text) })).failed ? 1 : 0;
+            return (await packageUpdate(ctx, { name, ...(values.etiqueta !== undefined && { tag: values.etiqueta }), confirm, say: (text) => console.log(text) })).failed ? 1 : 0;
           } finally {
             ask.close();
           }
@@ -638,6 +651,28 @@ Informe: ${r.report}`);
         }
         console.log(formatEgress(egressReport(ctx, { job: action, days: values.days ? Number(values.days) : 1 })));
         return 0;
+      }
+      case "actualizar": {
+        const r = requestUpdate(ctx);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        const found = await waitUpdate(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS });
+        console.log(found.text);
+        return found.ok ? 0 : 1;
+      }
+      case "liberar": {
+        const ask = interactiveConfirm();
+        try {
+          const r = await releaseVersion(ctx, { args: rest, line: values.line, confirm: values.yes ? async () => true : ask.confirm, say: (text) => console.log(text) });
+          console.log(r.text);
+          return r.released ? 0 : 1;
+        } finally {
+          ask.close();
+        }
       }
       case "autostart": {
         if (rest[0] !== "on" && rest[0] !== "off") throw new Error("Indicá on u off: zero autostart on|off");

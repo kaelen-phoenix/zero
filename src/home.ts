@@ -12,6 +12,8 @@ export interface FactoryHome {
   daemonLog: string;
   /** Held by the running daemon (see daemon-lock.ts). */
   daemonLock: string;
+  /** Held by a package update while it runs (see package-auto-update.ts). */
+  packageUpdateLock: string;
   /** Shared with the egress gate's container: its policy, the passes of running boxes and its connection records. */
   gate: string;
   /** Optional helper binaries zero downloads with the owner's consent (cloudflared). */
@@ -44,6 +46,7 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     jobs: join(abs, "jobs"),
     daemonLog: join(abs, "daemon.log"),
     daemonLock: join(abs, "daemon.lock"),
+    packageUpdateLock: join(abs, "package-update.lock"),
     gate: join(abs, "gate"),
     bin: join(abs, "bin"),
     packages: join(abs, "packages"),

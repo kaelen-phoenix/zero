@@ -379,6 +379,12 @@ export function npmInstalledVersion(dir: string): string | undefined {
 /** The last the factory saw on a package's remote, without having applied it. */
 export interface SeenUpdate {
   seen?: string;
+  /** The released version `seen` is; only on the stable channel. */
+  version?: string;
+  /** The commit installed when that look was made, when it is a released version too. */
+  current?: { commit: string; version: string };
+  /** The commit installed when that look was made, when moving it to `seen` would be going back. */
+  ahead?: string;
   at: string;
   /** Why the last look failed; `seen` stays what an earlier one found. */
   error?: string;
@@ -396,11 +402,10 @@ export function readSeen(store: Pick<Store, "getKv">, name: string): SeenUpdate 
   }
 }
 
-export function recordSeen(store: Pick<Store, "setKv">, name: string, seen: string, at: Date): void {
-  store.setKv(updateKey(name), JSON.stringify({ seen, at: at.toISOString() } satisfies SeenUpdate));
+export function recordSeen(store: Pick<Store, "setKv">, name: string, seen: string, at: Date, release: Pick<SeenUpdate, "version" | "current" | "ahead"> = {}): void {
+  store.setKv(updateKey(name), JSON.stringify({ seen, ...release, at: at.toISOString() } satisfies SeenUpdate));
 }
 
 export function recordLookFailed(store: Pick<Store, "getKv" | "setKv">, name: string, error: string, at: Date): void {
-  const { seen } = readSeen(store, name) ?? {};
-  store.setKv(updateKey(name), JSON.stringify({ ...(seen && { seen }), at: at.toISOString(), error: cleanError(error) } satisfies SeenUpdate));
+  store.setKv(updateKey(name), JSON.stringify({ ...readSeen(store, name), at: at.toISOString(), error: cleanError(error) } satisfies SeenUpdate));
 }
