@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryJob, type FactoryProposal, type FactoryStatus, type JobMachine, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
 import type { CatalogAddPlan, ProjectPlan, ProjectResult } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeStationRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, resetTime, selfUpdateLines, STATUS_TEXT } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
+import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
+import type { ResearchRunRecord } from "../line/research.js";
 import { bars, gauge, lineChart } from "./charts.js";
 import type { PolicyEvent } from "../line/policy.js";
 import type { ConnectedClient } from "../mcp/oauth.js";
@@ -253,15 +255,15 @@ export type StationUploads = Record<string, { maxMb: number; extensions: string[
 /** One station of a package: its state, its last on-demand run and, when it takes them, the forms to ask for one and to upload a file. */
 function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean, uploads?: StationUploads[string]): string {
   const ref = `${pkg}/${s.name}`;
-  const state = `${!s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
+  const state = `${!s.allowed ? "no corre" : s.elsewhere ? "no corre en esta máquina" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.machine !== undefined ? ` · fijada a la máquina ${s.machine}` : ""}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
     ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
   const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
-  const form = onDemand
+  const form = onDemand && !s.elsewhere
     ? `<form method="post" action="/packages/run"><input type="hidden" name="station" value="${esc(ref)}"><label for="p-${esc(ref)}">Pedido (opcional)</label><textarea id="p-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Pedir ahora</button></form>`
     : "";
-  const upload = uploads
+  const upload = uploads && !s.elsewhere
     ? `<form method="post" action="/packages/upload?station=${esc(encodeURIComponent(ref))}" enctype="multipart/form-data"><input type="hidden" name="station" value="${esc(ref)}"><label for="f-${esc(ref)}">Archivo (${esc(uploads.extensions.join(", "))}, hasta ${esc(String(uploads.maxMb))} MB)</label><input id="f-${esc(ref)}" type="file" name="file" accept="${esc(uploads.extensions.join(","))}" required><label for="u-${esc(ref)}">Pedido (opcional)</label><textarea id="u-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Subir archivo</button></form>`
     : "";
   return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;
@@ -313,10 +315,27 @@ export function loginPage(nonce: string, failed = false, back?: string): string 
 const CHIP_TEXT: Record<JobStatus, string> = { queued: "en cola", running: "trabajando", waiting: "te espera", delivered: "entregado", failed: "fallido", stopped: "detenido" };
 const chip = (status: JobStatus) => `<span class="chip" data-status="${status}">${CHIP_TEXT[status]}</span>`;
 
-const jobLine = (j: Job) =>
-  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
+/** Where a job is, only with other machines in the factory. */
+const onMachine = (m?: JobMachine) => (m ? (m.alive ? esc(machineNote(m)) : `<span class="bad">${esc(machineNote(m))}</span>`) : "");
 
-const answerForms = (j: Job) =>
+/** A job another machine has: its texts come from that machine. */
+const awayLine = (j: FactoryJob) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(j.title)}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)} · ${esc(describeFactoryJob(j))}${onMachine(j.machine)}</span></li>`;
+
+/** Where an answer goes, or what was already sent from here. */
+const awayNote = (m: JobMachine, note?: string) => `<p class="muted">${note ? `Desde esta máquina: ${esc(note)}.` : `Tu respuesta se entrega en la máquina ${esc(m.name)}${m.alive ? "" : " cuando vuelva"}.`}</p>`;
+
+/** The question of a job another machine has, with its answer unless one was already sent. */
+const awayQuestion = (j: FactoryJob) =>
+  j.question
+    ? `<pre>${esc(j.question.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${awayNote(j.machine, j.note)}${j.note ? "" : answerForms(j)}`
+    : "";
+
+const jobLine = (j: Job, machine?: JobMachine) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}${onMachine(machine)}</span></li>`;
+
+const answerForms = (j: Pick<Job, "id">) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
 <button class="primary" name="decision" value="approve">Aprobar</button><button class="danger" name="decision" value="reject">Rechazar</button></form>`;
 
@@ -324,13 +343,39 @@ const answerForms = (j: Job) =>
 function budgetStat(s: FactoryStatus): string {
   const b = s.budget;
   const paused = b.reached ? ` · <span class="bad">PAUSADA${b.until ? ` hasta ${esc(resetTime(b.until))}` : ""}</span>` : "";
+  const shared = b.shared ? " · todas las máquinas" : "";
   if (b.billing === "subscription") {
     const top = [...b.windows].sort((x, y) => (y.utilization ?? 0) - (x.utilization ?? 0))[0];
-    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${paused}</span></div>`;
+    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${shared}${paused}</span></div>`;
     const used = top.utilization === undefined ? "—" : `${Math.round(top.utilization * 100)}%`;
-    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${paused}</span></div>`;
+    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${shared}${paused}</span></div>`;
   }
-  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${paused}</span></div>`;
+  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${shared}${paused}</span></div>`;
+}
+
+/** The unjam station on demand: the pending request, the last run and, unless it is off, the form to ask for one. */
+function unjamCard(u: FactoryStatus["unjam"]): string {
+  if (!u.enabled && !u.pending && !u.last) return "";
+  const pending = u.pending ? `<p>Corrida a demanda: ${esc(unjamPendingText(u.pending))}</p>` : "";
+  const last = u.last ? `<p${u.last.outcome === "failed" || u.last.outcome === "not-run" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeUnjamRun(u.last))}</p>` : "";
+  const options = u.lines.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  const form = u.enabled
+    ? `<form method="post" action="/unjam"><label for="unjam-line">Línea</label><select id="unjam-line" name="line"><option value="">Todas las líneas</option>${options}</select><button class="primary">Destrabar ahora</button></form>`
+    : "";
+  return `<div class="card"><h2>Destrabador</h2>${pending}${last}${form}</div>`;
+}
+
+/** An express research run, in red when it failed or could not run. */
+const researchRunText = (r: ResearchRunRecord) => (r.outcome === "failed" || r.outcome === "not-run" ? `<span class="bad">${esc(describeResearchRun(r))}</span>` : esc(describeResearchRun(r)));
+
+/** The express research run asked for and not started. */
+const researchPending = (r: ResearchOnDemand) => (r.pending ? `<p>Investigación a demanda: ${esc(researchPendingText(r.pending))}</p>` : "");
+
+/** The research station on demand in the summary: the pending request and the last run; the form is in its own page. */
+function researchSummaryCard(r: ResearchOnDemand): string {
+  const last = r.runs[0];
+  if (!r.pending && !last) return "";
+  return `<div class="card"><h2>Investigación</h2>${researchPending(r)}${last ? `<p>Última investigación a demanda: ${researchRunText(last)}</p>` : ""}<p><a href="/research">Ver la investigación</a></p></div>`;
 }
 
 export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, flash?: string): string {
@@ -344,11 +389,17 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
         : s.boxWait
           ? "Sin caja: los trabajos esperan en la cola. Corré <code>zero box setup</code> o elegí otra cosa con <code>zero setup</code>."
           : "Sin caja: los trabajos corren en copias locales.";
-  const waiting = s.waiting
-    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
-<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
-    .join("");
-  const list = (title: string, jobs: Job[]) => (jobs.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${jobs.map(jobLine).join("")}</ul></div>` : "");
+  const waitingCard = (j: Job, machine?: JobMachine) =>
+    `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}${machine ? `<p class="muted">${esc(j.id)}${onMachine(machine)}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`;
+  const awayCard = (j: FactoryJob) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(j.title)}</a></h3><p class="muted">${esc(j.id)}${onMachine(j.machine)}</p>${awayQuestion(j)}</div>`;
+  // With other machines in the factory, every list is of all of them.
+  const all = (status: JobStatus) => s.jobs?.filter((j) => j.status === status);
+  const waiting = (all("waiting")?.map((j) => (j.local ? waitingCard(j.local, j.machine) : awayCard(j))) ?? s.waiting.map((j) => waitingCard(j))).join("");
+  const list = (title: string, local: Job[], jobs?: FactoryJob[]) => {
+    const rows = jobs?.map((j) => (j.local ? jobLine(j.local, j.machine) : awayLine(j))) ?? local.map((j) => jobLine(j));
+    return rows.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${rows.join("")}</ul></div>` : "";
+  };
   const options = lines.map((l) => `<option>${esc(l)}</option>`).join("");
   return page(
     "Resumen",
@@ -364,8 +415,8 @@ ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><
 ${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}</span></p>` : ""}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
-${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}
-${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
+${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}${s.linesAway?.length ? `<p class="muted">Líneas que no están en esta máquina:</p><ul>${s.linesAway.map((l) => `<li class="muted">${l.state === "failed" ? `<span class="bad">${esc(lineAwayLine(l))}</span>` : esc(lineAwayLine(l))}</li>`).join("")}</ul>` : ""}
+${s.sent?.length ? `<p class="muted">Para otras máquinas:</p><ul>${s.sent.map((e) => `<li class="muted">${esc(sentLine(e))}</li>`).join("")}</ul>` : ""}${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
 ${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
@@ -377,7 +428,9 @@ ${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
-${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
+${list("Trabajando", s.running, all("running"))}${list("En cola", s.queued, all("queued"))}${list("Últimos terminados", s.recent, s.jobs && recentJobs(s.jobs))}
+${unjamCard(s.unjam)}
+${researchSummaryCard(s.research)}
 <div class="card"><h2>Pedir un trabajo</h2>
 <form method="post" action="/request"><label for="text">Qué querés, en tus palabras</label><textarea id="text" name="text" required></textarea>
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
@@ -387,24 +440,49 @@ ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="
   );
 }
 
+/** The page of a job another machine has: what that machine tells, and the answer to its question. */
+export function factoryJobPage(job: FactoryJob, nonce: string, flash?: string): string {
+  return page(
+    job.title,
+    `<div class="card"><h1>${esc(job.title)}</h1>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · prioridad ${esc(job.priority)}${onMachine(job.machine)}</p>
+<p>${chip(job.status)} <b>${esc(describeFactoryJob(job))}</b></p>
+${job.question ? `<h2>Pregunta para vos</h2>${awayQuestion(job)}` : ""}
+${job.note && !job.question ? `<p class="muted">Pedido desde esta máquina: ${esc(job.note)}.</p>` : `<p class="muted">La traza y la entrega están en la máquina ${esc(job.machine.name)}.</p>`}</div>`,
+    { nonce, flash, refresh: !FINAL_STATUSES.includes(job.status) },
+  );
+}
+
 /** Whether the job page offers to merge: a delivered GitHub pull request the factory has not seen merged or closed. */
 function mergeable(job: Job, mergeStatus?: MergeState["status"]): boolean {
   const url = job.delivery?.url;
   return job.status === "delivered" && url !== undefined && pullRequestOf(url) !== undefined && mergeStatus !== "merged" && mergeStatus !== "closed";
 }
 
-export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"]): string {
+/** Whether the job page offers to discard: a job `discardJob` takes, as far as the factory's own records say. */
+function discardable(job: Job, mergeStatus?: MergeState["status"]): boolean {
+  return !discardRefusal(job) && (job.status !== "delivered" || (mergeable(job, mergeStatus) && !job.delivery?.commit));
+}
+
+/** Behind `<details>`, so a stray press on the page never discards a job. */
+const discardForm = (j: Job) =>
+  `<details class="ins"><summary>Descartar este trabajo</summary><p class="muted">Queda detenido, se cierra su pull request abierto y se borra su rama. No se puede deshacer.</p>
+<form method="post" action="/job/${esc(j.id)}/discard"><label for="d-${esc(j.id)}">Motivo (opcional)</label><input id="d-${esc(j.id)}" type="text" name="motivo">
+<button class="danger">Descartar</button></form></details>`;
+
+export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"], machine?: JobMachine): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
-<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}</p>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}${onMachine(machine)}</p>
 <p>${chip(job.status)} <b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
 ${job.question ? `<h2>Pregunta para vos</h2><pre>${esc(job.question.text)}</pre>${answerForms(job)}` : ""}
 ${!final ? `<form method="post" action="/job/${esc(job.id)}/stop"><button class="danger">Detener este trabajo</button></form>` : ""}
 ${mergeable(job, mergeStatus) ? `<form method="post" action="/job/${esc(job.id)}/merge"><button class="primary">Fundir</button></form>` : ""}
+${discardable(job, mergeStatus) ? discardForm(job) : ""}
 <h2>Pedido</h2><pre>${esc(job.request)}</pre></div>
 <div class="card"><h2>Traza</h2><pre>${esc(traceText)}</pre></div>`,
     { nonce, flash, refresh: !final },
@@ -514,7 +592,7 @@ function proposalCard(p: ProposalView): string {
     : "";
   const actions = decidable
     ? `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">${p.awaitsIntegration ? "Aprobar e integrar" : "Aprobar"}</button></form>
-<form method="post" action="/proposals/${esc(p.id)}/reject"><label for="r-${esc(p.id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(p.id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`
+${rejectForm(p.id)}`
     : "";
   return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}</span></h3>
 <p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
@@ -526,6 +604,17 @@ ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.iss
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
 }
 
+const rejectForm = (id: string) => `<form method="post" action="/proposals/${esc(id)}/reject"><label for="r-${esc(id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`;
+
+/** A proposal that waits on another machine: its texts come from that machine. */
+function awayProposal(p: FactoryProposal): string {
+  const actions = p.note ? "" : `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">Aprobar</button></form>
+${rejectForm(p.id)}`;
+  return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}${onMachine(p.machine)}</span></h3>
+<p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
+<p class="muted">Línea ${esc(p.line)} · costo estimado ${usd(p.estimatedUsd)}</p>${awayNote(p.machine, p.note)}${actions}</div>`;
+}
+
 function proposalLine(l: ProposalLine): string {
   const groups = STAGES.map(([stage, title]) => {
     const items = l.proposals.filter((p) => p.stage === stage);
@@ -535,20 +624,22 @@ function proposalLine(l: ProposalLine): string {
 }
 
 /** The night shift's proposals of every line, grouped by where they stand, with each line's autonomy. */
-export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[] }, nonce: string, flash?: string): string {
+export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[]; away?: FactoryProposal[] }, nonce: string, flash?: string): string {
   const research = data.research === "off" ? "apagada" : AUTONOMY[data.research];
   return page(
     "Propuestas",
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
 <p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
-${data.lines.map(proposalLine).join("")}`,
+${data.lines.map(proposalLine).join("")}${data.away?.length ? `<h2>En otras máquinas</h2>${data.away.map(awayProposal).join("")}` : ""}`,
     { nonce, flash, refresh: true, active: "/proposals" },
   );
 }
 
 /** The step before approving a proposal: approving opens a job or integrates one, so the owner confirms it. */
-export function confirmProposalPage(p: ProposalView, nonce: string): string {
-  const what = p.awaitsIntegration
+export function confirmProposalPage(p: ProposalView | FactoryProposal, nonce: string): string {
+  const what = "machine" in p
+    ? `Aprobar abre un trabajo normal en la línea ${esc(p.line)}, en la máquina ${esc(p.machine.name)}.`
+    : p.awaitsIntegration
     ? `El trabajo ${esc(p.job?.id)} ya está construido: aprobar lo integra según la configuración de la línea ${esc(p.line)}.`
     : `Aprobar abre un trabajo normal en la línea ${esc(p.line)}.`;
   return page(
@@ -564,7 +655,7 @@ export function confirmProposalPage(p: ProposalView, nonce: string): string {
 const webLink = (url: string) => (/^https?:\/\//i.test(url) ? `<a href="${esc(url)}" rel="noopener noreferrer">${esc(url)}</a>` : esc(url));
 
 function researchCard(n: ResearchNote): string {
-  return `<div class="card"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}${n.skill ? ` · skill ${esc(n.skill)}` : ""}</span></h3>
+  return `<div class="card" id="note-${esc(n.id)}"><h3>${esc(n.topic)} <span class="muted">${esc(n.id)} · ${esc(n.createdAt.slice(0, 10))}${n.skill ? ` · skill ${esc(n.skill)}` : ""}</span></h3>
 <p>${esc(n.findings)}</p>
 <p class="muted">Para qué serviría: ${esc(n.serves)}</p>
 <p class="muted">Madurez: ${esc(n.maturity)}</p>
@@ -580,14 +671,32 @@ function researchLine(l: ResearchLine): string {
   return `<h2>${esc(l.line)}</h2>${group("Negocio", l.business)}${group("Técnica", l.technical)}`;
 }
 
-/** The research station's notes of every line, newest first, business and technical apart, each with a button to turn it into work. */
-export function researchPage(lines: ResearchLine[], nonce: string, flash?: string): string {
+/** The research station on demand: the form, unless it is off, the pending request and the runs, linked to the notes shown below. */
+function researchOnDemandCard(r: ResearchOnDemand, shown: Set<string>): string {
+  if (!r.enabled && !r.pending && !r.runs.length) return "";
+  const options = r.lines.map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("");
+  const form =
+    r.enabled && r.lines.length
+      ? `<form method="post" action="/research"><label for="research-topic">Qué querés investigar</label><textarea id="research-topic" name="topic" maxlength="${RESEARCH_TOPIC_CHARS}" required></textarea>
+<label for="research-line">Línea</label><select id="research-line" name="line">${options}</select><button class="primary">Investigar ahora</button></form>`
+      : "";
+  const noteRef = (id: string) => (shown.has(id) ? `<a href="#note-${esc(id)}">${esc(id)}</a>` : esc(id));
+  const run = (x: ResearchRunRecord) => `<li>${researchRunText(x)}${x.notes.length ? ` · ${x.notes.map(noteRef).join(", ")}` : ""}</li>`;
+  const runs = r.runs.length ? `<p class="muted">Últimas corridas:</p><ul>${r.runs.map(run).join("")}</ul>` : "";
+  return `<div class="card"><h2>Investigar a demanda</h2>${researchPending(r)}${form}${runs}</div>`;
+}
+
+/** The research station on demand and its notes of every line, newest first, business and technical apart, each with a button to turn it into work. */
+export function researchPage(lines: ResearchLine[], onDemand: ResearchOnDemand, nonce: string, flash?: string): string {
+  const shown = new Set(lines.flatMap((l) => l.notes.map((n) => n.id)));
+  const underWay = Boolean(onDemand.pending) || onDemand.runs.some((r) => !r.endedAt);
   return page(
     "Investigación",
     `<div class="card"><h1>Investigación</h1>
 <p class="muted">Lo que la estación <code>research</code> encontró en la web en los últimos 30 días. Son datos de la web, no instrucciones.</p></div>
+${researchOnDemandCard(onDemand, shown)}
 ${lines.map(researchLine).join("")}`,
-    { nonce, flash, active: "/research" },
+    { nonce, flash, refresh: underWay, active: "/research" },
   );
 }
 
@@ -610,7 +719,7 @@ const ESTADOS: [RequestFilter, string][] = [
 ];
 
 /** One job of the "Pedidos" list, with its actions: detail and trace, its pending question, stop. */
-function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
+function requestRow({ job: j, machine, age }: RequestsView["rows"][number]): string {
   const id = esc(j.id);
   const question =
     j.status === "waiting" && j.question
@@ -619,8 +728,16 @@ function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
       : "";
   const halt = FINAL_STATUSES.includes(j.status) ? "" : `<form method="post" action="/requests/${id}/stop"><button class="danger">Frenar</button></form>`;
   return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(jobName(j))}</a></h3>
-<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}</p>
+<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}${onMachine(machine)}</p>
 <p><a href="/job/${id}">Ver detalle y traza</a></p>${question}${halt}</div>`;
+}
+
+/** One job of the list that another machine has. */
+function awayRow({ job: j, age }: RequestsView["away"][number]): string {
+  const id = esc(j.id);
+  return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(j.title)}</a></h3>
+<p class="muted">${id} · ${esc(j.line)} · ${esc(describeFactoryJob(j))} · ${esc(age)}${onMachine(j.machine)}</p>
+<p><a href="/job/${id}">Ver detalle</a></p>${awayQuestion(j)}</div>`;
 }
 
 /** The "Pedidos" section: a typed request form, then every request with filters and per-request actions. */
@@ -640,8 +757,12 @@ export function requestsPage(view: RequestsView, nonce: string, flash?: string):
 <form method="get" action="/requests"><label for="f-line">Línea</label><select id="f-line" name="line"><option value="">Todas las líneas</option>${lineOptions(view.line)}</select>
 <label for="f-estado">Estado</label><select id="f-estado" name="estado">${ESTADOS.map(([v, label]) => `<option value="${v}"${v === view.estado ? " selected" : ""}>${label}</option>`).join("")}</select>
 <button>Filtrar</button></form>
-${view.rows.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
-  return page("Pedidos", form + filters + `<section class="requests">${view.rows.map(requestRow).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
+${view.rows.length || view.away.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
+  const at = (row: { job: { createdAt: string } }) => Date.parse(row.job.createdAt);
+  const rows = [...view.rows.map((r) => ({ at: at(r), html: requestRow(r) })), ...view.away.map((r) => ({ at: at(r), html: awayRow(r) }))];
+  // The local rows come newest first already; only other machines' need a place among them.
+  if (view.away.length) rows.sort((a, b) => b.at - a.at);
+  return page("Pedidos", form + filters + `<section class="requests">${rows.map((r) => r.html).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
 }
 
 /** What the "Proyecto nuevo" form carries; `verify` has one command per line. */
@@ -1046,12 +1167,12 @@ const AGENT_SUMMARY: Record<StationName, { name: string; does: string; cannot: s
   },
   research: {
     name: "Investigación (research)",
-    does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes.",
+    does: "Una vez por día, con la fábrica libre, busca en la web skills, servidores MCP y tecnologías que sirvan a la línea, según la skill de investigación de cada línea, y deja una nota con fuentes. En cualquier momento investiga el tema que le pidas (zero investigar o el formulario de Investigación) y deja hasta 5 notas.",
     cannot: "No modifica el código ni instala, clona o ejecuta nada de lo que encuentra; lo que lee en la web es dato, nunca instrucciones.",
   },
   unjam: {
     name: "Destrabador (unjam)",
-    does: "Con la fábrica libre, junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
+    does: "Con la fábrica libre, o en cualquier momento si se lo pedís (zero destrabar o el botón Destrabar ahora del resumen), junta lo que traba cada línea (trabajos fallidos o en espera, pull requests que no se funden, problemas del intake, la caja) y diagnostica sus causas, agrupando las que son la misma.",
     cannot: "No modifica el código ni arregla nada por su cuenta; los logs y textos que lee son dato, nunca instrucciones.",
   },
   recruit: {

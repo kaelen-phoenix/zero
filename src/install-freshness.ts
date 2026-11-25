@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { githubRepository } from "./line/integrate.js";
 import { log } from "./log.js";
 import { realGit, type GitRunner } from "./package-install.js";
+import { readSelfUpdate, type SelfUpdateEntry } from "./self-update.js";
 import type { Store } from "./state/store.js";
 
 /** Where the daemon keeps what it last saw of the installed copy of zero. */
@@ -13,7 +14,9 @@ const EVERY_MS = 60 * 60_000;
 /**
  * The installed copy of zero next to what was merged: `behind` counts the
  * commits of the checkout's upstream (or `<remote>/<branch>`) missing in HEAD,
- * `staleBuild` says a file under src/ is newer than dist/cli.js. A folder that
+ * `staleBuild` says a file under src/ is newer than dist/cli.js, unless HEAD is
+ * the commit the last self-update put in place and src/ has no local change
+ * (the switch rewrites src/ after building dist/). A folder that
  * is not a git repository only carries a `problem`.
  */
 export interface InstallFreshness {
@@ -73,7 +76,7 @@ const samePath = (a: string, b: string) => {
 };
 
 /** Looks at the installation now, from its own git checkout; a failed fetch leaves the local refs, and nothing is thrown. */
-async function lookAt(root: string, git: GitRunner, now: Date): Promise<InstallFreshness> {
+async function lookAt(root: string, git: GitRunner, now: Date, updated?: SelfUpdateEntry): Promise<InstallFreshness> {
   const checkedAt = now.toISOString();
   let top: string;
   try {
@@ -95,7 +98,12 @@ async function lookAt(root: string, git: GitRunner, now: Date): Promise<InstallF
   const repository = githubRepository(url);
   const built = mtime(join(root, "dist", "cli.js"));
   const source = newestFile(join(root, "src"));
-  const staleBuild = built !== undefined && source !== undefined && source > built;
+  let staleBuild = built !== undefined && source !== undefined && source > built;
+  if (staleBuild && updated?.to) {
+    const head = await git(["rev-parse", "HEAD"], { cwd: root }).catch(() => "");
+    const dirty = await git(["status", "--porcelain", "--", "src"], { cwd: root }).catch(() => "?");
+    if (head && head === updated.to && !dirty.trim()) staleBuild = false;
+  }
   if (!ref) return { checkedAt, staleBuild, ...(repository && { repository }), problem: "La instalación de zero no está en una rama." };
   try {
     await git(["fetch", "--quiet", remote], { cwd: root });
@@ -116,13 +124,17 @@ async function lookAt(root: string, git: GitRunner, now: Date): Promise<InstallF
 /**
  * The daemon's pass: at most once an hour, records in kv `install:freshness`
  * how far the installed copy of zero is from what was merged. Returns the new
- * record, or undefined when the last one is less than an hour old.
+ * record, or undefined when the last one is less than an hour old and no
+ * self-update put a new version in place since.
  */
 export async function checkInstall(store: Store, now: Date, opts: { root?: string; git?: GitRunner } = {}): Promise<InstallFreshness | undefined> {
   const last = readInstallFreshness(store);
+  const updated = readSelfUpdate(store).history.filter((e) => e.outcome === "updated").at(-1);
   const at = last ? Date.parse(last.checkedAt) : Number.NaN;
-  if (Number.isFinite(at) && now.getTime() - at < EVERY_MS && now.getTime() >= at) return undefined;
-  const record = await lookAt(opts.root ?? installRoot(), opts.git ?? realGit, now);
+  const since = updated ? Date.parse(updated.at) : Number.NaN;
+  const fresh = Number.isFinite(at) && now.getTime() - at < EVERY_MS && now.getTime() >= at;
+  if (fresh && !(Number.isFinite(since) && since > at)) return undefined;
+  const record = await lookAt(opts.root ?? installRoot(), opts.git ?? realGit, now, updated);
   store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify(record));
   return record;
 }

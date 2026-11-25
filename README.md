@@ -84,9 +84,11 @@ zero approve <id>              # approve (or --reject --note "why")
 zero trace <id>                # step by step: stations, attempts, agents, commands, cost
 zero briefing                  # report: production, cost, lessons, what needs you
 zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to share with its client
+zero descartar <job> [--motivo "<text>"]   # closes a job you no longer need, with its pull request and its branch
 zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero actualizar-pr <line> <number>...   # updates open pull requests of the line with its base, in that order
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
+zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -98,6 +100,7 @@ The chat does the same with these tools:
 - `zero_status`: the factory's status, or a job's
 - `zero_answer`: answers a job's question
 - `zero_stop`: andon, stops a job or the whole factory
+- `zero_discard`: closes a job you no longer need, with its pull request and its branch
 - `zero_resume`: resumes after the andon
 - `zero_briefing`: the briefing
 - `zero_monthly_report`: the monthly report
@@ -109,6 +112,8 @@ The chat does the same with these tools:
 - `zero_research_request`: turns a research note into a job
 - `zero_package_run`: a package station on demand, with an optional `request`
 - `zero_package_upload`: a file for a package station that takes uploads
+- `zero_unjam`: the unjam station now, for one line or for all of them
+- `zero_investigate`: web research now on the `topic` you give, for one line
 - `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
 - `zero_egress`: internet egress
 - `zero_egress_block`: blocks a site (internet egress)
@@ -137,10 +142,80 @@ To start a project from scratch, `zero repo crear <name|account/name>` creates t
 ### Several machines (`zero unirse`)
 
 ```sh
-zero unirse me/zero-coord
+gh repo create me/zero-coord --private --add-readme   # once; --add-readme leaves the first commit GitHub needs
+zero unirse me/zero-coord                             # on each machine
 ```
 
-A factory can live on more than one of your machines. Create a private GitHub repository for coordination (or let `zero repo crear <name> --coordinacion` create it and join this machine), then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
+A factory can live on more than one of your machines. Create a private GitHub repository for coordination (or let `zero repo crear <name> --coordinacion` create it and join this machine), then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Without a repository, or with one it cannot use, it explains how to create it; zero creates nothing on its own. Secrets stay in each machine's own store and never travel through that repository. Restart the factory (`zero shutdown` and `zero start`) after joining.
+
+```yaml
+distributed:
+  repository: me/zero-coord
+  machine: cloud                 # optional: this machine's name; without it, the host's
+```
+
+- **Who is there.** Each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. The machines never connect to each other.
+- **A shared queue.** Every machine takes jobs from the same queue, each job on one machine at a time, and only those it can do (the box and the engines it has). If one goes down, another takes its jobs over from the last checkpoint pushed; what was not pushed is done again.
+- **Lines cloned on their own.** Each machine publishes its lines that have a GitHub remote (name, repository, base branch, `setup`, `verify` and integration; never paths, secrets or the rest of its configuration), and the others clone them into `ZERO_HOME/lines` when they join and whenever a new one appears, with git's own credentials. A line that already exists on a machine is never changed, and package lines are not shared. With `platforms` (`win32`, `darwin`, `linux`) a line says where it can be worked on: a machine with another platform, or without its engines, does not clone it, and `zero status` and the panel say why.
+- **Cloned lines run commands.** A cloned line brings the `setup` and `verify` commands that this machine will run: whoever can write in the coordination repository can add lines. Keep it yours alone.
+- **Use `integrate: pull-request` in shared lines.** With `merge` or `branch`, the work is delivered in the clone of the machine that did it, and the others do not see it.
+- **One budget.** What every machine spends counts against the same limits (`usdPerDay`, `usdPerNight`, `usdPerJob`), and a subscription has one quota: an engine paused on one machine by its plan or by `reservePercent` is paused on all. This assumes that they all use the same account. What the others spent arrives up to a heartbeat late, so several machines working at once can go a little over a cap.
+- **From any of them.** The chat, the CLI and the panel of any machine show the jobs of all, with the machine's name, and from there you can ask for work (also for a line that machine does not have), answer, approve, and decide proposals. What is for another machine goes out with the next heartbeat and is applied with that machine's, not at once; if it is down, when it comes back. Stopping, discarding and merging a job, and its trace, are still for the machine that has it.
+- **Packages.** They are not copied between machines, and their stations can be pinned to one (see [Agent packages](#agent-packages)).
+
+Without `distributed`, a single-machine factory works as always and sends nothing. The reasons and the protocol are in `docs/adr/0007-fabrica-distribuida.md`.
+
+### Linux machine in the cloud
+
+To add a Linux virtual machine that works on its own, with no desktop and no open ports. It needs:
+
+- Debian 12, Ubuntu 24.04 or later, with systemd and a user of yours that is not root. Other distributions work with their own package names.
+- Node 22 or later and npm, installed for the whole system ([nodejs.org](https://nodejs.org)): the service does not read your shell's configuration, so it does not find what a version manager leaves in your folder.
+- Outgoing HTTPS. Nothing comes in except your own SSH: leave every other port closed, the panel's 4848 included.
+
+The commands with `sudo` need administrator rights and you run them; zero asks for none.
+
+```sh
+sudo apt install git gh podman uidmap gnome-keyring dbus-user-session   # administrator
+sudo npm install -g @anthropic-ai/claude-code                           # administrator: the CLIs of the engines you will use
+sudo loginctl enable-linger "$USER"                                     # administrator: your user's services start with the machine
+```
+
+**Box.** zero uses Podman without root: `podman info` has to answer with your user. If it complains about identifiers, your user needs a range in `/etc/subuid` and `/etc/subgid` (an administrator adds it with `usermod --add-subuids` and `--add-subgids`). If it refuses `--cpus`, systemd does not delegate that controller to your user: an administrator adds it (`Delegate=cpu cpuset io memory pids` in a drop-in of `user@.service`).
+
+**Keyring.** zero keeps the panel's key and the credentials in the system keyring (Secret Service), never in a file. With no desktop it has to be unlocked by hand. This asks for its password without showing it, and the first time it creates the keyring:
+
+```sh
+read -rsp "Keyring password: " KEYRING && printf %s "$KEYRING" | gnome-keyring-daemon --replace --unlock --components=secrets; unset KEYRING
+```
+
+**After every restart the keyring is locked again**: the service starts the factory on its own, but the panel and the stored credentials do not work until you come in through SSH, run that command again and restart the factory (`zero shutdown` and `zero start --detach`).
+
+**Install and join.** With the keyring unlocked:
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh   # ends by opening zero setup
+zero init                                              # creates the factory if zero setup did not
+zero setup                                             # engines, limits, panel and GitHub; run it again to change anything
+gh auth login --git-protocol https --web               # shows a code to type in the browser of another machine
+gh auth setup-git                                      # git asks gh for the credential when it clones the lines
+zero box setup                                         # builds the box's image with Podman
+claude setup-token                                     # your subscription's token
+zero secret set CLAUDE_CODE_OAUTH_TOKEN                # pasted without being shown, kept in the keyring
+zero unirse me/zero-coord                              # joins the factory and clones its lines
+zero autostart on                                      # the user service that starts with the machine
+zero shutdown && zero start --detach                   # starts it already joined
+zero panel remote on                                   # the panel through the tunnel, no open port
+```
+
+- No secret is pasted into a file, an argument or an environment variable: `zero secret set` and `zero setup` ask for it without showing it. With the keyring unlocked, `gh auth login` leaves its session there; without one it leaves it in a file **in plain text**. `gh auth status` tells which.
+- Codex needs a key inside the box (`zero secret set OPENAI_API_KEY`). `codex login --device-auth` leaves its session in a file that the CLI manages, unencrypted: use the key if you would rather avoid that.
+- `zero setup` may already have done the steps of GitHub, the token and the start at login: running them again does no harm.
+- `zero panel remote on` asks before downloading `cloudflared`, which only makes outgoing connections, and gives you the link. The panel of any other machine also shows the whole factory.
+- If an engine's CLI is in a folder of yours such as `~/.local/bin`, put that folder in the `PATH` of `~/.config/environment.d/zero.conf`: the service does not read `.bashrc`.
+- What should never go out from a cloud address, such as a package's station, is pinned to another machine (see [Agent packages](#agent-packages)).
+
+zero's tests do not exercise this installation: they only check that this guide has its pieces. Podman without root, the keyring with no desktop, the systemd service after a restart, the logins and the tunnel have not been run by them on a cloud machine.
 
 ## Install with Docker
 
@@ -337,6 +412,7 @@ request
 - **It merges only when GitHub says so.** With integrate `pull-request` and `autoMerge`, zero merges only once every GitHub check on the pull request has finished successfully, including Sonar, CodeQL and any other tool configured as a check. If a check fails, the pull request stays open.
 - **Merging on request.** On any line, with or without `autoMerge`, you can ask the factory to merge a pull request it delivered: `zero fusionar <job | url>` on the terminal, `zero_merge` in the chat, or the **Fundir** button on the job's page in the panel (which asks for confirmation first). It merges only when GitHub says the pull request is ready (every check passed, no conflicts); otherwise it tells you why and forces nothing. `zero fusionar <url>` also takes an open pull request of a line's GitHub repository that the factory did not deliver, and merges it at the commit it read, under the same rule. Each merge is recorded in the job's trace and in the line's townhall.
 - **Checks GitHub did not start because of billing.** When GitHub refuses to start a pull request's jobs because the account's payments failed or its spending limit was reached, zero does not comment, refresh or count it as a broken environment: it tells you once per repository (in `zero status`, the panel and the briefing) and, as soon as GitHub starts runs on that repository again, reruns the failed jobs of those runs on its own (`rerun --failed`), one pull request at a time and at most once per run.
+- **Discarding a job.** `zero descartar <job> [--motivo "<text>"]` (`zero_discard` in the chat, **Descartar** on the job's page in the panel) closes a job that failed, is queued, waits for you, or was delivered with its pull request still open: it ends stopped with your reason in the report, its open pull request gets a comment and is closed, and its `zero/…` branch is deleted in the line's repository and on GitHub. It never touches the base branch or a branch that is not the factory's, and what GitHub refuses is told without leaving the job open. A running job has to be stopped first (`zero stop <job>`). The jams that were only about that job leave the status at once. The factory also closes on its own the failed jobs whose pull request was already merged, or whose branch or changes are already in the base branch of the remote: they end stopped, with the why in the report, and you are asked nothing.
 - **Updating someone else's pull requests.** `zero actualizar-pr <line> <number>...` takes open pull requests of the line's GitHub repository, whoever opened them (not from a fork, to the line's base branch), one job per number in the order given. Before touching anything it leaves a local backup branch `respaldo/pr<N>` at the pull request's head (or `respaldo/pr<N>-<job>` when one already exists at another commit; it is never pushed). The job merges the base into the pull request's branch, resolves the conflicts with the OpenSpec changes of that branch as their guide, runs the line's verification and pushes to the same branch without force, opening no other pull request; if someone pushed to the branch in the meantime, it pushes nothing. It prints one line per pull request and exits 1 when any was refused, saying why.
 - **Integration train.** When several pull requests of a line block each other (each merge leaves the next in conflict or behind), `zero tren <line> [<number>...]` lines them up: the ones the factory delivered and not merged yet, oldest first, or the numbers you give in that order, taking on those it did not open as with `zero actualizar-pr`. The factory works only on the first one: it brings the base in, resolves the conflicts on that pull request's own branch, runs the verification, waits for the checks and merges it only when GitHub says it is ready, even on a line without `autoMerge`; then it goes on with the next. It never merges anything red, and it merges a pull request it did not open only at the commit it verified: if someone pushes to that branch afterwards, the train stops there and says so. Simple conflicts (import lines both sides added or changed, or both sides adding different lines at the same place) are resolved without a model and without spending an attempt. A check run cancelled by its workflow's concurrency group is not a failure: the factory runs those again one pull request at a time, and it does not merge while another pull request of the repository has checks waiting for their turn. The unjam station also starts a train on its own on lines at `build` or `auto`, and it runs during the day too when a pull request has been blocked for hours (`unjam.urgentAfterHours`, 2 by default), without competing with your work. When it cannot clear a jam, `zero status`, the panel and the briefing say what is missing and who has to do it: you, whoever opened the pull request, GitHub or the factory.
 - **If the repository has no checks**, auto-merge waits a few minutes for them to appear and then merges with only zero's own verification and reviews.
@@ -365,12 +441,12 @@ With the factory running, the panel shows:
 - each job's trace;
 - internet egress and the report;
 - each line's night-shift proposals ("Propuestas" tab);
-- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first);
+- each line's research notes ("Investigación" tab), business notes apart from technical ones, with their sources, the link to their issue and a button to request a job from a note (it asks for confirmation first), and a form to research a topic now, with the pending request and the last runs;
 - the "Monitor" tab: factory totals (jobs per day, delivered, failed, queued and running, success rate, average time per job and per station, attempts per job), subscription use, the month's spend per engine and tokens, one card per agent (calls, tokens, cost, time, success rate, deliveries, engines, models and lines) and one per line (jobs, deliveries, last job, open pull requests), drawn in SVG inside the panel, filtered by today, 7 or 30 days, read-only and refreshed on its own;
 - the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
-From the panel you can also request a job, pull the andon and block or allow sites. It is designed for the phone.
+From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
 
 ```sh
 zero panel                     # the panel link, with your key (starts the factory if needed)
@@ -403,7 +479,7 @@ zero mcp remote off            # turns it off
 - zero is its own OAuth 2.1 authorization server, with PKCE (S256) and dynamic client registration. Each new connection is approved by you on the panel's page, with your key; the chat never gets a password.
 - Access tokens last 1 hour and refresh tokens 7 days, rotating on every use. zero keeps only their SHA-256 hash.
 - Two permissions: read (status, traces, proposals, research, reports) and act (request work, answer).
-- Merging, stopping, approving proposals or protected files, blocking sites and creating repositories from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
+- Merging, stopping, discarding jobs, approving proposals or protected files, blocking sites and creating repositories from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
 - The "Chat remoto" tab lists the connected chats, revokes them (it asks for confirmation first) and confirms the held actions.
 - The quick tunnel's address changes every time it restarts, so the chat's connector has to be updated then.
 
@@ -520,6 +596,7 @@ lines:
     verify: ["npm test"]  # everything must pass before the review
     verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
+    platforms: [win32, linux]   # optional: where it can be worked on (win32 · darwin · linux); a joined machine on another platform does not clone it
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
@@ -691,7 +768,7 @@ Guarantees that zero enforces, never the agent: custom agents are read-only (in 
 
 Packages are a way to extend zero with your own agents or with third-party ones, without touching zero or the factory's fixed stations. A package is a local folder or an npm package with a `zero-package.yaml` at its root. From it zero loads agents with their instructions, skills and, only with your explicit permission, stations with their own code.
 
-You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine` and `model`:
+You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine`, `model`, `machine` and `machines`:
 
 ```yaml
 packages:
@@ -702,7 +779,12 @@ packages:
     allowCode: true                # off by default: without it, its stations never run
     config:
       greeting: Hello
+    machine: home-pc               # optional: its stations run only on this machine, by name or id
+    machines:                      # optional: the same for a single station; it wins over machine
+      note: home-pc
 ```
+
+**Stations pinned to a machine.** With several machines (see [Several machines](#several-machines-zero-unirse)), `machine` pins every station of a package and `machines` only the ones it names, to one machine: its `distributed.machine` (or the host name when there is none; upper and lower case do not matter) or its id. A pinned station never runs on another machine, whether in its period, with the factory busy, at its scheduled times, on demand or from an upload: zero does not even import its module there, and asking for it there is refused naming the right machine. A name that matches no machine leaves the station running nowhere. If `machines` names a station the package does not have, the package shows the problem and none of its stations run, so a typo never leaves one free to run anywhere. `zero package list` and the panel's "Paquetes" tab show the pinned machine. A package's agents and skills, and the jobs its stations request, are not pinned.
 
 **The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included, and a skill's folder cannot hold links at all.
 
@@ -955,6 +1037,7 @@ A research skill can be a **business** one (pricing, licenses, comparable produc
 research:                 # or `research: off` to turn it off
   topics: ["local agent engines"]   # optional: topics of interest for every line
   perLinePerDay: 1        # notes per research skill per day (0 = off); if not enough, they take turns
+  usdPerRun: 2            # cap in dollars of each run you ask for (pay-per-use engines)
   autonomy: propose       # propose · build · auto: how far a proposal born from a note goes on its own
 stations:
   research: { timeoutMinutes: 15 }
@@ -992,6 +1075,18 @@ Each note has a topic, what was found, the sources (http(s) links; a note withou
 
 On GitHub lines each note is also published as an issue in the line's repo, with the `zero:investigacion` label (the factory creates it if missing) and never with `zero`, so it does not become a job on its own. The issue has what was found, what it would help with, its maturity, the sources, the note's id and how to request a job (`zero research request <id>`). Before publishing, zero covers secrets and paths from your PC and disables mentions (@user) so nobody gets notified. Markdown images and tags that load resources (`img`, `picture`, `source`, `video`, `audio`, `iframe`) are published as text, in notes, proposals and proposal comments, and a note's sources are stored without query string or fragment. This reduces exposure but guarantees nothing: data can still travel in a URL's path, and normal links remain, though they take a click. If GitHub fails, it retries on the next pass.
 
+**On demand.** You can ask for research on a topic without waiting for the night shift: `zero investigar "<topic>" [--line <line>]`; the chat's `zero_investigate` tool (a remote chat needs permission to act); or the "Investigar ahora" form in the panel's "Investigación" tab, with the topic and the line. With a single line that is not a package's you can leave the line out. It runs once as soon as it can, with jobs queued or running, outside `nightShift.hours`, with `nightShift: off`, with `perLinePerDay: 0` and on a line without a research skill, without taking a job's place. The skills' regular runs keep their own turn.
+
+- **The result is normal notes.** At most 5 per run, with the same rule as the nightly ones: a note without an http(s) source is discarded, and zero does not check that the page says what the note claims. They carry no skill and are never business notes. Only Claude searches the web in this station; with another engine a run can end without notes.
+- **Its own cap.** On pay-per-use engines a run spends at most `research.usdPerRun` (2 dollars by default), or what is left of `limits.usdPerDay` when that is less. A run that reaches the cap ends cut short, without notes. Its spending counts in the day's budget and not in `limits.usdPerNight`. On a subscription, the plan's windows and the station's time limit hold.
+- **One pending at a time.** Asking again before it starts is refused, and so it is with the andon on, the budget reached, `research: off`, an empty topic or one over 2000 characters, or a line that does not exist or belongs to a package: you get the reason and nothing is recorded (the command exits 1). If the andon or the budget comes after you asked, it stays pending until neither holds. The andon or a shutdown (a version change included) cuts a run in progress, which has to be asked for again.
+- **How you find out.** The command and the chat start the factory if it was off, wait a while for the run to start and tell you whether it did or is still pending; with `--esperar` the terminal stays until the end and shows you the notes. When it ends, the chat's next zero answer says so, once; and `zero status`, the panel's summary and the briefing show the pending request and the last run, with the topic, when it was asked for, how it ended (fine, failed, cut short or could not run, with the reason) and how many notes it left. The panel's "Investigación" tab keeps the last 10 runs, with links to their notes.
+
+```sh
+zero investigar "new payment rules" --line tienda   # research now on a topic
+zero investigar "new payment rules" --line tienda --esperar   # the same, waiting for the end
+```
+
 Security: what comes from the web is data, never instructions, and the instructions of `research` and `scout` say so. The station is read-only: it does not install, clone or run anything it finds. With Claude it only has the read tools plus `WebSearch` (the search runs on the provider's side; `WebFetch` is off); with other engines it works as a read-only station. It does not go through the box yet, so its searches do not show up in `zero egress`.
 
 ## Unjam
@@ -1009,7 +1104,14 @@ stations:
   unjam: { timeoutMinutes: 15 }
 ```
 
+**On demand.** You can ask for it without waiting for the night shift: `zero destrabar`, for every line, or `zero destrabar <line>`, for one; the chat's `zero_unjam` tool (a remote chat needs permission to act); or the "Destrabar ahora" button in the panel's summary, where you choose the line. It runs once as soon as it can, with jobs queued or running, outside `nightShift.hours`, with `nightShift: off` and even for a line already diagnosed in the period, without taking a job's place and never along with another diagnosis. The regular passes keep their own turn, and package lines are never looked at.
+
+- **Same logic and limits.** `unjam.maxJobsPerDay`, `nightShift.maxAutoJobsPerDay`, no repeated titles, each job's single retry, the line's autonomy and protected paths hold as in the regular pass, and it shares `limits.usdPerNight`: with nothing left, it calls no model and ends as cut short. Like the regular pass, it first closes the failed jobs that are already resolved, so they are never diagnosed.
+- **One pending at a time.** Asking again before it starts is refused, and so it is with the andon on, the budget reached, `unjam: off` or a line that does not exist or belongs to a package: you get the reason and nothing is recorded (the command exits 1). If the andon or the budget comes after you asked, it stays pending until neither holds.
+- **What it shows.** The command and the chat start the factory if it was off, wait a while for the run to start and tell you whether it did or is still pending. `zero status`, the panel's summary and the briefing show the pending run and the last one: when it was asked for, when it started and how it ended (fine, failed, cut short or could not run, with the reason), with each line's jams and causes.
+
 ```sh
+zero destrabar [line]     # the unjam station now, for one line or for all of them
 zero reintentar <job>     # a failed job back to the queue from its checkpoint, or a pull request in conflict back to the line
 ```
 
@@ -1135,3 +1237,7 @@ Every AI orchestrator starts from the same assumption: code is the product and a
 - Plugin and specialist API
 - ccusage
 - Governed MCP for the station agents
+
+## License and trademark
+
+The code is licensed under [Apache-2.0](LICENSE): you can use it, modify it and fork it. The name "zero in the loop" and the logos are not part of that license; the [trademark policy](TRADEMARK.md) covers them. You can name the project to describe it or to say that something works with it. Using the name or the logos for a derived product or service needs permission.

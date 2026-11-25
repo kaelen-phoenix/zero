@@ -7,14 +7,16 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, createProject, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answer, approveProposal, briefing, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, rejectProposal, reviveDaemon, removeAgent, requestStationRun, uploadToStation, waitStationStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, getJob, joinFactory, openFactory, panelLinks, requestWork, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, createProject, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
+import { gitCloneLine, type LineCloner } from "./coord/lines.js";
 import { githubIssues, lineRepository } from "./intake/github.js";
+import { discardJob } from "./line/discard.js";
 import { gitCredential, githubToken } from "./line/integrate.js";
 import { runDaemon } from "./daemon.js";
-import { formatAdoptions, formatTrain, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
+import { formatAdoptions, formatTrain, formatDiscard, formatEgress, formatJob, formatMerge, formatPendingActions, formatProposalDecision, formatProposals, formatRemoteChat, formatRequest, formatResearchNotes, formatAgents, formatCatalog, formatPackages, formatSkills, formatStatus, shutdownOutcome } from "./format.js";
 import { factoryHome } from "./home.js";
 import { addLine, initFactory } from "./init.js";
 import { install } from "./install.js";
@@ -45,6 +47,8 @@ Uso diario (también desde el chat):
   zero resume                    Reanuda la fábrica
   zero reintentar <trabajo>      Vuelve a poner en cola desde su checkpoint un trabajo fallido, o deja que la
                                  fábrica vuelva a actualizar un pull request en conflicto
+  zero descartar <trabajo>       Cierra un trabajo fallido, en cola, en espera o con su pull request sin fundir: cierra ese
+                                 pull request con un comentario y borra su rama   [--motivo "<texto>"]
   zero fusionar <trabajo | url>  Funde un pull request que entregó la fábrica, aunque la línea no tenga autoMerge,
                                  solo si GitHub dice que está listo (checks verdes, sin conflictos); si no, dice por qué
   zero actualizar-pr <línea> <número>...
@@ -55,6 +59,14 @@ Uso diario (también desde el chat):
                                  Arma el tren de integración de la línea con sus pull requests entregados sin fundir (o
                                  esos, en ese orden): los funde de a uno, aunque la línea no tenga autoMerge, actualizando
                                  y resolviendo el siguiente recién después, y nunca funde uno en rojo
+  zero destrabar [línea]         Corre ahora el destrabador en la línea (o en todas), aunque haya trabajos en cola o
+                                 corriendo y fuera del turno nocturno, con sus mismos límites; responde cuando la
+                                 corrida empezó (o, pasados 2 minutos, que sigue pendiente)
+  zero investigar "<tema>" [--line <nombre>] [--esperar]
+                                 Investiga ahora ese tema en la web para la línea, aunque haya trabajos en cola o corriendo
+                                 y fuera del turno nocturno, hasta research.usdPerRun; responde cuando la corrida empezó
+                                 (o, pasados 2 minutos, que sigue pendiente); con --esperar, se queda hasta que termina y
+                                 muestra sus notas
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -127,7 +139,8 @@ Fábrica:
   zero issues on|off             Toma como pedidos los issues de GitHub con una etiqueta   [--line <nombre>] [--label zero]
   zero start [--detach]          Enciende la fábrica (en primer plano, o en segundo plano)
   zero autostart on|off          Enciende la fábrica al iniciar sesión (sin permisos de administrador), o deja de hacerlo
-  zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado)
+  zero unirse <cuenta/repo>      Une esta máquina a una fábrica distribuida (repositorio de coordinación privado) y clona
+                                 sus líneas; sin repositorio, explica cómo crearlo
   zero shutdown                  Apaga la fábrica cuando termine lo que está haciendo y espera a que se apague (hasta 60 s)
   zero mcp                       Servidor MCP por stdio (lo lanzan los clientes de chat)
   zero mcp remote on|off         Deja manejar la fábrica desde el chat del celular (ChatGPT, Claude u otro cliente MCP) por
@@ -139,7 +152,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run` waits for the daemon to start the run before saying it is still pending. */
+/** How long `zero package run`, `zero destrabar` and `zero investigar` wait for the daemon to start the run before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -170,6 +183,7 @@ async function main(argv: string[]): Promise<number> {
       coordinacion: { type: "boolean" },
       verify: { type: "string", multiple: true },
       setup: { type: "string", multiple: true },
+      esperar: { type: "boolean" },
       detach: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       help: { type: "boolean", short: "h" },
@@ -310,7 +324,7 @@ async function main(argv: string[]): Promise<number> {
       }
       case "request": {
         const text = rest.join(" ");
-        const r = requestWork(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
+        const r = requestAnywhere(ctx, { text, line: values.line, kind: values.spec ? "spec" : "request", priority: values.prioridad });
         const started = await ensureDaemon(ctx);
         console.log(formatRequest(r) + (started ? "\nLa fábrica estaba apagada: la encendí." : ""));
         return 0;
@@ -328,12 +342,22 @@ async function main(argv: string[]): Promise<number> {
         if (started) console.log("La fábrica estaba apagada: la encendí.");
         return 0;
       }
+      case "descartar": {
+        if (!rest[0]) throw new Error('Indicá el trabajo: zero descartar <trabajo> [--motivo "<texto>"]');
+        console.log(formatDiscard(await discardJob(ctx, rest[0], { reason: values.motivo, via: "cli" })));
+        return 0;
+      }
       case "status":
-        console.log(rest[0] ? formatJob(getJob(ctx, rest[0]), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus({ ...factoryStatus(ctx), daemonProcesses: daemonProcesses() }));
+        console.log(rest[0] ? jobText(ctx, rest[0]) : formatStatus({ ...factoryStatus(ctx), daemonProcesses: daemonProcesses() }));
         return 0;
       case "approve": {
         if (!rest[0]) throw new Error("Indicá el trabajo: zero approve <trabajo>");
-        console.log(formatJob(await answer(ctx, rest[0], values.reject ? "reject" : "approve", values.note), { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        const r = await answerAnywhere(ctx, rest[0], values.reject ? "reject" : "approve", values.note);
+        if ("job" in r) console.log(formatJob(r.job, { subscription: onSubscription(ctx.store, ctx.config.engine) }));
+        else {
+          const started = await ensureDaemon(ctx);
+          console.log(`${r.sent}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        }
         return 0;
       }
       case "stop": {
@@ -363,6 +387,31 @@ async function main(argv: string[]): Promise<number> {
         if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
         return 0;
       }
+      case "destrabar": {
+        const r = requestUnjam(ctx, rest[0] ?? values.line);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        console.log((await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
+        return 0;
+      }
+      case "investigar": {
+        const r = requestInvestigation(ctx, rest.join(" "), values.line);
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        const start = await waitResearchStart(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS });
+        console.log(start.text);
+        if (!values.esperar || start.notRun) return 0;
+        console.log((await waitResearchEnd(ctx, r.requestedAt)).text);
+        return 0;
+      }
       case "resume":
         resume(ctx);
         console.log("Fábrica reanudada.");
@@ -390,17 +439,14 @@ Informe: ${r.report}`);
       }
       case "proposals": {
         if (!rest[0]) {
-          console.log(formatProposals(listProposals(ctx)));
+          console.log(formatProposals(listProposals(ctx), false, proposalsElsewhere(ctx)));
           return 0;
         }
         if ((rest[0] !== "approve" && rest[0] !== "reject") || !rest[1]) break;
-        if (rest[0] === "reject") {
-          console.log(`Propuesta ${(await rejectProposal(ctx, rest[1], values.note)).id} rechazada y archivada.`);
-          return 0;
-        }
-        const r = approveProposal(ctx, rest[1]);
-        const started = await ensureDaemon(ctx);
-        console.log(`Propuesta ${rest[1]} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
+        const r = await decideProposal(ctx, rest[1], rest[0], values.note);
+        // An approval opens a job, and a decision sent goes out with the daemon's pass.
+        const started = !("rejected" in r) && (await ensureDaemon(ctx));
+        console.log(`${formatProposalDecision(rest[1], r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`);
         return 0;
       }
       case "research": {
@@ -632,8 +678,15 @@ Informe: ${r.report}`);
         }
       }
       case "unirse": {
-        if (!rest[0]) throw new Error("Indicá el repositorio de coordinación: zero unirse <cuenta/repo>");
-        const joined = await joinFactory(ctx, rest[0]);
+        // git runs on its own, so Ctrl+C has to reach it too.
+        const stopJoin = new AbortController();
+        const clone: LineCloner = async (input) => {
+          console.log(`Clonando ${input.url}…`);
+          const cut = () => stopJoin.abort();
+          process.once("SIGINT", cut);
+          await gitCloneLine(input).finally(() => process.off("SIGINT", cut));
+        };
+        const joined = await joinFactory(ctx, rest[0] ?? "", undefined, { ...githubJoin(ctx), clone, signal: stopJoin.signal });
         console.log(joined.text);
         return joined.joined ? 0 : 1;
       }

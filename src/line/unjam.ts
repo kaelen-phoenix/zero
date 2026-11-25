@@ -4,6 +4,7 @@ import { ANDON_KEY, currentBox, requestWork, retryJob, startTrain, type FactoryC
 import { budgetState, pickEngine } from "../budget.js";
 import { lineAutonomy, type LineConfig } from "../config.js";
 import { installBehind, readInstallFreshness } from "../install-freshness.js";
+import { readSelfUpdate } from "../self-update.js";
 import { lineRepository } from "../intake/github.js";
 import { intakeProblemKey, jiraProblemKey, linearProblemKey, securityAlertsProblemKey } from "../intake/keys.js";
 import { log } from "../log.js";
@@ -12,6 +13,7 @@ import { FINAL_STATUSES, type Job, type Proposal, type Store } from "../state/st
 import { startOfDay } from "../telemetry/metrics.js";
 import { checksBillingKey, checksOutageKey, mergeKey, pullRequestOf, type ChecksBilling, type ChecksOutage, type MergeState } from "./automerge.js";
 import { pendingCleanups } from "./cleanup.js";
+import { discardResolved } from "./discard.js";
 import { scrubLocal } from "./research.js";
 import { SPEC_REFUSAL } from "./runner.js";
 import { acceptableChange, insideHours, normalizeTitle, periodStart, scoutSpent, takeOnItsOwn } from "./scout.js";
@@ -152,6 +154,16 @@ function readJson<T>(store: Store, key: string): T | undefined {
   }
 }
 
+/** Whether every jam a stored cause groups is of a job closed since, as a job or as its pull request: stopped, or delivered with no blocked merge. */
+export function closedCause(store: Store, cause: Cause): boolean {
+  const closed = (id: string) => {
+    const job = /^(job|pr):/.test(id) ? store.getJob(id.slice(id.indexOf(":") + 1)) : undefined;
+    if (job?.status === "delivered") return readJson<MergeState>(store, mergeKey(job.id))?.status !== "blocked";
+    return job?.status === "stopped";
+  };
+  return cause.jams.length > 0 && cause.jams.every(closed);
+}
+
 /** The GitHub repository of a line's remote, if git can read it. */
 function ownRepository(line: LineConfig): string | undefined {
   try {
@@ -177,7 +189,7 @@ function lineRepositories(own: string | undefined, jobs: Job[]): string[] {
  * What holds one line up, from its own records and without a model: failed jobs of the last days with their last
  * problem, waiting jobs, auto-merge pull requests blocked, the checks' outages and billing refusals of its
  * repositories, its intake problems, its pending cleanups, an installed copy of zero behind its own repository's
- * merged work and, in the box, a box that is not ready.
+ * merged work and, on the first line that is not a package's, a box that is not ready.
  */
 export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): Jam[] {
   const jams: Jam[] = [];
@@ -225,9 +237,14 @@ export function collectJams(ctx: FactoryContext, line: LineConfig, now: Date): J
       install.behind ? `${install.behind} merged commit${install.behind === 1 ? "" : "s"} of ${install.upstream ?? "its upstream"} missing` : "",
       install.staleBuild ? "its build (dist/cli.js) older than its code under src/" : "",
     ].filter(Boolean);
-    jams.push({ id: "install", line: line.name, kind: "install", text: `the installed copy of zero that runs the factory is behind: ${missing.join(", ")} (checked ${install.checkedAt})` });
+    const updated = readSelfUpdate(ctx.store).history.at(-1);
+    const setting = ctx.config.selfUpdate.enabled
+      ? `selfUpdate is enabled in the factory file${updated ? `; its last entry: ${updated.outcome} at ${updated.at}${updated.reason ? ` (${updated.reason})` : ""}` : "; it has not updated the copy yet"}`
+      : "selfUpdate is off in the factory file";
+    jams.push({ id: "install", line: line.name, kind: "install", text: `the installed copy of zero that runs the factory is behind: ${missing.join(", ")} (checked ${install.checkedAt}); ${setting}` });
   }
-  if (ctx.config.isolation === "container") {
+  // The box belongs to the machine: one jam, on the first line that is not a package's.
+  if (ctx.config.isolation === "container" && ctx.config.lines.find((l) => !l.package)?.name === line.name) {
     const box = currentBox(ctx).availability;
     if (!box.ready) jams.push({ id: "box", line: line.name, kind: "box", text: `the isolation box is not ready: ${box.problems.join("; ") || "no reason given"}` });
   }
@@ -627,45 +644,185 @@ export async function unjamLine(ctx: FactoryContext, line: LineConfig, jams: Jam
   return causes;
 }
 
+/** A run of the unjam station the person in charge asked for and that has not started yet; at most one in the factory. */
+export interface UnjamRequest {
+  /** When it was asked, ISO 8601. */
+  requestedAt: string;
+  /** The line it is for; every line that is not a package's without it. */
+  line?: string;
+}
+
+/** A line an on-demand run looked at. */
+export interface UnjamLineResult {
+  line: string;
+  jams: number;
+  causes: number;
+  /** Its diagnosis produced nothing valid. */
+  failed?: boolean;
+}
+
+/** The last on-demand run of the unjam station; times in ISO 8601. */
+export interface UnjamRunRecord {
+  /** The `requestedAt` of the request it answers. */
+  asked: string;
+  line?: string;
+  /** Absent for a run that could not start. */
+  startedAt?: string;
+  endedAt?: string;
+  /** `not-run` when its line went away or the station was turned off before it started. */
+  outcome?: "ok" | "failed" | "stopped" | "not-run";
+  reason?: string;
+  lines: UnjamLineResult[];
+}
+
+// Outside the `unjam:` prefix: a line's diagnosis is kept at `unjam:<line>`, whatever the line is called.
+/** The pending on-demand run, as an `UnjamRequest`. */
+export const UNJAM_REQUEST_KEY = "unjam-demand";
+/** The last on-demand run, as an `UnjamRunRecord`. */
+export const UNJAM_RUN_KEY = "unjam-demand-last";
+
+/** The on-demand run that has not started yet, if there is one and it can be read. */
+export function readUnjamRequest(store: Store): UnjamRequest | undefined {
+  const request = readJson<UnjamRequest>(store, UNJAM_REQUEST_KEY);
+  return typeof request?.requestedAt === "string" ? request : undefined;
+}
+
+/** The last on-demand run, if one was recorded and can be read. */
+export function readUnjamRun(store: Store): UnjamRunRecord | undefined {
+  const record = readJson<UnjamRunRecord>(store, UNJAM_RUN_KEY);
+  return typeof record?.asked === "string" && Array.isArray(record.lines) ? record : undefined;
+}
+
+/** Why an on-demand run ended before it looked at all its lines. */
+const CUT = {
+  shutdown: "la fábrica se apagó",
+  andon: "la fábrica se detuvo (andon)",
+  budget: "se alcanzó el presupuesto",
+  engine: "no hay un motor disponible para el destrabador",
+  night: "se alcanzó el límite de gasto nocturno (limits.usdPerNight)",
+};
+
+/** What makes an `unjamPass` the one the person in charge asked for. */
+export interface UnjamDemand {
+  /** Only this line; every line that is not a package's without it. */
+  line?: string;
+  /** Called once for each line looked at. */
+  looked: (result: UnjamLineResult) => void;
+}
+
 /** Owner work queued or running: the unjam station steps aside. */
 const ownerWork = (store: Store) => store.listJobs({ status: ["queued", "running"], limit: 1 }).length > 0;
 
 /**
  * The unjam station while the factory is idle, with the night shift's gates and its shared spending cap: every line
  * with jams and not yet diagnosed this period gets one call. A line without jams gets none, and loses its old diagnosis.
+ * Failed jobs whose work is already in are closed first, so they are no jam.
  */
-export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal, merges?: MergeApiFactory): Promise<void> {
+export async function unjamPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, signal?: AbortSignal, merges?: MergeApiFactory, demand?: UnjamDemand): Promise<string | undefined> {
   const shift = ctx.config.nightShift;
-  if (ctx.config.unjam === "off" || shift === "off" || !insideHours(shift, now)) return;
+  // Asked for by the person in charge: neither the hours, nor the owner's work, nor the period hold it back, and the period's mark is not its own.
+  if (ctx.config.unjam === "off" || (!demand && (shift === "off" || !insideHours(shift, now)))) return undefined;
   const period = periodStart(shift, now);
   const logs: LogCache = new Map();
+  await discardResolved(ctx, now, merges);
   for (const line of ctx.config.lines) {
-    if (line.package) continue;
+    if (line.package || (demand?.line !== undefined && line.name !== demand.line)) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
-    if (signal?.aborted || ownerWork(ctx.store) || ctx.store.getKv(ANDON_KEY) === "on") return;
-    if (ctx.store.getKv(unjamPassKey(line.name)) === period.toISOString()) continue;
+    if (signal?.aborted) return CUT.shutdown;
+    if (ctx.store.getKv(ANDON_KEY) === "on") return CUT.andon;
+    if (!demand && ownerWork(ctx.store)) return undefined;
+    if (!demand && ctx.store.getKv(unjamPassKey(line.name)) === period.toISOString()) continue;
     let jams = collectJams(ctx, line, now);
     if (!jams.length) {
       if (ctx.store.getKv(unjamKey(line.name))) ctx.store.deleteKv(unjamKey(line.name));
+      demand?.looked({ line: line.name, jams: 0, causes: 0 });
       continue;
     }
-    if (budgetState(ctx.store, ctx.config, now).reached) return;
+    if (budgetState(ctx.store, ctx.config, now).reached) return CUT.budget;
     const choice = pickEngine(ctx.store, ctx.config, "unjam", now);
-    if (!choice.available) return;
+    if (!choice.available) return CUT.engine;
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now);
-      if (left <= 0) return;
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, period, now, ctx.config);
+      if (left <= 0) return CUT.night;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }
-    ctx.store.setKv(unjamPassKey(line.name), period.toISOString());
+    if (!demand) ctx.store.setKv(unjamPassKey(line.name), period.toISOString());
+    let causes: Cause[] | undefined;
     try {
       if (merges) jams = await withCheckLogs(line, jams, merges, logs);
-      await unjamLine(ctx, line, jams, runAgent, now, { maxBudgetUsd, signal });
+      causes = await unjamLine(ctx, line, jams, runAgent, now, { maxBudgetUsd, signal });
     } catch (err) {
       log.warn("unjam failed", { line: line.name, error: String(err) });
     }
+    // A call cut by the shutdown says nothing about the line.
+    if (!causes && signal?.aborted) return CUT.shutdown;
+    demand?.looked({ line: line.name, jams: jams.length, causes: causes?.length ?? 0, ...(!causes && { failed: true }) });
   }
+  return undefined;
+}
+
+/** Why the unjam station cannot look at a line (at any line, without a name) on demand, whatever the moment. */
+export function onDemandProblem(ctx: FactoryContext, name?: string): string | undefined {
+  if (ctx.config.unjam === "off") return "el destrabador está apagado (unjam: off en el archivo de la fábrica)";
+  const lines = ctx.config.lines.filter((l) => !l.package);
+  if (name === undefined) return lines.length ? undefined : "la fábrica no tiene líneas para destrabar";
+  if (lines.some((l) => l.name === name)) return undefined;
+  if (ctx.config.lines.some((l) => l.name === name)) return `la línea "${name}" es de un paquete: el destrabador no la mira`;
+  return `no existe la línea "${name}". Líneas: ${lines.map((l) => l.name).join(", ") || "ninguna"}`;
+}
+
+/** Whether an on-demand run is pending and may start now: while the andon is on or the budget is reached, it stays pending. */
+export function unjamOnDemandReady(ctx: FactoryContext, now: Date): boolean {
+  return readUnjamRequest(ctx.store) !== undefined && ctx.store.getKv(ANDON_KEY) !== "on" && !budgetState(ctx.store, ctx.config, now).reached;
+}
+
+/** How an on-demand run that looked at all its lines ended. */
+function demandEnd(lines: UnjamLineResult[]): Pick<UnjamRunRecord, "outcome" | "reason"> {
+  const failed = lines.filter((l) => l.failed).map((l) => l.line);
+  if (failed.length) return { outcome: "failed", reason: `no hubo un diagnóstico válido de ${failed.join(", ")}` };
+  const clear = lines.filter((l) => !l.jams).map((l) => l.line);
+  if (!clear.length) return { outcome: "ok" };
+  return { outcome: "ok", reason: clear.length === 1 ? `la línea ${clear[0]} no tiene trabas` : `las líneas ${clear.join(", ")} no tienen trabas` };
+}
+
+/**
+ * The run of the unjam station the person in charge asked for, whatever the factory is doing: an `unjamPass` with the
+ * same limits, outside its hours and periods. The request goes right before the run so it never runs twice, and the
+ * record is written with it and again when the run ends. The daemon never runs it along with another unjam pass.
+ */
+export async function unjamOnDemandPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal; merges?: MergeApiFactory } = {}): Promise<void> {
+  const request = readUnjamRequest(ctx.store);
+  if (!request || opts.signal?.aborted || !unjamOnDemandReady(ctx, now)) return;
+  const clock = () => (ctx.now ?? (() => new Date()))().toISOString();
+  const write = (record: UnjamRunRecord) => ctx.store.setKv(UNJAM_RUN_KEY, JSON.stringify(record));
+  const lines: UnjamLineResult[] = [];
+  const base = { asked: request.requestedAt, ...(request.line !== undefined && { line: request.line }), lines };
+  ctx.store.deleteKv(UNJAM_REQUEST_KEY);
+  const problem = onDemandProblem(ctx, request.line);
+  if (problem) {
+    write({ ...base, endedAt: clock(), outcome: "not-run", reason: problem });
+    return;
+  }
+  const startedAt = clock();
+  write({ ...base, startedAt });
+  log.info("unjam runs on demand", { line: request.line, asked: request.requestedAt });
+  let end: Pick<UnjamRunRecord, "outcome" | "reason">;
+  try {
+    const cut = await unjamPass(ctx, runAgent, now, opts.signal, opts.merges, { line: request.line, looked: (r) => lines.push(r) });
+    end = cut ? { outcome: "stopped", reason: cut } : demandEnd(lines);
+  } catch (err) {
+    log.warn("on-demand unjam failed", { line: request.line, error: String(err) });
+    end = { outcome: "failed", reason: "el destrabador falló antes de terminar; el detalle está en el log de la fábrica" };
+  }
+  write({ ...base, startedAt, endedAt: clock(), ...end });
+}
+
+/** An on-demand run a crashed daemon left without an end, closed when the next one starts. */
+export function closeInterruptedUnjam(ctx: FactoryContext, now: Date): void {
+  const record = readUnjamRun(ctx.store);
+  if (!record?.startedAt || record.endedAt) return;
+  ctx.store.setKv(UNJAM_RUN_KEY, JSON.stringify({ ...record, endedAt: now.toISOString(), outcome: "stopped", reason: "la fábrica se cerró antes de que terminara" } satisfies UnjamRunRecord));
 }
 
 /** When the line was last diagnosed during the day for a pull request blocked too long (ISO): once per `urgentAfterHours`. */
@@ -683,6 +840,7 @@ export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner
   const after = unjam.urgentAfterHours * 3_600_000;
   const logs: LogCache = new Map();
   let ran = 0;
+  await discardResolved(ctx, now, opts.merges);
   for (const line of ctx.config.lines) {
     if (line.package) continue;
     // Checked again before every line, so owner work that arrives mid-pass goes first.
@@ -703,7 +861,7 @@ export async function urgentUnjamPass(ctx: FactoryContext, runAgent: AgentRunner
     if (!choice.available) return ran;
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now, ctx.config);
       if (left <= 0) return ran;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }

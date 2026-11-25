@@ -22,6 +22,8 @@ export interface FactoryHome {
   packageData: string;
   /** Local git repositories packages create for their own lines, in `<package>/<name>`; no remote. */
   packageRepos: string;
+  /** Repositories of the lines the factory's other machines published, cloned here as `<line>` (see coord/lines.ts). */
+  lines: string;
   /** Saved reports: what the factory produces stays here, never in a repository. */
   reports: string;
   /** Regeneration drills (see line/drill.ts): each one's copy and report, never in a repository. */
@@ -49,6 +51,7 @@ export function factoryHome(root = process.env.ZERO_HOME ?? join(homedir(), ".ze
     packages: join(abs, "packages"),
     packageData: join(abs, "package-data"),
     packageRepos: join(abs, "package-repos"),
+    lines: join(abs, "lines"),
     reports: join(abs, "reports"),
     drills: join(abs, "drills"),
     projects: join(abs, "projects"),

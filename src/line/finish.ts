@@ -2,7 +2,7 @@ import { AGENT_STATIONS, type FactoryConfig } from "../config.js";
 import { log } from "../log.js";
 import { tryGit } from "../shell.js";
 import { recordCleanup } from "./cleanup.js";
-import type { Delivery, Job, Question, Store } from "../state/store.js";
+import { FINAL_STATUSES, type Delivery, type Job, type Question, type Store } from "../state/store.js";
 import { APPROVAL_SPAN } from "../telemetry/metrics.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import type { NewPost, Townhall } from "../townhall/index.js";
@@ -61,9 +61,30 @@ export const STOPPED_BY_YOU = "Lo detuviste vos.";
 /** The stored reason of a job the person rejected, with their note when there is one. */
 export const rejectedByYou = (note?: string) => `Lo rechazaste vos${note ? `: ${note}` : "."}`;
 
+/** The stored reason of a job the person discarded, with their reason when there is one. */
+export const discardedByYou = (reason?: string) => `Lo descartaste vos${reason ? `: ${reason}` : "."}`;
+
+/** The stored reason of a failed job the factory closed on its own because its work is already in. */
+export const discardedByFactory = (why: string) => `Descartado por la fábrica: ${why}.`;
+
+/** The stored reason of a job whose claim another machine of a distributed factory took over: this copy ends without pushing, integrating or telling its origin. */
+export const LOST_TO_ANOTHER = "Lo retomó otra máquina de la fábrica.";
+
+/** The stored reason of a local job for a request another machine had already queued. */
+export const TAKEN_BY_ANOTHER = "Lo tomó otra máquina de la fábrica.";
+
+/** The stored reason of a local copy of a job another machine finished. */
+export const endedOn = (name: string) => `Lo terminó la máquina ${name}.`;
+
+/** A job that ended because another machine has it: its origin (issue, Linear, Jira) hears about it from that machine, never from this one. */
+export function endedElsewhere(job: Pick<Job, "status" | "reason">): boolean {
+  if (!FINAL_STATUSES.includes(job.status) || !job.reason) return false;
+  return job.reason === LOST_TO_ANOTHER || job.reason === TAKEN_BY_ANOTHER || /^Lo terminó la máquina .+\.$/.test(job.reason);
+}
+
 /** A stored reason in the third person, for issues, the reply station and the townhall. Any other reason stays as it is. */
 export function reasonForOthers(reason: string): string {
-  return reason.replace(/^Lo detuviste vos/, "Lo detuvo la persona responsable").replace(/^Lo rechazaste vos/, "Lo rechazó la persona responsable");
+  return reason.replace(/^Lo detuviste vos/, "Lo detuvo la persona responsable").replace(/^Lo rechazaste vos/, "Lo rechazó la persona responsable").replace(/^Lo descartaste vos/, "Lo descartó la persona responsable");
 }
 
 /**

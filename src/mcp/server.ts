@@ -3,10 +3,12 @@ import { basename, isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answer, approveProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, rejectProposal, requestStationRun, uploadToStation, type UploadContent, waitStationStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, linesWithSkills, mergePullRequest, monthlyReport, openFactory, requestWork, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { answerAnywhere, decideProposal, holdRemoteAction, type RemoteAction, briefing, listProposals, listResearchNotes, requestFromResearchNote, requestInvestigation, requestStationRun, requestUnjam, uploadToStation, type UploadContent, waitResearchStart, waitStationStart, waitUnjamStart, egressReport, ensureDaemon as startDaemon, factoryStatus, getJob, jobElsewhere, jobText, linesWithSkills, mergePullRequest, monthlyReport, openFactory, proposalsElsewhere, requestAnywhere, resume, reviveDaemon, setEgressRule, stop, trace, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
-import { formatEgress, formatJob, formatMerge,formatProposals, formatRequest, formatResearchNotes, formatStatus } from "../format.js";
+import { formatDiscard, formatEgress, formatJob, formatMerge, formatProposalDecision, formatProposals, formatRequest, formatResearchNotes, formatStatus, researchNotice } from "../format.js";
 import type { FactoryHome } from "../home.js";
+import { discardJob, discardRefusal } from "../line/discard.js";
+import { takeUntoldResearch } from "../line/research.js";
 import { log } from "../log.js";
 import { invalidNameText, validRepositoryName } from "../project.js";
 import type { Scope } from "./oauth.js";
@@ -31,19 +33,32 @@ async function revive(ctx: FactoryContext, start: Starter): Promise<void> {
   }
 }
 
+/** The notices of the express research runs that ended and no chat told yet; never fails the call they go with. */
+function endedResearch(ctx: FactoryContext): string[] {
+  try {
+    return takeUntoldResearch(ctx.store).map((r) => researchNotice(r));
+  } catch (err) {
+    log.warn("cannot tell the ended research runs", { error: err instanceof Error ? err.name : "error" });
+    return [];
+  }
+}
+
 /**
  * Opens the factory fresh for every call, so edits to zero.factory.yaml apply without restarting the client.
- * With `start`, a daemon that crashed with work left is started again after the call.
+ * With `start`, a daemon that crashed with work left is started again after the call. With `notices`, a successful
+ * answer carries what ended meanwhile, in a block of its own: the answer may be JSON, or a report to share.
  */
-async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, start?: Starter): Promise<Text> {
+async function openFor(home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string, opts: { start?: Starter; notices: boolean }): Promise<Text> {
   let ctx: FactoryContext | undefined;
   try {
     ctx = await openFactory(home);
-    return text(await fn(ctx));
+    const answered = text(await fn(ctx));
+    if (opts.notices) answered.content.push(...endedResearch(ctx).flatMap((n) => text(n).content));
+    return answered;
   } catch (err) {
     return { ...text(err instanceof Error ? err.message : String(err)), isError: true };
   } finally {
-    if (ctx && start) await revive(ctx, start);
+    if (ctx && opts.start) await revive(ctx, opts.start);
     ctx?.store.close();
   }
 }
@@ -107,11 +122,11 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   const server = new McpServer({ name: "zero", version: "0.2.0" }, { instructions: INSTRUCTIONS });
   const autoStart = opts.autoStart ?? true;
   const ensureDaemon = opts.start ?? startDaemon;
-  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, autoStart ? ensureDaemon : undefined);
-  // How long zero_package_run waits for the run to start; shorter than the CLI's, since a chat waits on it.
+  // How long zero_package_run, zero_unjam and zero_investigate wait for the run to start; shorter than the CLI's, since a chat waits on it.
   const stationWaitMs = opts.stationWaitMs ?? 30_000;
   const remote = opts.remote;
   const canAct = !remote || remote.scope.includes("zero:act");
+  const withFactory = (home: FactoryHome, fn: (ctx: FactoryContext) => Promise<string> | string) => openFor(home, fn, { ...(autoStart && { start: ensureDaemon }), notices: canAct });
   // A remote token without zero:act never gets the other tools registered, so it cannot even list them.
   const tool = ((name: string, ...rest: unknown[]) =>
     canAct || READ_TOOLS.has(name) ? (server.registerTool as (...a: unknown[]) => unknown).call(server, name, ...rest) : undefined) as typeof server.registerTool;
@@ -140,7 +155,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     },
     ({ text: request, line, kind, priority }) =>
       withFactory(home, async (ctx) => {
-        const result = requestWork(ctx, { text: request, line, kind, priority });
+        const result = requestAnywhere(ctx, { text: request, line, kind, priority });
         const started = autoStart && (await ensureDaemon(ctx));
         return formatRequest(result) + (started ? "\nLa fábrica estaba apagada: la encendí." : "");
       }),
@@ -154,7 +169,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: { job: z.string().optional().describe("Job id for details; omit for the factory overview.") },
       annotations: { readOnlyHint: true },
     },
-    ({ job }) => withFactory(home, (ctx) => (job ? formatJob(getJob(ctx, job), { subscription: onSubscription(ctx.store, ctx.config.engine) }) : formatStatus(factoryStatus(ctx)))),
+    ({ job }) => withFactory(home, (ctx) => (job ? jobText(ctx, job) : formatStatus(factoryStatus(ctx)))),
   );
 
   tool(
@@ -170,10 +185,17 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     },
     ({ job, decision, note }) =>
       withFactory(home, async (ctx) => {
-        const run = async () => formatJob(await answer(ctx, job, decision, note), { subscription: onSubscription(ctx.store, ctx.config.engine) });
-        // Approving changes to protected paths is the delicate answer; the others go through as on the terminal.
-        if (decision !== "approve" || getJob(ctx, job).question?.kind !== "protected-path") return run();
-        return delicate(ctx, { tool: "zero_answer", args: { job, decision, ...(note && { note }) } }, run);
+        const run = async () => {
+          const r = await answerAnywhere(ctx, job, decision, note);
+          if ("job" in r) return formatJob(r.job, { subscription: onSubscription(ctx.store, ctx.config.engine) });
+          const started = autoStart && (await ensureDaemon(ctx));
+          return `${r.sent}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+        };
+        // Approving changes to protected paths is the delicate answer, wherever the job is; the others go through as on the terminal.
+        const away = jobElsewhere(ctx, job);
+        const { question } = away ?? getJob(ctx, job);
+        if (decision !== "approve" || question?.kind !== "protected-path") return run();
+        return delicate(ctx, { tool: "zero_answer", args: { job, decision, ...(note && { note }), ...(away && { askedAt: question.askedAt }) } }, run);
       }),
   );
 
@@ -195,7 +217,7 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true)),
+    () => withFactory(home, (ctx) => formatProposals(listProposals(ctx), true, proposalsElsewhere(ctx))),
   );
 
   tool(
@@ -212,10 +234,10 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
     ({ id, decision, note }) =>
       withFactory(home, (ctx) =>
         delicate(ctx, { tool: "zero_proposal_decide", args: { id, decision, ...(note && { note }) } }, async () => {
-          if (decision === "reject") return `Propuesta ${(await rejectProposal(ctx, id, note)).id} rechazada y archivada.`;
-          const r = approveProposal(ctx, id);
-          const started = await ensureDaemon(ctx);
-          return `Propuesta ${id} aprobada.\n${formatRequest(r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
+          const r = await decideProposal(ctx, id, decision, note);
+          // An approval opens a job, and a decision sent goes out with the daemon's pass.
+          const started = !("rejected" in r) && (await ensureDaemon(ctx));
+          return `${formatProposalDecision(id, r)}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}`;
         }),
       ),
   );
@@ -295,6 +317,44 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
   );
 
   tool(
+    "zero_unjam",
+    {
+      title: "Destrabar ahora",
+      description: "Ask the factory to run the unjam station once, now: it diagnoses what is stuck on a line, or on every line, without waiting for the night shift or for queued and running jobs, within its usual limits. At most one pending run. Only when the owner asks for it.",
+      inputSchema: { line: z.string().optional().describe("Project (line) name; every line without it.") },
+    },
+    ({ line }) =>
+      withFactory(home, async (ctx) => {
+        const r = requestUnjam(ctx, line);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitUnjamStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
+    "zero_investigate",
+    {
+      title: "Investigar ahora",
+      description:
+        "Ask the factory to research one topic on the web now, for one line, without waiting for the night shift or for queued and running jobs, within the budget and its own spending cap. At most one pending run. It leaves normal research notes (zero_research); when it ends, a later zero answer carries a notice to relay to the owner. Only when the owner asks for it.",
+      inputSchema: {
+        topic: z.string().describe("What to investigate, in the owner's words; at most 2000 characters."),
+        line: z.string().optional().describe("Project (line) name; optional when the factory has a single line."),
+      },
+    },
+    ({ topic, line }) =>
+      withFactory(home, async (ctx) => {
+        const r = requestInvestigation(ctx, topic, line);
+        if (!r.ok) return r.reason;
+        const started = autoStart && (await ensureDaemon(ctx));
+        const wait = await waitResearchStart(ctx, r.requestedAt, { timeoutMs: stationWaitMs });
+        return `${r.text}${started ? "\nLa fábrica estaba apagada: la encendí." : ""}\n${wait.text}`;
+      }),
+  );
+
+  tool(
     "zero_stop",
     {
       title: "Detener (andon)",
@@ -310,6 +370,27 @@ export function createZeroMcpServer(home: FactoryHome, opts: ZeroMcpOptions = {}
           return r.job!.stopRequested && r.job!.status === "running" ? `Deteniendo el trabajo ${r.job!.id}…` : formatJob(r.job!, { subscription: onSubscription(ctx.store, ctx.config.engine) });
         }),
       ),
+  );
+
+  tool(
+    "zero_discard",
+    {
+      title: "Descartar un trabajo",
+      description:
+        "Close a job the owner no longer needs: one that failed, is queued or waiting, or was delivered with its pull request still open. It ends stopped, its open pull request gets a comment and is closed, and its branch is deleted; a running job has to be stopped first. Only when the owner asks for it.",
+      inputSchema: {
+        job: z.string().describe("The job id."),
+        reason: z.string().optional().describe("The owner's reason, if they gave one; it goes to the report and the pull request's comment."),
+      },
+      annotations: { destructiveHint: true },
+    },
+    ({ job, reason }) =>
+      withFactory(home, (ctx) => {
+        // What can be refused now is never held for the person in charge to confirm.
+        const refusal = discardRefusal(getJob(ctx, job));
+        if (refusal) throw new Error(refusal);
+        return delicate(ctx, { tool: "zero_discard", args: { job, ...(reason && { reason }) } }, async () => formatDiscard(await discardJob(ctx, job, { reason, via: "chat", api: opts.merges })));
+      }),
   );
 
   tool(

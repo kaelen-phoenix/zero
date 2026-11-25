@@ -66,8 +66,10 @@ const ResearchSchema = z.union([
     .object({
       /** Topics of interest added to every line's research. */
       topics: z.array(z.string().min(1)).default([]),
-      /** Notes each line keeps per local day; 0 turns research off. */
+      /** Notes each line keeps per local day; 0 turns the daily research off. */
       perLinePerDay: z.number().int().min(0).default(1),
+      /** What one research run asked for on demand may spend; per-use billing only. */
+      usdPerRun: z.number().positive().default(2),
       /**
        * How far every research-born proposal goes on its own, whatever scout declares about it: the stricter of this and
        * the line's autonomy.
@@ -279,6 +281,10 @@ export const PackageEntrySchema = z
     config: z.unknown().optional(),
     engine: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    /** The only machine its stations may run on, by name or id; absent: any. */
+    machine: z.string().trim().min(1).optional(),
+    /** The same for single stations, by name; it wins over `machine`. */
+    machines: z.record(z.string(), z.string().trim().min(1)).optional(),
   })
   .strict()
   .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm")
@@ -301,6 +307,9 @@ const JiraSiteSchema = z
     }
   }, "an https address with no credentials or path, such as https://acme.atlassian.net")
   .transform((raw) => new URL(raw).origin);
+
+/** The platforms a line may say it runs on. */
+export const LINE_PLATFORMS = ["win32", "darwin", "linux"] as const;
 
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
@@ -374,6 +383,8 @@ export const LineSchema = z.object({
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
   /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
   allowedArtifacts: z.array(z.string()).default([]),
+  /** The platforms this line can be worked on; absent: any. A machine of a distributed factory on another one does not clone it. */
+  platforms: z.array(z.enum(LINE_PLATFORMS)).min(1).optional(),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
   /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
@@ -461,7 +472,7 @@ export const FactorySchema = z
     /** Absent: on, at any hour the factory is idle. */
     nightShift: NightShiftSchema.default({ autonomy: "propose", maxAutoJobsPerDay: 3 }),
     /** Absent: on, one note per line with a research skill per day. */
-    research: ResearchSchema.default({ topics: [], perLinePerDay: 1, autonomy: "propose" }),
+    research: ResearchSchema.default({ topics: [], perLinePerDay: 1, usdPerRun: 2, autonomy: "propose" }),
     /** Absent: on, with the night shift's gates, at most two jobs a day. */
     unjam: UnjamSchema.default({ maxJobsPerDay: 2, urgentAfterHours: 2 }),
     /** Absent: on, with the night shift's gates, once a week, at most three findings a run. */
@@ -631,6 +642,8 @@ export interface LoadedPackages {
 /** `loadedPackages` never comes from the file: the schema drops that key, and only `src/packages.ts` sets it. */
 export type FactoryConfig = z.infer<typeof FactorySchema> & { loadedPackages?: LoadedPackages };
 export type LineConfig = z.infer<typeof LineSchema>;
+/** A line as the factory file writes it. */
+export type LineEntry = z.input<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
 export type CustomAgent = z.output<typeof CustomAgentSchema>;

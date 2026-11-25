@@ -8,8 +8,11 @@ import { createBoxExecutor, type BoxExecutor } from "./box/executor.js";
 import { syncAutostart, type AutostartResult } from "./autostart.js";
 import { checkInstall } from "./install-freshness.js";
 import { githubCoord } from "./coord/github.js";
-import { coordPass } from "./coord/pass.js";
-import type { CoordApi } from "./coord/protocol.js";
+import { linesPass, type LineCloner } from "./coord/lines.js";
+import { coordPass, coordReady } from "./coord/pass.js";
+import { claimJob, finished, releaseJob, stillHolds, type CoordApi } from "./coord/protocol.js";
+import { canTake, readQueued } from "./coord/queue.js";
+import { pushProgress, resumeProgress } from "./coord/progress.js";
 import type { GitRunner } from "./package-install.js";
 import { acquireDaemonLock } from "./daemon-lock.js";
 import { githubHalt, githubMeter, type GithubMeter, type GithubPass } from "./github-quota.js";
@@ -34,21 +37,24 @@ import { beingGuarded } from "./readonly-guard.js";
 import { answerJob } from "./line/answer.js";
 import { cleanupPass } from "./line/cleanup.js";
 import { killLeftovers } from "./leftovers.js";
-import { finalizeJob, STOPPED_BY_YOU } from "./line/finish.js";
+import { endedOn, finalizeJob, LOST_TO_ANOTHER, STOPPED_BY_YOU } from "./line/finish.js";
 import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
-import { researchPass } from "./line/research.js";
+import { closeInterruptedResearch, researchOnDemandPass, researchOnDemandReady, researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
 import { recruitPass } from "./line/recruit.js";
-import { resendAfterCapability, unjamPass, urgentUnjamPass } from "./line/unjam.js";
+import { discardResolved } from "./line/discard.js";
+import { closeInterruptedUnjam, resendAfterCapability, unjamOnDemandPass, unjamOnDemandReady, unjamPass, urgentUnjamPass } from "./line/unjam.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { afterFailure, importSwitchResult, isMachineFailure, launchSwitch, readSelfUpdate, realSelfUpdateDeps, recordSelfUpdate, selfUpdateCheck, type SelfUpdateDeps, type SwitchLauncher } from "./self-update.js";
 import { signedIssues, signedMerges } from "./signature.js";
 import { guardLogStreams, log } from "./log.js";
 import { exportPass } from "./telemetry/otlp.js";
-import type { Job } from "./state/store.js";
+import { FINAL_STATUSES, type Job } from "./state/store.js";
+import type { WorkCopy } from "./workspace.js";
+import { machineIdentity, type MachineIdentity } from "./machine.js";
 import { panelKey } from "./panel/key.js";
 import { createPanelServer } from "./panel/server.js";
 import { TUNNEL_TOKEN_SECRET, tunnelKeeper } from "./panel/tunnel.js";
@@ -84,8 +90,12 @@ export interface DaemonOptions {
   unjam?: boolean;
   /** Run the unjam station during the day for a line with a pull request blocked too long (`unjam.urgentAfterHours`), busy factory or not. Defaults to on, except in `once` runs. */
   urgentUnjam?: boolean;
+  /** Run the unjam station when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
+  unjamOnDemand?: boolean;
   /** Run the research station while the factory is idle. Defaults to on, except in `once` runs. */
   research?: boolean;
+  /** Run the research station when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
+  researchOnDemand?: boolean;
   /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
   recruit?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
@@ -104,6 +114,8 @@ export interface DaemonOptions {
   launchSwitch?: SwitchLauncher;
   /** The coordination repository of a distributed factory; tests inject a memory one. Without it, `once` runs do not beat. */
   coord?: (repository: string) => CoordApi | undefined;
+  /** Clones a line another machine published; tests inject a fake. Defaults to git. */
+  cloneLine?: LineCloner;
 }
 
 const BOX_RECHECK_MS = 10 * 60_000;
@@ -215,6 +227,9 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     }
     store.updateJob(job.id, { status: "queued" });
   }
+
+  closeInterruptedUnjam(ctx, now());
+  closeInterruptedResearch(ctx, now());
 
   const running = new Map<string, Running>();
   // One gate host per runtime and image, shared by every job so only one of them starts the gate.
@@ -359,6 +374,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       });
   };
 
+  // Failed jobs whose work is already in the base branch, closed the same way; a GitHub pause only holds back asking about their pull requests.
+  let resolvedAt = 0;
+  let closingResolved: Promise<unknown> | undefined;
+  const closeResolved = () => {
+    if (closingResolved || !ctx.config.lines.length || Date.now() - resolvedAt < (opts.once ? 0 : INTAKE_MS)) return;
+    resolvedAt = Date.now();
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "resolved"));
+    closingResolved = discardResolved(ctx, now(), merges)
+      .catch((err) => log.warn("closing resolved jobs failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("resolved");
+        closingResolved = undefined;
+      });
+  };
+
   // A distributed factory's heartbeat and machine list, through the meter, at most every heartbeatSeconds; a single-machine factory sends nothing.
   let coordAt = 0;
   let coordinating: Promise<unknown> | undefined;
@@ -374,6 +404,35 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("coord");
         coordinating = undefined;
       });
+  };
+
+  // The protocol the runner relies on to take, check and release jobs: only with `distributed` and a passed probe of its repository, and in `once` runs only when injected.
+  const protocol = (): CoordApi | undefined => {
+    const distributed = ctx.config.distributed;
+    if (!distributed || (opts.once && !opts.coord) || !coordReady(ctx)) return undefined;
+    return (opts.coord ?? realCoord(meter))(distributed.repository);
+  };
+  // The factory's lines, published and cloned in a pass of their own: a slow clone never holds up the heartbeat nor the start of jobs. A shutdown cuts it.
+  let linesAt = 0;
+  let sharingLines: Promise<unknown> | undefined;
+  const shareLines = () => {
+    if (sharingLines || Date.now() - linesAt < (opts.once ? 0 : (ctx.config.distributed?.heartbeatSeconds ?? 0) * 1000)) return;
+    const api = protocol();
+    if (!api) return;
+    linesAt = Date.now();
+    sharingLines = linesPass(ctx, api, { now, signal: researchStop.signal, clone: opts.cloneLine })
+      .catch((err) => log.warn("shared lines pass failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("coord");
+        sharingLines = undefined;
+      });
+  };
+  // A job that ended is released with its status, and one cut short by a shutdown goes back to the shared queue; an andon or a quota stop keeps its claim.
+  const releaseAtEnd = async (api: CoordApi, machine: MachineIdentity, end: Job, signal: AbortSignal) => {
+    const ended = FINAL_STATUSES.includes(end.status) && end.reason !== LOST_TO_ANOTHER;
+    const shutDown = end.status === "queued" && signal.aborted && signal.reason === ("shutdown" satisfies StopReason);
+    if (!ended && !shutDown) return;
+    await releaseJob(api, end.id, machine, end.status, now()).catch((err) => log.warn("releasing the job's claim failed", { job: end.id, error: String(err) }));
   };
 
   // What the lines' external services cost this month; the pass itself keeps each service to once a local day.
@@ -480,8 +539,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   let packagesAt = 0;
   const researchStop = new AbortController();
   const idlePasses = () => {
-    // Never two diagnoses at once: the daytime one may still be at work.
-    if (idle || urgent || running.size) return;
+    // Never two diagnoses at once: the daytime one, or the one asked for, may still be at work.
+    if (idle || urgent || unjamming || running.size) return;
     const scouts = (opts.scout ?? !opts.once) && ctx.config.nightShift !== "off";
     const unjams = (opts.unjam ?? !opts.once) && ctx.config.unjam !== "off" && ctx.config.nightShift !== "off";
     const researches = (opts.research ?? !opts.once) && ctx.config.research !== "off";
@@ -495,16 +554,21 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         await scoutPass(ctx, passRunner(ctx.config), now(), opts.issues ?? realIssues(ctx, meter, "scout")).catch((err) => log.warn("night shift failed", { error: String(err) }));
         meter.endRun("scout");
       }
+      // An unjam run asked for meanwhile goes before the next step, and never along with one.
+      await startUnjamOnDemand();
       if (unjams && !researchStop.signal.aborted) {
         // The failed checks' logs are read through the meter, and not at all while GitHub holds a pause.
         const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
         await unjamPass(ctx, passRunner(ctx.config), now(), researchStop.signal, merges).catch((err) => log.warn("unjam failed", { error: String(err) }));
         meter.endRun("unjam");
       }
+      await startUnjamOnDemand();
       if (researches && !researchStop.signal.aborted)
         await researchPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("research failed", { error: String(err) }));
+      await startUnjamOnDemand();
       if (recruits && !researchStop.signal.aborted)
         await recruitPass(ctx, passRunner(ctx.config), now(), researchStop.signal).catch((err) => log.warn("recruiter failed", { error: String(err) }));
+      await startUnjamOnDemand();
       if (stations && !researchStop.signal.aborted)
         await packagesPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal }).catch((err) => log.warn("package stations failed", { error: String(err) }));
     })().finally(() => (idle = undefined));
@@ -550,7 +614,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   let urgentAt = 0;
   let urgent: Promise<unknown> | undefined;
   const runUrgentUnjam = () => {
-    if (urgent || idle || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
+    if (urgent || idle || unjamming || !(opts.urgentUnjam ?? !opts.once) || ctx.config.unjam === "off" || !ctx.config.unjam.urgentAfterHours || Date.now() - urgentAt < (opts.once ? 0 : INTAKE_MS)) return;
     urgentAt = Date.now();
     const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
     urgent = urgentUnjamPass(ctx, passRunner(ctx.config), now(), { running: running.size, signal: researchStop.signal, merges })
@@ -559,6 +623,36 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         meter.endRun("unjam");
         urgent = undefined;
       });
+  };
+
+  // An unjam run the person in charge asked for: its own background pass, which takes no job slot and waits for no job. Never two diagnoses at
+  // once, and limits.usdPerNight is shared: it waits for the daytime pass to end and runs between the idle run's steps, never along with one.
+  let unjamming: Promise<void> | undefined;
+  const startUnjamOnDemand = () => {
+    if (unjamming || stopping || researchStop.signal.aborted || !(opts.unjamOnDemand ?? !opts.once) || !unjamOnDemandReady(ctx, now())) return unjamming;
+    const merges = githubPaused() ? undefined : (opts.merges ?? realMerges(ctx, meter, "unjam"));
+    unjamming = unjamOnDemandPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal, merges })
+      .catch((err) => log.warn("on-demand unjam failed", { error: String(err) }))
+      .finally(() => {
+        meter.endRun("unjam");
+        unjamming = undefined;
+      });
+    return unjamming;
+  };
+  const runUnjamOnDemand = () => {
+    if (!idle && !urgent) void startUnjamOnDemand();
+  };
+
+  // A research run the person in charge asked for: its own background pass, which takes no job slot, has its own cap and so waits
+  // neither for the idle run nor for the diagnoses. Unlike the other passes, the andon cuts it mid-call.
+  let investigating: Promise<void> | undefined;
+  let investigationStop = new AbortController();
+  const runResearchOnDemand = () => {
+    if (investigating || stopping || !(opts.researchOnDemand ?? !opts.once) || !researchOnDemandReady(ctx, now())) return;
+    investigationStop = new AbortController();
+    investigating = researchOnDemandPass(ctx, passRunner(ctx.config), now(), { signal: AbortSignal.any([investigationStop.signal, researchStop.signal]) })
+      .catch((err) => log.warn("on-demand research failed", { error: String(err) }))
+      .finally(() => (investigating = undefined));
   };
 
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
@@ -571,6 +665,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         stopped = "shutdown";
         break;
       }
+      if (investigating && store.getKv(ANDON_KEY) === "on") investigationStop.abort("andon" satisfies StopReason);
       try {
         ctx.config = await factoryConfig(ctx.home);
         followAutostart();
@@ -590,6 +685,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         findReverts();
         readAlerts();
         coordinate();
+        shareLines();
       }
       takeLinear();
       takeJira();
@@ -597,11 +693,14 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       readBilling();
       lookAtInstall();
       resendRefused();
+      closeResolved();
       exportTraces();
       runSchedules();
       runOnDemand();
       runBusyStations();
+      runUnjamOnDemand();
       runUrgentUnjam();
+      runResearchOnDemand();
       lookForPackageUpdates();
       checkSelfUpdate();
       await importSwitchResult(ctx);
@@ -645,6 +744,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
           if (busy) continue;
           const line = ctx.config.lines.find((l) => l.name === job.line);
           if (!line) {
+            // A job from the shared queue whose line went away here is left for the machines that have it.
+            if (readQueued(store, job.id)?.origin === "imported") continue;
             await finalizeJob(ctx, job, "failed", { reason: `La línea "${job.line}" ya no existe en la fábrica.` });
             continue;
           }
@@ -658,12 +759,45 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
             startable = true;
             break;
           }
+          // A distributed factory runs only what it took: a job another machine holds stays in the local queue, as it is.
+          const coord = protocol();
+          const machine = coord && machineIdentity(store, ctx.config);
+          if (coord && machine) {
+            // A job from another machine is taken only when this one has what it needs: the box, and its engines.
+            const queuedHere = readQueued(store, job.id);
+            if (queuedHere?.origin === "imported" && !canTake(queuedHere.needs, ctx.config, currentBox(ctx).availability.ready)) continue;
+            const claim = githubPaused()
+              ? undefined
+              : await claimJob(coord, job.id, machine, now(), ctx.config.distributed!.leaseMinutes, { keepFinished: true }).catch((err) => {
+                  log.warn("claiming the job failed; not starting it", { job: job.id, error: String(err) });
+                  return undefined;
+                });
+            // Another machine already ended it: this copy ends the same way, telling its origin nothing.
+            if (claim && !claim.claimed && finished(claim.holder) && store.getJob(job.id)?.status === "queued")
+              await finalizeJob(ctx, store.getJob(job.id)!, claim.holder.status, { reason: endedOn(claim.holder.name) });
+            if (!claim?.claimed) continue;
+            // Another machine pushed this job's progress, or held it until its lease ran out: it goes on from that checkpoint.
+            await resumeProgress({ api: coord, store, machine, repo: line.repo }, job.id, Boolean(claim.takenFrom)).catch((err) =>
+              log.warn("resuming the job from its pushed progress failed; running it as it is", { job: job.id, error: String(err) }),
+            );
+          }
           startable = true;
           const controller = new AbortController();
           const { availability } = currentBox(ctx);
           const box = readyBox(ctx.config);
-          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability };
+          // A check that cannot reach the coordination repository lets the job go on: only a claim read as another machine's stops it.
+          const holds =
+            coord && machine
+              ? () =>
+                  stillHolds(coord, job.id, machine.id).catch((err) => {
+                    log.warn("checking the job's claim failed; going on", { job: job.id, error: String(err) });
+                    return true;
+                  })
+              : undefined;
+          const pushes = coord && machine ? { pushProgress: (j: Job, copy: WorkCopy) => pushProgress({ api: coord, store, machine, repo: line.repo, now }, j, copy) } : undefined;
+          const deps = { ...ctx, config: ctx.config, runAgent: agentRunner(ctx.config), box, boxAvailability: availability, ...(holds && { holds }), ...pushes };
           const done = runJob(job.id, deps, controller.signal)
+            .then((end) => (coord && machine ? releaseAtEnd(coord, machine, end, controller.signal) : undefined))
             .catch((err) => log.error("job runner crashed", { job: job.id, error: String(err) }))
             .finally(() => running.delete(job.id));
           running.set(job.id, { line: job.line, controller, done });
@@ -674,7 +808,8 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         idlePasses();
       }
 
-      if (opts.once && !running.size && !startable) {
+      // An express run keeps a `once` run alive, so the andon still cuts it.
+      if (opts.once && !running.size && !startable && !investigating) {
         stopped = "once";
         break;
       }
@@ -693,15 +828,19 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await checkingReverts;
     await readingAlerts;
     await coordinating;
+    await sharingLines;
     await cleaning;
     await readingBilling;
     await checkingInstall;
     await resending;
+    await closingResolved;
     await exporting;
     await scheduling;
     await demanding;
     await busyRunning;
     await urgent;
+    await unjamming;
+    await investigating;
     await looking;
     await selfChecking;
     await idle;

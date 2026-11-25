@@ -14,7 +14,7 @@ import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import type { PullRequestsFactory } from "../tracker.js";
 import { conflictMarkers, openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
-import { askOwner, describeDelivery, finalizeJob, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
+import { askOwner, describeDelivery, finalizeJob, LOST_TO_ANOTHER, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { recordCleanup } from "./cleanup.js";
 import { killLeftovers } from "../leftovers.js";
@@ -54,6 +54,10 @@ export interface RunnerDeps extends LedgerDeps {
   fetch?: typeof fetch;
   /** Kills the processes left running in a folder; defaults to the real one from leftovers.ts. */
   killLeftovers?: (folder: string) => number;
+  /** With a distributed factory's protocol on: whether the job's claim is still this machine's, asked before every station. */
+  holds?: () => Promise<boolean>;
+  /** With a distributed factory's protocol on: pushes the job's branch and progress at a checkpoint; `lost` when the job is another machine's now. */
+  pushProgress?: (job: Job, copy: WorkCopy) => Promise<"pushed" | "lost" | "skipped">;
 }
 
 /** Runs a shell command in the job's work copy, wherever the job runs. */
@@ -62,11 +66,27 @@ type Shell = (command: string, cwd: string, opts: { timeoutMs: number; signal?: 
 /** Why a running job was interrupted. `stop` ends it; `andon` and `shutdown` put it back in the queue. */
 export type StopReason = "stop" | "andon" | "shutdown";
 
-/** `quota`: an engine ran out of plan quota or API credit; the job waits in the queue until it renews. */
+/**
+ * `quota`: an engine ran out of plan quota or API credit; the job waits in the queue until it renews.
+ * `lost`: another machine of the factory took the job's claim; this copy ends without pushing, integrating or telling its origin.
+ */
 class Interrupted extends Error {
-  constructor(readonly why: StopReason | "quota") {
+  constructor(readonly why: StopReason | "quota" | "lost") {
     super(`interrupted: ${why}`);
   }
+}
+
+/** Stops the job before a station once its claim is no longer this machine's; nothing without the protocol. */
+async function ensureHolds(deps: RunnerDeps, span?: { end: (status: "error", attrs: Record<string, string>) => void }): Promise<void> {
+  if (!deps.holds || (await deps.holds())) return;
+  span?.end("error", { "error.message": "claim lost to another machine" });
+  throw new Interrupted("lost");
+}
+
+/** Pushes the job's progress at a checkpoint, and stops it once it is another machine's; nothing without the protocol. */
+async function checkpointPush(deps: RunnerDeps, jobId: string, copy: WorkCopy): Promise<void> {
+  if (!deps.pushProgress) return;
+  if ((await deps.pushProgress(deps.store.getJob(jobId)!, copy)) === "lost") throw new Interrupted("lost");
 }
 
 /** The first preparation of a work copy failed, after its one new try. The job is not resumed: it would find the copy made and skip setup. */
@@ -219,6 +239,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
         const earlier = job.feedback;
         saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths });
         job = store.updateJob(jobId, { checkpoint: "spec", station: "build", feedback: conflictFeedback(copy, merge.paths, adoptedOf(job, { head: taken.head, baseCommit })) });
+        await ensureHolds(deps);
         if (await resolveWithAgents(lineDeps, job, line, copy, { head: taken.head, baseCommit, paths: merge.paths }, signal, addCost)) {
           saveRefresh(deps, jobId, { ...taken, started: true, baseCommit, paths: merge.paths, resolved: true });
           // Like a clean merge: verify, the reviews and the rest run as always, without spending an attempt.
@@ -228,10 +249,12 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     }
 
     if (job.checkpoint === "none") {
+      await ensureHolds(deps);
       const outcome = await specStation(lineDeps, job, line, copy, signal, addCost, learn);
       check();
       if (typeof outcome === "string") return await fail(outcome);
       job = reload();
+      await checkpointPush(deps, jobId, copy);
     }
     const flaggedAfterSpec = await egressStop(deps, jobId, level);
     if (flaggedAfterSpec) return flaggedAfterSpec;
@@ -246,6 +269,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       job = reload();
     }
 
+    await ensureHolds(deps);
     const flaggedBeforeIntegrate = await egressStop(deps, jobId, level);
     if (flaggedBeforeIntegrate) return flaggedBeforeIntegrate;
     // Verify ran before the reviews and may have been long ago: an approval or a restart resumes here, and an agent's commit leaves nothing uncommitted to notice.
@@ -267,6 +291,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       }
     }
     check();
+    await ensureHolds(deps);
+    await checkpointPush(deps, jobId, copy);
     job = store.updateJob(jobId, { station: "integrate" });
     const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
       copy.publish();
@@ -298,7 +324,16 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     if (err instanceof Interrupted || signal.aborted) {
       const why = err instanceof Interrupted ? err.why : reasonOf(signal);
       if (why === "stop") return finalizeJob(deps, reload(), "stopped", { reason: STOPPED_BY_YOU });
+      if (why === "lost") {
+        log.info("job taken over by another machine of the factory; ending this copy", { job: jobId });
+        return finalizeJob(deps, reload(), "stopped", { reason: LOST_TO_ANOTHER });
+      }
       if (why === "quota") log.info("engine quota or credit used up; job back in the queue until it renews", { job: jobId });
+      // A shutdown on purpose leaves what is committed on the remote, so another machine can go on from there.
+      if (why === "shutdown" && opened && deps.pushProgress) {
+        const copy = opened;
+        await deps.pushProgress(reload(), copy).catch((e) => log.warn("pushing the job's progress at shutdown failed", { job: jobId, error: String(e) }));
+      }
       return store.updateJob(jobId, { status: "queued" });
     }
     if (err instanceof RefreshFailed) return fail(err.message);
@@ -605,7 +640,7 @@ const choose = (deps: RunnerDeps, who: Who) =>
 const engineOf = (c: EngineChoice): AgentRequest["engine"] => ({ name: c.engine, model: c.model, replaces: c.replaces, reason: c.reason });
 
 /** What the job may still be charged; subscription calls cost nothing extra. */
-const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, job.id, nowOf(deps)), 0.01);
+const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, deps.config, job.id, nowOf(deps)), 0.01);
 
 /** The dollar cap of the next call: none on a subscription, whose real limit is the plan itself. */
 const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.billing === "subscription" ? undefined : remaining(deps, job));
@@ -822,6 +857,7 @@ async function buildLoop(
 
   for (;;) {
     if (signal.aborted) throw new Interrupted(reasonOf(signal));
+    await ensureHolds(deps);
     let job = store.getJob(jobId)!;
     // A job interrupted after building resumes at the station it was in, without rebuilding.
     // A clean merge of the base resumes at verify at any attempt count, even 0 (a retried pull request).
@@ -843,7 +879,7 @@ async function buildLoop(
     }
     // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
     // An attempt that starts with less than a small share of the cap would only be cut short by it.
-    const billed = jobBilledUsd(store, jobId, nowOf(deps));
+    const billed = jobBilledUsd(store, deps.config, jobId, nowOf(deps));
     const cap = job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0);
     const next = choose(deps, resumingWriter >= 0 ? writers[resumingWriter]! : resumingCustom >= 0 ? custom[resumingCustom]! : resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
     if ((billed >= cap || cap - billed < cap * MIN_ATTEMPT_SHARE) && next.billing !== "subscription") return budgetStop(deps, job, level, spec, billed);
@@ -917,7 +953,7 @@ async function buildLoop(
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1, station: "build" });
         attemptSpan.end("error", { "error.message": "job budget used up" });
-        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
       }
       if (!run.ok) {
         failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
@@ -961,6 +997,7 @@ async function buildLoop(
           tracer.start(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station } }).end("ok", { "zero.skipped": true });
           continue;
         }
+        await ensureHolds(deps, attemptSpan);
         job = store.updateJob(jobId, { station });
         const loaded = await customInstructions(deps, line, writer);
         if (!loaded.ok) {
@@ -1014,7 +1051,7 @@ async function buildLoop(
           // The job's dollar cap cut the call short: the owner decides, and it resumes at this agent.
           copy.discardChanges();
           attemptSpan.end("error", { "error.message": "job budget used up" });
-          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
         }
         if (!run.ok) {
           // Unlike build, nothing half-done stays for the next commit to pick up as someone else's work.
@@ -1033,6 +1070,7 @@ async function buildLoop(
       }
     }
 
+    await ensureHolds(deps, attemptSpan);
     store.updateJob(jobId, { station: "verify" });
     job = store.getJob(jobId)!;
     const verified = await tracer.within("zero.station.verify", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "verify" } }, async (span) =>
@@ -1073,6 +1111,7 @@ async function buildLoop(
       // A verified stage is kept: its commits stay, and the next stage starts with fresh attempts.
       store.updateJob(jobId, { stagesDone: stageNo, attempt: 0, feedback: null, station: "build" });
       attemptSpan.end("ok", { "zero.stage": stageNo });
+      await checkpointPush(deps, jobId, copy);
       continue;
     }
 
@@ -1126,6 +1165,7 @@ async function buildLoop(
       const ask = agent
         ? `You are this project's own "${agent.name}" agent. Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
         : `${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`;
+      await ensureHolds(deps, attemptSpan);
       store.updateJob(jobId, { station });
       const reviewed = await tracer.within(`zero.station.${station}`, { jobId, parentId: attemptSpan.id, attrs: { "zero.station": station, ...(agent && { "zero.agent.blocking": agent.blocking }) } }, async (span) => {
         let switched = 0;

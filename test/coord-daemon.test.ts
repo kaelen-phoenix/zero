@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { factoryStatus, joinFactory } from "../src/app.js";
-import { MACHINES_KEY, coordPass, readMachines } from "../src/coord/pass.js";
+import { MACHINES_KEY, PROBE_KEY, coordPass, coordReady, readMachines, readProbe } from "../src/coord/pass.js";
 import { machineRef, memoryCoord, type MachineView } from "../src/coord/protocol.js";
 import { runDaemon } from "../src/daemon.js";
 import { formatStatus } from "../src/format.js";
@@ -56,6 +56,59 @@ describe("coordination pass in the daemon", () => {
   });
 });
 
+describe("probe of the coordination repository", () => {
+  const now = new Date("2026-11-15T10:00:00Z");
+  const minutes = (m: number) => new Date(now.getTime() + m * 60_000);
+  const probes = (api: ReturnType<typeof memoryCoord>) => api.calls.filter((c) => c.startsWith("create probe/"));
+
+  it("stores a passed probe once and leaves no probe ref", async () => {
+    const ctx = testFactory({ isolation: "worktree", distributed: DISTRIBUTED, lines: [] }, () => now);
+    const api = memoryCoord();
+    expect(coordReady(ctx)).toBe(false);
+    await coordPass(ctx, api, undefined, now);
+    expect(readProbe(ctx.store)).toEqual({ repository: "me/zero-coord", at: now.toISOString(), ok: true });
+    expect([...api.refs.keys()].some((k) => k.startsWith("probe/"))).toBe(false);
+    expect(coordReady(ctx)).toBe(true);
+    await coordPass(ctx, api, undefined, minutes(120));
+    expect(probes(api)).toHaveLength(2);
+  });
+
+  it("stores a failed probe and tries again only after an hour", async () => {
+    const ctx = testFactory({ isolation: "worktree", distributed: DISTRIBUTED, lines: [] }, () => now);
+    const api = memoryCoord();
+    // A backend whose create accepts a ref that already exists.
+    api.create = async (name, data) => {
+      api.calls.push(`create ${name}`);
+      return api.write(name, data);
+    };
+    await coordPass(ctx, api, undefined, now);
+    const probe = readProbe(ctx.store)!;
+    expect(probe).toMatchObject({ repository: "me/zero-coord", ok: false, problem: expect.stringContaining("ya existe") });
+    expect(coordReady(ctx)).toBe(false);
+    const tried = probes(api).length;
+    await coordPass(ctx, api, undefined, minutes(30));
+    expect(probes(api)).toHaveLength(tried);
+    await coordPass(ctx, api, undefined, minutes(61));
+    expect(probes(api).length).toBeGreaterThan(tried);
+  });
+
+  it("is not ready for another repository than the one probed", async () => {
+    const ctx = testFactory({ isolation: "worktree", distributed: DISTRIBUTED, lines: [] }, () => now);
+    ctx.store.setKv(PROBE_KEY, JSON.stringify({ repository: "me/otro", at: now.toISOString(), ok: true }));
+    expect(coordReady(ctx)).toBe(false);
+    const api = memoryCoord();
+    await coordPass(ctx, api, undefined, now);
+    expect(readProbe(ctx.store)?.repository).toBe("me/zero-coord");
+    expect(coordReady(ctx)).toBe(true);
+  });
+
+  it("is never ready without distributed", () => {
+    const ctx = testFactory({ isolation: "worktree", lines: [] }, () => now);
+    ctx.store.setKv(PROBE_KEY, JSON.stringify({ repository: "me/zero-coord", at: now.toISOString(), ok: true }));
+    expect(coordReady(ctx)).toBe(false);
+  });
+});
+
 describe("machines in status and panel", () => {
   const now = new Date("2026-11-15T10:00:00");
   const machines: MachineView[] = [
@@ -94,7 +147,7 @@ describe("zero unirse", () => {
 
   it("writes the repository when it is private", async () => {
     const ctx = testFactory({ isolation: "worktree", lines: [] });
-    const result = await joinFactory(ctx, "me/zero-coord", async () => ({ private: true }));
+    const result = await joinFactory(ctx, "me/zero-coord", async () => ({ private: true }), { coord: () => memoryCoord() });
     expect(result.joined).toBe(true);
     expect(ctx.config.distributed).toMatchObject({ repository: "me/zero-coord", heartbeatSeconds: 60, leaseMinutes: 10 });
     expect(file(ctx)).toMatch(/distributed:\s*\n\s+repository: me\/zero-coord/);

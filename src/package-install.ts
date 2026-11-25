@@ -30,7 +30,7 @@ const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/;
 export const cleanText = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, " ").trim();
 
 /** Git's own words without anything that looks like a credential. */
-const cleanError = (text: string) => cleanText(redact(text).replace(/:\/\/[^/\s@]+@/g, "://[REDACTED]@")).slice(0, 500);
+export const cleanError = (text: string) => cleanText(redact(text).replace(/:\/\/[^/\s@]+@/g, "://[REDACTED]@")).slice(0, 500);
 
 export { findOnPath };
 

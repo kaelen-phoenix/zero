@@ -2,7 +2,7 @@ import { Octokit } from "@octokit/rest";
 import { requestWork, type FactoryContext } from "../app.js";
 import type { LineConfig } from "../config.js";
 import { GithubHalted, isRateLimit } from "../github-quota.js";
-import { describeDelivery, reasonForOthers, STOPPED_BY_YOU } from "../line/finish.js";
+import { describeDelivery, endedElsewhere, reasonForOthers, STOPPED_BY_YOU } from "../line/finish.js";
 import { githubRepository } from "../line/integrate.js";
 import { tryGit } from "../shell.js";
 import { FINAL_STATUSES, type Job } from "../state/store.js";
@@ -146,8 +146,10 @@ export const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).joi
  * What the issue is told when its job reaches a status worth telling, once per status (and per question).
  * With `replyHere: false` (a tracker whose later comments the factory does not read, and that is not GitHub: Linear, Jira) the texts
  * invite no answer on the issue and do not mention GitHub.
+ * A job that ended because another machine of the factory has it tells nothing: that machine reports.
  */
 export function report(job: Job, opts: { replyHere?: boolean } = {}): { key: string; body: string } | undefined {
+  if (endedElsewhere(job)) return undefined;
   const replyHere = opts.replyHere ?? true;
   const id = `\`${job.id}\``;
   if (job.status === "waiting" && job.question) {

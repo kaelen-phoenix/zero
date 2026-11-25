@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { briefing, factoryStatus } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { formatStatus } from "../src/format.js";
-import { checkInstall, INSTALL_FRESHNESS_KEY, readInstallFreshness, type InstallFreshness } from "../src/install-freshness.js";
+import { checkInstall, INSTALL_FRESHNESS_KEY, installBehind, readInstallFreshness, type InstallFreshness } from "../src/install-freshness.js";
 import type { GitRunner } from "../src/package-install.js";
 import { overviewPage } from "../src/panel/html.js";
+import { recordSelfUpdate } from "../src/self-update.js";
 import { cleanup, gitIn, gitRepo, run, tempDir, testFactory, testStore } from "./helpers.js";
 
 afterEach(cleanup);
@@ -67,6 +68,48 @@ describe("installed copy freshness", () => {
     utimesSync(join(root, "src", "cli.ts"), new Date("2026-11-03T00:00:00Z"), new Date("2026-11-03T00:00:00Z"));
     const store = testStore();
     expect(await checkInstall(store, at("2026-11-12T10:00:00Z"), { root, git: recordingGit().git })).toMatchObject({ behind: 0, staleBuild: true });
+  });
+
+  describe("after a self-update", () => {
+    /** An installation whose src/ is newer than its build, with the self-update having put HEAD in place. */
+    function updated() {
+      const { root } = installation(0);
+      utimesSync(join(root, "src", "cli.ts"), new Date("2026-11-03T00:00:00Z"), new Date("2026-11-03T00:00:00Z"));
+      const store = testStore();
+      const head = run("git", ["rev-parse", "HEAD"], root).trim();
+      recordSelfUpdate(store, { entry: { from: "0".repeat(40), to: head, at: "2026-11-12T09:00:00.000Z", outcome: "updated" } });
+      return { root, store };
+    }
+
+    it("does not call the build stale", async () => {
+      const { root, store } = updated();
+      const record = await checkInstall(store, at("2026-11-12T10:00:00Z"), { root, git: recordingGit().git });
+      expect(record).toMatchObject({ behind: 0, staleBuild: false });
+      expect(installBehind(record)).toBe(false);
+    });
+
+    it("calls it stale after a manual edit under src/", async () => {
+      const { root, store } = updated();
+      writeFileSync(join(root, "src", "cli.ts"), "export const edited = 1;\n");
+      utimesSync(join(root, "src", "cli.ts"), new Date("2026-11-03T00:00:00Z"), new Date("2026-11-03T00:00:00Z"));
+      expect(await checkInstall(store, at("2026-11-12T10:00:00Z"), { root, git: recordingGit().git })).toMatchObject({ staleBuild: true });
+    });
+
+    it("looks again when an update came after the last record", async () => {
+      const { root } = installation(0);
+      const store = testStore();
+      store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify({ checkedAt: "2026-11-12T10:00:00.000Z", behind: 3, staleBuild: false, upstream: "origin/main" }));
+      recordSelfUpdate(store, { entry: { from: "a", to: "b", at: "2026-11-12T10:20:00.000Z", outcome: "updated" } });
+      expect(await checkInstall(store, at("2026-11-12T10:30:00Z"), { root, git: recordingGit().git })).toMatchObject({ behind: 0 });
+    });
+
+    it("keeps the hour when the update is older than the record", async () => {
+      const { root } = installation(0);
+      const store = testStore();
+      store.setKv(INSTALL_FRESHNESS_KEY, JSON.stringify({ checkedAt: "2026-11-12T10:00:00.000Z", behind: 3, staleBuild: false, upstream: "origin/main" }));
+      recordSelfUpdate(store, { entry: { from: "a", to: "b", at: "2026-11-12T09:20:00.000Z", outcome: "updated" } });
+      expect(await checkInstall(store, at("2026-11-12T10:30:00Z"), { root, git: recordingGit().git })).toBeUndefined();
+    });
   });
 
   it("asks git at most once an hour", async () => {

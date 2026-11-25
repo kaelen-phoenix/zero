@@ -10,7 +10,8 @@ import type { LineConfig, PackageStation } from "../config.js";
 import { log } from "../log.js";
 import { git } from "../shell.js";
 import { FACTORY_IDENTITY } from "../workspace.js";
-import { isInside, packageDataDir, warnOnce } from "../packages.js";
+import { machineIdentity } from "../machine.js";
+import { isInside, packageDataDir, pinnedMachine, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
@@ -306,7 +307,7 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
     if (!choice.available) return refused("no hay ningún motor disponible");
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now, ctx.config);
       if (left <= 0) return refused("ya se gastó el tope de limits.usdPerNight");
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }
@@ -629,12 +630,28 @@ interface StationTurn {
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
+/**
+ * Whether a station may run on this machine: it is pinned to none, or to this one by its name (in any case) or its id.
+ * A pin that names no known machine lets it run nowhere.
+ */
+export function runsHere(ctx: Pick<FactoryContext, "store" | "config">, station: PackageStation): boolean {
+  const pinned = pinnedMachine(station.entry, station.name);
+  if (pinned === undefined) return true;
+  const machine = machineIdentity(ctx.store, ctx.config);
+  return pinned === machine.id || pinned.toLowerCase() === machine.name.trim().toLowerCase();
+}
+
+/** The loaded stations that may run on this machine. */
+const ownStations = (ctx: FactoryContext) => (ctx.config.loadedPackages?.stations ?? []).filter((s) => runsHere(ctx, s));
+
 /** Stations with a turn under way in this process; the daemon is the only process that runs them. */
 const busyStations = new Set<string>();
 
 /** One station's turn; it never throws, and an end by time leaves its signal aborted and the pass behind. A busy station is left alone. */
 async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, turn: StationTurn, outer?: AbortSignal): Promise<void> {
   const key = stationKey(station);
+  // The last barrier: whatever asked for this turn, a station pinned to another machine is never imported here.
+  if (!runsHere(ctx, station)) return;
   const missing = station.secrets.filter((s) => !ctx.secrets.has(s));
   if (missing.length) {
     warnOnce(`${key}: no corre porque faltan los secretos ${missing.join(", ")}`);
@@ -790,7 +807,7 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
  * One at a time; a failure or a hang stays in the log and in the run's record, and the next one still runs.
  */
 export async function onDemandPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (!pendingOnDemand(ctx, station)) continue;
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
@@ -854,7 +871,7 @@ const noAgent: StationContext["runAgent"] = () => {
  * of it. One at a time; a failure or a hang stays in the log and the next one still runs.
  */
 export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     for (const { at, day } of dueSlots(ctx, station, now)) {
       if (opts.signal?.aborted) return;
       if (ctx.store.getKv(ANDON_KEY) === "on") return;
@@ -875,9 +892,9 @@ export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { sign
   }
 }
 
-/** Whether some loaded station has a run asked for by the person in charge still pending. */
+/** Whether some station that may run on this machine has a run asked for by the person in charge still pending. */
 export function onDemandPending(ctx: FactoryContext): boolean {
-  return (ctx.config.loadedPackages?.stations ?? []).some((s) => pendingOnDemand(ctx, s));
+  return ownStations(ctx).some((s) => pendingOnDemand(ctx, s));
 }
 
 /**
@@ -887,7 +904,7 @@ export function onDemandPending(ctx: FactoryContext): boolean {
  * `whenBusy` also has it in `busyPass`. A failure or a hang stays in the log and the next station still runs.
  */
 export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.listJobs({ status: ["queued", "running"], limit: 1 }).length) return;
@@ -897,9 +914,9 @@ export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, n
   }
 }
 
-/** Whether some loaded station declares `whenBusy`. */
+/** Whether some station that may run on this machine declares `whenBusy`. */
 export function whenBusyStations(ctx: FactoryContext): boolean {
-  return (ctx.config.loadedPackages?.stations ?? []).some((s) => s.whenBusy);
+  return ownStations(ctx).some((s) => s.whenBusy);
 }
 
 /**
@@ -911,7 +928,7 @@ export function whenBusyStations(ctx: FactoryContext): boolean {
  * `packagesPass`, so a station runs at most once per `everyMinutes` across both.
  */
 export async function busyPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (!station.whenBusy) continue;
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
