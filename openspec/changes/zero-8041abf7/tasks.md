@@ -1,0 +1,13 @@
+# Tasks
+
+## 1. Implementación
+
+- [ ] 1.1 Create the OpenSpec change openspec/changes/zero-8041abf7 (proposal.md in Spanish addressing 'vos', tasks.md, specs/production-line/spec.md with ADDED requirements under new names) and check it with `npx openspec validate --all`.
+- [ ] 1.2 src/line/discard.ts: add an optional `onClosed?: (closed: { line: string; job: string }) => void` parameter to discardResolved and pass it to discardResolvedIn, which calls it right after `closed++` (after finalizeJob). Export a type such as `ResolvedClosure`. Wrap the callback in a try/catch so a failing callback does not count as a lookup failure.
+- [ ] 1.3 src/line/unjam.ts: add the optional `closed?: { line: string; job: string }[]` to UnjamRunRecord, documented as the jobs closed by discardResolved in the run, from every line. Add an optional `closed?: (c) => void` to UnjamDemand. unjamPass passes `demand?.closed` to its discardResolved call. Leave the regular and urgent passes and the daemon's own call as they are.
+- [ ] 1.4 unjamOnDemandPass: collect the closures in an array. On each one, rewrite the in-progress record ({ ...base, startedAt, closed }) so a crash keeps them. Include `closed` (only when non-empty) in the final write in every branch: ok, failed, stopped, and the catch. closeInterruptedUnjam already spreads the record, so make sure it is kept.
+- [ ] 1.5 src/format.ts: in describeUnjamRun, add the closures segment (singular/plural, grouped by line in first-seen order, at most UNJAM_CLOSED_SHOWN = 5 ids, then ', y M más'). Ignore `closed` when it is not an array. Put the segment after the status segment, both for ended runs and for runs still under way, and change nothing when there are no closures.
+- [ ] 1.6 Tests in test/discard-resolved.test.ts: the callback for one or several closures, and that it is not called when nothing closes. Update the on-demand test near line 209 to expect closed. Add a two-line test where the request names a single line, plus the 'stopped after closing' and 'crash after closing' cases.
+- [ ] 1.7 Tests in test/unjam-on-demand.test.ts ('seeing it'): the singular, plural, multi-line and bounded texts, an old record without closed (unchanged text, and readUnjamRun returns it as it was), a malformed closed, and the briefing line. Add a case in test/panel-unjam.test.ts where the panel paragraph contains the escaped closure text.
+- [ ] 1.8 Document it in docs/agents/night-shift.md (the on-demand bullet: UnjamDemand.closed, the record's optional `closed`, the rewrite on each closure, the text in describeUnjamRun), and note discardResolved's onClosed in docs/agents/production-line.md where discardResolved is described.
+- [ ] 1.9 Run `npm run typecheck`, `npm test` and `npx openspec validate --all`.
