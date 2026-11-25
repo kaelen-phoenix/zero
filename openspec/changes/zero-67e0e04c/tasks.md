@@ -33,7 +33,7 @@
 
 ## 5. Etapa 5: Sección Invitados y documentación
 
-- [ ] 5.1 Owner's `/guests` in NAV: form built from what loaded packages offer, list, revoke behind confirm=1, log; the invitation's answer is a 200 page with the link once; add /guests to returnTo.
-- [ ] 5.2 Tests: new test/panel-guests-owner.test.ts; update the menu list in test/panel-guide.test.ts if it needs it.
-- [ ] 5.3 Document in docs/agents/panel.md (guests) and docs/agents/packages.md (`guests`, item `scope`, `guest` in pass), README.md and README.es.md with the same structure and code blocks, saying that with a quick tunnel the address changes and that revoking does not cancel what was already accepted.
-- [ ] 5.4 Run npm run typecheck, npm test and npx openspec validate --all.
+- [x] 5.1 Owner's `/guests` in NAV: form built from what loaded packages offer, list, revoke behind confirm=1, log; the invitation's answer is a 200 page with the link once; add /guests to returnTo.
+- [x] 5.2 Tests: new test/panel-guests-owner.test.ts; update the menu list in test/panel-guide.test.ts if it needs it.
+- [x] 5.3 Document in docs/agents/panel.md (guests) and docs/agents/packages.md (`guests`, item `scope`, `guest` in pass), README.md and README.es.md with the same structure and code blocks, saying that with a quick tunnel the address changes and that revoking does not cancel what was already accepted.
+- [x] 5.4 Run npm run typecheck, npm test and npx openspec validate --all.

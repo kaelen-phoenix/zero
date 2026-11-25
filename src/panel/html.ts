@@ -174,6 +174,7 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
   ["/remote-chat", "Chat remoto", `<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>`],
+  ["/guests", "Invitados", `<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6.5 7-6.5s7 2.5 7 6.5M19 8v6M16 11h6"/>`],
   ["/packages", "Paquetes", `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`],
 ];
 

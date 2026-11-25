@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestInvestigation, requestStationRun, requestsView, requestUnjam, uploadToStation, requestWork, researchOnDemand, researchView, resume, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
+import { addFromCatalog, agentCatalog, catalogAddPlan, controlRoomView, rejectCatalogEntry, answer, approveProposal, confirmRemoteAction, remoteChatView, revokeRemoteChatClient, briefing, egressReport, factoryGuide, factoryStatus, getJob, guestList, guestsView, inviteGuest, monitorView, monthlyReport, packageList, packageTabFile, packageTabs, packageTabView, parsePeriod, productionLine, proposalsView, rejectProposal, requestFromResearchNote, requestInvestigation, requestStationRun, requestsView, requestUnjam, uploadToStation, requestWork, researchOnDemand, researchView, resume, revokeGuest, saveReport, setEgressMode, setEgressRule, stop, trace, mergePullRequest, type FactoryContext, type MergeApiFactory } from "../app.js";
 import { onSubscription } from "../budget.js";
 import { formatDiscard, formatMerge } from "../format.js";
 import { mergeKey, type MergeState } from "../line/automerge.js";
@@ -11,6 +11,7 @@ import { createRemoteMcp, isRemoteMcpPath } from "../mcp/http.js";
 import { downloadName, MAX_DOWNLOAD_BYTES } from "../package-tabs.js";
 import { reportFileName, reportHtml, reportMarkdown } from "../report.js";
 import { controlRoomFragment, controlRoomPage } from "./control-room.js";
+import { confirmGuestRevokePage, guestInvitedPage, guestsPage } from "./guest-admin.js";
 import { guestRun, guestStations, guestUpload, type GuestAnswer } from "./guest-actions.js";
 import { guestHomePage, guestNotFoundPage, guestNotice, guestTabPage, guestTooLargePage, type GuestMenu } from "./guest-pages.js";
 import { findGuestByCookie, findGuestByKey, guestAccess, guestCookie, recordGuestEvent, touchGuest, type Guest } from "./guests.js";
@@ -141,6 +142,7 @@ function returnTo(path: string): string {
   if (path.startsWith("/research")) return "/research";
   if (path.startsWith("/packages")) return "/packages";
   if (path.startsWith("/remote-chat")) return "/remote-chat";
+  if (path.startsWith("/guests")) return "/guests";
   if (path.startsWith("/agents")) return "/agents";
   if (path.startsWith("/control-room")) return "/control-room";
   return path.startsWith("/egress") ? "/egress" : "/";
@@ -464,6 +466,7 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
       }
       if (path === "/proposals") return send(res, 200, proposalsPage(proposalsView(ctx), nonce, flash), nonce);
       if (path === "/remote-chat") return send(res, 200, remoteChatPage(remoteChatView(ctx, ctx.now?.()), nonce, flash), nonce);
+      if (path === "/guests") return send(res, 200, guestsPage(guestsView(ctx, Number(url.searchParams.get("antes")) || undefined), nonce, flash, ctx.now?.()), nonce);
       if (path === "/research") return send(res, 200, researchPage(researchView(ctx, ctx.now?.()), researchOnDemand(ctx), nonce, flash), nonce);
       if (path === "/control-room") {
         // Read-only: the fragment is what the page refreshes its modules with.
@@ -607,6 +610,21 @@ export function createPanelServer(ctx: FactoryContext, opts: PanelOptions): Serv
         return send(res, 200, confirmRevokePage(client, nonce), nonce);
       }
       return back(res, "/remote-chat", revokeRemoteChatClient(ctx, id) ? "Chat revocado: sus tokens dejaron de servir." : `No hay ningún chat conectado ${id}.`);
+    }
+    if (path === "/guests") {
+      // One scope value per line; a form sends each line break as two characters.
+      const values = (form.get("alcance") ?? "").split(/\r?\n/).filter((v) => v.trim());
+      const r = inviteGuest(ctx, { name: form.get("nombre") ?? "", only: form.getAll("solo"), values, all: form.get("todo") === "1", via: "panel" });
+      // The link goes in this answer and never in a redirect, whose address would carry the key.
+      return r.ok ? send(res, 200, guestInvitedPage(r, nonce), nonce) : back(res, "/guests", `No se creó el acceso: ${r.reason}.`);
+    }
+    const guestRevoke = /^\/guests\/([0-9a-f]{8})\/revoke$/.exec(path)?.[1];
+    if (guestRevoke) {
+      const guest = guestList(ctx).find((g) => g.id === guestRevoke);
+      if (!guest) throw new Error("Ese invitado ya no tiene acceso.");
+      // Revoking cuts the guest off at once, so the first press only asks for confirmation.
+      if (form.get("confirm") !== "1") return send(res, 200, confirmGuestRevokePage(guest, nonce), nonce);
+      return back(res, "/guests", revokeGuest(ctx, guest.name).text);
     }
     const pendingAction = /^\/remote-chat\/pending\/([0-9a-f]{8})\/confirm$/.exec(path);
     if (pendingAction) {

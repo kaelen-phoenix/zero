@@ -2140,15 +2140,24 @@ export interface GuestInvitation {
   values?: string[];
   /** Every scope value, those to come included. */
   all?: boolean;
+  /** Where it was asked from, so a refusal names the options as they are called there; the terminal by default. */
+  via?: "panel";
 }
+
+/** How a refusal names the options of an invitation. */
+const INVITE_OPTIONS = {
+  cli: { only: "--solo <paquete> o --solo <paquete>/<pestaña o estación>", values: "--alcance <valor>", all: "--todo" },
+  panel: { only: "marcá al menos una pestaña o acción", values: "«Alcance»", all: "«Todo»" },
+};
 
 /** `key` and the links exist only here, since only a hash is kept; `stable` when the tunnel's address survives restarts. */
 export type GuestInvitationResult = { ok: true; guest: GuestView; key: string; links: PanelLinks; stable: boolean } | { ok: false; reason: string };
 
 /** What an invitation grants, or why it is refused. */
 function guestGrants(ctx: Pick<FactoryContext, "config">, input: GuestInvitation): { grants: GuestGrant[] } | { reason: string } {
+  const option = INVITE_OPTIONS[input.via ?? "cli"];
   const only = input.only.map((ref) => cleanText(ref)).filter(Boolean);
-  if (!only.length) return { reason: "indicá a qué accede: --solo <paquete> o --solo <paquete>/<pestaña o estación>" };
+  if (!only.length) return { reason: `indicá a qué accede: ${option.only}` };
   const asked = new Map<LoadedPackage, Set<string>>();
   for (const ref of only) {
     const [name, part, ...rest] = ref.split("/");
@@ -2161,14 +2170,14 @@ function guestGrants(ctx: Pick<FactoryContext, "config">, input: GuestInvitation
     asked.set(pkg, new Set([...(asked.get(pkg) ?? []), ...(part === undefined ? offered : [part])]));
   }
   const values = [...new Set((input.values ?? []).map((v) => v.trim()))];
-  if (values.length && input.all) return { reason: "elegí --alcance <valor> o --todo, no los dos" };
+  if (values.length && input.all) return { reason: `elegí ${option.values} o ${option.all}, no los dos` };
   const scoped = [...asked.keys()].filter((p) => p.guests!.scope);
-  if (!scoped.length && (values.length || input.all)) return { reason: `${values.length ? "--alcance" : "--todo"} no corresponde: ${[...asked.keys()].map((p) => p.name).join(", ")} no declara un alcance para invitados` };
+  if (!scoped.length && (values.length || input.all)) return { reason: `${values.length ? option.values.replace(" <valor>", "") : option.all} no corresponde: ${[...asked.keys()].map((p) => p.name).join(", ")} no declara un alcance para invitados` };
   if (scoped.length && !values.length && !input.all) {
     const what = scoped.map((p) => `${p.name} (${p.guests!.scope!.title})`).join(", ");
-    return { reason: `falta el alcance de ${what}: indicá --alcance <valor> (uno o más) para limitar el acceso, o --todo para darlo entero` };
+    return { reason: `falta el alcance de ${what}: indicá ${option.values} (uno o más) para limitar el acceso, o ${option.all} para darlo entero` };
   }
-  if (values.some((v) => v.length < 1 || v.length > MAX_SCOPE_VALUE)) return { reason: `cada valor de --alcance tiene que tener entre 1 y ${MAX_SCOPE_VALUE} caracteres` };
+  if (values.some((v) => v.length < 1 || v.length > MAX_SCOPE_VALUE)) return { reason: `cada valor del alcance tiene que tener entre 1 y ${MAX_SCOPE_VALUE} caracteres` };
   return {
     grants: [...asked].map(([p, parts]) => {
       const { scope, tabs, run, upload } = p.guests!;
@@ -2210,6 +2219,44 @@ export function guestLog(ctx: Pick<FactoryContext, "store">, name?: string): Gue
   if (name === undefined) return ctx.store.listGuestEvents();
   const ids = new Set([...listGuests(ctx.store), ...ctx.store.guestsWithEvents()].filter((g) => guestNameKey(g.name) === guestNameKey(name)).map((g) => g.id));
   return ids.size ? ctx.store.listGuestEvents([...ids]) : undefined;
+}
+
+/** What a package offers to guests, for the form that invites. */
+export interface GuestOffer {
+  package: string;
+  /** The title of its scope, when it declares one. */
+  scope?: string;
+  /** `<package>/<name>` and what it lets a guest do: a tab and a station with the same name are one part. */
+  parts: { ref: string; allows: string }[];
+}
+
+export interface GuestsView {
+  offers: GuestOffer[];
+  guests: GuestView[];
+  /** A page of the log, newest first. */
+  log: GuestEvent[];
+  /** Where the next page starts, when there are older events. */
+  older?: number;
+}
+
+/** How many events of the guests' log the panel shows at once. */
+const GUEST_LOG_PAGE = 200;
+
+/** The panel's guests section; with `before`, only the events older than that one. */
+export function guestsView(ctx: Pick<FactoryContext, "store" | "config">, before = Infinity): GuestsView {
+  const offers = (ctx.config.loadedPackages?.packages ?? []).flatMap((p): GuestOffer[] => {
+    if (!p.guests) return [];
+    const { scope, tabs, run, upload } = p.guests;
+    const parts = [...new Set([...tabs, ...run, ...upload])].map((name) => {
+      const tab = tabs.includes(name) && p.tabs.find((t) => t.name === name);
+      const allows = [tab && `ver la pestaña «${tab.title}» (${name})`, run.includes(name) && `pedir corridas de ${name}`, upload.includes(name) && `subir archivos a ${name}`];
+      return { ref: `${p.name}/${name}`, allows: allows.filter(Boolean).join(", ") };
+    });
+    return [{ package: p.name, ...(scope && { scope: scope.title }), parts }];
+  });
+  const events = ctx.store.listGuestEvents().filter((e) => e.seq < before);
+  const log = events.slice(0, GUEST_LOG_PAGE);
+  return { offers, guests: guestList(ctx), log, ...(events.length > log.length && { older: log.at(-1)!.seq }) };
 }
 
 /** Asks the daemon to open or close the tunnel to the panel. */
