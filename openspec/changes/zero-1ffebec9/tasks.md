@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Single attribution list and clean published text
 
-- [ ] 1.1 Create src/attribution.ts with ATTRIBUTION_PATTERNS, isAttributionLine and stripAttribution.
-- [ ] 1.2 Apply stripAttribution in withTrailer, signText, signedIssues and signedMerges (always wrapping), and to the pull request and merge titles in src/line/integrate.ts.
-- [ ] 1.3 Turn off Claude Code attribution in claudeOptions settings (src/engines/claude.ts).
-- [ ] 1.4 Add the AGENTS.md convention and the docs in docs/agents/core.md and docs/agents/engines.md.
-- [ ] 1.5 Tests: stripAttribution cases, signed adapters cleaning with signature undefined (adjust existing identity expectations), claudeOptions attribution, docs.test.ts convention check.
+- [x] 1.1 Create src/attribution.ts with ATTRIBUTION_PATTERNS, isAttributionLine and stripAttribution.
+- [x] 1.2 Apply stripAttribution in withTrailer, signText, signedIssues and signedMerges (always wrapping), and to the pull request and merge titles in src/line/integrate.ts.
+- [x] 1.3 Turn off Claude Code attribution in claudeOptions settings (src/engines/claude.ts).
+- [x] 1.4 Add the AGENTS.md convention and the docs in docs/agents/core.md and docs/agents/engines.md.
+- [x] 1.5 Tests: stripAttribution cases, signed adapters cleaning with signature undefined (adjust existing identity expectations), claudeOptions attribution, docs.test.ts convention check.
 
 ## 2. Etapa 2: Clean the job's unpublished commits before integrating or pushing
 

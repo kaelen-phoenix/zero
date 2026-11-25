@@ -4,6 +4,7 @@ import type { CommitAuthor, LineConfig, Signature } from "../config.js";
 import { factoryHome, inContainer } from "../home.js";
 import { SecretStore } from "../keychain.js";
 import { git, spawnGit, tryGit } from "../shell.js";
+import { stripAttribution } from "../attribution.js";
 import { withTrailer } from "../signature.js";
 import type { Delivery } from "../state/store.js";
 import { createGitHubTracker, type PullRequestsFactory } from "../tracker.js";
@@ -44,7 +45,7 @@ function mergeIn(dir: string, branch: string, message: string, env: NodeJS.Proce
  * merge conflicts, nothing changes and the caller parks the job.
  */
 export function mergeIntoBase(line: LineConfig, copy: WorkCopy, opts: IntegrateOptions): IntegrateResult {
-  const message = withTrailer(`zero: ${opts.title} (${opts.jobId})`, opts.signature);
+  const message = withTrailer(`zero: ${stripAttribution(opts.title)} (${opts.jobId})`, opts.signature);
   const env = authorEnv(opts.author, line.repo);
   const owner = checkedOutAt(line.repo, line.baseBranch);
   if (owner) {
@@ -126,7 +127,7 @@ async function openPullRequest(line: LineConfig, copy: WorkCopy, opts: Integrate
   if (push.status !== 0) return { ok: false, reason: `No se pudo publicar la rama: ${(push.stderr || push.stdout).trim()}` };
   let pr: string;
   try {
-    pr = await (opts.pullRequests ?? createGitHubTracker)(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: opts.title, body: opts.body });
+    pr = await (opts.pullRequests ?? createGitHubTracker)(token, repository).openPullRequest({ head: copy.branch, base: line.baseBranch, title: stripAttribution(opts.title), body: stripAttribution(opts.body) });
   } catch (err) {
     if (!pullRequestExists(err)) throw err;
     return { ok: false, reason: `GitHub dice que ya existe una solicitud de cambio para la rama ${copy.branch}, así que no se abrió otra. Revisala en GitHub.` };
