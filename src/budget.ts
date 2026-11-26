@@ -185,10 +185,10 @@ function customAgentChains(config: BudgetConfig): ChainLink[][] {
  * ran out of credit, and once that engine's own spend today reaches the daily
  * dollar cap. With no reading here, another machine's plan may only pause it.
  */
-function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[]): EngineBudget {
+function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[], signedOutAt: Map<string, Date>): EngineBudget {
   const r = all.get(engine);
   // Its session expired: wait a little for the person in charge to sign in again, then try again.
-  const out = signedOut(store, now).get(engine);
+  const out = signedOutAt.get(engine);
   if (out) {
     const until = new Date(out.getTime() + UNKNOWN_RESET_MS);
     if (until > now) return { engine, billing: r?.billing ?? "unknown", paused: true, until: until.toISOString(), reason: `falta iniciar sesión en el motor ${engine}` };
@@ -246,11 +246,12 @@ function planPause(config: BudgetConfig, r: Reading, now: Date, windows: PlanWin
 /** Every engine of the stations' and custom agents' chains, by name. */
 function engineBudgets(store: Store, config: BudgetConfig, now: Date, windows: PlanWindow[] = []): Map<string, EngineBudget> {
   const all = readings(store, now);
+  const signedOutAt = signedOut(store, now);
   const out = new Map<string, EngineBudget>();
   const chains = [...AGENT_STATIONS.map((station) => stationChain(config, station)), ...customAgentChains(config)];
   for (const chain of chains) {
     for (const { engine } of chain) {
-      if (!out.has(engine)) out.set(engine, engineBudget(store, config, engine, all, now, windows));
+      if (!out.has(engine)) out.set(engine, engineBudget(store, config, engine, all, now, windows, signedOutAt));
     }
   }
   return out;
@@ -290,8 +291,12 @@ export function pickAgentEngine(store: Store, config: BudgetConfig, agent: Pick<
 
 function pickFromChain(store: Store, config: BudgetConfig, chain: ChainLink[], now: Date): EngineChoice {
   const budgets = engineBudgets(store, config, now);
-  const all = readings(store, now);
-  for (const { engine } of chain) if (!budgets.has(engine)) budgets.set(engine, engineBudget(store, config, engine, all, now, []));
+  const missing = chain.filter((l) => !budgets.has(l.engine));
+  if (missing.length) {
+    const all = readings(store, now);
+    const signedOutAt = signedOut(store, now);
+    for (const { engine } of missing) if (!budgets.has(engine)) budgets.set(engine, engineBudget(store, config, engine, all, now, [], signedOutAt));
+  }
   const own = chain[0]!;
   const ownBudget = budgets.get(own.engine)!;
   const index = chain.findIndex((l) => !budgets.get(l.engine)!.paused);
