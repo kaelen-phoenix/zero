@@ -91,6 +91,7 @@ zero actualizar                # pasa zero ahora a la última versión de su can
 zero liberar [<commit>] [<version>] [--line <line>]   # publica una versión para las instalaciones del canal estable
 zero tren <line> [<number>...]   # funde de a uno los pull requests trabados de la línea, el más viejo primero
 zero investigar "<topic>" [--line <line>]   # una investigación en la web ahora sobre un tema, sin esperar a la noche
+zero rendimiento <line>        # auditoría de rendimiento del código de la línea ahora: propuestas por impacto, nada se construye
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
@@ -434,6 +435,12 @@ Con `performance: true` en una línea:
 - **Solo frenan los problemas graves.** Como en `review`, solo un hallazgo verificado alto o crítico con confianza 8 o más devuelve el cambio a `build`; lo demás queda registrado y el cambio sigue.
 
 En una línea con la opción prendida (o en los globales, si alguna línea la tiene prendida), ningún otro agente puede llamarse `performance`.
+
+**Auditoría a demanda.** `zero rendimiento <línea>` revisa el código actual de la línea con la misma lista, en cualquier línea que no sea de un paquete, tenga o no la opción. Corre una vez apenas puede, con trabajos en cola o en marcha, sin ocupar el lugar de un trabajo: un agente en solo lectura con la skill `zero:performance` lee el repositorio y zero se queda con a lo sumo 5 propuestas, ordenadas de mayor a menor impacto, cada una con su impacto, el control, los archivos y el arreglo concreto (sin repetir los títulos de otras propuestas y sin tocar rutas protegidas). Te esperan en `zero proposals`, sea cual sea la autonomía de la línea: la auditoría nunca construye nada sin tu aprobación. En la fábrica puede haber una sola pendiente; con el andon prendido o el presupuesto alcanzado se rechaza.
+
+```sh
+zero rendimiento tienda      # audita la línea ahora; después, zero proposals
+```
 
 ## Panel en el navegador
 

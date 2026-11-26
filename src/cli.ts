@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { inspectBox, saveBoxStatus, setupBox } from "./box/index.js";
 import { installedRuntimes, responds } from "./box/runtime.js";
 import { SecretStore } from "./keychain.js";
-import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, guestList, guestLog, inviteGuest, revokeGuest, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
+import { addAgent, addFromCatalog, agentCatalog, rejectCatalogEntry, adoptPullRequests, startTrain, confirmRemoteAction, pendingRemoteActions, remoteChatView, revokeRemoteChatClient, setRemoteMcp, packageAdd, packageList, packageRemove, packageUpdate, addSkill, agentList, answerAnywhere, briefing, decideProposal, daemonInfo, daemonProcesses, listProposals, listResearchNotes, mergePullRequest, monthlyReport, regenerationDrill, requestFromResearchNote, requestInvestigation, reviveDaemon, removeAgent, requestStationRun, requestUnjam, requestPerformanceAudit, requestUpdate, uploadToStation, waitResearchEnd, waitResearchStart, waitStationStart, waitUnjamStart, waitPerformanceAudit, waitUpdate, removeSkill, skillList, egressReport, ensureDaemon, factoryStatus, githubJoin, jobText, joinFactory, openFactory, panelLinks, proposalsElsewhere, requestAnywhere, resume, retryJob, guestList, guestLog, inviteGuest, revokeGuest, setEgressMode, setEgressRule, setIssueIntake, setAutostart, setPriority, setRemotePanel, shutdownFactory, releaseVersion, saveReport, stop, trace, type FactoryContext, type PanelLinks } from "./app.js";
 import { syncAutostart } from "./autostart.js";
 import { onSubscription } from "./budget.js";
 import { findLine } from "./config.js";
@@ -67,6 +67,9 @@ Uso diario (también desde el chat):
                                  y fuera del turno nocturno, hasta research.usdPerRun; responde cuando la corrida empezó
                                  (o, pasados 2 minutos, que sigue pendiente); con --esperar, se queda hasta que termina y
                                  muestra sus notas
+  zero rendimiento <línea>       Audita ahora el rendimiento del código de la línea con la lista de controles de zero y
+                                 deja propuestas ordenadas por impacto, que esperan tu aprobación: no construye nada;
+                                 responde cuando la auditoría empezó (o, pasados 2 minutos, que sigue pendiente)
   zero briefing [--days N]       Informe: producción, costo, aprendizajes, pendientes
   zero informe [línea] [--mes AAAA-MM] [--html]
                                  Informe mensual por línea, para compartir (por defecto el mes anterior, todas las líneas); --html lo guarda en ZERO_HOME/reports y muestra la ruta
@@ -162,7 +165,7 @@ Fábrica:
 
 Directorio de la fábrica: ZERO_HOME (por defecto ~/.zero)`;
 
-/** How long `zero package run`, `zero destrabar`, `zero investigar` and `zero actualizar` wait for the daemon to take what was asked before saying it is still pending. */
+/** How long `zero package run`, `zero destrabar`, `zero investigar`, `zero rendimiento` and `zero actualizar` wait for the daemon to take what was asked before saying it is still pending. */
 const STATION_WAIT_MS = 120_000;
 
 async function main(argv: string[]): Promise<number> {
@@ -421,6 +424,17 @@ async function main(argv: string[]): Promise<number> {
         console.log(start.text);
         if (!values.esperar || start.notRun) return 0;
         console.log((await waitResearchEnd(ctx, r.requestedAt)).text);
+        return 0;
+      }
+      case "rendimiento": {
+        const r = requestPerformanceAudit(ctx, rest[0] ?? values.line ?? "");
+        if (!r.ok) {
+          console.log(r.reason);
+          return 1;
+        }
+        console.log(r.text);
+        if (await ensureDaemon(ctx)) console.log("La fábrica estaba apagada: la encendí.");
+        console.log((await waitPerformanceAudit(ctx, r.requestedAt, { timeoutMs: STATION_WAIT_MS })).text);
         return 0;
       }
       case "resume":

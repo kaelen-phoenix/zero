@@ -91,6 +91,7 @@ zero actualizar                # moves zero to the newest version of its channel
 zero liberar [<commit>] [<version>] [--line <line>]   # publishes a release for the installations on the stable channel
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
 zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
+zero rendimiento <line>        # performance audit of the line's code now: proposals ordered by impact, nothing built
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -434,6 +435,12 @@ With `performance: true` on a line:
 - **Only serious problems stop the change.** Like `review`, only a verified high or critical finding with confidence 8 or more sends the change back to `build`; everything else is recorded and the change goes on.
 
 On a line with the option on (or globally, when some line has it on), no other agent may be named `performance`.
+
+**Audit on demand.** `zero rendimiento <line>` reviews the line's code as it is now with the same checklist, on any line that is not a package's, with or without the option. It runs once as soon as it can, with jobs queued or running, without taking a job's place: one read-only agent with the `zero:performance` skill reads the repository and zero keeps at most 5 proposals, ordered from high to low impact, each with its impact, the control, the files and the concrete fix (without repeating the titles of other proposals and without touching protected paths). They wait for you in `zero proposals`, whatever the line's autonomy: the audit never builds anything without your approval. Only one audit can be pending in the factory; with the andon on or the budget reached it is refused.
+
+```sh
+zero rendimiento tienda      # audit the line now; then zero proposals
+```
 
 ## Browser panel
 

@@ -23,7 +23,7 @@
 
 ## 4. Etapa 4: Auditoría a demanda con propuestas por impacto
 
-- [ ] 4.1 Origin `performance` in proposals and jobs (store), and proposalAutonomy always `propose` for it.
-- [ ] 4.2 src/line/performance.ts: request, schema, prompt, acceptAudit and performanceAuditPass; agents/performance-audit.md.
-- [ ] 4.3 requestPerformanceAudit/waitPerformanceAudit in app.ts, the pass in daemon.ts, `zero rendimiento <línea>` in cli.ts.
-- [ ] 4.4 Tests for the request, the pass, ordering, dedupe and waiting for approval; docs night-shift.md and both READMEs.
+- [x] 4.1 Origin `performance` in proposals and jobs (store), and proposalAutonomy always `propose` for it.
+- [x] 4.2 src/line/performance.ts: request, schema, prompt, acceptAudit and performanceAuditPass; agents/performance-audit.md.
+- [x] 4.3 requestPerformanceAudit/waitPerformanceAudit in app.ts, the pass in daemon.ts, `zero rendimiento <línea>` in cli.ts.
+- [x] 4.4 Tests for the request, the pass, ordering, dedupe and waiting for approval; docs night-shift.md and both READMEs.

@@ -75,7 +75,7 @@ export type JobSource =
    * A proposal of the scout station: approved by the owner (no autonomy), or
    * taken by the night shift on its own under the line's `build` or `auto` autonomy.
    */
-  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto"; origin?: "unjam" }
+  | { kind: "night-shift"; proposal: string; autonomy?: "build" | "auto"; origin?: ProposalOrigin }
   /** A research note the owner turned into work. */
   | { kind: "research"; note: string }
   /** A package's station asked for it with `ctx.requestJob`. */
@@ -145,6 +145,9 @@ export interface SpanRow {
 /** `reverted`: the night shift integrated it on its own and the owner reverted it on the base branch. */
 export type ProposalStatus = "pending" | "approved" | "rejected" | "reverted";
 
+/** Who drafted a proposal that is not scout's: the unjam station, or a performance audit the person in charge asked for. */
+export type ProposalOrigin = "unjam" | "performance";
+
 /** Work the scout station proposed on its own; the owner decides it. */
 export interface Proposal {
   id: string;
@@ -182,8 +185,8 @@ export interface Proposal {
   /** The line's open issue it came from, when scout linked one of the issues in its prompt. */
   sourceIssue?: number;
   sourceIssueUrl?: string;
-  /** Drafted by the unjam station from the factory's records, not by scout. */
-  origin?: "unjam";
+  /** Not scout's: drafted by the unjam station from the factory's records, or by a performance audit of the line. */
+  origin?: ProposalOrigin;
   /** For a missing capability: the jobs refused at spec for want of it, resent once its job enters the base branch. */
   forJobs?: string[];
 }
@@ -449,7 +452,7 @@ function toProposal(r: Row): Proposal {
     issueClosed: Number(r.issue_closed ?? 0) === 1,
     sourceIssue: r.source_issue_number == null ? undefined : Number(r.source_issue_number),
     sourceIssueUrl: str(r.source_issue_url),
-    ...(r.origin === "unjam" && { origin: "unjam" as const }),
+    ...((r.origin === "unjam" || r.origin === "performance") && { origin: r.origin as ProposalOrigin }),
     ...(r.for_jobs != null && { forJobs: json<string[]>(r.for_jobs) ?? [] }),
   };
 }
@@ -744,7 +747,7 @@ export class Store {
     this.db.prepare("DELETE FROM egress WHERE at < ?").run(before.toISOString());
   }
 
-  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: "unjam"; forJobs?: string[] }): Proposal {
+  createProposal(input: { line: string; title: string; why: string; change: string; estimatedUsd: number; paths: string[]; researchNote?: string; thirdParty?: boolean; business?: boolean; commercial?: boolean; sourceIssue?: { number: number; url: string }; origin?: ProposalOrigin; forJobs?: string[] }): Proposal {
     const id = newId();
     this.db
       .prepare(
