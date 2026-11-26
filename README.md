@@ -91,6 +91,7 @@ zero actualizar                # moves zero to the newest version of its channel
 zero liberar [<commit>] [<version>] [--line <line>]   # publishes a release for the installations on the stable channel
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
 zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
+zero rendimiento <line>        # performance audit of the line's code now: proposals ordered by impact, nothing built
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -423,6 +424,24 @@ With `checkDependencies: true` on a line, after verify and before review zero lo
 - **Without network.** If a service does not answer within 10 seconds or answers with an error, the packages stay as not verified (in the trace, the log and the security prompt) and the line goes on.
 - **What is not asked about.** What the lock resolves outside the public npm registry (git, local files, links, other registries) and `package.json` specs that are not registry ranges. For now it covers only npm.
 
+### Performance review (`performance`)
+
+Apps built with AI tend to be slow for known reasons: queries without pagination or indexes, queries repeated in a loop (N+1), no caching, static files without a CDN, unoptimized images, all the JavaScript in a single bundle, heavy work inside the request instead of a background queue. zero ships a checklist of those problems, the `zero:performance` skill, built from official documentation (web.dev, MDN, Next.js, React, PostgreSQL, Django, Rails, Express, Node.js, Vite, Chrome), with how to detect each one in the code and how to fix it. `build` always has the rule not to introduce them.
+
+With `performance: true` on a line:
+
+- **`build` gets the checklist.** The `zero:performance` skill is added to its skills on that line, with any engine.
+- **A performance reviewer reads every change.** zero's own `performance` agent runs after `security` and before the line's other reviewers, read-only, with the checklist, and points out the problems the change adds with the file, the line and the concrete fix. Its instructions are zero's (`agents/performance.md` of its installation), never the repository's.
+- **Only serious problems stop the change.** Like `review`, only a verified high or critical finding with confidence 8 or more sends the change back to `build`; everything else is recorded and the change goes on.
+
+On a line with the option on (or globally, when some line has it on), no other agent may be named `performance`.
+
+**Audit on demand.** `zero rendimiento <line>` reviews the line's code as it is now with the same checklist, on any line that is not a package's, with or without the option. It runs once as soon as it can, with jobs queued or running, without taking a job's place: one read-only agent with the `zero:performance` skill reads the repository and zero keeps at most 5 proposals, ordered from high to low impact, each with its impact, the control, the files and the concrete fix (without repeating the titles of other proposals and without touching protected paths). They wait for you in `zero proposals`, whatever the line's autonomy: the audit never builds anything without your approval. Only one audit can be pending in the factory; with the andon on or the budget reached it is refused.
+
+```sh
+zero rendimiento tienda      # audit the line now; then zero proposals
+```
+
 ## Browser panel
 
 With the factory running, the panel shows:
@@ -622,6 +641,7 @@ lines:
     signature: off            # optional: this line's own signature, replaces the global one
     allowedArtifacts: ["media/**"]   # optional: paths this line versions though they look like operation output
     checkDependencies: false  # optional: ask OSV and deps.dev about new npm dependencies before review
+    performance: false        # optional: zero's performance reviewer after security, and its checklist for build
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.

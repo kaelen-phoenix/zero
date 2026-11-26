@@ -34,8 +34,8 @@ describe("docker/Dockerfile", () => {
   });
 
   it("keeps what the box image is built from", () => {
-    for (const piece of ["COPY package.json package-lock.json ./", "./dist", "COPY agents ./agents", "COPY box/Dockerfile ./box/Dockerfile"]) expect(file).toContain(piece);
-    expect(read("src/box/image.ts")).toContain('["package.json", "package-lock.json", "dist", "agents", "box/Dockerfile"]');
+    for (const piece of ["COPY package.json package-lock.json ./", "./dist", "COPY agents ./agents", "COPY skills ./skills", "COPY box/Dockerfile ./box/Dockerfile"]) expect(file).toContain(piece);
+    expect(read("src/box/image.ts")).toContain('["package.json", "package-lock.json", "dist", "agents", "skills", "box/Dockerfile"]');
   });
 
   it("runs as an unprivileged user, marked as a container, starting the factory", () => {

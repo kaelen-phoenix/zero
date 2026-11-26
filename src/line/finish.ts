@@ -39,6 +39,8 @@ export interface PrRefresh {
 }
 
 export const prRefreshKey = (jobId: string) => `pr-refresh:${jobId}`;
+/** The verified findings of zero's performance reviewer that did not block its last passing run: the pull request lists them. */
+export const performanceFindingsKey = (jobId: string) => `performance-findings:${jobId}`;
 
 export function prRefresh(store: Pick<Store, "getKv">, jobId: string): PrRefresh | undefined {
   const raw = store.getKv(prRefreshKey(jobId));
@@ -161,6 +163,7 @@ export async function finalizeJob(
     if (line && branch && !checkedOutAt(line.repo, branch)) tryGit(["update-ref", `refs/heads/${branch}`, gaveUp.head], line.repo);
   }
   if (refresh) deps.store.deleteKv(prRefreshKey(job.id));
+  deps.store.deleteKv(performanceFindingsKey(job.id));
 
   const topic = done.title ?? done.request.slice(0, 80);
   const posts: NewPost[] = [

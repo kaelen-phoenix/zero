@@ -354,7 +354,7 @@ export function formatAgents(lists: LineAgentList[]): string {
           : a.type === "conflict"
             ? "resuelve conflictos al traer la base, antes de build"
             : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
-      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
+      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : a.origin === "zero" ? "de zero" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }
   return out.join("\n");
@@ -441,7 +441,7 @@ export function formatSkills(l: SkillList): string {
   for (const p of l.problems) out.push(`  ${skillWarning(p)}`);
   out.push("", "Skills disponibles en Claude Code:");
   if (!l.available.length) out.push("- ninguna (personales en ~/.claude/skills o de plugins instalados)");
-  for (const s of l.available) out.push(`- ${s.fullName}${s.source === "plugin" ? ` (plugin ${s.plugin})` : s.source === "package" ? ` (paquete ${s.plugin})` : " (personal)"}`);
+  for (const s of l.available) out.push(`- ${s.fullName}${s.source === "plugin" ? ` (plugin ${s.plugin})` : s.source === "package" ? ` (paquete ${s.plugin})` : s.source === "zero" ? " (de zero)" : " (personal)"}`);
   return out.join("\n");
 }
 

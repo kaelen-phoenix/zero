@@ -15,7 +15,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubHalt, githubMeter, githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, PERFORMANCE_AGENT, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
@@ -46,6 +46,7 @@ import { drillFiles, runDrill, specPath, type DrillDeps, type DrillResult } from
 import { discardJob } from "./line/discard.js";
 import { jobStage, type Spec } from "./line/spec.js";
 import { closedCause, onDemandProblem, readDiagnosis, readUnjamRequest, readUnjamRun, UNJAM_REQUEST_KEY, type Cause, type UnjamRequest, type UnjamRunRecord } from "./line/unjam.js";
+import { auditProblem, PERFORMANCE_AUDIT_REQUEST_KEY, readPerformanceAuditRequest, readPerformanceAuditRun, type PerformanceAuditRequest } from "./line/performance.js";
 import { readResearchRequest, readResearchRuns, RESEARCH_REQUEST_KEY, researchBudgetReached, researchOnDemandProblem, scrubLocal, type ResearchRequest, type ResearchRunRecord } from "./line/research.js";
 import { isPriority, PRIORITIES, storedPriority, type JobPriority } from "./priority.js";
 import { FINAL_STATUSES, newId, Store, type GuestEvent, type Job, type JobSource, type JobStatus, type Proposal, type ProposalStatus, type QuestionKind, type ResearchNote, type SpanRow } from "./state/store.js";
@@ -2899,8 +2900,8 @@ export async function removePackageLine(ctx: FactoryContext, input: { name: stri
 
 export interface AgentListEntry {
   name: string;
-  /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
-  origin: "factory" | "line" | "package";
+  /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line; `zero`: zero's own, on the lines that turn it on. */
+  origin: "factory" | "line" | "package" | "zero";
   /** `build`: it writes, between build and verify. `review`: read-only, after security. */
   type: "review" | "build" | "conflict";
   /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
@@ -3116,6 +3117,7 @@ export async function removeAgent(ctx: FactoryContext, input: { name: string; li
   if (at < 0) {
     const packaged = ctx.config.loadedPackages?.agents.find((a) => a.name === input.name);
     if (packaged) return `El agente ${input.name} viene del paquete ${packaged.package}: quitalo con \`zero package remove ${packaged.package}\`.`;
+    if (line.performance && input.name === PERFORMANCE_AGENT) return `El agente ${input.name} es el revisor de rendimiento de zero: apagalo con \`performance: false\` en la línea ${line.name} de ${ctx.home.config}.`;
     const global = ctx.config.agents.some((a) => a.name === input.name);
     return global
       ? `El agente ${input.name} es global (vale para todas las líneas): quitalo de \`agents\` en ${ctx.home.config}.`
@@ -3513,6 +3515,45 @@ export async function waitUnjamStart(ctx: FactoryContext, requestedAt: string, w
     waited += step;
   }
   return { started: false, text: "La corrida del destrabador sigue pendiente: corre en la próxima pasada del daemon." };
+}
+
+/**
+ * Asks the daemon for one performance audit of a line as soon as it can, whatever the factory is doing: it reads the
+ * code as it is with the `zero:performance` checklist and leaves proposals that wait for the person in charge. At
+ * most one pending in the factory; a refusal writes nothing.
+ */
+export function requestPerformanceAudit(ctx: FactoryContext, line: string, now = new Date()): StationRunResult {
+  const name = line.trim();
+  const pending = readPerformanceAuditRequest(ctx.store);
+  if (pending) return { ok: false, reason: `ya hay una auditoría de rendimiento pendiente para ${pending.line}, pedida el ${pending.requestedAt}` };
+  if (ctx.store.getKv(ANDON_KEY) === "on") return { ok: false, reason: "la fábrica está detenida (andon); volvé a pedirla cuando la reanudes" };
+  if (budgetState(ctx.store, ctx.config, now).reached) return { ok: false, reason: "se alcanzó el presupuesto" };
+  if (!name) return { ok: false, reason: `falta la línea a auditar. Líneas: ${ctx.config.lines.filter((l) => !l.package).map((l) => l.name).join(", ") || "ninguna"}` };
+  const problem = auditProblem(ctx, name);
+  if (problem) return { ok: false, reason: problem };
+  const requestedAt = now.toISOString();
+  ctx.store.setKv(PERFORMANCE_AUDIT_REQUEST_KEY, JSON.stringify({ requestedAt, line: name } satisfies PerformanceAuditRequest));
+  return { ok: true, text: `Auditoría de rendimiento pedida para ${name}: corre una vez en la próxima pasada y deja propuestas que esperan tu aprobación.`, requestedAt };
+}
+
+/** Like `waitStationStart`, for the audit asked for at `requestedAt`; one that already ended says how at once. */
+export async function waitPerformanceAudit(ctx: FactoryContext, requestedAt: string, wait: StationWait): Promise<{ started: boolean; text: string }> {
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const pollMs = wait.pollMs ?? 1000;
+  let waited = 0;
+  for (;;) {
+    const run = readPerformanceAuditRun(ctx.store);
+    if (run?.asked === requestedAt) {
+      if (run.endedAt && run.outcome === "ok") return { started: true, text: `La auditoría terminó con ${run.proposals} propuesta${run.proposals === 1 ? "" : "s"}${run.reason ? ` (${run.reason})` : ""}. Mirala${run.proposals === 1 ? "" : "s"} en zero proposals.` };
+      if (run.endedAt) return { started: Boolean(run.startedAt), text: `La auditoría ${run.startedAt ? "no terminó" : "no corrió"}: ${run.reason ?? "sin motivo registrado"}.` };
+      if (run.startedAt) return { started: true, text: `La auditoría empezó (${hourMinute(run.startedAt)}). Sus propuestas aparecen en zero proposals.` };
+    }
+    if (waited >= wait.timeoutMs) break;
+    const step = Math.min(pollMs, wait.timeoutMs - waited);
+    await sleep(step);
+    waited += step;
+  }
+  return { started: false, text: "La auditoría de rendimiento sigue pendiente: corre en la próxima pasada del daemon." };
 }
 
 /**

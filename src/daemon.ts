@@ -42,6 +42,7 @@ import { runJob, type StopReason } from "./line/runner.js";
 import { packageUpdatesPass } from "./line/package-updates.js";
 import { duePackageUpdate, launchPackage, launchPackageUpdate, PACKAGE_RUN_KEY, packageRunUnderWay, packageUpdateLockHeld, readPackageRun, type PackageUpdateLauncher } from "./package-auto-update.js";
 import { busyPass, onDemandPass, onDemandPending, packagesPass, scheduledPass, whenBusyStations } from "./line/packages.js";
+import { closeInterruptedAudit, performanceAuditPass, performanceAuditReady } from "./line/performance.js";
 import { closeInterruptedResearch, researchOnDemandPass, researchOnDemandReady, researchPass } from "./line/research.js";
 import { detectReverts } from "./line/reverts.js";
 import { scoutPass } from "./line/scout.js";
@@ -97,6 +98,8 @@ export interface DaemonOptions {
   research?: boolean;
   /** Run the research station when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
   researchOnDemand?: boolean;
+  /** Run the performance audit of a line when the person in charge asks for it, busy factory or not. Defaults to on, except in `once` runs. */
+  performanceAudit?: boolean;
   /** Run the recruiter (public agents for the catalog) while the factory is idle. Defaults to on, except in `once` runs. */
   recruit?: boolean;
   /** Run the stations of the installed packages while the factory is idle, and at the times of their `schedule`. Defaults to on, except in `once` runs. */
@@ -233,6 +236,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
 
   closeInterruptedUnjam(ctx, now());
   closeInterruptedResearch(ctx, now());
+  closeInterruptedAudit(ctx, now());
   closeInterruptedUpdate(ctx, now());
 
   const running = new Map<string, Running>();
@@ -549,7 +553,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
   const updatePackage = async (): Promise<boolean> => {
     if (opts.once && !opts.launchPackageUpdate) return false;
     // What it would cut, or what would keep it waiting for this daemon to end.
-    if (running.size || idle || urgent || unjamming || investigating || demanding || busyRunning || scheduling || looking || selfChecking) return false;
+    if (running.size || idle || urgent || unjamming || investigating || auditing || demanding || busyRunning || scheduling || looking || selfChecking) return false;
     const { status } = readSelfUpdate(store).state;
     if (status === "ready" || status === "switching") return false;
     const due = duePackageUpdate(ctx);
@@ -686,6 +690,15 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
       .finally(() => (investigating = undefined));
   };
 
+  // A performance audit the person in charge asked for: its own background pass, read-only, which takes no job slot and waits for no job.
+  let auditing: Promise<void> | undefined;
+  const runPerformanceAudit = () => {
+    if (auditing || stopping || researchStop.signal.aborted || !(opts.performanceAudit ?? !opts.once) || !performanceAuditReady(ctx, now())) return;
+    auditing = performanceAuditPass(ctx, passRunner(ctx.config), now(), { signal: researchStop.signal })
+      .catch((err) => log.warn("performance audit failed", { error: String(err) }))
+      .finally(() => (auditing = undefined));
+  };
+
   // Set only when the loop ends because it was asked to; an error leaves the heartbeat behind, so the factory reads as crashed.
   let stopped: DaemonStopReason | undefined;
   try {
@@ -735,6 +748,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
         runUnjamOnDemand();
         runUrgentUnjam();
         runResearchOnDemand();
+        runPerformanceAudit();
         lookForPackageUpdates();
         checkSelfUpdate();
       }
@@ -880,6 +894,7 @@ async function factoryLoop(ctx: FactoryContext, opts: DaemonOptions): Promise<vo
     await urgent;
     await unjamming;
     await investigating;
+    await auditing;
     await looking;
     await selfChecking;
     await idle;

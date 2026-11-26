@@ -200,10 +200,11 @@ export function ownerOnly(proposal: Pick<Proposal, "business" | "commercial" | "
  * How far a proposal may go without the owner: the line's autonomy, restricted
  * by `research.autonomy` when it was born from a research note: its origin
  * decides, never what scout, having just read that note, declares about it.
- * Business-born, commercial and legal proposals always wait (`ownerOnly`).
+ * Business-born, commercial and legal proposals always wait (`ownerOnly`), and so do a performance audit's: the
+ * audit never builds without the person in charge.
  */
-export function proposalAutonomy(config: Pick<FactoryConfig, "nightShift" | "research">, line: Pick<LineConfig, "nightShift">, proposal: Pick<Proposal, "researchNote" | "paths" | "business" | "commercial">): Autonomy {
-  if (ownerOnly(proposal)) return "propose";
+export function proposalAutonomy(config: Pick<FactoryConfig, "nightShift" | "research">, line: Pick<LineConfig, "nightShift">, proposal: Pick<Proposal, "researchNote" | "paths" | "business" | "commercial" | "origin">): Autonomy {
+  if (ownerOnly(proposal) || proposal.origin === "performance") return "propose";
   const own = lineAutonomy(config, line);
   return proposal.researchNote ? stricter(own, researchAutonomy(config)) : own;
 }
