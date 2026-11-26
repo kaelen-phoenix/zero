@@ -423,6 +423,18 @@ Con `checkDependencies: true` en una línea, después de la verificación y ante
 - **Sin red.** Si un servicio no responde en 10 segundos o responde con un error, los paquetes quedan como no verificados (en la traza, el log y el prompt de seguridad) y la línea sigue.
 - **Qué no se consulta.** Lo que el lock resuelve fuera del registro público de npm (git, archivos locales, enlaces, otros registros) y las specs de `package.json` que no son rangos del registro. Por ahora cubre solo npm.
 
+### Revisión de rendimiento (`performance`)
+
+Las apps hechas con IA suelen andar lentas por motivos conocidos: consultas sin paginar o sin índices, consultas repetidas en un bucle (N+1), nada de caché, archivos estáticos sin CDN, imágenes sin optimizar, todo el JavaScript en un solo paquete, trabajos pesados dentro de la respuesta en vez de una cola en segundo plano. zero trae una lista de controles de esos problemas, la skill `zero:performance`, armada desde documentación oficial (web.dev, MDN, Next.js, React, PostgreSQL, Django, Rails, Express, Node.js, Vite, Chrome), con cómo detectar cada uno en el código y cómo arreglarlo. `build` tiene siempre la regla de no introducirlos.
+
+Con `performance: true` en una línea:
+
+- **`build` recibe la lista.** La skill `zero:performance` se suma a sus skills en esa línea, con cualquier motor.
+- **Un revisor de rendimiento lee cada cambio.** El agente `performance` propio de zero corre después de `security` y antes de los demás revisores de la línea, en solo lectura, con la lista, y marca los problemas que agrega el cambio con el archivo, la línea y el arreglo concreto. Sus instrucciones son las de zero (`agents/performance.md` de su instalación), nunca las del repositorio.
+- **Solo frenan los problemas graves.** Como en `review`, solo un hallazgo verificado alto o crítico con confianza 8 o más devuelve el cambio a `build`; lo demás queda registrado y el cambio sigue.
+
+En una línea con la opción prendida (o en los globales, si alguna línea la tiene prendida), ningún otro agente puede llamarse `performance`.
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -621,6 +633,7 @@ lines:
     signature: off            # opcional: la firma propia de esta línea, reemplaza la global
     allowedArtifacts: ["media/**"]   # opcional: rutas que esta línea versiona aunque parezcan producto de la operación
     checkDependencies: false  # opcional: consulta a OSV y deps.dev por las dependencias npm nuevas antes de la revisión
+    performance: false        # opcional: el revisor de rendimiento de zero después de seguridad, y su lista de controles para build
 ```
 
 Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.

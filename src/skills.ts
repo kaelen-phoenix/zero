@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import type { FactoryConfig } from "./config.js";
+import { PERFORMANCE_SKILL, type FactoryConfig } from "./config.js";
 import { log } from "./log.js";
 
 /** Stations staffed by an agent, which are the only ones that can get skills. */
@@ -163,10 +163,11 @@ export function skillView(ref: string, available: Skill[]): SkillView {
   return { name: ref, fullName: skill.fullName, ...(skill.description && { description: skill.description }) };
 }
 
-/** The global list for the agent plus the line's own, without duplicates. */
+/** The global list for the agent plus the line's own, without duplicates; build on a line with `performance: true` also gets zero's performance skill. */
 export function assignedSkills(config: FactoryConfig, station: SkillStation, lineName?: string): string[] {
   const line = lineName ? config.lines.find((l) => l.name === lineName) : undefined;
-  return [...new Set([...config.stations[station].skills, ...(line?.stations?.[station]?.skills ?? [])])];
+  const performance = station === "build" && line?.performance ? [PERFORMANCE_SKILL] : [];
+  return [...new Set([...config.stations[station].skills, ...(line?.stations?.[station]?.skills ?? []), ...performance])];
 }
 
 /** One problem per assignment that does not resolve. */

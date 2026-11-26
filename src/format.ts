@@ -354,7 +354,7 @@ export function formatAgents(lists: LineAgentList[]): string {
           : a.type === "conflict"
             ? "resuelve conflictos al traer la base, antes de build"
             : `revisor ${a.blocking ? "bloqueante" : "informativo"}`;
-      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
+      out.push(`- ${a.name} (${kind}, ${a.origin === "factory" ? "global" : a.origin === "package" ? "de un paquete" : a.origin === "zero" ? "de zero" : "de la línea"}): ${a.path}${a.missing ? " · FALTA el archivo de instrucciones" : ""}`);
     }
   }
   return out.join("\n");

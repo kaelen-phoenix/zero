@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageGuests, type PackageStation, type PackageTab } from "./config.js";
+import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, PERFORMANCE_AGENT, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageGuests, type PackageStation, type PackageTab } from "./config.js";
 import type { FactoryHome } from "./home.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
@@ -345,6 +345,8 @@ export function warnOnce(message: string, fields?: Record<string, unknown>): voi
 export function loadPackages(config: Pick<FactoryConfig, "packages" | "agents" | "lines">, home: Pick<FactoryHome, "config" | "packages" | "worktrees" | "jobs">): LoadedPackages {
   const out: LoadedPackages = { packages: [], agents: [], skills: [], stations: [], problems: [] };
   const taken = new Set([...config.agents, ...config.lines.flatMap((l) => l.agents)].map((a) => a.name));
+  // Zero's performance reviewer holds its name on every line once one turns it on.
+  if (config.lines.some((l) => l.performance)) taken.add(PERFORMANCE_AGENT);
   for (const [index, entry] of (config.packages ?? []).entries()) {
     let label = entryLabel(entry);
     try {

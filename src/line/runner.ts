@@ -1191,7 +1191,7 @@ async function buildLoop(
         own = customRun(agent, loaded.text);
       }
       const ask = agent
-        ? `You are this project's own "${agent.name}" agent. Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
+        ? `${agent.origin === "zero" ? `You are zero's own "${agent.name}" reviewer.` : `You are this project's own "${agent.name}" agent.`} Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
         : `${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`;
       await ensureHolds(deps, attemptSpan);
       store.updateJob(jobId, { station });

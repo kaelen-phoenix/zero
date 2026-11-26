@@ -10,10 +10,10 @@
 
 ## 2. Etapa 2: Revisor de rendimiento por línea
 
-- [ ] 2.1 `performance` option in LineSchema and refusal of the name clash.
-- [ ] 2.2 Origin `zero` in LineAgent, built-in agent in lineAgents, agentInstructionsPath for zero's folder, agents/performance.md.
-- [ ] 2.3 zero:performance for build on performance lines (assignedSkills).
-- [ ] 2.4 Tests in test/performance.test.ts for config, order and blocking or not in runJob; docs and both READMEs.
+- [x] 2.1 `performance` option in LineSchema and refusal of the name clash.
+- [x] 2.2 Origin `zero` in LineAgent, built-in agent in lineAgents, agentInstructionsPath for zero's folder, agents/performance.md.
+- [x] 2.3 zero:performance for build on performance lines (assignedSkills).
+- [x] 2.4 Tests in test/performance.test.ts for config, order and blocking or not in runJob; docs and both READMEs.
 
 ## 3. Etapa 3: Hallazgos no graves en el pull request
 

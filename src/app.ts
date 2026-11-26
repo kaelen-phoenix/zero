@@ -15,7 +15,7 @@ import { availableSkills, resolveSkill, SKILL_STATIONS, skillProblems, skillView
 import { billedUsd, budgetState, onSubscription, type BudgetState, type PlanWindow } from "./budget.js";
 import { githubHalt, githubMeter, githubStatus, type GithubStatus } from "./github-quota.js";
 import { daemonLockHeld } from "./daemon-lock.js";
-import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
+import { AGENT_STATIONS, agentInstructionsPath, editFactory, effectiveLevel, findLine, FIXED_STATIONS, lineAgents, lineAutonomy, lineSignature, NPM_NAME, PERFORMANCE_AGENT, SiteSchema, type Autonomy, type BoxAvailability, type EffectiveLevel, type FactoryConfig, type LineConfig, type LineEntry, type LoadedPackage, type PackageEntry, type PackageProblem, type PackageStation, type StationName } from "./config.js";
 import { Octokit } from "@octokit/rest";
 import { SecretStore } from "./keychain.js";
 import { factoryHome, inContainer, type FactoryHome } from "./home.js";
@@ -2899,8 +2899,8 @@ export async function removePackageLine(ctx: FactoryContext, input: { name: stri
 
 export interface AgentListEntry {
   name: string;
-  /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line. */
-  origin: "factory" | "line" | "package";
+  /** `factory`: a global agent, for every line; `line`: the line's own; `package`: it came with an installed package, for every line; `zero`: zero's own, on the lines that turn it on. */
+  origin: "factory" | "line" | "package" | "zero";
   /** `build`: it writes, between build and verify. `review`: read-only, after security. */
   type: "review" | "build" | "conflict";
   /** With `build`: it runs only when the change touches one of these globs; empty, on every job. */
@@ -3116,6 +3116,7 @@ export async function removeAgent(ctx: FactoryContext, input: { name: string; li
   if (at < 0) {
     const packaged = ctx.config.loadedPackages?.agents.find((a) => a.name === input.name);
     if (packaged) return `El agente ${input.name} viene del paquete ${packaged.package}: quitalo con \`zero package remove ${packaged.package}\`.`;
+    if (line.performance && input.name === PERFORMANCE_AGENT) return `El agente ${input.name} es el revisor de rendimiento de zero: apagalo con \`performance: false\` en la línea ${line.name} de ${ctx.home.config}.`;
     const global = ctx.config.agents.some((a) => a.name === input.name);
     return global
       ? `El agente ${input.name} es global (vale para todas las líneas): quitalo de \`agents\` en ${ctx.home.config}.`

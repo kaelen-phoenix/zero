@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
@@ -394,6 +395,8 @@ export const LineSchema = z.object({
   platforms: z.array(z.enum(LINE_PLATFORMS)).min(1).optional(),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
+  /** Run zero's performance reviewer on every change, after security, and give build the `zero:performance` skill. Absent: off. */
+  performance: z.boolean().optional(),
   /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
   package: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes").optional(),
 });
@@ -563,6 +566,14 @@ export const FactorySchema = z
         if (agent.engine && !known.includes(agent.engine)) issue("engine", `el agente "${agent.name}" usa el motor "${agent.engine}", que no existe; motores conocidos: ${known.join(", ")}`);
       }
     };
+    // Zero's own performance reviewer takes its name on the lines that turn it on.
+    const performanceTaken = (agents: CustomAgent[], path: (string | number)[]) => {
+      for (const [i, agent] of agents.entries()) {
+        if (agent.name === PERFORMANCE_AGENT) ctx.addIssue({ code: "custom", path: [...path, i, "name"], message: `el agente "${PERFORMANCE_AGENT}" es el revisor de rendimiento de zero en las líneas con performance: true; elegí otro nombre` });
+      }
+    };
+    if (cfg.lines.some((l) => l.performance)) performanceTaken(cfg.agents, ["agents"]);
+    for (const [i, line] of cfg.lines.entries()) if (line.performance) performanceTaken(line.agents, ["lines", i, "agents"]);
     checkAgents(cfg.agents, ["agents"], new Set());
     for (const [i, entry] of cfg.packages.entries()) {
       if (entry.engine && !known.includes(entry.engine)) ctx.addIssue({ code: "custom", path: ["packages", i, "engine"], message: `el paquete usa el motor "${entry.engine}", que no existe; motores conocidos: ${known.join(", ")}` });
@@ -679,11 +690,37 @@ export function instructionsProblem(path: string): string | undefined {
 }
 
 /** A custom agent that applies to a line, and where its instructions live: the line's repository, the factory folder or its package. */
-export type LineAgent = CustomAgent & { origin: "factory" | "line" | "package"; package?: string; packageDir?: string };
+export type LineAgent = CustomAgent & { origin: "factory" | "line" | "package" | "zero"; package?: string; packageDir?: string };
 
-/** The custom agents of a line, in order: the file's global ones, those of the packages, then the line's own. Each type runs in this order at its own point of the line. */
-export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackages">, line: Pick<LineConfig, "agents">): LineAgent[] {
+/** The name of zero's own performance reviewer, and the skill it and build get on the lines with `performance: true`. */
+export const PERFORMANCE_AGENT = "performance";
+export const PERFORMANCE_SKILL = "zero:performance";
+
+/** Where zero's own instructions live: `agents/` of its installation, never a repository. */
+export const ZERO_AGENTS_DIR = fileURLToPath(new URL("../agents/", import.meta.url));
+
+/** Zero's performance reviewer: read-only and blocking, so only its verified serious findings stop a change. */
+const performanceAgent = (): LineAgent => ({
+  name: PERFORMANCE_AGENT,
+  instructions: `${PERFORMANCE_AGENT}.md`,
+  type: "review",
+  after: "review",
+  access: "read",
+  blocking: true,
+  files: [],
+  maxTurns: 40,
+  timeoutMinutes: 15,
+  skills: [PERFORMANCE_SKILL],
+  origin: "zero",
+});
+
+/**
+ * The custom agents of a line, in order: zero's performance reviewer when the line turns it on, the file's global
+ * ones, those of the packages, then the line's own. Each type runs in this order at its own point of the line.
+ */
+export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackages">, line: Pick<LineConfig, "agents" | "performance">): LineAgent[] {
   return [
+    ...(line.performance ? [performanceAgent()] : []),
     ...config.agents.map((a) => ({ ...a, origin: "factory" as const })),
     ...(config.loadedPackages?.agents ?? []).map((a) => ({ ...a, origin: "package" as const })),
     ...line.agents.map((a) => ({ ...a, origin: "line" as const })),
@@ -692,6 +729,7 @@ export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackage
 
 /** Where zero reads a custom agent's instructions: never the job's work copy. */
 export function agentInstructionsPath(agent: LineAgent, repo: string, factoryDir: string): string {
+  if (agent.origin === "zero") return join(ZERO_AGENTS_DIR, agent.instructions);
   return join(agent.origin === "package" ? agent.packageDir! : agent.origin === "line" ? repo : factoryDir, agent.instructions);
 }
 
