@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import type { FactoryConfig } from "./config.js";
 import { log } from "./log.js";
@@ -14,9 +15,9 @@ export type SkillStation = (typeof SKILL_STATIONS)[number];
 export interface Skill {
   /** Short name: the skill's directory. */
   name: string;
-  /** `name` for personal skills, `plugin:name` for plugin skills, `package:name` for a package's skills. */
+  /** `name` for personal skills, `plugin:name` for plugin skills, `package:name` for a package's skills, `zero:name` for zero's own. */
   fullName: string;
-  source: "personal" | "plugin" | "package";
+  source: "personal" | "plugin" | "package" | "zero";
   /** The plugin it came from; for a package's skill, the package. */
   plugin?: string;
   dir: string;
@@ -127,22 +128,30 @@ export function discoverSkills(claudeHome = defaultClaudeHome()): Skill[] {
   return out.map(withDescription);
 }
 
-/** What the owner's Claude Code has plus what the loaded packages bring. */
+/** Where zero's own skills live: `skills/` of its installation, next to `agents/`. */
+export const BUILTIN_SKILLS_DIR = fileURLToPath(new URL("../skills/", import.meta.url));
+
+/** The skills zero ships, as `zero:<name>`; they reach every engine like any other skill. */
+export function builtinSkills(root = BUILTIN_SKILLS_DIR): Skill[] {
+  return skillDirs(root).map((name) => withDescription({ name, fullName: `zero:${name}`, source: "zero", dir: join(root, name) }));
+}
+
+/** What the owner's Claude Code has plus what the loaded packages bring and zero's own. */
 export function availableSkills(config: Pick<FactoryConfig, "loadedPackages">, claudeHome = defaultClaudeHome()): Skill[] {
-  return [...discoverSkills(claudeHome), ...(config.loadedPackages?.skills ?? [])];
+  return [...discoverSkills(claudeHome), ...(config.loadedPackages?.skills ?? []), ...builtinSkills()];
 }
 
 /**
  * `plugin:skill` resolves by full name; a short name only when exactly one
- * skill has it. A package's skills only go by full name, so installing one never
- * makes the owner's own short names ambiguous.
+ * skill has it. A package's skills and zero's own only go by full name, so they
+ * never make the owner's own short names ambiguous.
  */
 export function resolveSkill(ref: string, available: Skill[]): { skill?: Skill; problem?: string } {
   if (ref.includes(":")) {
     const exact = available.find((s) => s.fullName === ref);
     return exact ? { skill: exact } : { problem: "no está instalada en Claude Code" };
   }
-  const matches = available.filter((s) => s.name === ref && s.source !== "package");
+  const matches = available.filter((s) => s.name === ref && s.source !== "package" && s.source !== "zero");
   if (matches.length === 1) return { skill: matches[0] };
   if (matches.length > 1) return { problem: `hay varias skills con ese nombre; usá el nombre completo: ${matches.map((s) => s.fullName).join(", ")}` };
   return { problem: "no está instalada en Claude Code" };
@@ -225,6 +234,7 @@ export async function stageSkills(skills: Skill[], parent = tmpdir()): Promise<S
       await cp(skill.dir, target, { recursive: true, filter: (src) => noLinkOnTheWay(src, skill) });
       if (!existsSync(join(target, "SKILL.md"))) continue;
     } else {
+      // Personal, plugin and zero's own skills: the copy follows links, so the run never reaches the original.
       await cp(skill.dir, target, { recursive: true, dereference: true });
     }
     const text = stripAllowedTools(await readFile(join(target, "SKILL.md"), "utf8"));

@@ -2,11 +2,11 @@
 
 ## 1. Etapa 1: Skill de rendimiento incluida en zero y regla de build
 
-- [ ] 1.1 OpenSpec change zero-e0131a74 with the full spec.
-- [ ] 1.2 skills/performance/SKILL.md with the checklist and official sources.
-- [ ] 1.3 Source `zero` in src/skills.ts: builtinSkills, availableSkills, stageSkills.
-- [ ] 1.4 Performance rule in agents/build.md.
-- [ ] 1.5 Tests in test/skills.test.ts; docs in docs/agents/engines.md.
+- [x] 1.1 OpenSpec change zero-e0131a74 with the full spec.
+- [x] 1.2 skills/performance/SKILL.md with the checklist and official sources.
+- [x] 1.3 Source `zero` in src/skills.ts: builtinSkills, availableSkills, stageSkills.
+- [x] 1.4 Performance rule in agents/build.md.
+- [x] 1.5 Tests in test/skills.test.ts; docs in docs/agents/engines.md.
 
 ## 2. Etapa 2: Revisor de rendimiento por línea
 
