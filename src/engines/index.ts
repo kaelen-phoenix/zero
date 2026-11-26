@@ -3,6 +3,7 @@ import { claudeEngine } from "./claude.js";
 import { antigravityEngine, codexEngine, customEngine, opencodeEngine, unsandboxedCodexEngine } from "./cli.js";
 import type { Engine } from "./types.js";
 
+export { signInHint } from "./sign-in.js";
 export type { Access, Engine, EngineRequest, EngineResult, QuotaReport, QuotaWindow } from "./types.js";
 
 const BUILT_IN: Record<string, Engine> = {

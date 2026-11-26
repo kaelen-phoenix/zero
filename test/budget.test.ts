@@ -197,6 +197,24 @@ describe("an engine whose session expired", () => {
     expect(b.reason).toContain("claude");
     expect(b.reason).not.toMatch(/cupo|saldo|suscripción/);
     expect(b.engines.find((e) => e.engine === "claude")).toMatchObject({ paused: true, billing: "unknown" });
+    const claude = b.engines.find((e) => e.engine === "claude")!;
+    expect(claude.reason).toMatch(/^falta iniciar sesión en el motor claude: /);
+    expect(claude.reason).toContain("/login");
+    expect(b.reason).toContain("/login");
+  });
+
+  it("names only the engine when zero does not know how to sign in to it", () => {
+    const store = testStore();
+    signedOut(new Tracer(store, at("2026-10-29T15:00:00Z")), "mine");
+    const mine = parseFactory(`engine: mine
+engines:
+  mine:
+    command: [unused]
+lines: []
+`);
+    const b = budgetState(store, mine, new Date("2026-10-29T15:01:00Z"));
+    expect(b.reached).toBe(true);
+    expect(b.engines.find((e) => e.engine === "mine")?.reason).toBe("falta iniciar sesión en el motor mine");
   });
 
   it("tries the engine again once the wait is over", () => {
