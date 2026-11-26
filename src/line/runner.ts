@@ -15,12 +15,13 @@ import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import type { PullRequestsFactory } from "../tracker.js";
 import { conflictMarkers, openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
-import { askOwner, describeDelivery, finalizeJob, LOST_TO_ANOTHER, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
+import { askOwner, describeDelivery, finalizeJob, LOST_TO_ANOTHER, performanceFindingsKey, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { recordCleanup } from "./cleanup.js";
 import { killLeftovers } from "../leftovers.js";
 import { asksBeforeUpdate, decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
-import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
+import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "./review.js";
+import { publicText } from "../public-text.js";
 import {
   capabilityExists,
   changeName,
@@ -302,7 +303,7 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
       return integrate(line, copy, {
         jobId,
         title: spec.title,
-        body: deliveryBody(spec, job!, store, lineSignature(config, line)),
+        body: deliveryBody(spec, job!, store, lineSignature(config, line), config.lines.map((l) => l.repo)),
         signature: lineSignature(config, line),
         scratchDir: join(deps.home.worktrees, line.name),
         author: commitAuthor(config, line),
@@ -704,11 +705,28 @@ function heldBy(ofLine: Autonomy, researchBorn: boolean): string {
   return `La propuesta tiene autonomía \`build\` y la línea ahora tiene \`${ofLine}\``;
 }
 
-/** What the pull request says:the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
-export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">, signature?: Signature): string {
+/** What the pull request says:the plain spec, what the performance reviewer noted without blocking, the issue it closes (its own, or its proposal's), and what the job cost. */
+export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal" | "getKv">, signature?: Signature, repos: string[] = []): string {
   const issue = job.source?.kind === "github-issue" ? job.source.number : job.source?.kind === "night-shift" ? store?.getProposal(job.source.proposal)?.issueNumber : undefined;
   const closes = issue !== undefined ? `\n\nCloses #${issue}` : "";
-  return signText(`${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`, signature);
+  return signText(`${plainSpec(spec)}${performanceSection(store, job.id, repos)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`, signature);
+}
+
+/** The performance reviewer's non-blocking findings as a section of the pull request, cleaned like any published text; empty without any. */
+function performanceSection(store: Pick<Store, "getKv"> | undefined, jobId: string, repos: string[]): string {
+  const saved = store?.getKv(performanceFindingsKey(jobId));
+  if (!saved) return "";
+  let findings: Finding[];
+  try {
+    findings = JSON.parse(saved) as Finding[];
+  } catch {
+    log.warn("unreadable performance findings; left out of the pull request", { job: jobId });
+    return "";
+  }
+  if (!findings.length) return "";
+  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+  const items = findings.map((f) => `- [${f.severity}] \`${f.file}:${f.line}\`: ${oneLine(f.problem)} → ${oneLine(f.fix)}`);
+  return `\n\n${publicText(`## Rendimiento\nEl revisor de rendimiento no frenó el cambio por esto, pero conviene mirarlo:\n${items.join("\n")}`, repos).text}`;
 }
 
 /**
@@ -929,6 +947,8 @@ async function buildLoop(
     };
 
     if (!resuming) {
+      // A new attempt's performance review starts from nothing: what an earlier one noted no longer describes the change.
+      store.deleteKv(performanceFindingsKey(jobId));
       job = store.updateJob(jobId, { attempt, station: "build" });
       const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) => {
         for (let switched = 0; ; switched++) {
@@ -1231,7 +1251,7 @@ async function buildLoop(
             if (!run.output) return undefined;
             const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);
             span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length, "zero.findings.low_confidence": lowConfidence(valid).length });
-            return { review: run.output, blocking: blockingFindings(valid) };
+            return { review: run.output, valid, blocking: blockingFindings(valid) };
           }
         }
         return undefined;
@@ -1244,7 +1264,14 @@ async function buildLoop(
       }
       await learn(reviewed.review.learnings);
       // An informative custom agent only reports: its findings never reject the change.
-      if (reviewed.blocking.length && (!agent || agent.blocking)) {
+      const blocks = reviewed.blocking.length > 0 && (!agent || agent.blocking);
+      // What zero's performance reviewer notes without blocking goes in the pull request; a rejected run leaves nothing.
+      if (agent?.origin === "zero" && agent.name === "performance") {
+        const notes = blocks ? [] : reviewed.valid.filter((f) => !reviewed.blocking.includes(f));
+        if (notes.length) store.setKv(performanceFindingsKey(jobId), JSON.stringify(notes));
+        else store.deleteKv(performanceFindingsKey(jobId));
+      }
+      if (blocks) {
         failAttempt(findingsFeedback(reviewed.blocking, station));
         rejected = true;
         break;

@@ -1,14 +1,17 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { agentName } from "../src/agent.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { agentName, type AgentRequest, type AgentRun } from "../src/agent.js";
 import { agentList, requestWork, type FactoryContext } from "../src/app.js";
 import { agentInstructionsPath, lineAgents, parseFactory, ZERO_AGENTS_DIR } from "../src/config.js";
+import { performanceFindingsKey } from "../src/line/finish.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { assignedSkills } from "../src/skills.js";
-import { cleanReview, cleanup, fakeAgents, gitRepo, testFactory, writeTree } from "./helpers.js";
+import { cleanReview, cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
+
+type Handler = (req: AgentRequest<any>, n: number) => Partial<AgentRun<any>> | void;
 
 const passes = `node -e "process.exit(0)"`;
 const ZERO_PERFORMANCE = readFileSync(new URL("../agents/performance.md", import.meta.url), "utf8");
@@ -139,4 +142,62 @@ describe("the performance reviewer in a job", () => {
       expect(span.attrs).toMatchObject({ "zero.findings": 1 });
     });
   }
+});
+
+describe("the performance reviewer's notes in the pull request", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A line delivered as a pull request to a bare remote that looks like GitHub; returns the bodies zero opened. */
+  async function deliver(performance: boolean | undefined, review: Handler) {
+    const bare = join(tempDir("zero-remote-"), "github.com", "kaelen", "web.git").replace(/\\/g, "/");
+    mkdirSync(bare, { recursive: true });
+    run("git", ["init", "-q", "--bare", "-b", "main"], bare);
+    const repo = gitRepo({ "README.md": "# demo\n" });
+    gitIn(repo, "remote", "add", "origin", bare);
+    gitIn(repo, "push", "-q", "origin", "main");
+    vi.stubEnv("GH_TOKEN", "test-token");
+    const ctx = testFactory({
+      level: "L2",
+      isolation: "worktree",
+      lines: [{ name: "web", repo, integrate: "pull-request", verify: [passes], ...(performance !== undefined && { performance }) }],
+    });
+    const bodies: string[] = [];
+    const agents = fakeAgents({ build: writeDb, performance: review });
+    const { job } = requestWork(ctx, { text: "orders" });
+    const done = await runJob(job.id, { ...deps(ctx, agents.runner), pullRequests: () => ({ openPullRequest: async ({ body }) => (bodies.push(body), "https://github.com/kaelen/web/pull/1") }) });
+    return { ctx, done, bodies };
+  }
+  const notes = (findings: object[]) => ({ output: cleanReview({ findings: findings as never }) });
+  const medium = { severity: "medium", file: "src/db.ts", line: 3, problem: "orders read without an index on customer_id", fix: "add an index on orders(customer_id)", confidence: 9 };
+
+  it("lists a verified non-blocking finding with its file and line, problem and fix", async () => {
+    const { ctx, done, bodies } = await deliver(true, () => notes([medium]));
+    expect(done).toMatchObject({ status: "delivered", attempt: 1 });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain("## Rendimiento");
+    expect(bodies[0]).toContain("- [medium] `src/db.ts:3`: orders read without an index on customer_id → add an index on orders(customer_id)");
+    expect(ctx.store.getKv(performanceFindingsKey(done.id))).toBeUndefined();
+  });
+
+  it("leaves out findings whose citation does not exist, and cleans what it publishes", async () => {
+    const { bodies } = await deliver(true, () =>
+      notes([medium, { ...medium, file: "src/missing.ts", problem: "ghost finding" }, { ...medium, line: 2, problem: "ping @someone about it" }]),
+    );
+    expect(bodies[0]).toContain("src/db.ts:3");
+    expect(bodies[0]).not.toContain("src/missing.ts");
+    expect(bodies[0]).not.toContain("ghost finding");
+    expect(bodies[0]).not.toContain(" @someone");
+  });
+
+  it("keeps only the passing run's notes, not those of a rejected attempt", async () => {
+    const { done, bodies } = await deliver(true, (_req, n) => (n === 1 ? notes([{ ...medium, problem: "first attempt only" }, { ...medium, severity: "critical", line: 1 }]) : notes([medium])));
+    expect(done).toMatchObject({ status: "delivered", attempt: 2 });
+    expect(bodies[0]).not.toContain("first attempt only");
+    expect(bodies[0]).toContain("src/db.ts:3");
+  });
+
+  it("has no section without findings or without the option", async () => {
+    expect((await deliver(true, () => notes([]))).bodies[0]).not.toContain("## Rendimiento");
+    expect((await deliver(undefined, () => notes([medium]))).bodies[0]).not.toContain("## Rendimiento");
+  });
 });

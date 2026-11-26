@@ -17,9 +17,9 @@
 
 ## 3. Etapa 3: Hallazgos no graves en el pull request
 
-- [ ] 3.1 Keep the performance reviewer's verified non-blocking findings of the passing run in kv and clear them on each attempt.
-- [ ] 3.2 `## Rendimiento` section in deliveryBody, cleaned with publicText.
-- [ ] 3.3 Tests of the PR body with and without findings; docs/agents/production-line.md.
+- [x] 3.1 Keep the performance reviewer's verified non-blocking findings of the passing run in kv and clear them on each attempt.
+- [x] 3.2 `## Rendimiento` section in deliveryBody, cleaned with publicText.
+- [x] 3.3 Tests of the PR body with and without findings; docs/agents/production-line.md.
 
 ## 4. Etapa 4: Auditoría a demanda con propuestas por impacto
 
