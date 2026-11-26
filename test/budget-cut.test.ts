@@ -6,7 +6,7 @@ import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.
 import { answer, requestWork, type FactoryContext } from "../src/app.js";
 import { budgetState } from "../src/budget.js";
 import { claudeResult, claudeThrown } from "../src/engines/claude.js";
-import type { EngineResult, QuotaReport } from "../src/engines/index.js";
+import { signInHint, type EngineResult, type QuotaReport } from "../src/engines/index.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { log } from "../src/log.js";
 import type { Store } from "../src/state/store.js";
@@ -74,6 +74,26 @@ describe("Claude result mapping", () => {
     expect(answer.ok).toBe(true);
     expect(answer.signedOut).not.toBe(true);
     expect(claudeThrown(new Error("socket hang up")).signedOut).not.toBe(true);
+  });
+
+  it("marks the other forms of a refused session, but not a bare 401", () => {
+    expect(claudeThrown(new Error("Your session could not be refreshed"))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["invalid_grant: refresh token revoked"] }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: 'API Error: 401 {"type":"authentication_error"}' }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeThrown(new Error("401 Unauthorized"))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeThrown(new Error("wrote 401 lines then socket hang up")).signedOut).not.toBe(true);
+    const answer = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "the log said invalid_grant and API Error: 401" }));
+    expect(answer.ok).toBe(true);
+    expect(answer.signedOut).not.toBe(true);
+  });
+
+  it("says how to sign in again to the engines it knows", () => {
+    expect(signInHint("claude")).toContain("`claude`");
+    expect(signInHint("claude")).toContain("/login");
+    expect(signInHint("codex")).toContain("codex login");
+    expect(signInHint("opencode")).toBeUndefined();
+    expect(signInHint("my-custom")).toBeUndefined();
+    expect(signInHint("toString")).toBeUndefined();
   });
 
   it("marks a call stopped by its dollar cap", () => {
@@ -341,6 +361,24 @@ describe("an engine whose session expired", () => {
     const attempt = ctx.store.spansForJob(job.id).find((s) => s.name === "zero.attempt")!;
     expect(attempt.status).toBe("error");
     expect(agents.count.build).toBe(1);
+  });
+
+  it("parks a spec refused with invalid_grant and resumes it once the engine answers", async () => {
+    let clock = new Date("2026-10-29T15:00:00Z");
+    const { ctx } = factory({ engine: "claude" }, () => clock);
+    let signedIn = false;
+    const agents = fakeAgents({ spec: () => (signedIn ? {} : { ok: false, text: "invalid_grant", signedOut: true }), build: (req) => (write(req), {}) });
+    const { job } = requestWork(ctx, { text: "health" });
+    const queued = await runJob(job.id, deps(ctx, agents.runner));
+    expect(queued.status).toBe("queued");
+    expect(queued.reason ?? "").not.toMatch(/^La estación spec no produjo/);
+    expect(budgetState(ctx.store, ctx.config, clock).reason).toContain("/login");
+
+    clock = new Date("2026-10-29T15:16:00Z");
+    signedIn = true;
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("delivered");
+    expect(done.spec).toBeTruthy();
   });
 });
 

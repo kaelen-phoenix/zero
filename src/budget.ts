@@ -1,6 +1,7 @@
 import { AGENT_STATIONS, customAgentChain, stationChain, type ChainLink, type CustomAgent, type FactoryConfig, type StationName } from "./config.js";
 import { othersJobUsd, othersPlans, othersSpentSince } from "./coord/spend.js";
 import type { QuotaReport, QuotaWindow } from "./engines/index.js";
+import { signInHint } from "./engines/sign-in.js";
 import type { SpanRow, Store } from "./state/store.js";
 import { AGENT_SPAN, dailyBudgetReached, spentToday, startOfDay } from "./telemetry/metrics.js";
 
@@ -191,7 +192,8 @@ function engineBudget(store: Store, config: BudgetConfig, engine: string, all: M
   const out = signedOutAt.get(engine);
   if (out) {
     const until = new Date(out.getTime() + UNKNOWN_RESET_MS);
-    if (until > now) return { engine, billing: r?.billing ?? "unknown", paused: true, until: until.toISOString(), reason: `falta iniciar sesión en el motor ${engine}` };
+    const hint = signInHint(engine);
+    if (until > now) return { engine, billing: r?.billing ?? "unknown", paused: true, until: until.toISOString(), reason: `falta iniciar sesión en el motor ${engine}${hint ? `: ${hint}` : ""}` };
   }
   const other = otherPlan(store, config, engine, r, now);
   if (!r) {

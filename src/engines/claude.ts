@@ -165,10 +165,11 @@ export function refusedQuota(text: string, quota?: QuotaReport): QuotaReport | u
 
 /**
  * The session of Claude Code expired or was never started (`Failed to authenticate: OAuth session expired and
- * could not be refreshed`): the engine waits for the person in charge to sign in again instead of failing the
- * work. Read only from failed calls, never from an answer.
+ * could not be refreshed`, `invalid_grant`, `API Error: 401`, `401 Unauthorized`): the engine waits for the person in
+ * charge to sign in again instead of failing the work. A bare 401 is not enough. Read only from failed calls, never
+ * from an answer.
  */
-const SIGNED_OUT = /failed to authenticate|oauth session expired|oauth token has expired/i;
+const SIGNED_OUT = /failed to authenticate|oauth session expired|oauth token has expired|could not be refreshed|\binvalid_grant\b|api error: 401\b|\b401 unauthorized\b/i;
 
 /** True when a failed call's text says the session expired. */
 export function signedOutText(text: string): boolean {
