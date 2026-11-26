@@ -90,6 +90,19 @@ function readings(store: Store, now: Date): Map<string, Reading> {
   return latest;
 }
 
+/** When each engine's latest call on this machine ended, if that call was refused because its session expired. */
+function signedOut(store: Store, now: Date): Map<string, Date> {
+  const latest = new Map<string, Date | undefined>();
+  for (const s of store.spansSince(AGENT_SPAN, new Date(now.getTime() - UNKNOWN_RESET_MS))) {
+    const mark = s.attrs["zero.engine.signed_out"];
+    // Spans come in start order; a later call without the mark means the engine answers again.
+    latest.set(String(s.attrs["zero.engine"] ?? ""), mark === true || mark === 1 ? new Date(s.end ?? s.start) : undefined);
+  }
+  const out = new Map<string, Date>();
+  for (const [engine, at] of latest) if (at) out.set(engine, at);
+  return out;
+}
+
 /** This machine's own subscription readings, as they are published for the others. */
 export function planReadings(store: Store, now: Date): { engine: string; at: Date; limited: boolean; windows: QuotaWindow[] }[] {
   return [...readings(store, now).values()].filter((r) => r.billing === "subscription");
@@ -174,6 +187,12 @@ function customAgentChains(config: BudgetConfig): ChainLink[][] {
  */
 function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[]): EngineBudget {
   const r = all.get(engine);
+  // Its session expired: wait a little for the person in charge to sign in again, then try again.
+  const out = signedOut(store, now).get(engine);
+  if (out) {
+    const until = new Date(out.getTime() + UNKNOWN_RESET_MS);
+    if (until > now) return { engine, billing: r?.billing ?? "unknown", paused: true, until: until.toISOString(), reason: `falta iniciar sesión en el motor ${engine}` };
+  }
   const other = otherPlan(store, config, engine, r, now);
   if (!r) {
     const pause = other && planPause(config, other, now, windows);

@@ -33,6 +33,8 @@ export interface AgentRun<T = unknown> {
   budgetLimited?: boolean;
   /** True when the engine stopped the call at its time limit. */
   timedOut?: boolean;
+  /** True when the engine refused the call because its session expired (someone has to sign in again). */
+  signedOut?: boolean;
 }
 
 export interface AgentRequest<T = unknown> {
@@ -268,6 +270,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       ...(result.quota && { quota: result.quota }),
       ...(result.budgetLimited && { budgetLimited: true }),
       ...(result.timedOut && { timedOut: true }),
+      ...(result.signedOut && { signedOut: true }),
     };
     if (run.ok && schema) {
       const parsed = schema.safeParse(result.output ?? extractJson(result.text));
@@ -286,6 +289,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       ...(result.tokens && { "gen_ai.usage.input_tokens": result.tokens.input, "gen_ai.usage.output_tokens": result.tokens.output }),
       ...quotaAttrs(result.quota),
       ...(run.budgetLimited && { "zero.budget.limited": true }),
+      ...(run.signedOut && { "zero.engine.signed_out": true }),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
     });
     if (model && result.model && result.model !== model) {
