@@ -83,7 +83,7 @@ export function createBoxExecutor(config: FactoryConfig, status: BoxStatus, secr
     }
     span?.end(r.code === 0 ? "ok" : "error", { "process.exit.code": r.code, "zero.timed_out": r.timedOut });
     if (r.cancelled) return { ok: false, text: "cancelled" };
-    if (r.timedOut) return { ok: false, text: `la caja superó el tiempo límite (${Math.round(req.timeoutMs / 60_000)} min)` };
+    if (r.timedOut) return { ok: false, text: `la caja superó el tiempo límite (${Math.round(req.timeoutMs / 60_000)} min)`, timedOut: true };
     return decodeResult(r.stdout) ?? { ok: false, text: `la caja terminó con código ${r.code} sin resultado: ${tail(r.stderr || r.stdout)}` };
   };
 
