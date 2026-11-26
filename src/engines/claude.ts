@@ -44,7 +44,8 @@ export function claudeOptions(req: EngineRequest, abort: AbortController): Optio
     // Load the target repo's CLAUDE.md/AGENTS.md and project settings, never the runner's user settings.
     settingSources: ["project"],
     // Never run hooks (a build may have written them into the repo) nor load the host's memory or claude.ai connectors.
-    settings: { disableAllHooks: true, autoMemoryEnabled: false },
+    // Nor sign commits or pull requests as Claude: the factory's work is attributed to no AI (src/attribution.ts).
+    settings: { disableAllHooks: true, autoMemoryEnabled: false, attribution: { commit: "", pr: "", sessionUrl: false } },
     strictMcpConfig: true,
     env: { ...process.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     allowedTools: TOOLS[req.access],

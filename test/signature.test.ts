@@ -109,6 +109,20 @@ describe("signing", () => {
     expect(gh.calls.map((c) => c.args[1])).toEqual(["Hola", "cuerpo"]);
   });
 
+  it("removes AI attribution from comments and issues without a signature", async () => {
+    const gh = fakeIssues();
+    const signed = signedIssues(gh.api, undefined);
+    await signed.comment(7, "Hola\n\nCo-Authored-By: Claude <noreply@anthropic.com>");
+    await signed.createIssue("t", "cuerpo\n🤖 Generated with [Claude Code](https://claude.com/claude-code)", []);
+    expect(gh.calls.map((c) => c.args[1])).toEqual(["Hola", "cuerpo"]);
+  });
+
+  it("removes AI attribution before signing", () => {
+    expect(signText("Cuerpo\n\nCo-authored-by: Codex <codex@openai.com>", signature)).toBe(`Cuerpo\n\n${TEXT}`);
+    expect(withTrailer("zero: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>", signature)).toBe(`zero: x\n\n${TRAILER}`);
+    expect(withTrailer("zero: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>")).toBe("zero: x");
+  });
+
   it("signs the automatic merge's comments", async () => {
     const said: string[] = [];
     const merges: MergeApi = {
@@ -120,7 +134,8 @@ describe("signing", () => {
     };
     await signedMerges(merges, signature).comment(10, "x");
     await signedMerges(merges, undefined).comment(10, "y");
+    await signedMerges(merges, undefined).comment(10, "z\nCo-Authored-By: Claude <noreply@anthropic.com>");
     expect(await signedMerges(merges, signature).merge(10, "abc")).toBe("sha");
-    expect(said).toEqual([`x\n\n${TEXT}`, "y"]);
+    expect(said).toEqual([`x\n\n${TEXT}`, "y", "z"]);
   });
 });

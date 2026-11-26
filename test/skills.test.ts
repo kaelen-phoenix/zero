@@ -231,7 +231,7 @@ describe("claude options", () => {
       const reqs = [req({ access: "read" }), req({ access: "web" }), req({ access: "write" }), req({ skills: staged }), req({ access: "write", skills: staged })];
       for (const r of reqs) {
         const o = claudeOptions(r, new AbortController());
-        expect(o.settings).toEqual({ disableAllHooks: true, autoMemoryEnabled: false });
+        expect(o.settings).toEqual({ disableAllHooks: true, autoMemoryEnabled: false, attribution: { commit: "", pr: "", sessionUrl: false } });
         expect(o.strictMcpConfig).toBe(true);
         expect(o.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
         expect(o.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");

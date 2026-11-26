@@ -624,6 +624,13 @@ describe("AGENTS.md", () => {
     expect(rule).toContain("Spanish");
   });
 
+  it("forbids AI attribution in commits and pull requests", () => {
+    const conventions = read("AGENTS.md").split("## Conventions")[1]!;
+    const rule = conventions.split("\n").find((l) => l.includes("attribution") && l.includes("src/attribution.ts"));
+    expect(rule).toBeDefined();
+    expect(rule).toContain("co-authorship is kept");
+  });
+
   it("is a short index with commands, areas and conventions", () => {
     const index = read("AGENTS.md");
     expect(Buffer.byteLength(index)).toBeLessThan(16000);

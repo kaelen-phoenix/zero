@@ -35,6 +35,7 @@ Where each part of the code lives and how it behaves, one file per area:
 - The chat may only tighten egress rules (block); allowing a site or changing the mode is for the owner on the terminal or in the file.
 - Nothing installs software or needs admin without the owner's explicit consent. Secrets never go in argv, files or logs.
 - The line never blocks on the owner: questions park a job, carry a timeout and a default answer, and approvals resume from a checkpoint.
+- No commit, branch, pull request or comment carries attribution to an AI tool (no `Co-Authored-By` of a vendor account, session trailers or links, "Generated with ..."), whichever engine or person worked; a person's co-authorship is kept. The list of what counts as AI attribution lives only in `src/attribution.ts`, and zero strips it from what it commits and publishes.
 - Every job end goes through `finalizeJob`, so it gets a final status, a closed job span and a townhall report.
 - The townhall must never break production: store failures are logged, not thrown.
 - Behaviour changes start as an OpenSpec change under `openspec/changes/`.
