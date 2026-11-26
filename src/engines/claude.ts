@@ -120,7 +120,7 @@ export const claudeEngine: Engine = {
       }
     } catch (err) {
       if (req.signal?.aborted) return { ok: false, text: "cancelled" };
-      if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min` };
+      if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
       return claudeThrown(err);
     } finally {
       clearTimeout(timer);
@@ -128,6 +128,8 @@ export const claudeEngine: Engine = {
     }
 
     const quota = claudeQuota(apiKeySource, rateLimit);
+    // The SDK may end its loop quietly on abort: a call the timer cut short is still a timeout.
+    if (!result && abort.signal.aborted && !req.signal?.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true, ...(quota && { quota }) };
     if (!result) return { ok: false, text: "ended without a result message", ...(quota && { quota }) };
     return claudeResult(result, quota);
   },

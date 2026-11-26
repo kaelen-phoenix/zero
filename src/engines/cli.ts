@@ -108,7 +108,7 @@ async function execute(name: string, inv: Invocation, req: EngineRequest, hooks:
 }
 
 async function outcome(name: string, r: ProcessResult, req: EngineRequest, { output = (p) => finalText(p.stdout), failure = (p) => p.stderr || p.stdout }: ExecuteHooks): Promise<EngineResult> {
-  if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min` };
+  if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
   if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${failure(r).slice(-2000)}` };
   return fromText(name, await output(r), r.stderr);
 }

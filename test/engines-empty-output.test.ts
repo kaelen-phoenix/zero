@@ -434,6 +434,6 @@ describe("other failures keep their message", () => {
 
   it("a run out of time", async () => {
     const result = await custom("sleeper", "setTimeout(() => {}, 60000)").run(req({ timeoutMs: 300 }));
-    expect(result).toEqual({ ok: false, text: `sleeper timed out after ${300 / 60_000} min` });
+    expect(result).toEqual({ ok: false, text: `sleeper timed out after ${300 / 60_000} min`, timedOut: true });
   });
 });

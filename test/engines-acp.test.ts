@@ -214,6 +214,7 @@ describe("ACP failures", () => {
     const { result, pid } = await run({ prompt: `setInterval(() => {}, 1000);` }, { timeoutMs: 1500 });
     expect(result.ok).toBe(false);
     expect(result.text).toMatch(/gem timed out after/);
+    expect(result.timedOut).toBe(true);
     expect(alive(pid)).toBe(false);
   });
 
