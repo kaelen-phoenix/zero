@@ -185,6 +185,48 @@ describe("budget", () => {
   });
 });
 
+describe("an engine whose session expired", () => {
+  const signedOut = (tracer: Tracer, engine = "claude") => tracer.start(AGENT_SPAN, { attrs: { "zero.engine": engine } }).end("error", { "zero.cost.usd": 0, "zero.engine.signed_out": true });
+
+  it("pauses it for a bounded wait with a reason about signing in", () => {
+    const store = testStore();
+    signedOut(new Tracer(store, at("2026-10-29T15:00:00Z")));
+    const b = budgetState(store, config(), new Date("2026-10-29T15:01:00Z"));
+    expect(b).toMatchObject({ reached: true, until: "2026-10-29T15:15:00.000Z" });
+    expect(b.reason).toContain("iniciar sesión");
+    expect(b.reason).toContain("claude");
+    expect(b.reason).not.toMatch(/cupo|saldo|suscripción/);
+    expect(b.engines.find((e) => e.engine === "claude")).toMatchObject({ paused: true, billing: "unknown" });
+  });
+
+  it("tries the engine again once the wait is over", () => {
+    const store = testStore();
+    signedOut(new Tracer(store, at("2026-10-29T15:00:00Z")));
+    expect(pickEngine(store, config(), "spec", new Date("2026-10-29T15:16:00Z"))).toMatchObject({ engine: "claude", available: true });
+    expect(budgetState(store, config(), new Date("2026-10-29T15:16:00Z")).reached).toBe(false);
+  });
+
+  it("ends the pause after a later call without the mark", () => {
+    const store = testStore();
+    signedOut(new Tracer(store, at("2026-10-29T15:00:00Z")));
+    call(new Tracer(store, at("2026-10-29T15:02:00Z")), 0.1);
+    const b = budgetState(store, config(), new Date("2026-10-29T15:03:00Z"));
+    expect(b.reached).toBe(false);
+    expect(b.engines.find((e) => e.engine === "claude")?.paused).toBe(false);
+  });
+
+  it("goes on with a replacement while it waits", () => {
+    const store = testStore();
+    signedOut(new Tracer(store, at("2026-10-29T15:00:00Z")));
+    const withCodex = parseFactory(`engine: claude
+fallback: [codex]
+lines: []
+`);
+    expect(pickEngine(store, withCodex, "spec", new Date("2026-10-29T15:01:00Z"))).toMatchObject({ engine: "codex", available: true, replaces: "claude" });
+    expect(budgetState(store, withCodex, new Date("2026-10-29T15:01:00Z")).reached).toBe(false);
+  });
+});
+
 describe("production line on a subscription", () => {
   function setup() {
     const repo = gitRepo();

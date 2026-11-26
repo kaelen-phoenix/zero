@@ -87,8 +87,11 @@ zero informe [line] [--mes AAAA-MM] [--html]   # informe mensual por línea, par
 zero descartar <job> [--motivo "<text>"]   # cierra un trabajo que ya no hace falta, con su pull request y su rama
 zero fusionar <job | url>      # funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 zero actualizar-pr <line> <number>...   # actualiza con su base pull requests abiertos de la línea, en ese orden
+zero actualizar                # pasa zero ahora a la última versión de su canal (ver Canales de actualización)
+zero liberar [<commit>] [<version>] [--line <line>]   # publica una versión para las instalaciones del canal estable
 zero tren <line> [<number>...]   # funde de a uno los pull requests trabados de la línea, el más viejo primero
 zero investigar "<topic>" [--line <line>]   # una investigación en la web ahora sobre un tema, sin esperar a la noche
+zero rendimiento <line>        # auditoría de rendimiento del código de la línea ahora: propuestas por impacto, nada se construye
 zero stop [id]                 # andon: para un trabajo o toda la fábrica · zero resume
 zero line add <path>           # agregar otro proyecto
 zero start [--detach] · zero shutdown
@@ -113,6 +116,7 @@ Desde el chat se hace lo mismo con estas herramientas:
 - `zero_package_run`: una estación de un paquete a demanda, con un `request` opcional
 - `zero_package_upload`: un archivo para una estación de un paquete que acepta archivos
 - `zero_unjam`: el destrabador ahora, para una línea o para todas
+- `zero_update`: actualiza zero a la última versión de su canal, cuando no haya trabajos corriendo
 - `zero_investigate`: una investigación en la web ahora sobre el tema que le das (`topic`), para una línea
 - `zero_merge`: funde un pull request que entregó la fábrica, cuando GitHub dice que está listo
 - `zero_egress`: salidas a internet
@@ -132,10 +136,80 @@ Si la fábrica se cae sin un `zero shutdown` (la máquina se reinició, el proce
 ### Varias máquinas (`zero unirse`)
 
 ```sh
-zero unirse me/zero-coord
+gh repo create me/zero-coord --private --add-readme   # una sola vez; --add-readme deja el primer commit que GitHub necesita
+zero unirse me/zero-coord                             # en cada máquina
 ```
 
-Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Con la fábrica reiniciada, cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Tomar trabajos de una cola común es el paso siguiente (ver `docs/adr/0007-fabrica-distribuida.md`); por ahora cada máquina corre sus propios trabajos. Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada.
+Una fábrica puede vivir en más de una de tus máquinas. Creá un repositorio privado de GitHub para la coordinación y corré `zero unirse <cuenta/repo>` en cada máquina: zero comprueba que el repositorio sea privado (rechaza uno público o uno que no puede leer) y escribe en el archivo de la fábrica solo `distributed: { repository }`. Sin repositorio, o con uno que no puede usar, explica cómo crearlo; zero no crea nada por su cuenta. Los secretos quedan en el almacén de cada máquina y nunca viajan por ese repositorio. Reiniciá la fábrica (`zero shutdown` y `zero start`) después de unirte.
+
+```yaml
+distributed:
+  repository: me/zero-coord
+  machine: cloud                 # opcional: el nombre de esta máquina; si falta, el del host
+```
+
+- **Quién está.** Cada máquina deja ahí su latido cada `heartbeatSeconds` (60 por defecto) a través del medidor de la cuota de GitHub, sin GitHub Actions, y `zero status` y el panel muestran un bloque `Máquinas:`: cada máquina, `viva` o `caída` (sin latido dentro de `leaseMinutes`, 10 por defecto), su último latido y sus trabajos. Las máquinas nunca se conectan entre sí.
+- **Una cola común.** Todas las máquinas toman trabajos de la misma cola, cada trabajo en una sola máquina a la vez, y solo los que pueden hacer (la caja y los motores que tienen). Si una se cae, otra retoma sus trabajos desde el último checkpoint subido; lo que no se subió se vuelve a hacer.
+- **Las líneas se clonan solas.** Cada máquina publica sus líneas con remoto de GitHub (nombre, repositorio, rama base, `setup`, `verify` e integración; nunca rutas, secretos ni el resto de su configuración), y las demás las clonan en `ZERO_HOME/lines` al unirse y cuando aparece una nueva, con las credenciales del propio git. Una línea que ya existe en una máquina nunca se cambia, y las líneas de paquetes no se comparten. Con `platforms` (`win32`, `darwin`, `linux`) una línea dice dónde se puede atender: una máquina de otra plataforma, o sin sus motores, no la clona, y `zero status` y el panel dicen por qué.
+- **Las líneas clonadas corren comandos.** Una línea clonada trae los comandos de `setup` y `verify` que esta máquina va a correr: quien puede escribir en el repositorio de coordinación puede agregar líneas. Que sea solo tuyo.
+- **Usá `integrate: pull-request` en las líneas compartidas.** Con `merge` o `branch`, el trabajo se entrega en el clon de la máquina que lo hizo, y las demás no lo ven.
+- **Un solo presupuesto.** Lo que gastan todas las máquinas cuenta contra los mismos límites (`usdPerDay`, `usdPerNight`, `usdPerJob`), y una suscripción tiene un solo cupo: un motor pausado en una máquina por su plan o por `reservePercent` se pausa en todas. Esto supone que todas usan la misma cuenta. Lo que gastaron las otras llega con hasta un latido de atraso, así que varias máquinas a la vez pueden pasarse un poco de un tope.
+- **Desde cualquiera.** El chat, la CLI y el panel de cualquier máquina muestran los trabajos de todas, con el nombre de la máquina, y desde ahí podés pedir trabajos (también para una línea que esa máquina no tiene), responder, aprobar y decidir propuestas. Lo que es para otra máquina sale con el próximo latido y se aplica con el de ella, no al instante; si está caída, cuando vuelva. Detener, descartar y fusionar un trabajo, y su traza, siguen siendo de la máquina que lo tiene.
+- **Paquetes.** No se copian entre máquinas, y sus estaciones se pueden fijar a una (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+Sin `distributed`, una fábrica de una sola máquina funciona como siempre y no manda nada. Las razones y el protocolo están en `docs/adr/0007-fabrica-distribuida.md`.
+
+### Máquina Linux en la nube
+
+Para sumar una máquina virtual con Linux que trabaje sola, sin escritorio y sin puertos abiertos. Necesita:
+
+- Debian 12, Ubuntu 24.04 o posterior, con systemd y un usuario tuyo que no sea root. Otras distribuciones sirven con sus propios nombres de paquetes.
+- Node 22 o posterior y npm, instalados para todo el sistema ([nodejs.org](https://nodejs.org)): el servicio no lee la configuración de tu shell, así que no encuentra lo que un gestor de versiones deja en tu carpeta.
+- Salida por HTTPS. No entra nada salvo tu propio SSH: dejá cerrados los demás puertos, incluido el 4848 del panel.
+
+Los comandos con `sudo` piden administrador y los corrés vos; zero no pide ninguno.
+
+```sh
+sudo apt install git gh podman uidmap gnome-keyring dbus-user-session   # administrador
+sudo npm install -g @anthropic-ai/claude-code                           # administrador: los CLI de los motores que vayas a usar
+sudo loginctl enable-linger "$USER"                                     # administrador: los servicios de tu usuario arrancan con la máquina
+```
+
+**Caja.** zero usa Podman sin root: `podman info` tiene que responder con tu usuario. Si se queja de los identificadores, a tu usuario le falta un rango en `/etc/subuid` y `/etc/subgid` (lo agrega un administrador con `usermod --add-subuids` y `--add-subgids`). Si rechaza `--cpus`, systemd no le delega ese controlador a tu usuario: lo agrega un administrador (`Delegate=cpu cpuset io memory pids` en un drop-in de `user@.service`).
+
+**Llavero.** zero guarda la llave del panel y las credenciales en el llavero del sistema (Secret Service), nunca en un archivo. Sin escritorio hay que desbloquearlo a mano. Esto pide su contraseña sin mostrarla, y la primera vez crea el llavero:
+
+```sh
+read -rsp "Contraseña del llavero: " KEYRING && printf %s "$KEYRING" | gnome-keyring-daemon --replace --unlock --components=secrets; unset KEYRING
+```
+
+**Después de cada reinicio el llavero vuelve a quedar bloqueado**: el servicio enciende la fábrica solo, pero el panel y las credenciales guardadas no funcionan hasta que entres por SSH, corras otra vez ese comando y reinicies la fábrica (`zero shutdown` y `zero start --detach`).
+
+**Instalar y unirse.** Con el llavero desbloqueado:
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh   # al final abre zero setup
+zero init                                              # crea la fábrica si no lo hizo zero setup
+zero setup                                             # motores, límites, panel y GitHub; correlo de nuevo para cambiar algo
+gh auth login --git-protocol https --web               # muestra un código para escribir en el navegador de otra máquina
+gh auth setup-git                                      # git le pide a gh la credencial cuando clona las líneas
+zero box setup                                         # construye la imagen de la caja con Podman
+claude setup-token                                     # el token de tu suscripción
+zero secret set CLAUDE_CODE_OAUTH_TOKEN                # se pega sin mostrarse y queda en el llavero
+zero unirse me/zero-coord                              # se une a la fábrica y clona sus líneas
+zero autostart on                                      # el servicio de usuario que arranca con la máquina
+zero shutdown && zero start --detach                   # la enciende ya unida
+zero panel remote on                                   # el panel por el túnel, sin puertos abiertos
+```
+
+- Ningún secreto se pega en un archivo, un argumento ni una variable de entorno: `zero secret set` y `zero setup` lo piden sin mostrarlo. Con el llavero desbloqueado, `gh auth login` deja ahí su sesión; sin llavero la deja en un archivo **en texto plano**. `gh auth status` dice cuál de los dos.
+- Codex necesita una clave dentro de la caja (`zero secret set OPENAI_API_KEY`). `codex login --device-auth` deja su sesión en un archivo que maneja el CLI, sin cifrar: usá la clave si preferís evitarlo.
+- Puede que `zero setup` ya haya hecho los pasos de GitHub, del token y del arranque: repetirlos no hace daño.
+- `zero panel remote on` pregunta antes de bajar `cloudflared`, que solo hace conexiones de salida, y te da el link. El panel de cualquier otra máquina también muestra la fábrica entera.
+- Si el CLI de un motor está en una carpeta tuya como `~/.local/bin`, poné esa carpeta en el `PATH` de `~/.config/environment.d/zero.conf`: el servicio no lee `.bashrc`.
+- Lo que nunca tiene que salir desde una dirección de la nube, como la estación de un paquete, se fija a otra máquina (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+Los tests de zero no prueban esta instalación: solo comprueban que esta guía tenga sus piezas. Podman sin root, el llavero sin escritorio, el servicio de systemd después de un reinicio, los inicios de sesión y el túnel no se corrieron con ellos en una máquina de la nube.
 
 ## Instalar con Docker
 
@@ -350,6 +424,24 @@ Con `checkDependencies: true` en una línea, después de la verificación y ante
 - **Sin red.** Si un servicio no responde en 10 segundos o responde con un error, los paquetes quedan como no verificados (en la traza, el log y el prompt de seguridad) y la línea sigue.
 - **Qué no se consulta.** Lo que el lock resuelve fuera del registro público de npm (git, archivos locales, enlaces, otros registros) y las specs de `package.json` que no son rangos del registro. Por ahora cubre solo npm.
 
+### Revisión de rendimiento (`performance`)
+
+Las apps hechas con IA suelen andar lentas por motivos conocidos: consultas sin paginar o sin índices, consultas repetidas en un bucle (N+1), nada de caché, archivos estáticos sin CDN, imágenes sin optimizar, todo el JavaScript en un solo paquete, trabajos pesados dentro de la respuesta en vez de una cola en segundo plano. zero trae una lista de controles de esos problemas, la skill `zero:performance`, armada desde documentación oficial (web.dev, MDN, Next.js, React, PostgreSQL, Django, Rails, Express, Node.js, Vite, Chrome), con cómo detectar cada uno en el código y cómo arreglarlo. `build` tiene siempre la regla de no introducirlos.
+
+Con `performance: true` en una línea:
+
+- **`build` recibe la lista.** La skill `zero:performance` se suma a sus skills en esa línea, con cualquier motor.
+- **Un revisor de rendimiento lee cada cambio.** El agente `performance` propio de zero corre después de `security` y antes de los demás revisores de la línea, en solo lectura, con la lista, y marca los problemas que agrega el cambio con el archivo, la línea y el arreglo concreto. Sus instrucciones son las de zero (`agents/performance.md` de su instalación), nunca las del repositorio.
+- **Solo frenan los problemas graves.** Como en `review`, solo un hallazgo verificado alto o crítico con confianza 8 o más devuelve el cambio a `build`; lo demás queda registrado y el cambio sigue.
+
+En una línea con la opción prendida (o en los globales, si alguna línea la tiene prendida), ningún otro agente puede llamarse `performance`.
+
+**Auditoría a demanda.** `zero rendimiento <línea>` revisa el código actual de la línea con la misma lista, en cualquier línea que no sea de un paquete, tenga o no la opción. Corre una vez apenas puede, con trabajos en cola o en marcha, sin ocupar el lugar de un trabajo: un agente en solo lectura con la skill `zero:performance` lee el repositorio y zero se queda con a lo sumo 5 propuestas, ordenadas de mayor a menor impacto, cada una con su impacto, el control, los archivos y el arreglo concreto (sin repetir los títulos de otras propuestas y sin tocar rutas protegidas). Te esperan en `zero proposals`, sea cual sea la autonomía de la línea: la auditoría nunca construye nada sin tu aprobación. En la fábrica puede haber una sola pendiente; con el andon prendido o el presupuesto alcanzado se rechaza.
+
+```sh
+zero rendimiento tienda      # audita la línea ahora; después, zero proposals
+```
+
 ## Panel en el navegador
 
 Con la fábrica en marcha, el panel muestra:
@@ -364,7 +456,7 @@ Con la fábrica en marcha, el panel muestra:
 - la pestaña "Sala de control": una consola de operaciones en tonos oscuros y letra monoespaciada chica, en vivo y solo lectura, con el reloj, los contadores del día, el costo y el estado del daemon, una cinta que se desplaza con los eventos de las últimas 24 horas, cada trabajo como un punto que viaja por las estaciones hasta una columna de decisiones, series de 24 horas por línea, el bus de agentes, los últimos spans, el uso del plan y las pausas de los motores, y las trabas y alertas en rojo, todo con datos reales de la fábrica y en una sola columna en el celular;
 - el informe mensual (pestaña "Informe mensual", ver [Informe mensual](#informe-mensual)), para elegir línea y mes y descargarlo.
 
-Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)), se pide investigar un tema ("Investigar ahora" en la pestaña "Investigación", ver [Investigación](#investigación)) y se bloquean o permiten sitios. Está pensado para el celular.
+Desde el panel también se pide un trabajo, se tira del andon, se manda a trabajar al destrabador ("Destrabar ahora" en el resumen, ver [Destrabador](#destrabador)), se actualiza zero ("Actualizar ahora" en el resumen, ver [Canales de actualización](#canales-de-actualización-channel)), se pide investigar un tema ("Investigar ahora" en la pestaña "Investigación", ver [Investigación](#investigación)) y se bloquean o permiten sitios. Está pensado para el celular.
 
 ```sh
 zero panel                     # el link del panel, con tu clave (enciende la fábrica si hace falta)
@@ -378,6 +470,30 @@ zero panel rotate              # clave nueva: los links anteriores dejan de serv
 - La clave vive en el llavero del sistema (en Docker, en `secrets.enc`).
 - El acceso remoto usa `cloudflared` (Apache-2.0). zero lo descarga con tu permiso de sus releases oficiales y, en Windows, verifica la firma de Cloudflare.
 - Mientras el túnel esté abierto, Cloudflare transporta el tráfico del panel. Cerralo cuando no lo uses.
+
+### Invitados (`zero panel invitar`)
+
+Podés darle a otra persona acceso a una parte del panel, con un link y una clave propios, independientes de los tuyos. Lo que se puede ofrecer lo declara cada paquete (ver [Paquetes de agentes](#paquetes-de-agentes)), y zero lo impone en el servidor.
+
+```sh
+zero panel invitar "Ana" --solo hello                        # todo lo que ese paquete ofrece a invitados
+zero panel invitar "Ana" --solo hello/news --alcance north   # una pestaña, y solo los datos de ese valor del alcance
+zero panel invitados           # quién tiene acceso, a qué y cuándo lo usó por última vez
+zero panel revocar "Ana"       # corta el acceso al instante
+zero panel registro "Ana"      # qué hizo; sin nombre, todos los invitados
+```
+
+La pestaña "Invitados" de tu panel hace lo mismo: un formulario con lo que ofrecen los paquetes, la lista con un botón para revocar (pide confirmación antes) y el registro.
+
+- **Qué ve un invitado.** Un panel aparte, cuyo menú solo tiene sus pestañas y, en su inicio, los formularios que le diste y el estado de sus propios pedidos. Toda otra página o acción responde que no existe: las líneas, el estado de la fábrica, los demás paquetes, fusionar, el andon, las aprobaciones, las salidas a internet y estos accesos. Nunca lee por qué la fábrica rechazó algo.
+- **El alcance.** Cuando un paquete reparte sus datos por un alcance, la invitación necesita `--alcance <valor>` (uno o más) o `--todo`. Un invitado limitado a algunos valores ve solo los elementos y archivos marcados exactamente con esos valores, y solo puede pedir corridas o mandar archivos para ellos.
+- **Nunca crece por su cuenta.** El acceso es la lista de lo que el paquete ofrecía cuando invitaste. Si después ofrece más, el invitado no lo recibe; si ofrece menos o cambia su alcance, esa parte se corta.
+- **El link se muestra una sola vez**, porque zero guarda solo una huella de la clave. Si se pierde, revocá e invitá de nuevo. `zero panel rotate` no cambia las claves de los invitados.
+- **Desde afuera.** Funciona por el mismo túnel que tu panel. Con un túnel temporal la dirección cambia cada vez que se reinicia: en la nueva sirve la misma clave (lo que sigue a `#k=`). Con `panel.tunnel.hostname` la dirección queda fija.
+- **Revocar** cuenta desde el pedido siguiente, también para un archivo que todavía se está recibiendo. No cancela lo que ya se aceptó, como una corrida ya pedida, y una descarga que ya se está enviando puede terminar.
+- **El registro** tiene cada invitación, ingreso, pestaña, descarga, corrida o archivo pedido, acceso denegado y revocación, y se conserva después de revocar. De los ingresos, pestañas, descargas y accesos denegados se guardan los 500 más nuevos de cada invitado.
+- Las corridas de los invitados gastan los mismos topes que las tuyas, y una pendiente bloquea otra de esa estación hasta que empieza.
+- Se maneja solo desde la terminal y tu panel: el chat no tiene ninguna herramienta para esto.
 
 ### Chat remoto (celular)
 
@@ -397,7 +513,7 @@ zero mcp remote off            # lo apaga
 - zero es su propio servidor de autorización OAuth 2.1, con PKCE (S256) y registro dinámico de clientes. Cada conexión nueva la aprobás vos en la página del panel, con tu clave; el chat nunca recibe una contraseña.
 - Los tokens de acceso duran 1 hora y los de renovación 7 días, y rotan en cada uso. zero guarda solo su hash SHA-256.
 - Dos permisos: leer (estado, trazas, propuestas, investigación, informes) y actuar (pedir trabajos, responder).
-- Fundir, detener, descartar trabajos, aprobar propuestas o archivos protegidos y bloquear sitios desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
+- Fundir, detener, descartar trabajos, aprobar propuestas o archivos protegidos, bloquear sitios y actualizar zero desde el chat no hacen nada en el momento: esperan tu confirmación en la pestaña "Chat remoto" del panel o con `zero mcp confirmar`.
 - La pestaña "Chat remoto" lista los chats conectados, los revoca (pide confirmación antes) y confirma las acciones retenidas.
 - La dirección del túnel rápido cambia cada vez que se reinicia, así que entonces hay que actualizar el conector del chat.
 
@@ -458,8 +574,8 @@ zero simulacro tienda pagos --archivos "src/pagos/**" --conservar # keeps the co
 
 - Trabaja en una copia aparte en `ZERO_HOME/drills/<id>/copy`, clonada de la rama base de la línea. El repositorio de la línea solo se lee: mismas ramas, worktrees, HEAD y estado de trabajo. La copia arranca con un historial nuevo de un solo commit, así el agente no encuentra ahí los archivos quitados.
 - Los tests y todo lo que está bajo `openspec/` nunca se quitan, aunque el patrón los nombre: son contra lo que se mide lo reconstruido.
-- El `setup` de la línea corre en la copia, y después una sola llamada al agente de build reconstruye los archivos desde la spec, con tope `--usd` o, sin él, `limits.usdPerJob` (no puede ser mayor). Luego corren en la copia los comandos de `verify` de la línea, hasta 20 minutos cada uno.
-- El resultado es `alcanzan` (todos los archivos quitados volvieron, todos los comandos de verify pasaron y el agente terminó bien), `no alcanzan` (cualquier otro caso, incluido un agente que falló o llegó a su tope) o `inválido` (el agente cambió o borró un test o una especificación).
+- El `setup` de la línea corre en la copia, y después una sola llamada al agente de build reconstruye los archivos desde la spec, con tope `--usd` o, sin él, `limits.usdPerJob` (no puede ser mayor). Luego corren en la copia los comandos de `verify` de la línea. Cada comando de `setup` tiene 20 minutos; cada comando de `verify` tiene el mismo límite de tiempo que en un trabajo: el `verifyTimeoutMinutes` de la línea, o más si sus corridas aprobadas recientes tardaron más. El informe dice el límite de cada comando que se cortó.
+- El resultado es `alcanzan` (todos los archivos quitados volvieron, todos los comandos de verify pasaron y el agente terminó bien), `sin medir` (lo mismo, salvo que algún comando de verify se quedó sin tiempo y no falló nada más, lo que no dice nada de las especificaciones), `no alcanzan` (cualquier otro caso, incluido un agente que falló o llegó a su tope) o `inválido` (el agente cambió o borró un test o una especificación).
 - El informe, en castellano, queda en `ZERO_HOME/drills/<id>/informe.md`, junto a `resultado.json` con los mismos datos: línea, capacidad, commit base, archivos quitados y reconstruidos, resultado, costo, cada comando con su código de salida y el final de su salida, y lo que la spec no decía y hubo que adivinar. El comando muestra su ruta. Si `ZERO_HOME/drills` cae dentro del repositorio de una línea o del de la carpeta actual, zero se niega, igual que con los informes guardados.
 - Al terminar el simulacro se borra la copia (aunque el agente haya fallado) y quedan solo `informe.md` y `resultado.json`; el informe lo dice. Con `--conservar` la copia queda entera en `ZERO_HOME/drills/<id>/copy` para que la revises, y el informe nombra su ruta. Si el borrado falla, el resultado no cambia: solo queda un aviso en el log.
 - Se niega antes de gastar nada cuando el andon está encendido o se acabó el presupuesto, y cuando la línea no tiene comandos de `verify`. En esta versión solo corre en la máquina: con `isolation: container` se niega.
@@ -514,6 +630,7 @@ lines:
     verify: ["npm test"]  # todo debe pasar antes de la revisión
     verifyTimeoutMinutes: 20  # opcional: minutos que puede tardar cada comando de verify; zero lo sube al doble de su corrida aprobada más lenta
     integrate: merge      # merge · branch · pull-request (arranca desde la rama base del remoto)
+    platforms: [win32, linux]   # opcional: dónde se puede atender (win32 · darwin · linux); una máquina unida de otra plataforma no la clona
     issues: { label: zero }   # opcional: toma como pedidos los issues de GitHub con esta etiqueta
     # jira: { site: "https://acme.atlassian.net", project: ABC }   # opcional: issues de Jira con la etiqueta "zero"; credenciales con zero secret set
     autoMerge: false          # con pull-request: la fábrica funde cuando todos los checks pasan
@@ -523,6 +640,7 @@ lines:
     signature: off            # opcional: la firma propia de esta línea, reemplaza la global
     allowedArtifacts: ["media/**"]   # opcional: rutas que esta línea versiona aunque parezcan producto de la operación
     checkDependencies: false  # opcional: consulta a OSV y deps.dev por las dependencias npm nuevas antes de la revisión
+    performance: false        # opcional: el revisor de rendimiento de zero después de seguridad, y su lista de controles para build
 ```
 
 Las skills se asignan también con `zero skill add <skill> --station <agente> [--line <línea>]`, `zero skill remove …` y `zero skill list` (el chat no las cambia). Con Claude se activan de forma nativa y el agente ve solo esas; con otros motores, zero agrega el texto del SKILL.md a sus instrucciones. Nunca cambian las herramientas de un agente: los de solo lectura leen la skill pero no ejecutan sus scripts, y en la caja se montan como solo lectura. Si una skill no está instalada, `zero status` lo avisa y el agente trabaja sin ella.
@@ -595,7 +713,33 @@ zero puede actualizarse solo después de que se fusionan sus propios cambios, as
 selfUpdate: { enabled: true }   # remote: origin, branch: la de la carpeta de instalación, startTimeoutSeconds: 120
 ```
 
-El daemon mira la rama de la carpeta de instalación en su remoto una vez por día y otra vez cuando se fusiona un pull request de una línea que trabaja sobre esa carpeta. Solo toma un avance rápido, y nunca con cambios locales ni en otra rama: en ese caso avisa una vez y no cambia nada. Prepara el commit nuevo aparte, en `~/.zero/self-update/`, sin tocar la versión que corre: las mismas reglas de lock que los paquetes, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` y una carga del archivo de la fábrica. Si falla un paso, sigue con la versión actual, avisa una vez y no vuelve a preparar ese commit. Con la versión nueva lista no empieza más trabajos, y cuando no corre ninguno le pasa la posta a un proceso aparte (solo módulos propios de Node) y se apaga como siempre: ese proceso pone en su lugar la compilación nueva, arranca el daemon desprendido como `zero start --detach` y espera a que tome el candado del daemon. Si no lo toma dentro de `startTimeoutSeconds`, lo detiene, vuelve a poner la compilación y el commit anteriores y arranca la versión anterior. Los trabajos interrumpidos y los de la cola siguen desde su punto de control. `zero status`, el panel y el resumen cuentan cada actualización (de qué commit a cuál), una vuelta atrás o una falla; `zero --version` muestra la versión y el commit. Los paquetes se actualizan con `zero package update`.
+El daemon mira la rama de la carpeta de instalación en su remoto una vez por día y otra vez cuando se fusiona un pull request de una línea que trabaja sobre esa carpeta. Solo toma un avance rápido, y nunca con cambios locales ni en otra rama: en ese caso avisa una vez y no cambia nada. Prepara el commit nuevo aparte, en `~/.zero/self-update/`, sin tocar la versión que corre: las mismas reglas de lock que los paquetes, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` y una carga del archivo de la fábrica. Si falla un paso, sigue con la versión actual, avisa una vez y no vuelve a preparar ese commit por su cuenta. Con la versión nueva lista no empieza más trabajos, y cuando no corre ninguno le pasa la posta a un proceso aparte (solo módulos propios de Node) y se apaga como siempre: ese proceso pone en su lugar la compilación nueva, arranca el daemon desprendido como `zero start --detach` y espera a que tome el candado del daemon. Si no lo toma dentro de `startTimeoutSeconds`, lo detiene, vuelve a poner la compilación y el commit anteriores y arranca la versión anterior. Los trabajos interrumpidos y los de la cola siguen desde su punto de control. `zero status`, el panel y el resumen cuentan cada actualización (de qué commit a cuál), una vuelta atrás o una falla; `zero --version` muestra la versión y el commit. Los paquetes se actualizan con `zero package update`; los del canal estable también pueden actualizarse solos (ver [Paquetes de agentes](#paquetes-de-agentes)).
+
+### Canales de actualización (`channel`)
+
+`channel` elige hacia dónde se actualiza una instalación y `enabled`, si lo hace sola. Con `ultimo` toma todo lo que entra en la rama, que es lo indicado para la fábrica principal. Con `estable` solo pasa a versiones que liberaste, que es lo indicado para una instalación de producción, por ejemplo una que solo corre un paquete para clientes y no tiene líneas. Sin `channel` todo sigue como se describe arriba y el estado no muestra ningún canal.
+
+```yaml
+selfUpdate: { channel: estable }   # solo mira y te espera; con enabled: true además se actualiza sola, de versión liberada en versión liberada
+```
+
+```sh
+zero liberar 1.3.0                    # libera la punta de la rama base del remoto como v1.3.0
+zero liberar <commit>                 # libera ese commit con el siguiente número de parche
+zero liberar <commit> 1.3.0 --yes     # las dos cosas, sin preguntar
+zero liberar 0.2.0 --line <line>      # libera el repositorio de esa línea, por ejemplo el de un paquete
+zero actualizar                       # pasa esta instalación a la última versión de su canal, ahora
+```
+
+- **Una versión liberada es una etiqueta.** `zero liberar` publica una etiqueta `vX.Y.Z` con las credenciales de git que ya tenés, y no crea una página de release en GitHub. Toda etiqueta `vX.Y.Z` del remoto cuenta como versión liberada, sin importar quién la publicó; cualquier otra se ignora. Cuando todavía no hay versiones liberadas, un commit sin versión toma la `version` de su package.json, o 0.1.0.
+- **Liberar pregunta antes.** Muestra la versión, el commit y el remoto, y no publica nada sin tu sí (`--yes` responde por vos; sin terminal ni `--yes` la respuesta es no). Se niega con una versión que ya existe o que no es mayor que la última, con un commit que no está en la rama base y con uno que no es posterior a la última versión liberada. Nunca mueve una etiqueta, y tus ramas, etiquetas y archivos quedan como estaban. Solo se libera desde la terminal: ni el chat ni el panel pueden.
+- **Las instalaciones solo avanzan.** Con `estable`, la última versión liberada tiene que estar en la rama que sigue la instalación y ser un avance rápido; si no, se muestra el problema y no cambia nada. Una instalación que está más adelante que la última versión liberada espera a una que la contenga. Lo que todavía no se liberó de la rama no cuenta como atraso.
+- **Mirar sin actualizar.** Con `channel` y sin `enabled`, la fábrica busca la última versión (como mucho una vez por hora con `estable`) y la registra, sin preparar nada.
+- **Actualizar cuando vos lo decidís.** `zero actualizar`, el `zero_update` del chat y el botón "Actualizar ahora" del panel hacen lo mismo, esté o no encendida la actualización automática: preparan la última versión del canal (`ultimo` si no hay uno) y cambian cuando no corre ningún trabajo, con vuelta atrás si no arranca. El comando espera hasta 2 minutos para decirte qué se encontró. Una actualización que pedís vuelve a probar, una vez, una versión que falló antes. Desde el chat remoto espera tu confirmación. El cambio espera a los trabajos y no a las estaciones de los paquetes, así que pedilo cuando no estén publicando nada.
+- **Qué ves.** Con un canal, `zero status` y el resumen del panel lo muestran, con la versión actual, si hay una más nueva y cómo terminó la última actualización que pediste, según la última vez que se miró y sin usar la red.
+- **En Docker** la instalación no es un repositorio de git: `zero actualizar` lo dice y no cambia nada. Ahí se actualiza la imagen.
+
+Las razones están en [`docs/adr/0010-canales-de-actualizacion.md`](docs/adr/0010-canales-de-actualizacion.md).
 
 ## Agentes a medida
 
@@ -685,7 +829,7 @@ Garantías que impone zero, nunca el agente: los agentes a medida son de solo le
 
 Los paquetes son una forma de extender zero con agentes propios o de terceros, sin tocar zero ni las estaciones fijas de la fábrica. Un paquete es una carpeta local o un paquete npm con un `zero-package.yaml` en su raíz. De ahí zero carga agentes con sus instrucciones, skills y, solo con tu permiso explícito, estaciones con código propio.
 
-Lo instalado se declara en `packages`, en el archivo de la fábrica. Cada entrada tiene exactamente uno de `path` o `npm`, y opcionalmente `allowCode`, `config`, `engine` y `model`:
+Lo instalado se declara en `packages`, en el archivo de la fábrica. Cada entrada tiene exactamente uno de `path` o `npm`, y opcionalmente `allowCode`, `config`, `engine`, `model`, `machine` y `machines`:
 
 ```yaml
 packages:
@@ -696,7 +840,12 @@ packages:
     allowCode: true                # apagado por defecto: sin esto, sus estaciones nunca corren
     config:
       greeting: Hello
+    machine: home-pc               # opcional: sus estaciones corren solo en esta máquina, por nombre o id
+    machines:                      # opcional: lo mismo para una sola estación; manda sobre machine
+      note: home-pc
 ```
+
+**Estaciones fijadas a una máquina.** Con varias máquinas (ver [Varias máquinas](#varias-máquinas-zero-unirse)), `machine` fija todas las estaciones de un paquete y `machines` solo las que nombra, a una máquina: su `distributed.machine` (o el nombre del equipo si no hay; no importan las mayúsculas) o su id. Una estación fijada nunca corre en otra máquina, ni en su período, ni con la fábrica ocupada, ni en sus horarios, ni a demanda, ni por un archivo subido: zero ni siquiera importa ahí su módulo, y pedirla desde ahí se rechaza nombrando la máquina correcta. Un nombre que no coincide con ninguna máquina deja la estación sin correr en ninguna. Si `machines` nombra una estación que el paquete no trae, el paquete muestra el problema y ninguna de sus estaciones corre, así un error de tipeo nunca deja una libre para correr en cualquier lado. `zero package list` y la pestaña "Paquetes" del panel muestran la máquina fijada. Los agentes y las skills de un paquete, y los trabajos que piden sus estaciones, no quedan fijados.
 
 **El manifiesto**, `zero-package.yaml`. `interface` dice para qué versión de este formato se escribió el paquete: este zero soporta `interface: 1` y deja afuera cualquier otra, diciendo cuál pidió. Las claves desconocidas se rechazan, así que un manifiesto no puede elegir motor ni modelo. Toda ruta tiene que ser relativa y quedarse dentro de la carpeta del paquete, enlaces incluidos, y la carpeta de una skill no puede tener ningún enlace.
 
@@ -791,7 +940,7 @@ export async function scheduled(ctx, { at }) {
 
 **Corridas a demanda.** A una estación cuyo manifiesto declara `onDemand: true` (por defecto es false) le podés pedir que corra una vez sin esperar sus `everyMinutes`: `zero package run <paquete>/<estación>`, o la herramienta `zero_package_run` del chat. zero llama a su `pass(ctx, { onDemand: true })`, con el mismo `ctx` de siempre, así la estación distingue tu pedido de su turno normal, que no recibe segundo argumento. El daemon la corre en una pasada propia, cada pocos minutos, haga lo que haga la línea: no espera a los trabajos en cola o en marcha, ni a scout o la investigación, y nunca empieza un trabajo ni ocupa el lugar de uno. Sí espera el andon apagado, presupuesto disponible y sus secretos declarados guardados; mientras tanto queda pendiente. `ctx.runAgent` sigue compartiendo el tope de `limits.usdPerNight`. Una estación nunca corre dos turnos a la vez: si su turno normal o programado está en marcha, el pedido espera la próxima pasada. Una corrida a demanda no mueve el período de la estación, y la estación no corre su turno normal mientras haya un pedido pendiente. `zero status`, el resumen del panel y el informe muestran las corridas pendientes y la última corrida de cada estación: corriendo, terminó bien, falló, superó su tiempo, se cortó al apagar la fábrica, no pudo correr, o sin resultado cuando nunca terminó. Hay como máximo una corrida pendiente por estación: si la pedís de nuevo antes de que corra, se rechaza. También recibís el motivo, y no se registra nada, cuando la estación no es `<paquete>/<estación>`, el paquete o la estación no existen, la estación no puede correr (por ejemplo, sin `allowCode`), no declara `onDemand: true`, el andon está activo o se agotó el presupuesto. Un módulo que no se puede importar, no tiene `pass` o cuyo `parseConfig` lanza un error descarta el pedido, y el motivo queda en el log; la corrida figura como que no pudo correr. El comando sale con 1 cuando se rechaza, y enciende la fábrica si estaba apagada.
 
-**Un pedido para la corrida.** `zero package run <paquete>/<estación> --pedido "..."` (la herramienta `zero_package_run` del chat recibe lo mismo como `request`, y la pestaña "Paquetes" del panel tiene un botón "Pedir ahora" con un campo de texto opcional en cada estación que acepta corridas a demanda) manda un texto con esa corrida. La estación lo recibe como `run.request` en `pass(ctx, run)`, es decir `{ onDemand: true, request }`, como pedido de la persona a cargo; sin texto, o con uno que queda vacío al limpiarlo, sigue recibiendo exactamente `{ onDemand: true }`. zero lo limpia antes de guardarlo: saca los valores de los secretos declarados por la estación y las rutas de los repositorios de tus líneas, y lo corta a 4000 caracteres. Solo vos podés pedirla, desde la terminal, el chat o el panel con tu sesión; el `ctx` de una estación, los issues, los comentarios y el `requestJob` de los paquetes no tienen forma de hacerlo. El comando responde cuando la corrida empezó o, pasados 2 minutos (30 segundos desde el chat), que sigue pendiente y va a correr en la próxima pasada del daemon. `zero status` muestra el pedido pendiente con su texto (`Corridas a demanda pendientes:`), la corrida mientras está en marcha (`Corrida a demanda de <paquete>/<estación>: en curso`) y cómo terminó la última: terminó bien, falló (con su error, sin secretos ni rutas locales, hasta 600 caracteres), superó su `timeoutMinutes` o se cortó porque la fábrica se apagó. `zero package list` y la pestaña "Paquetes" del panel muestran lo mismo.
+**Un pedido para la corrida.** `zero package run <paquete>/<estación> --pedido "..."` (la herramienta `zero_package_run` del chat recibe lo mismo como `request`, y la pestaña "Paquetes" del panel tiene un botón "Pedir ahora" con un campo de texto opcional en cada estación que acepta corridas a demanda) manda un texto con esa corrida. La estación lo recibe como `run.request` en `pass(ctx, run)`, es decir `{ onDemand: true, request }`, como pedido de la persona a cargo; sin texto, o con uno que queda vacío al limpiarlo, sigue recibiendo exactamente `{ onDemand: true }`. zero lo limpia antes de guardarlo: saca los valores de los secretos declarados por la estación y las rutas de los repositorios de tus líneas, y lo corta a 4000 caracteres. Solo vos podés pedirla, desde la terminal, el chat o el panel con tu sesión, o un invitado al que le diste esa estación (ver **Invitados** más abajo); el `ctx` de una estación, los issues, los comentarios y el `requestJob` de los paquetes no tienen forma de hacerlo. El comando responde cuando la corrida empezó o, pasados 2 minutos (30 segundos desde el chat), que sigue pendiente y va a correr en la próxima pasada del daemon. `zero status` muestra el pedido pendiente con su texto (`Corridas a demanda pendientes:`), la corrida mientras está en marcha (`Corrida a demanda de <paquete>/<estación>: en curso`) y cómo terminó la última: terminó bien, falló (con su error, sin secretos ni rutas locales, hasta 600 caracteres), superó su `timeoutMinutes` o se cortó porque la fábrica se apagó. `zero package list` y la pestaña "Paquetes" del panel muestran lo mismo.
 
 **Mandarle un archivo a una estación.** Una estación con `onDemand: true` también puede declarar `uploads`: `maxMb` (mayor que cero y hasta 100, 20 por defecto) y `extensions` (`[".zip"]` por defecto); un manifiesto con `uploads` y sin `onDemand: true` queda afuera. Mandás el archivo con `zero package upload <paquete>/<estación> <archivo>` (acepta `--pedido` como `zero package run`) o desde la pestaña "Paquetes" del panel, que muestra un formulario para subirlo en esas estaciones. Desde el chat, `zero_package_upload` recibe la estación, una ruta absoluta `path` a un archivo de esta máquina, o `content` en base64 más `name`, y un `request` opcional; el chat remoto solo acepta `content`, nunca una ruta de esta máquina, con un cuerpo de pedido de alrededor de 1 MiB. zero lo guarda en `~/.zero/package-data/<paquete>/uploads/<estación>/`, con la hora y un nombre base limpio, y pide una corrida a demanda de esa estación, que lo recibe como `ctx.upload` (`{ name, path, sizeBytes, at }`, con `path` dentro de su carpeta de datos); ningún otro turno tiene `ctx.upload`. Es contenido de terceros, así que zero revisa todo antes de guardarlo y no deja nada cuando lo rechaza: la estación no declara `uploads`, la extensión no es una de las suyas, el archivo pasa de `maxMb` (el panel también deja de leer ahí), un `.zip` no empieza como un zip, o la corrida se rechazaría (ya hay otra pendiente, el andon está activo, se agotó el presupuesto). El formulario del panel pide tu sesión y rechaza un pedido que viene de otro sitio.
 
@@ -832,6 +981,18 @@ Cada pestaña aparece en el menú de todas las páginas del panel y tiene su pro
 
 **Descargas.** El `file` de un elemento ofrece para bajar un archivo de la carpeta de datos: una ruta relativa como `out/d1.zip`, sin `..` ni unidad (una que los tenga invalida el archivo entero). La pestaña muestra un link "Descargar" solo cuando ese archivo existe como archivo común y su ruta real queda dentro de la carpeta de datos; si no, el elemento se muestra sin él. El link apunta a `/packages/<paquete>/<pestaña>/files/<ruta>`, que pide la sesión del panel y entrega el archivo como adjunto (`application/octet-stream`, nunca se abre en el navegador) solo cuando los datos actuales de la pestaña listan exactamente ese archivo, sigue siendo un archivo común dentro de la carpeta de datos, con los enlaces resueltos, y pesa hasta 512 MiB. Cualquier otro pedido recibe 404, y para responderlo no corre código del paquete.
 
+**Invitados.** Con `guests`, un paquete dice qué podés ofrecer a invitados del panel (ver [Invitados](#invitados-zero-panel-invitar)): `tabs`, nombres de sus pestañas; `run`, estaciones con `onDemand: true`; `upload`, estaciones con `uploads`; y, si sus datos se reparten entre invitados, `scope`, con un nombre y el título que se lee. Sin `guests` no ofrece nada. Un nombre que no existe, que no acepta esa acción o que se repite, una clave desconocida o un `guests` que no ofrece nada deja afuera al paquete entero.
+
+```yaml
+guests:
+  scope: { name: account, title: Account } # opcional: lo que distingue la parte de un invitado de la de otro
+  tabs: [news]
+  run: [note]
+  upload: [note]
+```
+
+Con un `scope`, cada elemento del JSON de las pestañas dice de quién es en su texto opcional `scope` (`"scope": "north"`). A un invitado limitado a algunos valores zero le muestra solo los elementos cuyo `scope` es exactamente uno de ellos, sin las categorías ni los archivos de los demás; los elementos sin `scope` no los ve. Vos y un invitado con `--todo` ven todo. Una corrida o un archivo que pide un invitado le llega a la estación como `pass(ctx, { onDemand: true, request?, guest: { name, scope? } })`, con el nombre y el alcance puestos por zero; `scope` no está cuando el invitado no tiene límite. Tus propias corridas no llevan `guest`. zero controla qué valor le llega a la estación, pero qué hace con él depende de su código: ofrecé solo estaciones que lo respeten, y que traten el pedido como de un tercero.
+
 **Repositorios locales.** Una estación cuyo manifiesto declara `repositories: { perDay: N }` puede construir sobre un repositorio git local propio, sin GitHub y sin que edites tu archivo. `ctx.repos.create(nombre, { from, setup, verify })` crea `~/.zero/package-repos/<paquete>/<nombre>` con un commit en `main`, con los archivos de un zip de la carpeta de datos cuando `from` nombra uno (descomprimido igual que con `ctx.unzip`), y suma a tu archivo la línea `<paquete>-<nombre>` con `integrate: merge`, `package: <paquete>` y los comandos `setup` y `verify` que le dio. El nombre va en minúsculas, dígitos y guiones, hasta 40 caracteres. Se rechaza, sin cambiar el archivo ni ninguna carpeta, cuando la estación no declara `repositories`, ya creó N hoy, el nombre no es válido o el nombre de la línea ya está usado. Con `requests`, `ctx.requestJob({ repo: nombre, text, maxUsd })` abre ahí un trabajo normal: especificación, construcción, verify y revisión como en cualquier línea, y la entrega es el commit de fusión en `main` de ese repositorio, sin remoto y sin pull request. `ctx.repos.archive(nombre, archivo)` escribe un zip de `main` en una ruta `.zip` de la carpeta de datos, listo para ofrecer como `file` de una pestaña, y `ctx.repos.remove(nombre)` saca la línea y la carpeta, salvo mientras la línea tenga un trabajo sin terminar. Toda llamada rechaza los repositorios de otro paquete, una estación nunca ve en `ctx.lines` las líneas de otro paquete ni puede pedir trabajos en ellas, y scout, el destrabador y la investigación no miran estas líneas.
 
 ```js
@@ -865,9 +1026,11 @@ zero package add ./hello --permitir-codigo   # allowCode: true, para que corran 
 zero package add github:acme/hello-zero#v1   # de git, en ~/.zero/packages/git/hello, en ese tag o rama
 zero package add https://example.com/acme/hello-zero.git
 zero package add git@example.com:acme/hello-zero.git#main
+zero package add github:acme/hello-zero --canal estable   # de git, solo versiones liberadas (etiquetas vX.Y.Z)
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # muestra el cambio y lo aplica; sin nombre, todos los paquetes
+zero package update hello --etiqueta v1.1.0  # pasa un paquete de git, fijado o no, a esa etiqueta
 zero package run hello/note                  # una pasada de esa estación en la próxima pasada, sin esperar la cola (onDemand: true)
 zero package run hello/note --pedido "revisá los precios de esta semana"   # lo mismo, con un pedido para esa corrida
 zero package upload hello/note ./site.zip    # le manda ese archivo a la estación y pide una corrida a demanda (uploads)
@@ -887,6 +1050,10 @@ zero package remove hello                    # lo saca del archivo; sus archivos
 Con algo para aplicar, zero apaga la fábrica y espera a que termine su proceso, porque en Windows los módulos nativos quedan tomados mientras corre. Después actualiza y reinstala dependencias, y si un paquete git falla (dependencias, manifiesto, nombre o encaje con los demás) vuelve al commit anterior. Al final enciende una sola fábrica, solo si había una en marcha. Si la fábrica no se apaga a tiempo, no se toca ningún paquete: el pedido de apagado queda vigente, así que la fábrica se apaga más tarde y nadie la vuelve a encender.
 
 Mientras está en marcha, la fábrica mira una vez por día qué tienen los remotos de los paquetes git y npm, sin tocar sus carpetas. `zero package list` muestra la fuente, el commit o la versión instalada y si hay una actualización disponible, según lo último que se vio y sin usar la red.
+
+**Canal y etiqueta de un paquete de git.** Con `--canal estable` (`channel: estable` en su entrada), `zero package add`, `zero package update` y la revisión diaria toman solo la última versión liberada `vX.Y.Z` de su remoto, nunca la punta de una rama, y dicen por qué cuando no hay ninguna o cuando lo instalado ya está más adelante: un paquete así nunca vuelve atrás. Sobre una fuente ya declarada, `zero package add <fuente> --canal estable` solo le pone el canal. Una fuente con `#etiqueta` queda fija en esa etiqueta y `--etiqueta` la cambia, con los mismos resguardos, confirmación y vuelta atrás que cualquier actualización; canal y etiqueta no van juntos. `zero package list` y la pestaña "Paquetes" del panel muestran el canal o la etiqueta, la versión instalada y la más nueva.
+
+Con `selfUpdate: { enabled: true }`, un paquete con `channel: estable` se actualiza solo cuando se vio una versión liberada más nueva, cuando no corre ningún trabajo: la fábrica lanza `zero package update <nombre>` como un proceso aparte, que la apaga y la vuelve a encender. Cada versión se intenta una sola vez, y una que pide más que antes (un secreto, una estación, un permiso) no se aplica; una versión que no se aplicó se ve en `zero status` y en `zero package list`, para que la apliques a mano. Sin `enabled`, o sin el canal del paquete, ningún paquete se actualiza solo; en Docker, ninguno.
 
 **Un paquete roto nunca frena la fábrica.** Queda afuera entero, los demás paquetes siguen y el motivo se ve en `zero status`, en `zero package list` y una vez en el registro. Eso vale también para los revisores bloqueantes de un paquete: si queda afuera, los trabajos siguen sin esa revisión, así que mirá `zero status` después de actualizar uno.
 

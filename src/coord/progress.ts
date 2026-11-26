@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { MAX_STAGES, SpecSchema, specProblems } from "../line/spec.js";
+import { scrubBranch } from "../attribution.js";
 import { log } from "../log.js";
 import type { MachineIdentity } from "../machine.js";
 import { spawnGit, tryGit } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
 import { removeWorkCopy, type WorkCopy } from "../workspace.js";
-import { COORD_ID, CoordConflict, progressRef, stillHolds, type CoordApi, type CoordRef } from "./protocol.js";
+import { COORD_ID, CoordConflict, progressRef, REF_NAME, stillHolds, type CoordApi, type CoordRef } from "./protocol.js";
 
 /** `coord:pushed:<id>`: the last sha of the job's branch this machine pushed, the lease of its next push. */
 export const pushedKey = (id: string) => `coord:pushed:${id}`;
@@ -62,9 +63,10 @@ export async function pushProgress(deps: PushDeps, job: Job, copy: WorkCopy): Pr
   }
   copy.publish();
   const ref = `refs/heads/${copy.branch}`;
-  const sha = tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo);
-  if (!sha) return "skipped";
+  if (!tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo)) return "skipped";
   const lease = store.getKv(pushedKey(job.id)) ?? "";
+  // AI attribution leaves the messages of what goes up for the first time; what was pushed before keeps its SHAs.
+  const sha = scrubBranch(repo, copy.branch, [lease || undefined, copy.base]);
   const pushed = spawnGit(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${lease}`, "origin", `${ref}:${ref}`], repo, { timeout: 120_000 });
   if (pushed.status !== 0) {
     const output = `${pushed.stderr ?? ""}${pushed.stdout ?? ""}`.trim();
@@ -103,8 +105,6 @@ export async function pushProgress(deps: PushDeps, job: Job, copy: WorkCopy): Pr
   return "pushed";
 }
 
-/** A branch or base name read back from the coordination repository: plain ref characters only, never an option or a path out. */
-const REF_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,200}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const CHECKPOINTS: Job["checkpoint"][] = ["none", "spec", "review"];
 

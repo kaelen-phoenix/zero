@@ -121,7 +121,7 @@ export function fakeAgents(handlers: Partial<Record<AgentStation | (string & {})
     const fallback: Partial<AgentRun<any>> =
       req.station === "spec" ? { output: validSpec() } : req.station === "review" || req.station === "security" ? { output: cleanReview() } : {};
     const result = { ok: true, text: "done", costUsd: costPerCall, costSource: "reported" as const, engine, ...fallback, ...((await handlers[name]?.(req, count[name]!)) ?? {}) };
-    span?.end(result.ok ? "ok" : "error", { "zero.cost.usd": result.costUsd, "zero.cost.source": result.costSource, ...quotaAttrs(result.quota) });
+    span?.end(result.ok ? "ok" : "error", { "zero.cost.usd": result.costUsd, "zero.cost.source": result.costSource, ...quotaAttrs(result.quota), ...(result.signedOut && { "zero.engine.signed_out": true }) });
     return result as AgentRun<T>;
   };
   return { runner, calls, count };

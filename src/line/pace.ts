@@ -66,11 +66,8 @@ export interface VerifyHistory {
   getJob(id: string): { line: string } | undefined;
 }
 
-/**
- * How long the slowest of the last 5 passing runs of a verify command took on a line in the last 30 days
- * (`zero.run_ms` when the span has it, else its end minus its start); `undefined` without such a run.
- */
-export function slowestVerifyMs(history: VerifyHistory, line: string, command: string, now: Date): number | undefined {
+/** How long the slowest of the last 5 passing runs of a command on a line took, in the last 30 days; undefined when there is none. */
+export function slowestPassMs(history: VerifyHistory, lineName: string, command: string, now: Date): number | undefined {
   const lines = new Map<string, string | undefined>();
   const lineOf = (jobId: string) => {
     if (!lines.has(jobId)) lines.set(jobId, history.getJob(jobId)?.line);
@@ -78,7 +75,7 @@ export function slowestVerifyMs(history: VerifyHistory, line: string, command: s
   };
   const took = history
     .spansSince(VERIFY_COMMAND_SPAN, new Date(now.getTime() - HISTORY_DAYS * 86_400_000))
-    .filter((s) => s.status === "ok" && s.end && s.jobId && s.attrs["process.command_line"] === command && lineOf(s.jobId) === line)
+    .filter((s) => s.status === "ok" && s.end && s.jobId && s.attrs["process.command_line"] === command && lineOf(s.jobId) === lineName)
     .slice(-HISTORY_RUNS)
     .map((s) => (typeof s.attrs["zero.run_ms"] === "number" ? (s.attrs["zero.run_ms"] as number) : Date.parse(s.end!) - Date.parse(s.start)))
     .filter((ms) => Number.isFinite(ms) && ms > 0);
@@ -92,6 +89,6 @@ export function slowestVerifyMs(history: VerifyHistory, line: string, command: s
  */
 export function verifyTimeoutMs(history: VerifyHistory, line: Pick<LineConfig, "name" | "verifyTimeoutMinutes">, command: string, now: Date): number {
   const floor = (line.verifyTimeoutMinutes ?? DEFAULT_VERIFY_MINUTES) * 60_000;
-  const learned = Math.min(2 * (slowestVerifyMs(history, line.name, command, now) ?? 0), MAX_LEARNED_MS);
+  const learned = Math.min(2 * (slowestPassMs(history, line.name, command, now) ?? 0), MAX_LEARNED_MS);
   return Math.max(floor, learned);
 }

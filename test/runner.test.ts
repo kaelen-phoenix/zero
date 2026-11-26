@@ -1015,7 +1015,7 @@ describe("what build is told about time", () => {
     const second = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
     expect(second).toContain("límite de 45 minutos");
     expect(second).toContain("sigue sin commitear en la copia de trabajo");
-    expect(second).toContain("continuar desde ahí");
+    expect(second).toContain("continuá desde ahí");
     expect(second).not.toContain("Hacé cambios más chicos");
   });
 

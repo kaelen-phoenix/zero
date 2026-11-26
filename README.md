@@ -87,8 +87,11 @@ zero informe [line] [--mes AAAA-MM] [--html]   # monthly report per line, to sha
 zero descartar <job> [--motivo "<text>"]   # closes a job you no longer need, with its pull request and its branch
 zero fusionar <job | url>      # merges a pull request the factory delivered, once GitHub says it is ready
 zero actualizar-pr <line> <number>...   # updates open pull requests of the line with its base, in that order
+zero actualizar                # moves zero to the newest version of its channel now (see Update channels)
+zero liberar [<commit>] [<version>] [--line <line>]   # publishes a release for the installations on the stable channel
 zero tren <line> [<number>...]   # merges the line's stuck pull requests one at a time, oldest first
 zero investigar "<topic>" [--line <line>]   # web research now on a topic, without waiting for the night
+zero rendimiento <line>        # performance audit of the line's code now: proposals ordered by impact, nothing built
 zero stop [id]                 # andon: stops a job or the whole factory · zero resume
 zero line add <path>           # add another project
 zero start [--detach] · zero shutdown
@@ -113,6 +116,7 @@ The chat does the same with these tools:
 - `zero_package_run`: a package station on demand, with an optional `request`
 - `zero_package_upload`: a file for a package station that takes uploads
 - `zero_unjam`: the unjam station now, for one line or for all of them
+- `zero_update`: updates zero to the newest version of its channel, once no job is running
 - `zero_investigate`: web research now on the `topic` you give, for one line
 - `zero_merge`: merges a pull request the factory delivered, once GitHub says it is ready
 - `zero_egress`: internet egress
@@ -132,10 +136,80 @@ If the factory goes down without a `zero shutdown` (the machine restarted, the p
 ### Several machines (`zero unirse`)
 
 ```sh
-zero unirse me/zero-coord
+gh repo create me/zero-coord --private --add-readme   # once; --add-readme leaves the first commit GitHub needs
+zero unirse me/zero-coord                             # on each machine
 ```
 
-A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Secrets stay in each machine's own store and never travel through that repository. With the factory restarted, each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. Taking jobs from a shared queue is the next step (see `docs/adr/0007-fabrica-distribuida.md`); for now each machine runs its own jobs. Without `distributed`, a single-machine factory works as always and sends nothing.
+A factory can live on more than one of your machines. Create a private GitHub repository for coordination, then run `zero unirse <account/repo>` on each machine: zero checks that the repository is private (it refuses a public one or one it cannot read) and writes only `distributed: { repository }` to the factory file. Without a repository, or with one it cannot use, it explains how to create it; zero creates nothing on its own. Secrets stay in each machine's own store and never travel through that repository. Restart the factory (`zero shutdown` and `zero start`) after joining.
+
+```yaml
+distributed:
+  repository: me/zero-coord
+  machine: cloud                 # optional: this machine's name; without it, the host's
+```
+
+- **Who is there.** Each machine writes its heartbeat there every `heartbeatSeconds` (60 by default) through the GitHub quota meter, without GitHub Actions, and `zero status` and the panel show a `Máquinas:` block: each machine, `viva` or `caída` (no heartbeat within `leaseMinutes`, 10 by default), its last heartbeat and its jobs. The machines never connect to each other.
+- **A shared queue.** Every machine takes jobs from the same queue, each job on one machine at a time, and only those it can do (the box and the engines it has). If one goes down, another takes its jobs over from the last checkpoint pushed; what was not pushed is done again.
+- **Lines cloned on their own.** Each machine publishes its lines that have a GitHub remote (name, repository, base branch, `setup`, `verify` and integration; never paths, secrets or the rest of its configuration), and the others clone them into `ZERO_HOME/lines` when they join and whenever a new one appears, with git's own credentials. A line that already exists on a machine is never changed, and package lines are not shared. With `platforms` (`win32`, `darwin`, `linux`) a line says where it can be worked on: a machine with another platform, or without its engines, does not clone it, and `zero status` and the panel say why.
+- **Cloned lines run commands.** A cloned line brings the `setup` and `verify` commands that this machine will run: whoever can write in the coordination repository can add lines. Keep it yours alone.
+- **Use `integrate: pull-request` in shared lines.** With `merge` or `branch`, the work is delivered in the clone of the machine that did it, and the others do not see it.
+- **One budget.** What every machine spends counts against the same limits (`usdPerDay`, `usdPerNight`, `usdPerJob`), and a subscription has one quota: an engine paused on one machine by its plan or by `reservePercent` is paused on all. This assumes that they all use the same account. What the others spent arrives up to a heartbeat late, so several machines working at once can go a little over a cap.
+- **From any of them.** The chat, the CLI and the panel of any machine show the jobs of all, with the machine's name, and from there you can ask for work (also for a line that machine does not have), answer, approve, and decide proposals. What is for another machine goes out with the next heartbeat and is applied with that machine's, not at once; if it is down, when it comes back. Stopping, discarding and merging a job, and its trace, are still for the machine that has it.
+- **Packages.** They are not copied between machines, and their stations can be pinned to one (see [Agent packages](#agent-packages)).
+
+Without `distributed`, a single-machine factory works as always and sends nothing. The reasons and the protocol are in `docs/adr/0007-fabrica-distribuida.md`.
+
+### Linux machine in the cloud
+
+To add a Linux virtual machine that works on its own, with no desktop and no open ports. It needs:
+
+- Debian 12, Ubuntu 24.04 or later, with systemd and a user of yours that is not root. Other distributions work with their own package names.
+- Node 22 or later and npm, installed for the whole system ([nodejs.org](https://nodejs.org)): the service does not read your shell's configuration, so it does not find what a version manager leaves in your folder.
+- Outgoing HTTPS. Nothing comes in except your own SSH: leave every other port closed, the panel's 4848 included.
+
+The commands with `sudo` need administrator rights and you run them; zero asks for none.
+
+```sh
+sudo apt install git gh podman uidmap gnome-keyring dbus-user-session   # administrator
+sudo npm install -g @anthropic-ai/claude-code                           # administrator: the CLIs of the engines you will use
+sudo loginctl enable-linger "$USER"                                     # administrator: your user's services start with the machine
+```
+
+**Box.** zero uses Podman without root: `podman info` has to answer with your user. If it complains about identifiers, your user needs a range in `/etc/subuid` and `/etc/subgid` (an administrator adds it with `usermod --add-subuids` and `--add-subgids`). If it refuses `--cpus`, systemd does not delegate that controller to your user: an administrator adds it (`Delegate=cpu cpuset io memory pids` in a drop-in of `user@.service`).
+
+**Keyring.** zero keeps the panel's key and the credentials in the system keyring (Secret Service), never in a file. With no desktop it has to be unlocked by hand. This asks for its password without showing it, and the first time it creates the keyring:
+
+```sh
+read -rsp "Keyring password: " KEYRING && printf %s "$KEYRING" | gnome-keyring-daemon --replace --unlock --components=secrets; unset KEYRING
+```
+
+**After every restart the keyring is locked again**: the service starts the factory on its own, but the panel and the stored credentials do not work until you come in through SSH, run that command again and restart the factory (`zero shutdown` and `zero start --detach`).
+
+**Install and join.** With the keyring unlocked:
+
+```sh
+curl -fsSL https://zerointheloop.com/install.sh | sh   # ends by opening zero setup
+zero init                                              # creates the factory if zero setup did not
+zero setup                                             # engines, limits, panel and GitHub; run it again to change anything
+gh auth login --git-protocol https --web               # shows a code to type in the browser of another machine
+gh auth setup-git                                      # git asks gh for the credential when it clones the lines
+zero box setup                                         # builds the box's image with Podman
+claude setup-token                                     # your subscription's token
+zero secret set CLAUDE_CODE_OAUTH_TOKEN                # pasted without being shown, kept in the keyring
+zero unirse me/zero-coord                              # joins the factory and clones its lines
+zero autostart on                                      # the user service that starts with the machine
+zero shutdown && zero start --detach                   # starts it already joined
+zero panel remote on                                   # the panel through the tunnel, no open port
+```
+
+- No secret is pasted into a file, an argument or an environment variable: `zero secret set` and `zero setup` ask for it without showing it. With the keyring unlocked, `gh auth login` leaves its session there; without one it leaves it in a file **in plain text**. `gh auth status` tells which.
+- Codex needs a key inside the box (`zero secret set OPENAI_API_KEY`). `codex login --device-auth` leaves its session in a file that the CLI manages, unencrypted: use the key if you would rather avoid that.
+- `zero setup` may already have done the steps of GitHub, the token and the start at login: running them again does no harm.
+- `zero panel remote on` asks before downloading `cloudflared`, which only makes outgoing connections, and gives you the link. The panel of any other machine also shows the whole factory.
+- If an engine's CLI is in a folder of yours such as `~/.local/bin`, put that folder in the `PATH` of `~/.config/environment.d/zero.conf`: the service does not read `.bashrc`.
+- What should never go out from a cloud address, such as a package's station, is pinned to another machine (see [Agent packages](#agent-packages)).
+
+zero's tests do not exercise this installation: they only check that this guide has its pieces. Podman without root, the keyring with no desktop, the systemd service after a restart, the logins and the tunnel have not been run by them on a cloud machine.
 
 ## Install with Docker
 
@@ -350,6 +424,24 @@ With `checkDependencies: true` on a line, after verify and before review zero lo
 - **Without network.** If a service does not answer within 10 seconds or answers with an error, the packages stay as not verified (in the trace, the log and the security prompt) and the line goes on.
 - **What is not asked about.** What the lock resolves outside the public npm registry (git, local files, links, other registries) and `package.json` specs that are not registry ranges. For now it covers only npm.
 
+### Performance review (`performance`)
+
+Apps built with AI tend to be slow for known reasons: queries without pagination or indexes, queries repeated in a loop (N+1), no caching, static files without a CDN, unoptimized images, all the JavaScript in a single bundle, heavy work inside the request instead of a background queue. zero ships a checklist of those problems, the `zero:performance` skill, built from official documentation (web.dev, MDN, Next.js, React, PostgreSQL, Django, Rails, Express, Node.js, Vite, Chrome), with how to detect each one in the code and how to fix it. `build` always has the rule not to introduce them.
+
+With `performance: true` on a line:
+
+- **`build` gets the checklist.** The `zero:performance` skill is added to its skills on that line, with any engine.
+- **A performance reviewer reads every change.** zero's own `performance` agent runs after `security` and before the line's other reviewers, read-only, with the checklist, and points out the problems the change adds with the file, the line and the concrete fix. Its instructions are zero's (`agents/performance.md` of its installation), never the repository's.
+- **Only serious problems stop the change.** Like `review`, only a verified high or critical finding with confidence 8 or more sends the change back to `build`; everything else is recorded and the change goes on.
+
+On a line with the option on (or globally, when some line has it on), no other agent may be named `performance`.
+
+**Audit on demand.** `zero rendimiento <line>` reviews the line's code as it is now with the same checklist, on any line that is not a package's, with or without the option. It runs once as soon as it can, with jobs queued or running, without taking a job's place: one read-only agent with the `zero:performance` skill reads the repository and zero keeps at most 5 proposals, ordered from high to low impact, each with its impact, the control, the files and the concrete fix (without repeating the titles of other proposals and without touching protected paths). They wait for you in `zero proposals`, whatever the line's autonomy: the audit never builds anything without your approval. Only one audit can be pending in the factory; with the andon on or the budget reached it is refused.
+
+```sh
+zero rendimiento tienda      # audit the line now; then zero proposals
+```
+
 ## Browser panel
 
 With the factory running, the panel shows:
@@ -365,7 +457,7 @@ With the factory running, the panel shows:
 - the "Sala de control" tab: an operations console in dark tones and small monospace type, live and read-only, with the clock, the day's counters, cost and the daemon's state, a scrolling ticker of the last 24 hours' events, each job as a dot travelling through the stations to a column of decisions, 24-hour sparklines per line, the agent bus, the latest spans, the engines' plan use and pauses, and the jams and alerts in red, all from the factory's real state and stacked in one column on the phone;
 - the monthly report ("Informe mensual" tab, see [Monthly report](#monthly-report)), to choose a line and a month and download it.
 
-From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
+From the panel you can also request a job, pull the andon, send the unjam station to work ("Destrabar ahora" in the summary, see [Unjam](#unjam)), update zero ("Actualizar ahora" in the summary, see [Update channels](#update-channels-channel)), ask for research on a topic ("Investigar ahora" in the "Investigación" tab, see [Research](#research)) and block or allow sites. It is designed for the phone.
 
 ```sh
 zero panel                     # the panel link, with your key (starts the factory if needed)
@@ -379,6 +471,30 @@ zero panel rotate              # new key: previous links stop working
 - The key lives in the system keychain (in Docker, in `secrets.enc`).
 - Remote access uses `cloudflared` (Apache-2.0). zero downloads it with your permission from its official releases and, on Windows, verifies Cloudflare's signature.
 - While the tunnel is open, Cloudflare carries the panel's traffic. Close it when you are not using it.
+
+### Guests (`zero panel invitar`)
+
+You can give another person access to a part of the panel, with a link and a key of their own, independent of yours. What can be offered is declared by each package (see [Agent packages](#agent-packages)), and zero enforces it on the server.
+
+```sh
+zero panel invitar "Ana" --solo hello                        # everything that package offers to guests
+zero panel invitar "Ana" --solo hello/news --alcance north   # one tab, and only the data of that scope value
+zero panel invitados           # who has access, to what and when they last used it
+zero panel revocar "Ana"       # cuts the access at once
+zero panel registro "Ana"      # what they did; without a name, every guest
+```
+
+The "Invitados" tab of your panel does the same: a form with what the packages offer, the list with a button to revoke (it asks for confirmation first) and the log.
+
+- **What a guest sees.** A panel apart, whose menu has only their tabs and, in its home page, the forms they were given and the state of their own requests. Every other page or action answers that it does not exist: the lines, the factory's status, other packages, merging, the andon, approvals, internet egress and these accesses. They never read why the factory refused something.
+- **The scope.** When a package divides its data by a scope, the invitation needs `--alcance <value>` (one or more) or `--todo`. A guest limited to some values sees only the elements and files marked with exactly those values, and can ask for runs or send files only for them.
+- **It never grows on its own.** The access is the list of what the package offered when you invited. If the package later offers more, the guest does not get it; if it offers less or changes its scope, that part stops.
+- **The link is shown once**, because zero keeps only a hash of the key. If it is lost, revoke and invite again. `zero panel rotate` does not change the guests' keys.
+- **From outside.** It works through the same tunnel as your panel. With a quick tunnel the address changes every time it restarts: the same key works at the new one (the part after `#k=`). With `panel.tunnel.hostname` the address stays.
+- **Revoking** counts from the next request, also for an upload still being received. It does not cancel what was already accepted, such as a run already asked for, and a download already being sent may finish.
+- **The log** has each invitation, sign-in, tab, download, run or file asked for, denied access and revocation, and stays after revoking. Of sign-ins, tabs, downloads and denials, the newest 500 of each guest are kept.
+- Guests' runs spend the same caps as yours, and a pending one blocks another of that station until it starts.
+- It is managed only from the terminal and your panel: the chat has no tool for it.
 
 ### Remote chat (phone)
 
@@ -398,7 +514,7 @@ zero mcp remote off            # turns it off
 - zero is its own OAuth 2.1 authorization server, with PKCE (S256) and dynamic client registration. Each new connection is approved by you on the panel's page, with your key; the chat never gets a password.
 - Access tokens last 1 hour and refresh tokens 7 days, rotating on every use. zero keeps only their SHA-256 hash.
 - Two permissions: read (status, traces, proposals, research, reports) and act (request work, answer).
-- Merging, stopping, discarding jobs, approving proposals or protected files and blocking sites from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
+- Merging, stopping, discarding jobs, approving proposals or protected files, blocking sites and updating zero from the chat do nothing at once: they wait for your confirmation in the "Chat remoto" tab of the panel or with `zero mcp confirmar`.
 - The "Chat remoto" tab lists the connected chats, revokes them (it asks for confirmation first) and confirms the held actions.
 - The quick tunnel's address changes every time it restarts, so the chat's connector has to be updated then.
 
@@ -459,8 +575,8 @@ zero simulacro tienda pagos --archivos "src/pagos/**" --conservar # keeps the co
 
 - It works in a separate copy in `ZERO_HOME/drills/<id>/copy`, cloned from the line's base branch. The line's repository is only read: same branches, worktrees, HEAD and working state. The copy gets a fresh history with a single commit, so the agent cannot find the removed files in it.
 - Tests and everything under `openspec/` are never removed, even if the pattern names them: they are what the rebuilt code is measured against.
-- The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy, up to 20 minutes each.
-- The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
+- The line's `setup` runs in the copy, then a single call to the build agent rebuilds the files from the spec, capped at `--usd` or, without it, `limits.usdPerJob` (it cannot be higher). Then the line's `verify` commands run in the copy. Each `setup` command gets 20 minutes; each `verify` command gets the same time limit as in a job: the line's `verifyTimeoutMinutes`, or more if its recent passing runs took longer. The report says the limit of every command that was cut.
+- The result is `alcanzan` (every removed file came back, every verify command passed and the agent finished well), `sin medir` (the same, except that some verify command ran out of time and nothing else failed, which says nothing about the specifications), `no alcanzan` (anything else, including an agent that failed or hit its cap) or `inválido` (the agent changed or deleted a test or a specification).
 - The report, in Spanish, is `ZERO_HOME/drills/<id>/informe.md`, next to `resultado.json` with the same data: line, capability, base commit, removed and rebuilt files, result, cost, each command with its exit code and the end of its output, and what the spec did not say and had to be guessed. The command prints its path. If `ZERO_HOME/drills` falls inside a line's repository or the current folder's, zero refuses, as with saved reports.
 - When the drill ends, the copy is deleted (even if the agent failed) and only `informe.md` and `resultado.json` stay; the report says so. With `--conservar` the copy stays whole in `ZERO_HOME/drills/<id>/copy` so you can look at it, and the report names its path. If the deletion fails, the result does not change: it is only logged as a warning.
 - It refuses before spending anything when the andon is on or the budget ran out, and when the line has no `verify` commands. In this version it only runs on this machine: with `isolation: container` it refuses.
@@ -515,6 +631,7 @@ lines:
     verify: ["npm test"]  # everything must pass before the review
     verifyTimeoutMinutes: 20  # optional: minutes each verify command may take; zero raises it to twice its slowest recent passing run
     integrate: merge      # merge · branch · pull-request (starts from the remote's base branch)
+    platforms: [win32, linux]   # optional: where it can be worked on (win32 · darwin · linux); a joined machine on another platform does not clone it
     issues: { label: zero }   # optional: takes as requests the GitHub issues with this label
     # jira: { site: "https://acme.atlassian.net", project: ABC }   # optional: Jira issues with the "zero" label; credentials with zero secret set
     autoMerge: false          # with pull-request: the factory merges when all checks pass
@@ -524,6 +641,7 @@ lines:
     signature: off            # optional: this line's own signature, replaces the global one
     allowedArtifacts: ["media/**"]   # optional: paths this line versions though they look like operation output
     checkDependencies: false  # optional: ask OSV and deps.dev about new npm dependencies before review
+    performance: false        # optional: zero's performance reviewer after security, and its checklist for build
 ```
 
 Skills are also assigned with `zero skill add <skill> --station <agent> [--line <line>]`, `zero skill remove …` and `zero skill list` (the chat does not change them). With Claude they load natively and the agent sees only those; with other engines, zero appends the SKILL.md text to their instructions. They never change an agent's tools: read-only agents read the skill but do not run its scripts, and in the box they are mounted read-only. If a skill is not installed, `zero status` says so and the agent works without it.
@@ -596,7 +714,33 @@ zero can update itself after its own changes merge, so the person in charge does
 selfUpdate: { enabled: true }   # remote: origin, branch: the install folder's, startTimeoutSeconds: 120
 ```
 
-The daemon looks at the install folder's branch on its remote once a day and again after a pull request of a line working on that folder merges. It only takes a fast-forward, and never with local changes or on another branch: then it warns once and changes nothing. It prepares the new commit apart, under `~/.zero/self-update/`, without touching the version that runs: the same lock rules as the packages, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` and a load of the factory file. If a step fails it stays on the current version, warns once and never prepares that commit again. With the new version ready it starts no more jobs, and once none is running it hands over to a separate process (Node built-ins only) and shuts down as usual: that process puts the new build in place, starts the daemon detached like `zero start --detach` and waits for it to take the daemon lock. If it does not within `startTimeoutSeconds`, it stops it, puts the previous build and commit back and starts the previous version. Interrupted and queued jobs resume from their checkpoint. `zero status`, the panel and the briefing tell each update (from which commit to which), a rollback or a failure; `zero --version` prints the version and the commit. Packages update with `zero package update`.
+The daemon looks at the install folder's branch on its remote once a day and again after a pull request of a line working on that folder merges. It only takes a fast-forward, and never with local changes or on another branch: then it warns once and changes nothing. It prepares the new commit apart, under `~/.zero/self-update/`, without touching the version that runs: the same lock rules as the packages, `npm ci --ignore-scripts`, `npm run build`, `node dist/cli.js --version` and a load of the factory file. If a step fails it stays on the current version, warns once and never prepares that commit again on its own. With the new version ready it starts no more jobs, and once none is running it hands over to a separate process (Node built-ins only) and shuts down as usual: that process puts the new build in place, starts the daemon detached like `zero start --detach` and waits for it to take the daemon lock. If it does not within `startTimeoutSeconds`, it stops it, puts the previous build and commit back and starts the previous version. Interrupted and queued jobs resume from their checkpoint. `zero status`, the panel and the briefing tell each update (from which commit to which), a rollback or a failure; `zero --version` prints the version and the commit. Packages update with `zero package update`; those on the stable channel can also update themselves (see [Agent packages](#agent-packages)).
+
+### Update channels (`channel`)
+
+`channel` chooses where an installation updates to and `enabled` whether it does so on its own. With `ultimo` it takes whatever enters the branch, which suits the main factory. With `estable` it only moves to versions you released, which suits a production installation, such as one that only runs a package for clients and has no lines. Without `channel` everything stays as described above and status shows no channel.
+
+```yaml
+selfUpdate: { channel: estable }   # only looks and waits for you; with enabled: true it also updates itself, release by release
+```
+
+```sh
+zero liberar 1.3.0                    # releases the tip of the remote's base branch as v1.3.0
+zero liberar <commit>                 # releases that commit with the next patch number
+zero liberar <commit> 1.3.0 --yes     # both, without asking
+zero liberar 0.2.0 --line <line>      # releases that line's repository, for example a package's
+zero actualizar                       # moves this installation to the newest version of its channel, now
+```
+
+- **A release is a tag.** `zero liberar` pushes a tag named `vX.Y.Z` with the git credentials you already have, and creates no release page on GitHub. Any `vX.Y.Z` tag on the remote counts as a release, whoever published it; any other tag is ignored. When there are no releases yet, a commit without a version takes the `version` of its package.json, or 0.1.0.
+- **Releasing asks first.** It shows the version, the commit and the remote, and publishes nothing without your yes (`--yes` answers for you; with no terminal and no `--yes` the answer is no). It refuses a version that exists or is not higher than the newest one, a commit outside the base branch, and one that is not later than the newest release. It never moves a tag, and your branches, tags and files stay as they were. Only the terminal releases: neither the chat nor the panel can.
+- **Installations only move forward.** With `estable`, the newest release must be in the branch the installation follows and be a fast-forward; otherwise the problem shows and nothing changes. An installation ahead of the newest release waits for one that contains it. Unreleased work in the branch does not count as being behind.
+- **Looking without updating.** With `channel` and without `enabled`, the factory looks for the newest version (at most once an hour with `estable`) and records it, without preparing anything.
+- **Updating when you decide.** `zero actualizar`, the chat's `zero_update` and the panel's "Actualizar ahora" button do the same, whether or not automatic updates are on: they prepare the newest version of the channel (`ultimo` without one) and switch once no job is running, going back if it does not start. The command waits up to 2 minutes to tell you what was found. An update you ask for tries again, once, a version that failed before. From the remote chat it waits for your confirmation. The switch waits for jobs and not for packages' stations, so ask for it when they are not publishing anything.
+- **What you see.** With a channel, `zero status` and the panel's summary show it, the current version, whether there is a newer one and how the last update you asked for ended, from the last look and without using the network.
+- **In Docker** the installation is not a git repository: `zero actualizar` says so and changes nothing. Update the image instead.
+
+The reasons are in [`docs/adr/0010-canales-de-actualizacion.md`](docs/adr/0010-canales-de-actualizacion.md).
 
 ## Custom agents
 
@@ -686,7 +830,7 @@ Guarantees that zero enforces, never the agent: custom agents are read-only (in 
 
 Packages are a way to extend zero with your own agents or with third-party ones, without touching zero or the factory's fixed stations. A package is a local folder or an npm package with a `zero-package.yaml` at its root. From it zero loads agents with their instructions, skills and, only with your explicit permission, stations with their own code.
 
-You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine` and `model`:
+You declare what is installed in `packages`, in the factory file. Each entry has exactly one of `path` or `npm`, and optionally `allowCode`, `config`, `engine`, `model`, `machine` and `machines`:
 
 ```yaml
 packages:
@@ -697,7 +841,12 @@ packages:
     allowCode: true                # off by default: without it, its stations never run
     config:
       greeting: Hello
+    machine: home-pc               # optional: its stations run only on this machine, by name or id
+    machines:                      # optional: the same for a single station; it wins over machine
+      note: home-pc
 ```
+
+**Stations pinned to a machine.** With several machines (see [Several machines](#several-machines-zero-unirse)), `machine` pins every station of a package and `machines` only the ones it names, to one machine: its `distributed.machine` (or the host name when there is none; upper and lower case do not matter) or its id. A pinned station never runs on another machine, whether in its period, with the factory busy, at its scheduled times, on demand or from an upload: zero does not even import its module there, and asking for it there is refused naming the right machine. A name that matches no machine leaves the station running nowhere. If `machines` names a station the package does not have, the package shows the problem and none of its stations run, so a typo never leaves one free to run anywhere. `zero package list` and the panel's "Paquetes" tab show the pinned machine. A package's agents and skills, and the jobs its stations request, are not pinned.
 
 **The manifest**, `zero-package.yaml`. `interface` says which version of this format the package was written for: this zero supports `interface: 1` and leaves out any other, saying which one it asked for. Unknown keys are refused, so a manifest cannot choose an engine or a model. Every path must be relative and stay inside the package's folder, links included, and a skill's folder cannot hold links at all.
 
@@ -792,7 +941,7 @@ export async function scheduled(ctx, { at }) {
 
 **On-demand runs.** A station whose manifest declares `onDemand: true` (false by default) can be asked to run once without waiting for its `everyMinutes`: `zero package run <package>/<station>`, or the chat's `zero_package_run` tool. zero calls its `pass(ctx, { onDemand: true })`, with the same `ctx` as always, so a station can tell your request from its regular turn, which gets no second argument. The daemon runs it in its own pass, every few minutes, whatever the line is doing: it does not wait for queued or running jobs, nor for scout or research, and it never starts a job or takes a job's place. It still waits for the andon off, budget left and its declared secrets saved; until then it stays pending. `ctx.runAgent` still shares the `limits.usdPerNight` cap. A station never runs two turns at once: if its regular or scheduled turn is under way, the request waits for the next pass. An on-demand run does not move the station's period, and the station does not run its regular turn while a request is pending. `zero status`, the panel's summary and the briefing show the pending runs and the last run of each station: running, ended fine, failed, over its time, cut by a shutdown, could not run, or with no result when it never ended. There is at most one pending run per station: asking again before it runs is refused. You also get the reason, and nothing is recorded, when the station is not `<package>/<station>`, the package or the station does not exist, the station cannot run (for example, without `allowCode`), it does not declare `onDemand: true`, the andon is on or the budget is used up. A module that cannot be imported, has no `pass` or whose `parseConfig` throws drops the request, and the reason goes to the log; the run shows as could not run. The command exits 1 when refused, and starts the factory if it was off.
 
-**A request for the run.** `zero package run <package>/<station> --pedido "..."` (the chat's `zero_package_run` takes the same as `request`, and the panel's "Paquetes" tab has a "Pedir ahora" button with an optional text field on every station that takes on-demand runs) sends a text with that run. The station gets it as `run.request` in `pass(ctx, run)`, that is `{ onDemand: true, request }`, as a request from the person in charge; with no text, or one that is empty once cleaned, it still gets exactly `{ onDemand: true }`. zero cleans it before keeping it: the values of the station's declared secrets and the paths of your lines' repositories are taken out, and it is cut to 4000 characters. Only you can ask for one, from the terminal, the chat or the panel with your session; a station's `ctx`, issues, comments and packages' `requestJob` have no way to. The command answers once the run started, or, after 2 minutes (30 seconds from the chat), that it is still pending and will run on the daemon's next pass. `zero status` shows the pending request with its text (`Corridas a demanda pendientes:`), the run while it is going (`Corrida a demanda de <package>/<station>: en curso`) and how the last one ended: it finished, failed (with its error, without secrets or local paths, at most 600 characters), ran past its `timeoutMinutes` or was cut by a shutdown. `zero package list` and the panel's "Paquetes" tab show the same.
+**A request for the run.** `zero package run <package>/<station> --pedido "..."` (the chat's `zero_package_run` takes the same as `request`, and the panel's "Paquetes" tab has a "Pedir ahora" button with an optional text field on every station that takes on-demand runs) sends a text with that run. The station gets it as `run.request` in `pass(ctx, run)`, that is `{ onDemand: true, request }`, as a request from the person in charge; with no text, or one that is empty once cleaned, it still gets exactly `{ onDemand: true }`. zero cleans it before keeping it: the values of the station's declared secrets and the paths of your lines' repositories are taken out, and it is cut to 4000 characters. Only you can ask for one, from the terminal, the chat or the panel with your session, or a guest you gave that station to (see **Guests** below); a station's `ctx`, issues, comments and packages' `requestJob` have no way to. The command answers once the run started, or, after 2 minutes (30 seconds from the chat), that it is still pending and will run on the daemon's next pass. `zero status` shows the pending request with its text (`Corridas a demanda pendientes:`), the run while it is going (`Corrida a demanda de <package>/<station>: en curso`) and how the last one ended: it finished, failed (with its error, without secrets or local paths, at most 600 characters), ran past its `timeoutMinutes` or was cut by a shutdown. `zero package list` and the panel's "Paquetes" tab show the same.
 
 **Sending a file to a station.** A station with `onDemand: true` may also declare `uploads`: `maxMb` (above zero and at most 100, 20 by default) and `extensions` (`[".zip"]` by default); a manifest with `uploads` and without `onDemand: true` stays out. You send the file with `zero package upload <package>/<station> <file>` (it takes `--pedido` like `zero package run`) or from the panel's "Paquetes" tab, which shows an upload form on those stations. From the chat, `zero_package_upload` takes the station, an absolute `path` to a file on this machine, or `content` in base64 plus `name`, and an optional `request`; the remote chat takes only `content`, never a path of this machine, with a request body of about 1 MiB. zero keeps it in `~/.zero/package-data/<package>/uploads/<station>/`, under the time and a cleaned base name, and asks for an on-demand run of that station, which gets it as `ctx.upload` (`{ name, path, sizeBytes, at }`, with `path` inside its data folder); no other turn has `ctx.upload`. It is a third party's content, so zero checks everything before keeping it and leaves nothing behind when it refuses: the station does not declare `uploads`, the extension is not one of its own, the file goes past `maxMb` (the panel stops reading there too), a `.zip` does not start like a zip, or the run would be refused (another one pending, the andon on, the budget used up). The panel's form asks for your session and refuses a request coming from another site.
 
@@ -833,6 +982,18 @@ Each tab appears in the menu of every panel page and has its own address, `/pack
 
 **Downloads.** An element's `file` offers a file of the data folder for download: a relative path such as `out/d1.zip`, without `..` or a drive (one that has them makes the whole file invalid). The tab shows a "Descargar" link only when that file exists as a regular file whose real path stays inside the data folder; otherwise the element shows without it. The link points to `/packages/<package>/<tab>/files/<path>`, which asks for the panel's session and hands the file out as an attachment (`application/octet-stream`, never opened in the browser) only when the tab's current data lists exactly that file, it is still a regular file inside the data folder, links resolved, and it weighs at most 512 MiB. Any other request gets 404, and no package code runs to answer it.
 
+**Guests.** With `guests`, a package says what you may offer to guests of the panel (see [Guests](#guests-zero-panel-invitar)): `tabs`, names of its tabs; `run`, stations with `onDemand: true`; `upload`, stations with `uploads`; and, if its data is divided among guests, `scope`, with a name and the title people read. Without `guests` it offers nothing. A name that does not exist, does not accept that action or repeats, an unknown key or a `guests` that offers nothing leaves the whole package out.
+
+```yaml
+guests:
+  scope: { name: account, title: Account } # optional: what tells one guest's part from another's
+  tabs: [news]
+  run: [note]
+  upload: [note]
+```
+
+With a `scope`, each element of the tabs' JSON says whose it is in its optional `scope` text (`"scope": "north"`). zero shows a guest limited to some values only the elements whose `scope` is exactly one of them, without the categories and files of the others; the elements without `scope` are hidden from them. You and a guest invited with `--todo` see everything. A run or file asked for by a guest reaches the station as `pass(ctx, { onDemand: true, request?, guest: { name, scope? } })`, with the name and the scope set by zero; `scope` is absent when the guest is not limited. Your own runs carry no `guest`. zero checks which value reaches the station, but what it does with it is up to its code, so offer only stations that keep to it, and treat the request as a third party's.
+
 **Local repositories.** A station whose manifest declares `repositories: { perDay: N }` can build on a local git repository of its own, without GitHub and without you editing your file. `ctx.repos.create(name, { from, setup, verify })` creates `~/.zero/package-repos/<package>/<name>` with one commit on `main`, with the files of a zip of the data folder when `from` names one (unpacked the same way as `ctx.unzip`), and adds to your file the line `<package>-<name>` with `integrate: merge`, `package: <package>` and the `setup` and `verify` commands it gave. The name takes lowercase letters, digits and dashes, up to 40 characters. It refuses, changing neither the file nor any folder, when the station does not declare `repositories`, it already created N today, the name is not valid or the line name is taken. With `requests`, `ctx.requestJob({ repo: name, text, maxUsd })` opens a normal job there: spec, build, verify and review as on any line, and the delivery is the merge commit on that repository's `main`, with no remote and no pull request. `ctx.repos.archive(name, file)` writes a zip of `main` to a `.zip` path of the data folder, ready to offer as a tab's `file`, and `ctx.repos.remove(name)` takes out the line and the folder, except while the line has a job that has not ended. Every call refuses another package's repositories, a station never sees another package's lines in `ctx.lines` nor can ask for jobs on them, and scout, unjam and research leave these lines alone.
 
 ```js
@@ -866,9 +1027,11 @@ zero package add ./hello --permitir-codigo   # allowCode: true, so its stations 
 zero package add github:acme/hello-zero#v1   # from git, into ~/.zero/packages/git/hello, at that tag or branch
 zero package add https://example.com/acme/hello-zero.git
 zero package add git@example.com:acme/hello-zero.git#main
+zero package add github:acme/hello-zero --canal estable   # from git, only released versions (vX.Y.Z tags)
 zero secret set HELLO_TOKEN
 zero package list
 zero package update hello                    # shows the change and applies it; without a name, every package
+zero package update hello --etiqueta v1.1.0  # moves a package from git, pinned or not, to that tag
 zero package run hello/note                  # one pass of that station on the next pass, without waiting for the queue (onDemand: true)
 zero package run hello/note --pedido "check this week's prices"   # the same, with a request for that run
 zero package upload hello/note ./site.zip    # sends that file to the station and asks for an on-demand run (uploads)
@@ -888,6 +1051,10 @@ zero package remove hello                    # takes it out of the file; its fil
 With something to apply, zero shuts the factory down and waits for its process to end, because on Windows native modules stay held while it runs. Then it updates and reinstalls dependencies, and if a git package fails (dependencies, manifest, name or fit with the others) it returns to the previous commit. At the end it starts a single factory, only if one was running. If the factory does not stop in time, no package is touched: the shutdown request stays in place, so the factory stops later and nothing starts it again.
 
 While it runs, the factory looks once a day at what the remotes of git and npm packages have, without touching their folders. `zero package list` shows the source, the installed commit or version and whether an update is available, from what was last seen and without using the network.
+
+**Channel and pin of a package from git.** With `--canal estable` (`channel: estable` in its entry), `zero package add`, `zero package update` and the daily look take only the newest `vX.Y.Z` release of its remote, never the tip of a branch, and say why when there is none or when what is installed is already past it: such a package is never moved back. On a source already declared, `zero package add <source> --canal estable` only sets the channel. A source with `#tag` stays pinned to that tag and `--etiqueta` moves it, with the same guards, confirmation and way back as any update; channel and pin do not go together. `zero package list` and the panel's "Paquetes" tab show the channel or the pin, the installed version and the newer one.
+
+With `selfUpdate: { enabled: true }`, a package with `channel: estable` updates itself when a newer release was seen, once no job is running: the factory starts `zero package update <name>` as a process of its own, which turns it off and on again. Each release is tried only once, and one that asks for more than before (a secret, a station, a permission) is not applied; a release that was not applied shows in `zero status` and `zero package list`, for you to apply by hand. Without `enabled`, or without the package's channel, no package updates on its own; in Docker none does.
 
 **A broken package never stops the factory.** It stays out whole, the other packages go on and the reason shows in `zero status`, in `zero package list` and once in the log. That also applies to a package's blocking reviewers: if it stays out, jobs go on without that review, so check `zero status` after updating one.
 

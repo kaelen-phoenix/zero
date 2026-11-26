@@ -42,6 +42,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /src/dist ./dist
 COPY agents ./agents
+COPY skills ./skills
 COPY box/Dockerfile ./box/Dockerfile
 RUN chmod +x dist/cli.js && ln -s /opt/zero/dist/cli.js /usr/local/bin/zero
 

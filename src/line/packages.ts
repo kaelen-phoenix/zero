@@ -10,7 +10,8 @@ import type { LineConfig, PackageStation } from "../config.js";
 import { log } from "../log.js";
 import { git } from "../shell.js";
 import { FACTORY_IDENTITY } from "../workspace.js";
-import { isInside, packageDataDir, warnOnce } from "../packages.js";
+import { machineIdentity } from "../machine.js";
+import { isInside, packageDataDir, pinnedMachine, warnOnce } from "../packages.js";
 import { REDACTED } from "../secrets.js";
 import { publicText } from "../public-text.js";
 import type { Job } from "../state/store.js";
@@ -125,14 +126,14 @@ export interface StationRepos {
 export type JobRequestResult = { id: string } | { reason: string };
 
 interface StationModule {
-  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for. */
+  /** Called as `pass(ctx)`, or `pass(ctx, { onDemand: true, request? })` for a run the person in charge asked for, plus `guest: { name, scope? }` when a panel guest did. */
   pass?: unknown;
   scheduled?: unknown;
   parseConfig?: unknown;
 }
 
-/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus the person in charge's `request` when there is one. */
-type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string }) => unknown;
+/** A module's `pass` or `scheduled`; an on-demand `pass` gets `{ onDemand: true }`, plus the `request` of whoever asked when there is one and who the panel guest was when it was one. */
+type StationHook = (ctx: StationContext, slot?: { at: string } | { onDemand: true; request?: string; guest?: Omit<StationGuest, "id"> }) => unknown;
 
 const stationKey = (station: Pick<PackageStation, "package" | "name">) => `${PACKAGE_AGENT_PREFIX}${station.package}/${station.name}`;
 
@@ -173,6 +174,29 @@ export function onDemandRecord(ctx: FactoryContext, pkg: string, name: string): 
 /** The text the person in charge sent with a pending on-demand run, already cleaned; absent without one. */
 export const stationOnDemandRequestKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:request`;
 
+/** The panel guest who asked for an on-demand run, all of it set by zero; `scope` is absent when they are not limited to one. */
+export interface StationGuest {
+  id: string;
+  name: string;
+  scope?: string;
+}
+
+/** Who asked for a pending on-demand run when it was a panel guest, as a `StationGuest`; written only with the request itself. */
+export const stationOnDemandGuestKey = (pkg: string, name: string) => `${stationOnDemandKey(pkg, name)}:guest`;
+
+/** The guest who asked for a pending on-demand run; null when one did and the record does not read, undefined when none did. */
+export function readStationGuest(ctx: Pick<FactoryContext, "store">, pkg: string, name: string): StationGuest | null | undefined {
+  const raw = ctx.store.getKv(stationOnDemandGuestKey(pkg, name));
+  if (raw === undefined) return undefined;
+  try {
+    const g = JSON.parse(raw) as StationGuest;
+    if (typeof g?.id !== "string" || typeof g.name !== "string" || !(g.scope === undefined || typeof g.scope === "string")) return null;
+    return { id: g.id, name: g.name, ...(g.scope !== undefined && { scope: g.scope }) };
+  } catch {
+    return null;
+  }
+}
+
 /** How an on-demand run ended. */
 export type StationRunOutcome = "done" | "failed" | "timeout" | "stopped";
 
@@ -181,6 +205,8 @@ export interface StationRunRecord {
   /** The `stationOnDemandKey` value it answered. */
   requestedAt: string;
   request?: string;
+  /** The panel guest who asked for it; absent when it was the person in charge. */
+  guest?: Pick<StationGuest, "id" | "name">;
   startedAt?: string;
   state: "running" | "ended";
   outcome?: StationRunOutcome;
@@ -306,7 +332,7 @@ function stationAgent(ctx: FactoryContext, runAgent: AgentRunner, station: Packa
     if (!choice.available) return refused("no hay ningún motor disponible");
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(ctx.config.nightShift, now), now, ctx.config);
       if (left <= 0) return refused("ya se gastó el tope de limits.usdPerNight");
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }
@@ -629,12 +655,28 @@ interface StationTurn {
   call(hook: StationHook, config: unknown, signal: AbortSignal): unknown;
 }
 
+/**
+ * Whether a station may run on this machine: it is pinned to none, or to this one by its name (in any case) or its id.
+ * A pin that names no known machine lets it run nowhere.
+ */
+export function runsHere(ctx: Pick<FactoryContext, "store" | "config">, station: PackageStation): boolean {
+  const pinned = pinnedMachine(station.entry, station.name);
+  if (pinned === undefined) return true;
+  const machine = machineIdentity(ctx.store, ctx.config);
+  return pinned === machine.id || pinned.toLowerCase() === machine.name.trim().toLowerCase();
+}
+
+/** The loaded stations that may run on this machine. */
+const ownStations = (ctx: FactoryContext) => (ctx.config.loadedPackages?.stations ?? []).filter((s) => runsHere(ctx, s));
+
 /** Stations with a turn under way in this process; the daemon is the only process that runs them. */
 const busyStations = new Set<string>();
 
 /** One station's turn; it never throws, and an end by time leaves its signal aborted and the pass behind. A busy station is left alone. */
 async function runTurn(ctx: FactoryContext, station: PackageStation, now: Date, turn: StationTurn, outer?: AbortSignal): Promise<void> {
   const key = stationKey(station);
+  // The last barrier: whatever asked for this turn, a station pinned to another machine is never imported here.
+  if (!runsHere(ctx, station)) return;
   const missing = station.secrets.filter((s) => !ctx.secrets.has(s));
   if (missing.length) {
     warnOnce(`${key}: no corre porque faltan los secretos ${missing.join(", ")}`);
@@ -743,13 +785,21 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
   const request = ctx.store.getKv(requestKey) || undefined;
   const uploadKey = stationUploadKey(station.package, station.name);
   const upload = readStationUpload(ctx, station.package, station.name);
-  const base = { requestedAt: asked, ...(request && { request }) };
+  const guestKey = stationOnDemandGuestKey(station.package, station.name);
+  const guest = readStationGuest(ctx, station.package, station.name);
+  const base = { requestedAt: asked, ...(request && { request }), ...(guest && { guest: { id: guest.id, name: guest.name } }) };
   let startedAt: string | undefined;
   const clear = () => {
     ctx.store.deleteKv(onDemandKey);
     ctx.store.deleteKv(requestKey);
     ctx.store.deleteKv(uploadKey);
+    ctx.store.deleteKv(guestKey);
   };
+  // Without knowing their scope it would run as if the person in charge had asked for it.
+  if (guest === null) {
+    log.warn(`${stationKey(station)} a demanda: se descarta, no se pudo leer qué invitado la pidió`);
+    return clear();
+  }
   const write = (record: OnDemandRecord) => ctx.store.setKv(recordKey, JSON.stringify(record));
   await runTurn(
     ctx,
@@ -778,7 +828,7 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
         if (error) record.error = stationText(error, ctx, station, CHARS_PER_TEXT);
         ctx.store.setKv(runKey, JSON.stringify(record));
       },
-      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal, upload), { onDemand: true, ...(request && { request }) }),
+      call: (hook, config, signal) => hook(stationContext(ctx, stationAgent(ctx, runAgent, station, now, signal), station, config, now, signal, upload), { onDemand: true, ...(request && { request }), ...(guest && { guest: { name: guest.name, ...(guest.scope !== undefined && { scope: guest.scope }) } }) }),
     },
     outer,
   );
@@ -790,7 +840,7 @@ async function runOnDemand(ctx: FactoryContext, runAgent: AgentRunner, station: 
  * One at a time; a failure or a hang stays in the log and in the run's record, and the next one still runs.
  */
 export async function onDemandPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (!pendingOnDemand(ctx, station)) continue;
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
@@ -854,7 +904,7 @@ const noAgent: StationContext["runAgent"] = () => {
  * of it. One at a time; a failure or a hang stays in the log and the next one still runs.
  */
 export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     for (const { at, day } of dueSlots(ctx, station, now)) {
       if (opts.signal?.aborted) return;
       if (ctx.store.getKv(ANDON_KEY) === "on") return;
@@ -875,9 +925,9 @@ export async function scheduledPass(ctx: FactoryContext, now: Date, opts: { sign
   }
 }
 
-/** Whether some loaded station has a run asked for by the person in charge still pending. */
+/** Whether some station that may run on this machine has a run asked for by the person in charge still pending. */
 export function onDemandPending(ctx: FactoryContext): boolean {
-  return (ctx.config.loadedPackages?.stations ?? []).some((s) => pendingOnDemand(ctx, s));
+  return ownStations(ctx).some((s) => pendingOnDemand(ctx, s));
 }
 
 /**
@@ -887,7 +937,7 @@ export function onDemandPending(ctx: FactoryContext): boolean {
  * `whenBusy` also has it in `busyPass`. A failure or a hang stays in the log and the next station still runs.
  */
 export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;
     if (ctx.store.listJobs({ status: ["queued", "running"], limit: 1 }).length) return;
@@ -897,9 +947,9 @@ export async function packagesPass(ctx: FactoryContext, runAgent: AgentRunner, n
   }
 }
 
-/** Whether some loaded station declares `whenBusy`. */
+/** Whether some station that may run on this machine declares `whenBusy`. */
 export function whenBusyStations(ctx: FactoryContext): boolean {
-  return (ctx.config.loadedPackages?.stations ?? []).some((s) => s.whenBusy);
+  return ownStations(ctx).some((s) => s.whenBusy);
 }
 
 /**
@@ -911,7 +961,7 @@ export function whenBusyStations(ctx: FactoryContext): boolean {
  * `packagesPass`, so a station runs at most once per `everyMinutes` across both.
  */
 export async function busyPass(ctx: FactoryContext, runAgent: AgentRunner, now: Date, opts: { signal?: AbortSignal } = {}): Promise<void> {
-  for (const station of ctx.config.loadedPackages?.stations ?? []) {
+  for (const station of ownStations(ctx)) {
     if (!station.whenBusy) continue;
     if (opts.signal?.aborted) return;
     if (ctx.store.getKv(ANDON_KEY) === "on") return;

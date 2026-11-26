@@ -1,20 +1,28 @@
+import { stripAttribution } from "./attribution.js";
 import type { Signature } from "./config.js";
 import type { IssueApi } from "./intake/github.js";
 import type { MergeApi } from "./line/automerge.js";
 
-/** A commit message ending with the signature's trailer as its own last paragraph, so git reads it as a trailer. */
+/**
+ * A commit message without AI attribution, ending with the signature's trailer
+ * as its own last paragraph, so git reads it as a trailer.
+ */
 export function withTrailer(message: string, signature?: Signature): string {
-  return signature ? `${message}\n\n${signature.trailer}` : message;
+  const clean = stripAttribution(message);
+  return signature ? `${clean}\n\n${signature.trailer}` : clean;
 }
 
-/** A pull request, issue or comment body ending with the signature's text. */
+/** A pull request, issue or comment body without AI attribution, ending with the signature's text. */
 export function signText(body: string, signature?: Signature): string {
-  return signature ? `${body}\n\n${signature.text}` : body;
+  const clean = stripAttribution(body);
+  return signature ? `${clean}\n\n${signature.text}` : clean;
 }
 
-/** Signs every comment and issue the factory writes through `api`; the adapter still adds FACTORY_MARK after it. */
+/**
+ * Cleans and signs every comment and issue the factory writes through `api`,
+ * even without a signature; the adapter still adds FACTORY_MARK after it.
+ */
 export function signedIssues(api: IssueApi, signature?: Signature): IssueApi {
-  if (!signature) return api;
   return {
     labeled: (label) => api.labeled(label),
     unlabeled: () => api.unlabeled(),
@@ -24,15 +32,14 @@ export function signedIssues(api: IssueApi, signature?: Signature): IssueApi {
     comment: (number, body) => api.comment(number, signText(body, signature)),
     comments: (number) => api.comments(number),
     ensureLabel: (label, description) => api.ensureLabel(label, description),
-    createIssue: (title, body, labels) => api.createIssue(title, signText(body, signature), labels),
+    createIssue: (title, body, labels) => api.createIssue(stripAttribution(title), signText(body, signature), labels),
     addLabels: (number, labels) => api.addLabels(number, labels),
     close: (number, reason) => api.close(number, reason),
   };
 }
 
-/** Signs the comments the automatic merge posts on pull requests. */
+/** Cleans and signs the comments the automatic merge posts on pull requests, even without a signature. */
 export function signedMerges(api: MergeApi, signature?: Signature): MergeApi {
-  if (!signature) return api;
   return {
     pullRequest: (number) => api.pullRequest(number),
     checks: (sha) => api.checks(sha),

@@ -44,7 +44,8 @@ export function claudeOptions(req: EngineRequest, abort: AbortController): Optio
     // Load the target repo's CLAUDE.md/AGENTS.md and project settings, never the runner's user settings.
     settingSources: ["project"],
     // Never run hooks (a build may have written them into the repo) nor load the host's memory or claude.ai connectors.
-    settings: { disableAllHooks: true, autoMemoryEnabled: false },
+    // Nor sign commits or pull requests as Claude: the factory's work is attributed to no AI (src/attribution.ts).
+    settings: { disableAllHooks: true, autoMemoryEnabled: false, attribution: { commit: "", pr: "", sessionUrl: false } },
     strictMcpConfig: true,
     env: { ...process.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     allowedTools: TOOLS[req.access],
@@ -104,10 +105,20 @@ export const claudeEngine: Engine = {
   hosts: ["api.anthropic.com"],
   async run(req) {
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), req.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, req.timeoutMs);
     const cancel = () => abort.abort();
     req.signal?.addEventListener("abort", cancel, { once: true });
     const options = claudeOptions(req, abort);
+    // One controller stops the SDK for both reasons, so which one it was is kept apart.
+    const cut = (): EngineResult | undefined => {
+      if (req.signal?.aborted) return { ok: false, text: "cancelled" };
+      if (timedOut) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
+      return undefined;
+    };
 
     let result: SDKResultMessage | undefined;
     let apiKeySource: string | undefined;
@@ -119,19 +130,17 @@ export const claudeEngine: Engine = {
         else if (message.type === "rate_limit_event") rateLimit = message.rate_limit_info;
       }
     } catch (err) {
-      if (req.signal?.aborted) return { ok: false, text: "cancelled" };
-      if (abort.signal.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
-      return claudeThrown(err);
+      return cut() ?? claudeThrown(err);
     } finally {
       clearTimeout(timer);
       req.signal?.removeEventListener("abort", cancel);
     }
 
     const quota = claudeQuota(apiKeySource, rateLimit);
-    // The SDK may end its loop quietly on abort: a call the timer cut short is still a timeout.
-    if (!result && abort.signal.aborted && !req.signal?.aborted) return { ok: false, text: `timed out after ${req.timeoutMs / 60_000} min`, timedOut: true, ...(quota && { quota }) };
-    if (!result) return { ok: false, text: "ended without a result message", ...(quota && { quota }) };
-    return claudeResult(result, quota);
+    if (!result) return { ...(cut() ?? { ok: false, text: "ended without a result message" }), ...(quota && { quota }) };
+    const answer = claudeResult(result, quota);
+    // A cut call may still end with an error message of its own: the cut is what explains it.
+    return answer.ok ? answer : { ...answer, ...cut() };
   },
 };
 
@@ -154,11 +163,23 @@ export function refusedQuota(text: string, quota?: QuotaReport): QuotaReport | u
   return quota;
 }
 
+/**
+ * The session of Claude Code expired or was never started (`Failed to authenticate: OAuth session expired and
+ * could not be refreshed`): the engine waits for the person in charge to sign in again instead of failing the
+ * work. Read only from failed calls, never from an answer.
+ */
+const SIGNED_OUT = /failed to authenticate|oauth session expired|oauth token has expired/i;
+
+/** True when a failed call's text says the session expired. */
+export function signedOutText(text: string): boolean {
+  return SIGNED_OUT.test(text);
+}
+
 /** What a thrown SDK error (neither cancelled nor timed out) means for zero. */
 export function claudeThrown(err: unknown): EngineResult {
   const text = err instanceof Error ? err.message : String(err);
   const quota = refusedQuota(text);
-  return { ok: false, text, ...(quota && { quota }) };
+  return { ok: false, text, ...(quota && { quota }), ...(signedOutText(text) && { signedOut: true }) };
 }
 
 /** The model that cost the most in a result's `modelUsage` (the first one on a tie); undefined when there is none. */
@@ -179,10 +200,13 @@ export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): Eng
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
-    quota = refusedQuota(errors.map(String).join("\n"), quota);
-    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+    const errorText = errors.map(String).join("\n");
+    quota = refusedQuota(errorText, quota);
+    const signedOut = signedOutText(errorText);
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }), ...(signedOut && { signedOut: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
   if (result.is_error && typeof result.result === "string") quota = refusedQuota(result.result, quota);
-  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  const signedOut = result.is_error && typeof result.result === "string" && signedOutText(result.result);
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }), ...(signedOut && { signedOut: true }) };
 }

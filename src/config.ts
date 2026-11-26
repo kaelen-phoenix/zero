@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, parseDocument, type Document } from "yaml";
 import { z } from "zod";
 import { BUILT_IN_ENGINES } from "./engines/index.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
-import { parseGitSource } from "./package-source.js";
+import { parseGitSource, stableChannelProblem } from "./package-source.js";
 import { findSecret } from "./secrets.js";
 import type { Skill } from "./skills.js";
 
@@ -275,16 +276,27 @@ export const PackageEntrySchema = z
       .refine((s) => !("error" in parseGitSource(s)), "usá una fuente git válida, https o ssh y sin credenciales en la URL")
       .optional(),
     commit: z.string().regex(/^[0-9a-f]{40,64}$/, "va el SHA completo del commit instalado").optional(),
+    /** `estable`: it only takes the released versions of its remote; absent: the reference of its source. */
+    channel: z.enum(["estable"]).optional(),
     /** True: zero may import the package's stations, which run with the owner's permissions. */
     allowCode: z.boolean().default(false),
     /** What its stations receive as `ctx.config`. */
     config: z.unknown().optional(),
     engine: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
+    /** The only machine its stations may run on, by name or id; absent: any. */
+    machine: z.string().trim().min(1).optional(),
+    /** The same for single stations, by name; it wins over `machine`. */
+    machines: z.record(z.string(), z.string().trim().min(1)).optional(),
   })
   .strict()
   .refine((p) => (p.path === undefined) !== (p.npm === undefined), "cada paquete lleva exactamente uno de path o npm")
-  .refine((p) => (p.git === undefined ? p.commit === undefined : p.path !== undefined && p.commit !== undefined && p.npm === undefined), "git va junto a path y commit, y sin npm");
+  .refine((p) => (p.git === undefined ? p.commit === undefined : p.path !== undefined && p.commit !== undefined && p.npm === undefined), "git va junto a path y commit, y sin npm")
+  .superRefine((p, ctx) => {
+    if (p.channel === undefined) return;
+    const problem = stableChannelProblem(p.git);
+    if (problem) ctx.addIssue({ code: "custom", path: ["channel"], message: problem });
+  });
 export type PackageEntry = z.output<typeof PackageEntrySchema>;
 
 /** `zero`: the factory authors its commits. `owner`: the identity git config resolves in the line's repository does; zero stays the committer. */
@@ -303,6 +315,9 @@ const JiraSiteSchema = z
     }
   }, "an https address with no credentials or path, such as https://acme.atlassian.net")
   .transform((raw) => new URL(raw).origin);
+
+/** The platforms a line may say it runs on. */
+export const LINE_PLATFORMS = ["win32", "darwin", "linux"] as const;
 
 export const LineSchema = z.object({
   name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes"),
@@ -376,8 +391,12 @@ export const LineSchema = z.object({
   commitAuthor: z.enum(COMMIT_AUTHORS).optional(),
   /** Globs of files this line versions on purpose, though they are shaped like the factory's operation output (`operationArtifacts`). */
   allowedArtifacts: z.array(z.string()).default([]),
+  /** The platforms this line can be worked on; absent: any. A machine of a distributed factory on another one does not clone it. */
+  platforms: z.array(z.enum(LINE_PLATFORMS)).min(1).optional(),
   /** Ask OSV and deps.dev about the npm dependencies each attempt adds, before review. Off: it tells them the dependencies' names. */
   checkDependencies: z.boolean().default(false),
+  /** Run zero's performance reviewer on every change, after security, and give build the `zero:performance` skill. Absent: off. */
+  performance: z.boolean().optional(),
   /** The package that created this line on a local repository of its own (`ctx.repos.create`); idle stations leave it alone. */
   package: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "use lowercase letters, digits and dashes").optional(),
 });
@@ -481,6 +500,8 @@ export const FactorySchema = z
         /** Absent: the install folder's checked-out branch. */
         branch: z.string().min(1).optional(),
         startTimeoutSeconds: z.number().int().min(10).default(120),
+        /** Only released versions, or whatever enters the branch. Absent: the latter, and nothing of it is shown. */
+        channel: z.enum(["estable", "ultimo"]).optional(),
       })
       .strict()
       .prefault({}),
@@ -545,6 +566,14 @@ export const FactorySchema = z
         if (agent.engine && !known.includes(agent.engine)) issue("engine", `el agente "${agent.name}" usa el motor "${agent.engine}", que no existe; motores conocidos: ${known.join(", ")}`);
       }
     };
+    // Zero's own performance reviewer takes its name on the lines that turn it on.
+    const performanceTaken = (agents: CustomAgent[], path: (string | number)[]) => {
+      for (const [i, agent] of agents.entries()) {
+        if (agent.name === PERFORMANCE_AGENT) ctx.addIssue({ code: "custom", path: [...path, i, "name"], message: `el agente "${PERFORMANCE_AGENT}" es el revisor de rendimiento de zero en las líneas con performance: true; elegí otro nombre` });
+      }
+    };
+    if (cfg.lines.some((l) => l.performance)) performanceTaken(cfg.agents, ["agents"]);
+    for (const [i, line] of cfg.lines.entries()) if (line.performance) performanceTaken(line.agents, ["lines", i, "agents"]);
     checkAgents(cfg.agents, ["agents"], new Set());
     for (const [i, entry] of cfg.packages.entries()) {
       if (entry.engine && !known.includes(entry.engine)) ctx.addIssue({ code: "custom", path: ["packages", i, "engine"], message: `el paquete usa el motor "${entry.engine}", que no existe; motores conocidos: ${known.join(", ")}` });
@@ -600,6 +629,17 @@ export interface PackageTab {
   categories?: string[];
 }
 
+/** What a package lets the person in charge offer to a panel guest; every name is one of its own tabs or stations. */
+export interface PackageGuests {
+  /** What its guests are told apart by; absent: whoever gets in sees every item. */
+  scope?: { name: string; title: string };
+  tabs: string[];
+  /** Stations with `onDemand`, whose run a guest may ask for. */
+  run: string[];
+  /** Stations with `uploads`, to which a guest may send a file. */
+  upload: string[];
+}
+
 export interface LoadedPackage {
   name: string;
   version: string;
@@ -613,6 +653,8 @@ export interface LoadedPackage {
   stations: string[];
   /** Its panel tabs; they show data only, so they need no `allowCode`. */
   tabs: PackageTab[];
+  /** Absent: it offers nothing to guests. */
+  guests?: PackageGuests;
 }
 
 export interface PackageProblem {
@@ -633,6 +675,8 @@ export interface LoadedPackages {
 /** `loadedPackages` never comes from the file: the schema drops that key, and only `src/packages.ts` sets it. */
 export type FactoryConfig = z.infer<typeof FactorySchema> & { loadedPackages?: LoadedPackages };
 export type LineConfig = z.infer<typeof LineSchema>;
+/** A line as the factory file writes it. */
+export type LineEntry = z.input<typeof LineSchema>;
 export type CustomEngine = z.infer<typeof CustomEngineSchema>;
 export type StationName = keyof FactoryConfig["stations"];
 export type CustomAgent = z.output<typeof CustomAgentSchema>;
@@ -646,11 +690,37 @@ export function instructionsProblem(path: string): string | undefined {
 }
 
 /** A custom agent that applies to a line, and where its instructions live: the line's repository, the factory folder or its package. */
-export type LineAgent = CustomAgent & { origin: "factory" | "line" | "package"; package?: string; packageDir?: string };
+export type LineAgent = CustomAgent & { origin: "factory" | "line" | "package" | "zero"; package?: string; packageDir?: string };
 
-/** The custom agents of a line, in order: the file's global ones, those of the packages, then the line's own. Each type runs in this order at its own point of the line. */
-export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackages">, line: Pick<LineConfig, "agents">): LineAgent[] {
+/** The name of zero's own performance reviewer, and the skill it and build get on the lines with `performance: true`. */
+export const PERFORMANCE_AGENT = "performance";
+export const PERFORMANCE_SKILL = "zero:performance";
+
+/** Where zero's own instructions live: `agents/` of its installation, never a repository. */
+export const ZERO_AGENTS_DIR = fileURLToPath(new URL("../agents/", import.meta.url));
+
+/** Zero's performance reviewer: read-only and blocking, so only its verified serious findings stop a change. */
+const performanceAgent = (): LineAgent => ({
+  name: PERFORMANCE_AGENT,
+  instructions: `${PERFORMANCE_AGENT}.md`,
+  type: "review",
+  after: "review",
+  access: "read",
+  blocking: true,
+  files: [],
+  maxTurns: 40,
+  timeoutMinutes: 15,
+  skills: [PERFORMANCE_SKILL],
+  origin: "zero",
+});
+
+/**
+ * The custom agents of a line, in order: zero's performance reviewer when the line turns it on, the file's global
+ * ones, those of the packages, then the line's own. Each type runs in this order at its own point of the line.
+ */
+export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackages">, line: Pick<LineConfig, "agents" | "performance">): LineAgent[] {
   return [
+    ...(line.performance ? [performanceAgent()] : []),
     ...config.agents.map((a) => ({ ...a, origin: "factory" as const })),
     ...(config.loadedPackages?.agents ?? []).map((a) => ({ ...a, origin: "package" as const })),
     ...line.agents.map((a) => ({ ...a, origin: "line" as const })),
@@ -659,6 +729,7 @@ export function lineAgents(config: Pick<FactoryConfig, "agents" | "loadedPackage
 
 /** Where zero reads a custom agent's instructions: never the job's work copy. */
 export function agentInstructionsPath(agent: LineAgent, repo: string, factoryDir: string): string {
+  if (agent.origin === "zero") return join(ZERO_AGENTS_DIR, agent.instructions);
   return join(agent.origin === "package" ? agent.packageDir! : agent.origin === "line" ? repo : factoryDir, agent.instructions);
 }
 

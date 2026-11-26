@@ -232,7 +232,7 @@ describe("panel guide pages", () => {
   });
 });
 
-const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/control-room", "/briefing", "/report", "/about", "/agents", "/remote-chat", "/packages"];
+const SECTIONS = ["/", "/line", "/requests", "/egress", "/proposals", "/research", "/monitor", "/control-room", "/briefing", "/report", "/about", "/agents", "/remote-chat", "/guests", "/packages"];
 const sideNav = (html: string) => {
   const navs = html.match(/<nav class="side"[\s\S]*?<\/nav>/g) ?? [];
   expect(navs).toHaveLength(1);

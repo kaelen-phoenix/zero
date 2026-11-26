@@ -42,8 +42,10 @@ export interface EngineResult {
   quota?: QuotaReport;
   /** True when the engine stopped the call because it reached the request's `maxBudgetUsd`. */
   budgetLimited?: boolean;
-  /** True when the engine ended the call because the request's `timeoutMs` ran out (never for a cancellation or another error). */
+  /** True when the engine stopped the call because it reached the request's `timeoutMs`. */
   timedOut?: boolean;
+  /** True when the engine refused the call because its session expired or it is not signed in. */
+  signedOut?: boolean;
 }
 
 /**

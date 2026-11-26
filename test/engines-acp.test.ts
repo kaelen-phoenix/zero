@@ -195,6 +195,7 @@ describe("ACP failures", () => {
     const { result } = await run({ session: `send({ id: m.id, error: { code: -32000, message: "auth required" } });`, prompt: "" });
     expect(result.ok).toBe(false);
     expect(result.text).toContain("auth required");
+    expect(result).not.toHaveProperty("timedOut");
   });
 
   it("fails on a stop reason other than end_turn", async () => {
@@ -208,6 +209,7 @@ describe("ACP failures", () => {
     expect(result.ok).toBe(false);
     expect(result.text).toContain("gem exited with 3");
     expect(result.text).toContain("adiós");
+    expect(result).not.toHaveProperty("timedOut");
   });
 
   it("kills the agent on timeout", async () => {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestWork } from "../src/app.js";
 import { killLeftovers, leftoversIn, mentionsFolder, type RunningProcess } from "../src/leftovers.js";
-import { createLimiter, slowestVerifyMs, verifyTimeoutMs, VERIFY_COMMAND_SPAN, type VerifyHistory } from "../src/line/pace.js";
+import { createLimiter, slowestPassMs, verifyTimeoutMs, VERIFY_COMMAND_SPAN, type VerifyHistory } from "../src/line/pace.js";
 import { runJob } from "../src/line/runner.js";
 import { machineTrouble } from "../src/line/verify.js";
 import { guardLogStreams, log, lostLogLines } from "../src/log.js";
@@ -113,25 +113,22 @@ describe("the time limit of a verify command", () => {
     expect(verifyTimeoutMs(history([span("a", 600)]), line, "npm test", now)).toBe(4 * 3_600_000);
   });
 
-  it("knows how long the slowest of the last passing runs took, and keeps the limit as it was", () => {
+  it("comes from the slowest passing run, which has no limit of its own and is undefined without history", () => {
+    expect(slowestPassMs(history([span("a", 15), span("b", 19), span("c", 12)]), "zero", "npm test", now)).toBe(19 * 60_000);
+    expect(slowestPassMs(history([span("a", 600)]), "zero", "npm test", now)).toBe(600 * 60_000);
+    expect(slowestPassMs(history([span("a", 50, {}, { "zero.run_ms": 15 * 60_000 })]), "zero", "npm test", now)).toBe(15 * 60_000);
+    expect(slowestPassMs(history([]), "zero", "npm test", now)).toBeUndefined();
     const runs = [
-      span("a", 10),
-      span("b", 19),
-      span("c", 12),
+      span("old", 100),
+      ...[1, 2, 3, 4, 5].map((n) => span(`r${n}`, 11)),
       span("failed", 90, { status: "error" }),
       span("other-command", 90, {}, { "process.command_line": "npm run lint" }),
       span("other-line", 90),
+      span("unfinished", 90, { end: undefined }),
     ];
-    const past = history(runs, { "other-line": "tienda" });
-    expect(slowestVerifyMs(past, "zero", "npm test", now)).toBe(19 * 60_000);
-    expect(verifyTimeoutMs(past, line, "npm test", now)).toBe(38 * 60_000);
-  });
-
-  it("knows no duration without a passing run", () => {
-    const failed = history([span("failed", 30, { status: "error" })]);
-    expect(slowestVerifyMs(failed, "zero", "npm test", now)).toBeUndefined();
-    expect(verifyTimeoutMs(failed, line, "npm test", now)).toBe(20 * 60_000);
-    expect(verifyTimeoutMs(failed, { ...line, verifyTimeoutMinutes: 30 }, "npm test", now)).toBe(30 * 60_000);
+    const some = history(runs, { "other-line": "tienda" });
+    expect(slowestPassMs(some, "zero", "npm test", now)).toBe(11 * 60_000);
+    expect(slowestPassMs(some, "otra", "npm test", now)).toBeUndefined();
   });
 });
 

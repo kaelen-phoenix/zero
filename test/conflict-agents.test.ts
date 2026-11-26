@@ -210,6 +210,25 @@ describe("falling back to build", () => {
     expect(f.ctx.store.spansForJob(f.job.id).some((s) => s.attrs["zero.agent.type"] === "conflict")).toBe(false);
   });
 
+  it("tells build the time limit and the conflicted files when the clock cut it, promising nothing about its work", async () => {
+    const f = await delivered({ agents: [] });
+    await f.conflict();
+    const before = buildPrompts(f).length;
+    f.on("build", (req) => {
+      const cut = buildPrompts(f).length === before + 1;
+      expect(hasMarkers(req.cwd)).toBe(true);
+      writeTree(req.cwd, { "shared.txt": cut ? "half\n" : "built\n" });
+      return cut ? { ok: false, text: "timed out after 45 min", timedOut: true } : undefined;
+    });
+    expect(await f.again()).toMatchObject({ status: "delivered", attempt: 3 });
+    const second = buildPrompts(f).at(-1)!;
+    expect(second).toContain("límite de 45 minutos");
+    expect(second).toMatch(FEEDBACK);
+    expect(second).toContain("- shared.txt");
+    expect(second).not.toContain("sin commitear");
+    expect(second).not.toContain("continuá desde ahí");
+  });
+
   it("goes to build when the agent returns a file", async () => {
     const f = await delivered();
     f.on("resolver", returns);

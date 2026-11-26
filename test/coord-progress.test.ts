@@ -69,6 +69,27 @@ describe("pushing the job's progress at each checkpoint", () => {
     expect(progressOf(api, job.id)?.checkpoint).toBe("review");
   });
 
+  it("pushes the job's commits without AI attribution, only by fast-forward", async () => {
+    const { ctx, remote } = factory();
+    const api = memoryCoord();
+    const { job } = requestWork(ctx, { text: "x" });
+    const { pushProgress } = await claimed(ctx, api, job.id);
+    const agents = fakeAgents({
+      build: (req) => {
+        writeTree(req.cwd, { "src/a.ts": "ok" });
+        gitIn(req.cwd, "add", "-A");
+        gitIn(req.cwd, "commit", "-q", "-m", "Add a\n\nCo-Authored-By: Claude <noreply@anthropic.com>");
+      },
+    });
+    const done = await runJob(job.id, { ...ctx, runAgent: agents.runner, pushProgress });
+    expect(done.status).toBe("delivered");
+    const pushed = remoteTip(remote, branchOf(job.id))!;
+    expect(ctx.store.getKv(pushedKey(job.id))).toBe(pushed);
+    const messages = run("git", ["log", "--format=%B", pushed, "--not", "main"], remote);
+    expect(messages).toContain("Add a");
+    expect(messages).not.toContain("noreply@anthropic.com");
+  });
+
   it("pushes each stage that passes verify", async () => {
     const { ctx, remote } = factory();
     const api = memoryCoord();
