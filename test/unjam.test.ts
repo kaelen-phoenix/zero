@@ -10,7 +10,7 @@ import { intakeProblemKey } from "../src/intake/keys.js";
 import { mergeKey, pollMerges, stampBlocked, type Check, type MergeApi, type MergeState } from "../src/line/automerge.js";
 import { readTrain } from "../src/line/train.js";
 import { scoutSpent } from "../src/line/scout.js";
-import { SPEC_REFUSAL } from "../src/line/runner.js";
+import { busyRetryKey, networkRetryKey, SPEC_REFUSAL } from "../src/line/runner.js";
 import { recordSelfUpdate } from "../src/self-update.js";
 import { collectJams, readDiagnosis, resendAfterCapability, unjamKey, unjamLine, unjamPass, unjamResentKey, unjamRetriedKey, unjamUrgentKey, urgentUnjamPass } from "../src/line/unjam.js";
 import { cleanupKey } from "../src/line/cleanup.js";
@@ -572,9 +572,23 @@ describe("retrying a job", () => {
     expect(after.feedback).toBeUndefined();
   });
 
-  it("refuses a failed job without a spec, other statuses and a pending cleanup, changing nothing", () => {
+  it("puts a failed job without a spec back in the queue from the start", () => {
     const { ctx } = factory();
-    const noSpec = failedJob(ctx);
+    const failed = failedJob(ctx, "La estación spec no produjo una especificación válida: Failed to authenticate");
+    const job = ctx.store.updateJob(failed.id, { attempt: 2, station: "spec", worktree: "/tmp/w", branch: `zero/${failed.id}`, base: "abc" });
+    ctx.store.setKv(networkRetryKey(job.id), "1");
+    ctx.store.setKv(busyRetryKey(job.id), "2");
+    expect(retryJob(ctx, job.id).kind).toBe("queued");
+    const after = ctx.store.getJob(job.id)!;
+    expect(after).toMatchObject({ status: "queued", attempt: 0, checkpoint: "none", stagesDone: 0, stopRequested: false });
+    for (const field of ["station", "finishedAt", "feedback", "worktree", "branch", "base", "spec"] as const) expect(after[field]).toBeUndefined();
+    expect(ctx.store.getKv(networkRetryKey(job.id))).toBeUndefined();
+    expect(ctx.store.getKv(busyRetryKey(job.id))).toBeUndefined();
+  });
+
+  it("refuses a job refused at spec, other statuses and a pending cleanup, changing nothing", () => {
+    const { ctx } = factory();
+    const noSpec = failedJob(ctx, `${SPEC_REFUSAL}: falta una capacidad`);
     expect(() => retryJob(ctx, noSpec.id)).toThrow(/sin especificación/);
     expect(ctx.store.getJob(noSpec.id)).toEqual(noSpec);
 

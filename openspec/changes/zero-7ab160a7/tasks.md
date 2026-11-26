@@ -11,6 +11,6 @@
 
 ## 2. Etapa 2: Retry of failed jobs without a specification
 
-- [ ] 2.1 In src/app.ts retryJob, accept a failed job without a spec whose reason does not start with SPEC_REFUSAL: queue it from the start (attempt 0, checkpoint none, station/stagesDone/feedback/finishedAt/worktree/base/branch cleared, stopRequested false, network and busy retry kv deleted). Spec refusals keep the current error.
-- [ ] 2.2 Update test/unjam.test.ts: a spec refusal is still refused unchanged, and a failed job without a spec and with another reason is queued from the start; the existing cases still pass.
-- [ ] 2.3 Document it in docs/agents/production-line.md and docs/agents/night-shift.md (retryCauses keeps its limits); run npm run typecheck, npm test and npx openspec validate --all.
+- [x] 2.1 In src/app.ts retryJob, accept a failed job without a spec whose reason does not start with SPEC_REFUSAL: queue it from the start (attempt 0, checkpoint none, station/stagesDone/feedback/finishedAt/worktree/base/branch cleared, stopRequested false, network and busy retry kv deleted). Spec refusals keep the current error.
+- [x] 2.2 Update test/unjam.test.ts: a spec refusal is still refused unchanged, and a failed job without a spec and with another reason is queued from the start; the existing cases still pass.
+- [x] 2.3 Document it in docs/agents/production-line.md and docs/agents/night-shift.md (retryCauses keeps its limits); run npm run typecheck, npm test and npx openspec validate --all.
