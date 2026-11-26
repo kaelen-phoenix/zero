@@ -289,6 +289,7 @@ export function createAgentRunner(config: FactoryConfig, opts: { execute?: Engin
       ...(result.tokens && { "gen_ai.usage.input_tokens": result.tokens.input, "gen_ai.usage.output_tokens": result.tokens.output }),
       ...quotaAttrs(result.quota),
       ...(run.budgetLimited && { "zero.budget.limited": true }),
+      ...(run.timedOut && { "zero.timed_out": true }),
       ...(run.signedOut && { "zero.engine.signed_out": true }),
       ...(!run.ok && { "error.message": run.text.slice(0, 300) }),
     });
