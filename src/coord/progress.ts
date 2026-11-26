@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { MAX_STAGES, SpecSchema, specProblems } from "../line/spec.js";
+import { scrubBranch } from "../attribution.js";
 import { log } from "../log.js";
 import type { MachineIdentity } from "../machine.js";
 import { spawnGit, tryGit } from "../shell.js";
@@ -62,9 +63,10 @@ export async function pushProgress(deps: PushDeps, job: Job, copy: WorkCopy): Pr
   }
   copy.publish();
   const ref = `refs/heads/${copy.branch}`;
-  const sha = tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo);
-  if (!sha) return "skipped";
+  if (!tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repo)) return "skipped";
   const lease = store.getKv(pushedKey(job.id)) ?? "";
+  // AI attribution leaves the messages of what goes up for the first time; what was pushed before keeps its SHAs.
+  const sha = scrubBranch(repo, copy.branch, [lease || undefined, copy.base]);
   const pushed = spawnGit(["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${lease}`, "origin", `${ref}:${ref}`], repo, { timeout: 120_000 });
   if (pushed.status !== 0) {
     const output = `${pushed.stderr ?? ""}${pushed.stdout ?? ""}`.trim();

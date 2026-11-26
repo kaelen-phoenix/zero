@@ -4,6 +4,7 @@
  * particular AI, whichever engine worked. A person's co-authorship is kept.
  * Extend the lists here; nothing else decides what is AI attribution.
  */
+import { git, spawnGit, tryGit } from "./shell.js";
 
 /** Names and addresses of AI tools, matched as whole words inside a trailer's value or a line. */
 export const AI_TOOLS: readonly string[] = [
@@ -56,4 +57,57 @@ export function stripAttribution(text: string): string {
   }
   if (removed) while (out.length && blank(out[out.length - 1]!)) out.pop();
   return out.join("\n") + ending;
+}
+
+/**
+ * Removes AI attribution from the messages of the job's own commits that are
+ * not published yet: those reachable from `refs/heads/<branch>` in `repo` and
+ * not from `keep` (the base, a head already pushed; refs or SHAs, missing ones
+ * ignored) nor from any remote-tracking ref. Each rewritten commit keeps its
+ * tree, author and committer with their dates and every other header, and its
+ * parents are mapped to their rewritten versions; only the attribution lines
+ * leave the message (a signature, now invalid, goes too). The objects are
+ * written as they are, so the same commits always give the same SHAs. The
+ * branch moves only from the tip it had, never by force; a clean branch is
+ * left untouched. Returns the branch's tip.
+ */
+export function scrubBranch(repo: string, branch: string, keep: (string | undefined)[]): string {
+  const ref = `refs/heads/${branch}`;
+  const tip = git(["rev-parse", "--verify", `${ref}^{commit}`], repo);
+  const kept = keep.flatMap((k) => (k && tryGit(["rev-parse", "--verify", "--quiet", `${k}^{commit}`], repo)) || []);
+  const range = git(["rev-list", "--reverse", "--topo-order", tip, "--not", "--remotes", ...kept], repo).split("\n").filter(Boolean);
+  const mapped = new Map<string, string>();
+  for (const sha of range) {
+    const read = spawnGit(["cat-file", "commit", sha], repo);
+    if (read.status !== 0) throw new Error(`git cat-file commit ${sha} failed: ${read.stderr.trim()}`);
+    const raw = read.stdout;
+    const split = raw.indexOf("\n\n");
+    const head = split < 0 ? raw : raw.slice(0, split);
+    const message = split < 0 ? "" : raw.slice(split + 2);
+    const clean = stripAttribution(message);
+    let moved = false;
+    const headers = head.split("\n").map((line) => {
+      const parent = /^parent ([0-9a-f]+)$/.exec(line);
+      const to = parent && mapped.get(parent[1]!);
+      if (!to) return line;
+      moved = true;
+      return `parent ${to}`;
+    });
+    if (!moved && clean === message) continue;
+    // A signature over the old message no longer holds; it goes with its continuation lines.
+    const unsigned = headers.filter((line, i) => !/^gpgsig(?:-sha256)? /.test(line) && !(line.startsWith(" ") && signed(headers, i)));
+    const written = spawnGit(["hash-object", "-t", "commit", "-w", "--stdin"], repo, { input: `${unsigned.join("\n")}\n\n${clean}` });
+    if (written.status !== 0) throw new Error(`git hash-object failed: ${(written.stderr || written.stdout).trim()}`);
+    mapped.set(sha, written.stdout.trim());
+  }
+  const next = mapped.get(tip);
+  if (!next) return tip;
+  git(["update-ref", "-m", "zero: AI attribution removed", ref, next, tip], repo);
+  return next;
+}
+
+/** Whether header line `i` continues a signature header. */
+function signed(headers: string[], i: number): boolean {
+  while (i > 0 && headers[i]!.startsWith(" ")) i--;
+  return /^gpgsig(?:-sha256)? /.test(headers[i]!);
 }

@@ -7,6 +7,7 @@ import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "..
 import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineAutonomy, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
+import { scrubBranch } from "../attribution.js";
 import { signText, withTrailer } from "../signature.js";
 import { git, sh, spawnGit, tryGit, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
@@ -296,6 +297,8 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     job = store.updateJob(jobId, { station: "integrate" });
     const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
       copy.publish();
+      // What an agent committed with AI attribution leaves its messages; the base and what is already pushed stay as they are.
+      scrubBranch(line.repo, copy.branch, [line.baseBranch, copy.base, refresh?.head]);
       return integrate(line, copy, {
         jobId,
         title: spec.title,
