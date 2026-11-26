@@ -90,6 +90,19 @@ function readings(store: Store, now: Date): Map<string, Reading> {
   return latest;
 }
 
+/** When each engine's latest call on this machine ended, if that call was refused because its session expired. */
+function signedOut(store: Store, now: Date): Map<string, Date> {
+  const latest = new Map<string, Date | undefined>();
+  for (const s of store.spansSince(AGENT_SPAN, new Date(now.getTime() - UNKNOWN_RESET_MS))) {
+    const mark = s.attrs["zero.engine.signed_out"];
+    // Spans come in start order; a later call without the mark means the engine answers again.
+    latest.set(String(s.attrs["zero.engine"] ?? ""), mark === true || mark === 1 ? new Date(s.end ?? s.start) : undefined);
+  }
+  const out = new Map<string, Date>();
+  for (const [engine, at] of latest) if (at) out.set(engine, at);
+  return out;
+}
+
 /** This machine's own subscription readings, as they are published for the others. */
 export function planReadings(store: Store, now: Date): { engine: string; at: Date; limited: boolean; windows: QuotaWindow[] }[] {
   return [...readings(store, now).values()].filter((r) => r.billing === "subscription");
@@ -172,8 +185,14 @@ function customAgentChains(config: BudgetConfig): ChainLink[][] {
  * ran out of credit, and once that engine's own spend today reaches the daily
  * dollar cap. With no reading here, another machine's plan may only pause it.
  */
-function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[]): EngineBudget {
+function engineBudget(store: Store, config: BudgetConfig, engine: string, all: Map<string, Reading>, now: Date, windows: PlanWindow[], signedOutAt: Map<string, Date>): EngineBudget {
   const r = all.get(engine);
+  // Its session expired: wait a little for the person in charge to sign in again, then try again.
+  const out = signedOutAt.get(engine);
+  if (out) {
+    const until = new Date(out.getTime() + UNKNOWN_RESET_MS);
+    if (until > now) return { engine, billing: r?.billing ?? "unknown", paused: true, until: until.toISOString(), reason: `falta iniciar sesión en el motor ${engine}` };
+  }
   const other = otherPlan(store, config, engine, r, now);
   if (!r) {
     const pause = other && planPause(config, other, now, windows);
@@ -227,11 +246,12 @@ function planPause(config: BudgetConfig, r: Reading, now: Date, windows: PlanWin
 /** Every engine of the stations' and custom agents' chains, by name. */
 function engineBudgets(store: Store, config: BudgetConfig, now: Date, windows: PlanWindow[] = []): Map<string, EngineBudget> {
   const all = readings(store, now);
+  const signedOutAt = signedOut(store, now);
   const out = new Map<string, EngineBudget>();
   const chains = [...AGENT_STATIONS.map((station) => stationChain(config, station)), ...customAgentChains(config)];
   for (const chain of chains) {
     for (const { engine } of chain) {
-      if (!out.has(engine)) out.set(engine, engineBudget(store, config, engine, all, now, windows));
+      if (!out.has(engine)) out.set(engine, engineBudget(store, config, engine, all, now, windows, signedOutAt));
     }
   }
   return out;
@@ -271,8 +291,12 @@ export function pickAgentEngine(store: Store, config: BudgetConfig, agent: Pick<
 
 function pickFromChain(store: Store, config: BudgetConfig, chain: ChainLink[], now: Date): EngineChoice {
   const budgets = engineBudgets(store, config, now);
-  const all = readings(store, now);
-  for (const { engine } of chain) if (!budgets.has(engine)) budgets.set(engine, engineBudget(store, config, engine, all, now, []));
+  const missing = chain.filter((l) => !budgets.has(l.engine));
+  if (missing.length) {
+    const all = readings(store, now);
+    const signedOutAt = signedOut(store, now);
+    for (const { engine } of missing) if (!budgets.has(engine)) budgets.set(engine, engineBudget(store, config, engine, all, now, [], signedOutAt));
+  }
   const own = chain[0]!;
   const ownBudget = budgets.get(own.engine)!;
   const index = chain.findIndex((l) => !budgets.get(l.engine)!.paused);

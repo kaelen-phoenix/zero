@@ -163,11 +163,23 @@ export function refusedQuota(text: string, quota?: QuotaReport): QuotaReport | u
   return quota;
 }
 
+/**
+ * The session of Claude Code expired or was never started (`Failed to authenticate: OAuth session expired and
+ * could not be refreshed`): the engine waits for the person in charge to sign in again instead of failing the
+ * work. Read only from failed calls, never from an answer.
+ */
+const SIGNED_OUT = /failed to authenticate|oauth session expired|oauth token has expired/i;
+
+/** True when a failed call's text says the session expired. */
+export function signedOutText(text: string): boolean {
+  return SIGNED_OUT.test(text);
+}
+
 /** What a thrown SDK error (neither cancelled nor timed out) means for zero. */
 export function claudeThrown(err: unknown): EngineResult {
   const text = err instanceof Error ? err.message : String(err);
   const quota = refusedQuota(text);
-  return { ok: false, text, ...(quota && { quota }) };
+  return { ok: false, text, ...(quota && { quota }), ...(signedOutText(text) && { signedOut: true }) };
 }
 
 /** The model that cost the most in a result's `modelUsage` (the first one on a tie); undefined when there is none. */
@@ -188,10 +200,13 @@ export function claudeResult(result: SDKResultMessage, quota?: QuotaReport): Eng
   if (result.subtype !== "success") {
     const errors = "errors" in result && Array.isArray(result.errors) ? result.errors : [];
     const budgetLimited = result.subtype === "error_max_budget_usd" || errors.some((e) => String(e).includes(BUDGET_TEXT));
-    quota = refusedQuota(errors.map(String).join("\n"), quota);
-    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+    const errorText = errors.map(String).join("\n");
+    quota = refusedQuota(errorText, quota);
+    const signedOut = signedOutText(errorText);
+    return { ok: false, text: result.subtype, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }), ...(signedOut && { signedOut: true }) };
   }
   const budgetLimited = result.is_error && typeof result.result === "string" && result.result.includes(BUDGET_TEXT);
   if (result.is_error && typeof result.result === "string") quota = refusedQuota(result.result, quota);
-  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }) };
+  const signedOut = result.is_error && typeof result.result === "string" && signedOutText(result.result);
+  return { ok: !result.is_error, text: result.result, output: result.structured_output, costUsd: result.total_cost_usd, sessionId, ...(model && { model }), ...(tokens && { tokens }), ...(quota && { quota }), ...(budgetLimited && { budgetLimited: true }), ...(signedOut && { signedOut: true }) };
 }

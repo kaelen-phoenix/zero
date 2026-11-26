@@ -44,6 +44,8 @@ export interface EngineResult {
   budgetLimited?: boolean;
   /** True when the engine stopped the call because it reached the request's `timeoutMs`. */
   timedOut?: boolean;
+  /** True when the engine refused the call because its session expired or it is not signed in. */
+  signedOut?: boolean;
 }
 
 /**

@@ -29,6 +29,7 @@ import { dataFile, readTabData, tabFile, visibleItems, type TabData, type TabIte
 import { answerJob, approveJob, type Decision } from "./line/answer.js";
 import { decide, type PolicyDecision, type PolicyEvent } from "./line/policy.js";
 import { cleanupKey, pendingCleanups } from "./line/cleanup.js";
+import { busyRetryKey, networkRetryKey, SPEC_REFUSAL } from "./line/runner.js";
 import { entryProblem, installFolder, ofChannel, readSelfUpdate, readSelfUpdateLook, readUpdateRequest, readUpdateRun, selfUpdateGit, UPDATE_REQUEST_KEY, type SelfUpdateChannel, type SelfUpdateEntry, type SelfUpdateRetry, type SelfUpdateTarget, type UpdateRequest, type UpdateRunRecord } from "./self-update.js";
 import { switchLockHeldAt } from "./self-update-switch.js";
 import { parseReleaseRequest, publishRelease, releaseTag, type ReleaseResult, type ReleaseTarget } from "./releases.js";
@@ -425,7 +426,8 @@ export type RetryOutcome = { job: Job; kind: "queued" | "pull-request" };
 
 /**
  * Tries a job again from where it stopped. A failed job with a specification goes back to the queue from its
- * checkpoint with its attempts reset; a delivered auto-merge pull request blocked in conflict or after its checks fixes gets
+ * checkpoint with its attempts reset; one that failed without a specification, unless spec refused it
+ * (SPEC_REFUSAL), goes back from the start; a delivered auto-merge pull request blocked in conflict or after its checks fixes gets
  * its attempts reset and its MergeState's `resolving`, `resolutions`, `conflict`, `fixing`, `fixes` and `backoff` dropped, so
  * the merges pass takes it back. Anything else is refused.
  */
@@ -435,7 +437,14 @@ export function retryJob(ctx: FactoryContext, id: string): RetryOutcome {
   if (!line) throw new Error(`La línea ${job.line} del trabajo ${id} ya no está configurada.`);
   if (ctx.store.getKv(cleanupKey(job.id))) throw new Error(`La copia de trabajo de ${id} todavía no se pudo borrar: reintentalo cuando se limpie.`);
   if (job.status === "failed") {
-    if (!job.spec) throw new Error(`El trabajo ${id} falló sin especificación: pedilo de nuevo en lugar de reintentarlo.`);
+    if (!job.spec) {
+      if (job.reason?.startsWith(SPEC_REFUSAL)) throw new Error(`El trabajo ${id} falló sin especificación: pedilo de nuevo en lugar de reintentarlo.`);
+      // Failed before its spec (an engine cut, for example): nothing of the run before is worth keeping.
+      ctx.store.deleteKv(networkRetryKey(job.id));
+      ctx.store.deleteKv(busyRetryKey(job.id));
+      const fresh = { checkpoint: "none", stagesDone: 0, attempt: 0, branch: null, base: null, worktree: null, station: null, feedback: null, finishedAt: null } as const;
+      return { kind: "queued", job: ctx.store.updateJob(id, { status: "queued", ...fresh, stopRequested: false }) };
+    }
     return { kind: "queued", job: ctx.store.updateJob(id, { status: "queued", attempt: 0, feedback: null, finishedAt: null, stopRequested: false }) };
   }
   if (job.status === "delivered" && job.delivery?.autoMerge && line.autoMerge) {
