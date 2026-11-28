@@ -33,7 +33,28 @@ export function cleanup() {
       // already closed by the test
     }
   }
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  removeTempDirs(dirs.splice(0));
+}
+
+/** Codes of a folder still held by another process (on Windows, often a git process of a test that timed out). */
+const BUSY = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+/**
+ * Removes a temp folder, retrying while it is busy. A folder that is still busy after the retries only
+ * gets a warning, so it does not break the next test; any other error is thrown.
+ */
+export function removeTempDir(dir: string, rm: typeof rmSync = rmSync) {
+  try {
+    rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (!code || !BUSY.has(code)) throw err;
+    console.warn(`could not remove the temp folder ${dir} (${code})`);
+  }
+}
+
+export function removeTempDirs(list: string[], rm: typeof rmSync = rmSync) {
+  for (const dir of list) removeTempDir(dir, rm);
 }
 
 export function run(cmd: string, args: string[], cwd: string): string {
