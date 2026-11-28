@@ -1,0 +1,9 @@
+# Tasks
+
+## 1. Implementación
+
+- [x] 1.1 src/box/executor.ts:86: add `timedOut: true` to the result of the `r.timedOut` branch without changing its text, its order relative to `cancelled`, or the span attributes.
+- [x] 1.2 Add test/box-timeout.test.ts. Mock `../src/box/run.js` with `vi.mock` the way test/codex-sandbox.test.ts does (spread the original module, replace `runInBox` with a controllable fake). Build the executor with `createBoxExecutor(ctx.config, READY, ctx.secrets, gate)`, using a stub GateHost and an engine whose credentials are set (for example claude with CLAUDE_CODE_OAUTH_TOKEN, or codex with OPENAI_API_KEY, as codex-sandbox.test.ts does). Test: `execute` returns `{ ok:false, text:'la caja superó el tiempo límite (45 min)', timedOut:true }` on a time-limit cut; the box's `agentRunner` passes on `timedOut: true`; cancellation and a non-zero exit without a result have no `timedOut` property.
+- [x] 1.3 In the same test file, run a job with `runJob` (L2, isolation worktree, `stations.build.timeoutMinutes` 45, verify passing, as in test/build-time.test.ts). Its `runAgent` sends `build` to `box.agentRunner(ctx.config)` and the other stations to `fakeAgents`. In the first build, the fake `runInBox` writes a file into `spec.copy` and returns `timedOut: true`. In the second, it returns `ZERO-RESULT {"ok":true,"text":"done"}`. Assert the second build prompt contains the time-limit feedback and not the abnormal-end feedback.
+- [x] 1.4 docs/agents/box-and-egress.md: add one sentence saying that the executor marks a box run cut by its time limit with `timedOut: true` (same text as before), so build gets the time-limit feedback just as it does with local engines.
+- [x] 1.5 Run `npm run typecheck`, `npx vitest run test/box-timeout.test.ts test/build-time.test.ts test/codex-sandbox.test.ts` and `npx openspec validate --all`.

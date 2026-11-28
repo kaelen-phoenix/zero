@@ -1,10 +1,13 @@
+import type { FactoryContext } from "../app.js";
 import type { FactoryConfig } from "../config.js";
 import { githubHalt } from "../github-quota.js";
 import { machineCapabilities, machineIdentity } from "../machine.js";
-import type { LedgerDeps } from "../line/finish.js";
 import type { Store } from "../state/store.js";
+import { decisionsPass, outboxPass } from "./actions.js";
 import { queuePass } from "./queue.js";
 import { heartbeat, listMachines, probeCoord, type CoordApi, type MachineView } from "./protocol.js";
+import { spendPass } from "./spend.js";
+import { statusPass } from "./status.js";
 
 /** The machines of the factory as the last coordination pass saw them; only written while `distributed` is set. */
 export const MACHINES_KEY = "coord:machines";
@@ -42,10 +45,10 @@ export function coordReady(ctx: { store: Store; config: FactoryConfig }): boolea
   return probe?.ok === true && probe.repository === distributed.repository;
 }
 
-/** Probes the repository once, and a failed probe again at most every PROBE_RETRY_MS. */
-async function probeOnce(ctx: { store: Store }, api: CoordApi, repository: string, machineId: string, now: Date): Promise<void> {
+/** Probes the repository once, and a failed probe again at most every `retryMs`. */
+export async function probeOnce(ctx: { store: Store }, api: CoordApi, repository: string, machineId: string, now: Date, retryMs = PROBE_RETRY_MS): Promise<void> {
   const last = readProbe(ctx.store);
-  if (last && last.repository === repository && (last.ok || now.getTime() - Date.parse(last.at) < PROBE_RETRY_MS)) return;
+  if (last && last.repository === repository && (last.ok || now.getTime() - Date.parse(last.at) < retryMs)) return;
   const result = await probeCoord(api, `${machineId}-${now.getTime()}`);
   const record: ProbeRecord = { repository, at: now.toISOString(), ok: result.ok, ...(result.ok ? {} : { problem: result.problem }) };
   ctx.store.setKv(PROBE_KEY, JSON.stringify(record));
@@ -55,11 +58,15 @@ async function probeOnce(ctx: { store: Store }, api: CoordApi, repository: strin
  * The daemon's coordination pass: this machine's heartbeat in the coordination
  * repository, then every machine's record kept in kv for status, panel and chat.
  * Before that, once per coordination repository, the probe that confirms its
- * conflicts (`coord:probe`), and once it passed, the shared queue (queuePass).
+ * conflicts (`coord:probe`), and once it passed, what each machine spent
+ * (spendPass), the shared queue (queuePass), what other machines decided for
+ * this one (decisionsPass), where every machine's jobs stand (statusPass) and
+ * what was decided or asked for here (outboxPass). A decision attended here is
+ * deleted only after the status tells what came of it.
  * Nothing at all without `distributed`, and nothing while GitHub holds a pause.
  */
 export async function coordPass(
-  ctx: LedgerDeps,
+  ctx: FactoryContext,
   api: CoordApi,
   box: { ready: boolean } | undefined,
   now: Date,
@@ -72,7 +79,14 @@ export async function coordPass(
   await heartbeat(api, machine, machineCapabilities(ctx.config, box), jobs, now);
   const machines = await listMachines(api, now, distributed.leaseMinutes);
   ctx.store.setKv(MACHINES_KEY, JSON.stringify(machines));
-  if (coordReady(ctx)) await queuePass(ctx, api, machine, box?.ready === true);
+  if (coordReady(ctx)) {
+    await spendPass(ctx.store, api, machine, now);
+    const claims = await queuePass(ctx, api, machine, box?.ready === true);
+    const decisions = await decisionsPass(ctx, api, machine, claims);
+    await statusPass(ctx, api, machine, claims, now);
+    for (const name of decisions.attended) await api.delete(name);
+    await outboxPass(ctx, api, machine, decisions.refs, now);
+  }
   return machines;
 }
 

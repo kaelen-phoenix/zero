@@ -152,6 +152,53 @@ describe("installed copy freshness", () => {
   });
 });
 
+describe("installed copy in the stable channel", () => {
+  it("does not count unreleased commits as missing", async () => {
+    const { root } = installation(3);
+    const ctx = testFactory({ isolation: "worktree", selfUpdate: { channel: "estable" }, lines: [{ name: "demo", repo: gitRepo() }] });
+    const record = await checkInstall(ctx.store, new Date(), { root, git: recordingGit().git, channel: "estable" });
+    expect(record).toMatchObject({ channel: "estable", unreleased: 3, staleBuild: false });
+    expect(record?.behind).toBeUndefined();
+    expect(installBehind(record)).toBe(false);
+    expect(formatStatus(factoryStatus(ctx))).not.toContain("Instalación atrasada");
+    expect(overviewPage(factoryStatus(ctx), ["demo"], "n")).not.toContain("Instalación atrasada");
+    expect((await briefing(ctx)).body).not.toContain("Instalación");
+  });
+
+  it("tells a stale build, and only that", async () => {
+    const { root } = installation(3);
+    utimesSync(join(root, "src", "cli.ts"), new Date("2026-11-03T00:00:00Z"), new Date("2026-11-03T00:00:00Z"));
+    const ctx = testFactory({ isolation: "worktree", selfUpdate: { channel: "estable" }, lines: [{ name: "demo", repo: gitRepo() }] });
+    await checkInstall(ctx.store, new Date(), { root, git: recordingGit().git, channel: "estable" });
+    const line = formatStatus(factoryStatus(ctx)).split("\n").find((l) => l.startsWith("Instalación atrasada"));
+    expect(line).toContain("npm run build");
+    expect(line).not.toContain("commit");
+    const { body } = await briefing(ctx);
+    expect(body).toContain("## Instalación");
+    expect(body).not.toContain("git pull");
+  });
+
+  it("looks again when the channel changes, and keeps the hour otherwise", async () => {
+    const { root } = installation(3);
+    const store = testStore();
+    const look = (iso: string, channel?: "estable" | "ultimo") => checkInstall(store, at(iso), { root, git: recordingGit().git, ...(channel && { channel }) });
+    expect(await look("2026-11-12T10:00:00Z")).toMatchObject({ behind: 3 });
+    expect(await look("2026-11-12T10:10:00Z", "estable")).toMatchObject({ channel: "estable", unreleased: 3 });
+    expect(await look("2026-11-12T10:20:00Z", "estable")).toBeUndefined();
+    expect(await look("2026-11-12T10:30:00Z", "ultimo")).toMatchObject({ channel: "ultimo", behind: 3 });
+    const none = await look("2026-11-12T10:40:00Z");
+    expect(none).toMatchObject({ behind: 3 });
+    expect(none).not.toHaveProperty("channel");
+  });
+
+  it("takes the channel of the factory file in the daemon", async () => {
+    const { root } = installation(2);
+    const ctx = testFactory({ isolation: "worktree", selfUpdate: { channel: "estable" }, lines: [{ name: "demo", repo: gitRepo() }] });
+    await runDaemon(ctx, { once: true, pollMs: 10, install: { root, git: recordingGit().git } });
+    expect(readInstallFreshness(ctx.store)).toMatchObject({ channel: "estable", unreleased: 2 });
+  });
+});
+
 describe("installed copy in the daemon", () => {
   it("looks at the installation in a once run only when it is injected", async () => {
     const { root } = installation(2);

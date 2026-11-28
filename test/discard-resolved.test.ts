@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { requestUnjam, type FactoryContext } from "../src/app.js";
+import { ANDON_KEY, requestUnjam, type FactoryContext } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { mergeKey, type MergeApi } from "../src/line/automerge.js";
 import { discardResolved, RESOLVED_MS } from "../src/line/discard.js";
 import { finalizeJob } from "../src/line/finish.js";
-import { readDiagnosis, readUnjamRun, unjamOnDemandPass, unjamPass, urgentUnjamPass } from "../src/line/unjam.js";
+import { closeInterruptedUnjam, readDiagnosis, readUnjamRun, UNJAM_RUN_KEY, unjamOnDemandPass, unjamPass, urgentUnjamPass } from "../src/line/unjam.js";
 import type { Job } from "../src/state/store.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
@@ -12,17 +12,23 @@ afterEach(cleanup);
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 20, 12, minute));
 
-/** A factory whose line has a bare repository as its remote. */
-function withRemote(over: Record<string, unknown> = {}) {
+/** A repository with a bare repository as its remote. */
+function remoteRepo() {
   const repo = gitRepo();
   const origin = tempDir("zero-origin-");
   gitIn(origin, "init", "-q", "--bare", "-b", "main");
   gitIn(repo, "remote", "add", "origin", origin);
   gitIn(repo, "push", "-q", "origin", "main");
+  return repo;
+}
+
+/** A factory whose line has a bare repository as its remote. */
+function withRemote(over: Record<string, unknown> = {}) {
+  const repo = remoteRepo();
   return { ctx: testFactory({ level: "L2", isolation: "worktree", lines: [{ name: "demo", repo, integrate: "pull-request" }], ...over }), repo };
 }
 
-const create = (ctx: FactoryContext) => ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 });
+const create = (ctx: FactoryContext, line = "demo") => ctx.store.createJob({ line, kind: "request", request: "x", budgetUsd: 3 });
 
 function commit(repo: string, files: Record<string, string>, message: string) {
   writeTree(repo, files);
@@ -31,8 +37,8 @@ function commit(repo: string, files: Record<string, string>, message: string) {
 }
 
 /** A failed job with its branch one commit ahead of main. */
-async function failed(ctx: FactoryContext, repo: string, delivery?: Job["delivery"]): Promise<Job> {
-  const job = create(ctx);
+async function failed(ctx: FactoryContext, repo: string, delivery?: Job["delivery"], line = "demo"): Promise<Job> {
+  const job = create(ctx, line);
   gitIn(repo, "checkout", "-q", "-b", `zero/${job.id}`);
   commit(repo, { [`${job.id}.txt`]: job.id }, "work");
   gitIn(repo, "checkout", "-q", "main");
@@ -75,6 +81,32 @@ describe("failed jobs already resolved", () => {
     expect(posts.map((p) => p.body)).toContain(reason);
     expect(gitIn(repo, "branch", "--format=%(refname:short)")).toContain(`zero/${job.id}`);
     expect(await discardResolved(ctx, at(5))).toBe(0);
+  });
+
+  it("reports each job it closes, with its line, and nothing when it closes none", async () => {
+    const { ctx, repo } = withRemote();
+    const seen: unknown[] = [];
+    expect(await discardResolved(ctx, at(0), undefined, (c) => seen.push(c))).toBe(0);
+    expect(seen).toEqual([]);
+    const jobs = [await failed(ctx, repo), await failed(ctx, repo), await failed(ctx, repo)];
+    merge(repo, jobs[0]!);
+    expect(await discardResolved(ctx, at(5), undefined, (c) => seen.push(c))).toBe(1);
+    expect(seen).toEqual([{ line: "demo", job: jobs[0]!.id }]);
+    merge(repo, jobs[1]!);
+    merge(repo, jobs[2]!);
+    expect(await discardResolved(ctx, at(10), undefined, (c) => seen.push(c))).toBe(2);
+    expect(seen.slice(1)).toEqual(jobs.slice(1).map((j) => ({ line: "demo", job: j.id })));
+  });
+
+  it("a failing report neither undoes a closure nor stops the others", async () => {
+    const { ctx, repo } = withRemote();
+    const jobs = [await failed(ctx, repo), await failed(ctx, repo)];
+    for (const job of jobs) merge(repo, job);
+    const fails = () => {
+      throw new Error("x");
+    };
+    expect(await discardResolved(ctx, at(0), undefined, fails)).toBe(2);
+    expect(jobs.map((j) => read(ctx, j).status)).toEqual(["stopped", "stopped"]);
   });
 
   it("closes one whose branch came from a box, told by its commit's message", async () => {
@@ -206,7 +238,79 @@ describe("failed jobs already resolved", () => {
     await unjamOnDemandPass(ctx, agents.runner, new Date());
     expect(agents.calls).toEqual([]);
     expect(read(ctx, job).status).toBe("stopped");
-    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }] });
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }], closed: [{ line: "demo", job: job.id }] });
+  });
+
+  it("an unjam run on demand records each job it closed, in order", async () => {
+    const { ctx, repo } = withRemote();
+    const jobs = [await failed(ctx, repo), await failed(ctx, repo)];
+    for (const job of jobs) merge(repo, job);
+    requestUnjam(ctx, "demo", new Date());
+    await unjamOnDemandPass(ctx, fakeAgents({}).runner, new Date());
+    expect(readUnjamRun(ctx.store)?.closed).toEqual(jobs.map((j) => ({ line: "demo", job: j.id })));
+  });
+
+  it("an unjam run on demand for one line records the closures of every line", async () => {
+    const repo = remoteRepo();
+    const blog = remoteRepo();
+    const ctx = testFactory({
+      level: "L2",
+      isolation: "worktree",
+      lines: [
+        { name: "demo", repo, integrate: "pull-request" },
+        { name: "blog", repo: blog, integrate: "pull-request" },
+      ],
+    });
+    const job = await failed(ctx, blog, undefined, "blog");
+    merge(blog, job);
+    requestUnjam(ctx, "demo", new Date());
+    await unjamOnDemandPass(ctx, fakeAgents({}).runner, new Date());
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", lines: [{ line: "demo", jams: 0, causes: 0 }], closed: [{ line: "blog", job: job.id }] });
+  });
+
+  it("an unjam run on demand that closes nothing records no closures", async () => {
+    const { ctx } = withRemote();
+    const asked = new Date();
+    requestUnjam(ctx, "demo", asked);
+    await unjamOnDemandPass(ctx, fakeAgents({}).runner, new Date());
+    const record = readUnjamRun(ctx.store)!;
+    expect(record).not.toHaveProperty("closed");
+    expect(record).toEqual({ asked: asked.toISOString(), line: "demo", startedAt: record.startedAt, endedAt: record.endedAt, outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }] });
+  });
+
+  it("an unjam run on demand cut after closing keeps its closures", async () => {
+    const { ctx, repo } = withRemote();
+    await failed(ctx, repo);
+    const job = await failed(ctx, repo, pullRequest(9));
+    requestUnjam(ctx, "demo", new Date());
+    // The andon goes on while GitHub answers, once the run has started.
+    const api = github(async () => {
+      ctx.store.setKv(ANDON_KEY, "on");
+      return { open: false, merged: true, mergeable: null, headSha: "a", base: "main" };
+    });
+    const agents = fakeAgents({});
+    await unjamOnDemandPass(ctx, agents.runner, new Date(), { merges: () => api });
+    expect(agents.calls).toEqual([]);
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "stopped", reason: expect.stringContaining("andon"), closed: [{ line: "demo", job: job.id }] });
+  });
+
+  it("an unjam run on demand that crashes after closing keeps its closures", async () => {
+    const { ctx, repo } = withRemote();
+    const first = await failed(ctx, repo, pullRequest(9));
+    await failed(ctx, repo, pullRequest(10));
+    requestUnjam(ctx, "demo", new Date());
+    let during: string | undefined;
+    const api = github(async (n) => {
+      // What a daemon that crashed here would leave: the first job is already closed.
+      if (n === 10) during = ctx.store.getKv(UNJAM_RUN_KEY);
+      return { open: false, merged: n === 9, mergeable: null, headSha: "a", base: "main" };
+    });
+    await unjamOnDemandPass(ctx, fakeAgents({}).runner, new Date(), { merges: () => api });
+    ctx.store.setKv(UNJAM_RUN_KEY, during!);
+    expect(readUnjamRun(ctx.store)).toMatchObject({ closed: [{ line: "demo", job: first.id }] });
+    expect(readUnjamRun(ctx.store)?.endedAt).toBeUndefined();
+    closeInterruptedUnjam(ctx, new Date());
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "stopped", endedAt: expect.any(String), closed: [{ line: "demo", job: first.id }] });
   });
 
   it("are closed before the daytime unjam looks: only what is left is diagnosed", async () => {

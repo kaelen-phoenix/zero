@@ -15,7 +15,7 @@ import { formatSkills, formatStatus } from "../src/format.js";
 import { createZeroMcpServer } from "../src/mcp/server.js";
 import { panelKey, sessionFor } from "../src/panel/key.js";
 import { createPanelServer } from "../src/panel/server.js";
-import { assignedSkills, discoverSkills, resolveSkill, shortDescription, skillDescription, skillView, stageSkills, stripAllowedTools, unstageSkills, type Skill } from "../src/skills.js";
+import { assignedSkills, availableSkills, builtinSkills, discoverSkills, resolveSkill, shortDescription, skillDescription, skillView, stageSkills, stripAllowedTools, unstageSkills, type Skill } from "../src/skills.js";
 import { cleanup, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 /** A Claude home with a personal skill `pdf` and the plugin `vercel@mkt` carrying `nextjs`. */
@@ -231,7 +231,7 @@ describe("claude options", () => {
       const reqs = [req({ access: "read" }), req({ access: "web" }), req({ access: "write" }), req({ skills: staged }), req({ access: "write", skills: staged })];
       for (const r of reqs) {
         const o = claudeOptions(r, new AbortController());
-        expect(o.settings).toEqual({ disableAllHooks: true, autoMemoryEnabled: false });
+        expect(o.settings).toEqual({ disableAllHooks: true, autoMemoryEnabled: false, attribution: { commit: "", pr: "", sessionUrl: false } });
         expect(o.strictMcpConfig).toBe(true);
         expect(o.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
         expect(o.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
@@ -480,5 +480,89 @@ describe("skills in the trace", () => {
     await createAgentRunner(ctx.config, { execute: ok })(req);
     await createAgentRunner(parseFactory(readFileSync(ctx.home.config, "utf8").replace("- pdf", "- vercel:nextjs")), { execute: ok })(req);
     expect(agentSpans(ctx, job.id).map((s) => s.attrs["zero.skills"])).toEqual(["pdf", "vercel:nextjs"]);
+  });
+});
+
+describe("zero's performance skill", () => {
+  const text = readFileSync("skills/performance/SKILL.md", "utf8");
+  const controls = text
+    .split(/^### /m)
+    .slice(1)
+    .map((block) => {
+      const field = (label: string) => block.split(/\r?\n/).find((l) => l.startsWith(`- **${label}:** `))?.slice(`- **${label}:** `.length).trim() ?? "";
+      return { title: block.split("\n")[0]!, detect: field("Detect"), fix: field("Fix"), sources: field("Sources").split(/,\s*/).filter(Boolean) };
+    });
+  const OFFICIAL = ["web.dev", "developer.mozilla.org", "nextjs.org", "react.dev", "www.postgresql.org", "docs.djangoproject.com", "guides.rubyonrails.org", "expressjs.com", "nodejs.org", "vite.dev", "developer.chrome.com"];
+
+  it("is listed among the available skills, by full name only", () => {
+    const performance = availableSkills({}, join(tempDir(), "missing")).find((s) => s.fullName === "zero:performance");
+    expect(performance).toMatchObject({ name: "performance", source: "zero" });
+    expect(performance!.description).toBeTruthy();
+    expect(builtinSkills().map((s) => s.fullName)).toContain("zero:performance");
+    const available = availableSkills(parseFactory(""));
+    expect(resolveSkill("zero:performance", available)).toEqual({ skill: performance });
+    expect(resolveSkill("performance", available).skill).toBeUndefined();
+  });
+
+  it("is shown as zero's in the skill list", () => {
+    expect(formatSkills(skillList(testFactory({})))).toMatch(/^- zero:performance \(de zero\)$/m);
+  });
+
+  it("reaches engines without native skills after the station's instructions", async () => {
+    const seen: EngineRequest[] = [];
+    const execute: EngineExecute = async (_e, req) => (seen.push(req), { ok: true, text: "ok" });
+    const config = parseFactory("engine: mycli\nengines:\n  mycli:\n    command: [echo]\nstations:\n  review:\n    skills: [zero:performance]\n");
+    await createAgentRunner(config, { execute })({ station: "review", prompt: "p", cwd: tempDir() });
+    const original = await agentInstructions("review");
+    expect(seen[0]!.instructions.startsWith(original)).toBe(true);
+    expect(seen[0]!.instructions.slice(original.length)).toContain("# Skill: zero:performance");
+    expect(seen[0]!.instructions).toContain(stripAllowedTools(text).trim());
+  });
+
+  it("stages a copy for engines with native skills", async () => {
+    const staged = await stageSkills(builtinSkills().filter((s) => s.fullName === "zero:performance"));
+    expect(staged.skills.map((s) => s.id)).toEqual(["zero-performance"]);
+    expect(readFileSync(join(staged.dir, "skills", "zero-performance", "SKILL.md"), "utf8")).toBe(text);
+    await unstageSkills(staged);
+  });
+
+  it("gives every control an identifier, detection, fix and https sources", () => {
+    expect(controls.length).toBeGreaterThanOrEqual(8);
+    for (const c of controls) {
+      expect(c.title).toMatch(/^PERF-\d{2}: \S/);
+      expect(c.detect, c.title).not.toBe("");
+      expect(c.fix, c.title).not.toBe("");
+      expect(c.sources.length, c.title).toBeGreaterThan(0);
+      for (const s of c.sources) expect(s, c.title).toMatch(/^https:\/\//);
+    }
+    expect(new Set(controls.map((c) => c.title.split(":")[0])).size).toBe(controls.length);
+  });
+
+  it.each([
+    ["unpaginated queries", /paginat/i],
+    ["missing indexes", /index/i],
+    ["N+1 queries", /N\+1/],
+    ["missing caching", /cach/i],
+    ["static assets without a CDN", /static.*CDN|CDN.*static/i],
+    ["unoptimized images", /image/i],
+    ["a single bundle without code splitting", /bundle|code splitting/i],
+    ["heavy work instead of a background queue", /background|queue/i],
+  ])("covers %s as a control", (_topic, pattern) => {
+    expect(controls.some((c) => pattern.test(c.title))).toBe(true);
+  });
+
+  it("cites only official documentation", () => {
+    const hosts = new Set(controls.flatMap((c) => c.sources.map((s) => new URL(s).host)));
+    for (const host of hosts) expect(OFFICIAL, host).toContain(host);
+  });
+});
+
+describe("the build rule", () => {
+  it("tells build not to introduce known performance problems", () => {
+    const text = readFileSync("agents/build.md", "utf8");
+    expect(text).toMatch(/pagination/i);
+    expect(text).toContain("N+1");
+    expect(text).toMatch(/background work/i);
+    expect(text).toContain("zero:performance");
   });
 });

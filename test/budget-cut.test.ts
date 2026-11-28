@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRunner, quotaAttrs, type EngineExecute } from "../src/agent.js";
 import { answer, requestWork, type FactoryContext } from "../src/app.js";
+import { budgetState } from "../src/budget.js";
 import { claudeResult, claudeThrown } from "../src/engines/claude.js";
-import type { EngineResult, QuotaReport } from "../src/engines/index.js";
+import { signInHint, type EngineResult, type QuotaReport } from "../src/engines/index.js";
 import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { log } from "../src/log.js";
 import type { Store } from "../src/state/store.js";
@@ -62,6 +63,39 @@ describe("Claude result mapping", () => {
     expect(claudeThrown(new Error("the request hit a limit of 5 retries")).quota?.limited).not.toBe(true);
   });
 
+  it("marks an expired session in a failed call, never in an answer", () => {
+    const thrown = claudeThrown(new Error("Failed to authenticate: OAuth session expired and could not be refreshed"));
+    expect(thrown).toMatchObject({ ok: false, signedOut: true });
+    expect(thrown.quota?.limited).not.toBe(true);
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: "Failed to authenticate. API Error: 401" }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["OAuth session expired"] }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeThrown(new Error("OAuth token has expired")).signedOut).toBe(true);
+    const answer = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "the log said Failed to authenticate: OAuth session expired" }));
+    expect(answer.ok).toBe(true);
+    expect(answer.signedOut).not.toBe(true);
+    expect(claudeThrown(new Error("socket hang up")).signedOut).not.toBe(true);
+  });
+
+  it("marks the other forms of a refused session, but not a bare 401", () => {
+    expect(claudeThrown(new Error("Your session could not be refreshed"))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeResult(sdkResult({ subtype: "error_during_execution", errors: ["invalid_grant: refresh token revoked"] }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeResult(sdkResult({ subtype: "success", is_error: true, result: 'API Error: 401 {"type":"authentication_error"}' }))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeThrown(new Error("401 Unauthorized"))).toMatchObject({ ok: false, signedOut: true });
+    expect(claudeThrown(new Error("wrote 401 lines then socket hang up")).signedOut).not.toBe(true);
+    const answer = claudeResult(sdkResult({ subtype: "success", is_error: false, result: "the log said invalid_grant and API Error: 401" }));
+    expect(answer.ok).toBe(true);
+    expect(answer.signedOut).not.toBe(true);
+  });
+
+  it("says how to sign in again to the engines it knows", () => {
+    expect(signInHint("claude")).toContain("`claude`");
+    expect(signInHint("claude")).toContain("/login");
+    expect(signInHint("codex")).toContain("codex login");
+    expect(signInHint("opencode")).toBeUndefined();
+    expect(signInHint("my-custom")).toBeUndefined();
+    expect(signInHint("toString")).toBeUndefined();
+  });
+
   it("marks a call stopped by its dollar cap", () => {
     expect(claudeResult(sdkResult({ subtype: "error_max_budget_usd", errors: [] }))).toMatchObject({ ok: false, budgetLimited: true, costUsd: 0.42 });
   });
@@ -116,6 +150,20 @@ describe("agent runner", () => {
     const run = await createAgentRunner(ctx.config, { execute })({ station: "build", prompt: "p", cwd: tempDir(), trace: { tracer: ctx.tracer, jobId: "j1" } });
     expect(run).toMatchObject({ ok: false, budgetLimited: true });
     expect(ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN)!.attrs).toMatchObject({ "zero.budget.limited": true });
+  });
+
+  it("passes the signed-out mark on to the run and its span, and nothing otherwise", async () => {
+    const run = async (result: EngineResult) => {
+      const ctx = testFactory({ engine: "claude", lines: [] });
+      const r = await createAgentRunner(ctx.config, { execute: async () => result })({ station: "build", prompt: "p", cwd: tempDir(), trace: { tracer: ctx.tracer, jobId: "j1" } });
+      return { run: r, attrs: ctx.store.spansForJob("j1").find((s) => s.name === AGENT_SPAN)!.attrs };
+    };
+    const out = await run({ ok: false, text: "Failed to authenticate", signedOut: true });
+    expect(out.run.signedOut).toBe(true);
+    expect(out.attrs).toMatchObject({ "zero.engine.signed_out": true });
+    const fine = await run({ ok: true, text: "done" });
+    expect(fine.run).not.toHaveProperty("signedOut");
+    expect(fine.attrs).not.toHaveProperty("zero.engine.signed_out");
   });
 
   it("records the tokens on the agent span only when the engine reports them", async () => {
@@ -266,6 +314,71 @@ describe("an engine out of quota or credit", () => {
     const source = readFileSync(new URL("../src/line/runner.ts", import.meta.url), "utf8");
     expect(source).not.toContain("subscription plan used up");
     expect(source.split(NEUTRAL).length - 1).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe("an engine whose session expired", () => {
+  const expired = { ok: false, text: "Failed to authenticate: OAuth session expired", signedOut: true };
+
+  it("goes on with a replacement in the same try", async () => {
+    const { ctx } = factory({ engine: "claude", fallback: ["codex"] });
+    const agents = fakeAgents({ spec: (_req, n) => (n === 1 ? expired : {}), build: (req) => (write(req), {}) });
+    const { job } = requestWork(ctx, { text: "health" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("delivered");
+    const specs = agents.calls.filter((c) => c.station === "spec");
+    expect(specs).toHaveLength(2);
+    expect(specs[1]!.engine).toMatchObject({ name: "codex", replaces: "claude" });
+  });
+
+  it("sends the job back to the queue from spec without spending tries, and resumes after the wait", async () => {
+    let clock = new Date("2026-10-29T15:00:00Z");
+    const { ctx } = factory({ engine: "claude" }, () => clock);
+    let signedIn = false;
+    const agents = fakeAgents({ spec: () => (signedIn ? {} : expired), build: (req) => (write(req), {}) });
+    const { job } = requestWork(ctx, { text: "health" });
+    const queued = await runJob(job.id, deps(ctx, agents.runner));
+    expect(queued.status).toBe("queued");
+    expect(queued.reason ?? "").not.toMatch(/^La estación spec no produjo/);
+    expect(agents.count.spec).toBe(1);
+    const b = budgetState(ctx.store, ctx.config, clock);
+    expect(b.reached).toBe(true);
+    expect(b.reason).toContain("iniciar sesión");
+
+    clock = new Date("2026-10-29T15:16:00Z");
+    signedIn = true;
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("delivered");
+    expect(done.spec).toBeTruthy();
+    expect(agents.count.spec).toBe(2);
+  });
+
+  it("does not spend a build attempt", async () => {
+    const { ctx } = factory({ engine: "claude" });
+    const agents = fakeAgents({ build: (req, n) => (n === 1 ? (writeTree(req.cwd, { "half.ts": "half\n" }), expired) : (write(req), {})) });
+    const { job } = requestWork(ctx, { text: "health" });
+    const queued = await runJob(job.id, deps(ctx, agents.runner));
+    expect(queued).toMatchObject({ status: "queued", attempt: 0 });
+    const attempt = ctx.store.spansForJob(job.id).find((s) => s.name === "zero.attempt")!;
+    expect(attempt.status).toBe("error");
+    expect(agents.count.build).toBe(1);
+  });
+
+  it("parks a spec refused with invalid_grant and resumes it once the engine answers", async () => {
+    let clock = new Date("2026-10-29T15:00:00Z");
+    const { ctx } = factory({ engine: "claude" }, () => clock);
+    let signedIn = false;
+    const agents = fakeAgents({ spec: () => (signedIn ? {} : { ok: false, text: "invalid_grant", signedOut: true }), build: (req) => (write(req), {}) });
+    const { job } = requestWork(ctx, { text: "health" });
+    const queued = await runJob(job.id, deps(ctx, agents.runner));
+    expect(queued.status).toBe("queued");
+    expect(queued.reason ?? "").not.toMatch(/^La estación spec no produjo/);
+    expect(budgetState(ctx.store, ctx.config, clock).reason).toContain("/login");
+
+    clock = new Date("2026-10-29T15:16:00Z");
+    signedIn = true;
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+    expect(done.status).toBe("delivered");
+    expect(done.spec).toBeTruthy();
   });
 });
 

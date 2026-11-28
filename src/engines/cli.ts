@@ -96,6 +96,8 @@ interface ExecuteHooks {
   failure?: (r: ProcessResult) => string;
   /** The plan reading of a call that was not cancelled. */
   quota?: (r: ProcessResult, ok: boolean) => Promise<QuotaReport | undefined>;
+  /** Whether a failed exit says the engine's session expired or was never started; only asked on a non-zero exit that was not cut by time. */
+  signedOut?: (r: ProcessResult) => boolean;
 }
 
 async function execute(name: string, inv: Invocation, req: EngineRequest, hooks: ExecuteHooks = {}): Promise<EngineResult> {
@@ -107,9 +109,9 @@ async function execute(name: string, inv: Invocation, req: EngineRequest, hooks:
   return quota ? { ...result, quota } : result;
 }
 
-async function outcome(name: string, r: ProcessResult, req: EngineRequest, { output = (p) => finalText(p.stdout), failure = (p) => p.stderr || p.stdout }: ExecuteHooks): Promise<EngineResult> {
-  if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min` };
-  if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${failure(r).slice(-2000)}` };
+async function outcome(name: string, r: ProcessResult, req: EngineRequest, { output = (p) => finalText(p.stdout), failure = (p) => p.stderr || p.stdout, signedOut }: ExecuteHooks): Promise<EngineResult> {
+  if (r.timedOut) return { ok: false, text: `${name} timed out after ${req.timeoutMs / 60_000} min`, timedOut: true };
+  if (r.code !== 0) return { ok: false, text: `${name} exited with ${r.code}: ${failure(r).slice(-2000)}`, ...(signedOut?.(r) && { signedOut: true }) };
   return fromText(name, await output(r), r.stderr);
 }
 
@@ -221,6 +223,14 @@ export function codexOutOfCredit(stdout: string, stderr: string): boolean {
   return CODEX_OUT_OF_CREDIT.test(stderr) || CODEX_OUT_OF_CREDIT.test(codexError(stdout) ?? "");
 }
 
+/** What Codex says when its session expired or was never started. */
+export const CODEX_SIGNED_OUT = /not logged in|\b401 unauthorized\b|\btoken (?:has )?expired\b|\brefresh token\b/i;
+
+/** Whether a failed call was refused for lack of a session: its stderr or its last error event says so. */
+export function codexSignedOut(stdout: string, stderr: string): boolean {
+  return CODEX_SIGNED_OUT.test(stderr) || CODEX_SIGNED_OUT.test(codexError(stdout) ?? "");
+}
+
 /**
  * What a run tells about the plan. Only plans report usage windows, so windows
  * without any word on the session still mean a subscription; a failed call with
@@ -296,6 +306,7 @@ async function runCodex(req: EngineRequest, sandbox: "on" | "off"): Promise<Engi
       output: async (r) => (await readFile(files.lastMessage, "utf8").catch(() => codexAnswer(r.stdout))).trim(),
       failure: (r) => (r.stderr.trim() ? r.stderr : (codexError(r.stdout) ?? r.stdout)),
       quota: async (r, ok) => codexQuota(await codexSession(req, dir), codexWindows(r.stdout), ok, !ok && codexOutOfCredit(r.stdout, r.stderr)),
+      signedOut: (r) => codexSignedOut(r.stdout, r.stderr),
     });
     return req.schema && result.ok ? withStructuredOutput(req.schema, result) : result;
   } finally {

@@ -116,7 +116,7 @@ export async function recruitPass(ctx: FactoryContext, runAgent: AgentRunner, no
   if (!choice.available) return 0;
   let maxBudgetUsd: number | undefined;
   if (choice.billing !== "subscription") {
-    const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(shift, now), now);
+    const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, periodStart(shift, now), now, ctx.config);
     if (left <= 0) return 0;
     maxBudgetUsd = Math.round(left * 1e6) / 1e6;
   }

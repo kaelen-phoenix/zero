@@ -391,7 +391,7 @@ describe("operation output", () => {
   it("recognizes the shapes by name and folder, in any case", () => {
     const paths = [
       "plus-media/a.txt", "x/plus-cleanup/b.json", "reports/2026-10.html", "docs/Informes/oct.pdf", "informe-tienda-2026-10.md", ".zero/townhall/a.md", "zero.factory.yaml", "sub/App.LOG",
-      "state.db", "a/state.db-wal", "a.db-shm", "a.db-journal", "a.sqlite", "a.SQLITE3", "daemon.lock", "x/secrets.enc", ".zero/worktrees/a", ".zero/jobs/b", ".zero/gate/c", ".zero/bin/d", ".zero/packages/e", ".zero/reports/f", ".zero/drills/f",
+      "state.db", "a/state.db-wal", "a.db-shm", "a.db-journal", "a.sqlite", "a.SQLITE3", "daemon.lock", "package-update.lock", "x/secrets.enc", ".zero/worktrees/a", ".zero/jobs/b", ".zero/gate/c", ".zero/bin/d", ".zero/packages/e", ".zero/reports/f", ".zero/drills/f",
       "report/a.csv", "informe/a.xlsx", "reports/deep/a.txt", "reports/a.xml", "reports/a.htm", "reports/a.json", "reports/a.md", "briefing-2026.pdf", "x/BRIEFING-lunes.html",
     ];
     expect(flagged(paths)).toEqual(paths);

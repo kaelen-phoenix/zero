@@ -12,7 +12,7 @@ export function zeroRoot(): string {
 }
 
 /** Files the image copies from the zero package. The image tag is their content hash. */
-const CONTEXT = ["package.json", "package-lock.json", "dist", "agents", "box/Dockerfile"];
+const CONTEXT = ["package.json", "package-lock.json", "dist", "agents", "skills", "box/Dockerfile"];
 
 function files(root: string): string[] {
   const out: string[] = [];

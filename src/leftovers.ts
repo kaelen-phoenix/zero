@@ -30,6 +30,16 @@ export function killTree(child: Pick<ChildProcess, "pid" | "kill">): void {
   }
 }
 
+/** Whether a process is there, whoever it belongs to. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e.code === "EPERM";
+  }
+}
+
 /** Whether a command line or a path names something inside `folder`: the folder itself or a path under it, never a sibling that only starts the same. */
 export function mentionsFolder(text: string, folder: string, windows = process.platform === "win32"): boolean {
   const norm = (s: string) => (windows ? s.replaceAll("/", "\\").toLowerCase() : s);

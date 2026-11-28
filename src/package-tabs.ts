@@ -30,6 +30,8 @@ export const TabDataSchema = z.object({
             if (problem) ctx.addIssue({ code: "custom", message: problem });
           })
           .optional(),
+        /** Whose item it is, for guests limited to some values. Anything but a text counts as none: hidden from them, and the rest of the tab goes on. */
+        scope: z.string().optional().catch(undefined),
       }),
     )
     .max(MAX_TAB_ITEMS),
@@ -88,6 +90,11 @@ export function readTabData(dataDir: string, tab: Pick<PackageTab, "data">): Tab
   return parsed.success ? { state: "ok", items: parsed.data.items } : invalid;
 }
 
+/** The items someone limited to these scope values may see: exact matches only, none without `scope`. No limit: all of them. */
+export function visibleItems(items: TabItem[], scopes?: readonly string[]): TabItem[] {
+  return scopes ? items.filter((i) => i.scope !== undefined && scopes.includes(i.scope)) : items;
+}
+
 /** The real path of `file` inside the data folder when it is a regular file within MAX_DOWNLOAD_BYTES there, links resolved; it never throws. */
 export function dataFile(dataDir: string, file: string): string | undefined {
   if (pathProblem(file)) return undefined;
@@ -102,10 +109,10 @@ export function dataFile(dataDir: string, file: string): string | undefined {
   }
 }
 
-/** The real path of a file the tab's current data lists with that exact `file`, under the same rules as `dataFile`; it never throws. */
-export function tabFile(dataDir: string, tab: Pick<PackageTab, "data">, file: string): string | undefined {
+/** The real path of a file the tab's current data lists with that exact `file`, in an item visible within `scopes` when given, under the same rules as `dataFile`; it never throws. */
+export function tabFile(dataDir: string, tab: Pick<PackageTab, "data">, file: string, scopes?: readonly string[]): string | undefined {
   const data = readTabData(dataDir, tab);
-  if (data.state !== "ok" || !data.items.some((i) => i.file === file)) return undefined;
+  if (data.state !== "ok" || !visibleItems(data.items, scopes).some((i) => i.file === file)) return undefined;
   return dataFile(dataDir, file);
 }
 

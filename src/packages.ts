@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageStation, type PackageTab } from "./config.js";
+import { CustomAgentSchema, FIXED_STATIONS, instructionsProblem, loadFactory, PERFORMANCE_AGENT, type FactoryConfig, type LoadedPackages, type PackageAgent, type PackageEntry, type PackageGuests, type PackageStation, type PackageTab } from "./config.js";
 import type { FactoryHome } from "./home.js";
 import { SECRET_NAME } from "./keychain.js";
 import { log } from "./log.js";
@@ -92,6 +92,17 @@ const ManifestTabSchema = z
   })
   .strict();
 
+/** What the panel's guests may be offered: nothing else of the package can reach them. */
+const ManifestGuestsSchema = z
+  .object({
+    /** What tells one guest's part from another's, matched against each item's `scope`. */
+    scope: z.object({ name: z.string().regex(NAME, NAME_RULE), title: z.string().trim().min(1).max(60) }).strict().optional(),
+    tabs: z.array(z.string()).default([]),
+    run: z.array(z.string()).default([]),
+    upload: z.array(z.string()).default([]),
+  })
+  .strict();
+
 export const ManifestSchema = z
   .object({
     interface: z.literal(PACKAGE_INTERFACE),
@@ -103,6 +114,8 @@ export const ManifestSchema = z
     stations: z.array(ManifestStationSchema).default([]),
     /** Read-only panel tabs, each showing a JSON file of the package's data folder. */
     tabs: z.array(ManifestTabSchema).default([]),
+    /** Absent: guests are offered nothing. */
+    guests: ManifestGuestsSchema.optional(),
   })
   .strict();
 export type PackageManifest = z.output<typeof ManifestSchema>;
@@ -256,6 +269,26 @@ function packageTabs(manifest: PackageManifest): PackageTab[] {
   });
 }
 
+/** What the manifest offers to guests, every name checked against its own tabs and stations. */
+function packageGuests(manifest: PackageManifest): PackageGuests | undefined {
+  if (!manifest.guests) return undefined;
+  const { scope, tabs, run, upload } = manifest.guests;
+  for (const [key, names] of Object.entries({ tabs, run, upload })) {
+    const repeated = names.find((n, i) => names.indexOf(n) !== i);
+    if (repeated !== undefined) throw new Refused(`guests.${key}: "${repeated}" está repetido`);
+  }
+  for (const name of tabs) if (!manifest.tabs.some((t) => t.name === name)) throw new Refused(`guests.tabs: no existe la pestaña "${name}"`);
+  const station = (key: string, name: string) => {
+    const found = manifest.stations.find((s) => s.name === name);
+    if (!found) throw new Refused(`guests.${key}: no existe la estación "${name}"`);
+    return found;
+  };
+  for (const name of run) if (!station("run", name).onDemand) throw new Refused(`guests.run: la estación "${name}" no tiene onDemand: true`);
+  for (const name of upload) if (!station("upload", name).uploads) throw new Refused(`guests.upload: la estación "${name}" no tiene uploads`);
+  if (!tabs.length && !run.length && !upload.length) throw new Refused("guests: no ofrece nada, falta al menos un nombre en tabs, run o upload");
+  return { ...(scope && { scope }), tabs, run, upload };
+}
+
 /** A package's own data folder in ZERO_HOME, where its stations write and its tabs read. */
 export const packageDataDir = (home: Pick<FactoryHome, "packageData">, name: string): string => join(home.packageData, name);
 
@@ -274,6 +307,11 @@ export function entryName(entry: PackageEntry, home: Pick<FactoryHome, "config" 
   } catch {
     return entryLabel(entry);
   }
+}
+
+/** The only machine the owner lets a station run on, as the file says it; undefined: any. */
+export function pinnedMachine(entry: Pick<PackageEntry, "machine" | "machines">, station: string): string | undefined {
+  return entry.machines && Object.hasOwn(entry.machines, station) ? entry.machines[station] : entry.machine;
 }
 
 /** Why code from this real folder must not be imported: the jobs' agents can write there. */
@@ -307,6 +345,8 @@ export function warnOnce(message: string, fields?: Record<string, unknown>): voi
 export function loadPackages(config: Pick<FactoryConfig, "packages" | "agents" | "lines">, home: Pick<FactoryHome, "config" | "packages" | "worktrees" | "jobs">): LoadedPackages {
   const out: LoadedPackages = { packages: [], agents: [], skills: [], stations: [], problems: [] };
   const taken = new Set([...config.agents, ...config.lines.flatMap((l) => l.agents)].map((a) => a.name));
+  // Zero's performance reviewer holds its name on every line once one turns it on.
+  if (config.lines.some((l) => l.performance)) taken.add(PERFORMANCE_AGENT);
   for (const [index, entry] of (config.packages ?? []).entries()) {
     let label = entryLabel(entry);
     try {
@@ -319,14 +359,22 @@ export function loadPackages(config: Pick<FactoryConfig, "packages" | "agents" |
       const agents = packageAgents(manifest, root, entry, skills, taken);
       const stations = packageStations(manifest, root, entry, skills);
       const tabs = packageTabs(manifest);
+      const guests = packageGuests(manifest);
       for (const a of agents) taken.add(a.name);
-      out.packages.push({ name: manifest.name, version: manifest.version, dir: root, index, entry, agents: agents.map((a) => a.name), skills: skills.map((s) => s.fullName), stations: stations.map((s) => s.name), tabs });
+      out.packages.push({ name: manifest.name, version: manifest.version, dir: root, index, entry, agents: agents.map((a) => a.name), skills: skills.map((s) => s.fullName), stations: stations.map((s) => s.name), tabs, ...(guests && { guests }) });
       out.agents.push(...agents);
       out.skills.push(...skills);
-      if (!stations.length) continue;
+      const unknown = Object.keys(entry.machines ?? {}).filter((name) => !stations.some((s) => s.name === name));
+      // A misspelled name would leave the station it meant free to run anywhere, so none of them runs.
+      const pins = unknown.length ? `machines fija estaciones que el paquete no trae (${unknown.join(", ")})` : undefined;
+      if (!stations.length) {
+        if (pins) out.problems.push({ package: manifest.name, reason: pins });
+        continue;
+      }
       const names = stations.map((s) => s.name).join(", ");
       const refusal = entry.allowCode ? codeRefusal(config, home, root) : `falta allowCode: true en su entrada para correr código`;
-      if (refusal) out.problems.push({ package: manifest.name, reason: `sus estaciones (${names}) no corren: ${refusal}` });
+      const refusals = [refusal, pins].filter((r) => r !== undefined);
+      if (refusals.length) out.problems.push({ package: manifest.name, reason: `sus estaciones (${names}) no corren: ${refusals.join("; ")}` });
       else out.stations.push(...stations);
     } catch (err) {
       out.problems.push({ package: label, reason: err instanceof Refused ? err.message : `no se pudo cargar: ${err instanceof Error ? err.message : String(err)}` });

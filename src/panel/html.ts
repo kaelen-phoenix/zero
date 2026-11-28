@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryStatus, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
+import { REQUEST_TYPES, RESEARCH_TOPIC_CHARS, type AgentGuide, type EgressReport, type FactoryGuide, type FactoryJob, type FactoryProposal, type FactoryStatus, type JobMachine, type LineRow, type LineStation, type MonitorPeriod, type MonitorView, type PackageList, type PackageTabLink, type PackageTabView, type ProductionLine, type ProposalLine, type ProposalStage, type ProposalView, type RemoteChatView, type RequestFilter, type RequestsView, type ResearchLine, type ResearchOnDemand, type StationState, type StationView } from "../app.js";
 import type { CatalogAddPlan } from "../app.js";
 import type { CatalogEntry } from "../catalog.js";
 import type { Autonomy, StationName } from "../config.js";
-import { billingLine, budgetLine, installLine, jamLine, machineLine, trainLine, bytes, describeJobStatus, describeResearchRun, describeStationRun, describeUnjamRun, jobCost, jobName, jobOrigin, onDemandState, outageLine, planSummary, researchPendingText, resetTime, selfUpdateLines, STATUS_TEXT, unjamPendingText } from "../format.js";
+import { billingLine, budgetLine, installLine, jamLine, lineAwayLine, machineLine, trainLine, bytes, describeFactoryJob, describeJobStatus, describeResearchRun, describeStationRun, packageByHandLine, packageInstalled, packageNews, describeUnjamRun, jobCost, jobName, jobOrigin, machineNote, onDemandState, outageLine, planSummary, recentJobs, researchPendingText, resetTime, selfUpdateLines, sentLine, STATUS_TEXT, unjamPendingText } from "../format.js";
 import { pullRequestOf, type MergeState } from "../line/automerge.js";
 import { discardRefusal } from "../line/discard.js";
 import { describeDelivery } from "../line/finish.js";
@@ -39,7 +39,7 @@ a { color:var(--accent); text-underline-offset:.2em; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
 code, pre { font-family:var(--mono); }
 :not(pre) > code { background:var(--code-bg); padding:.1em .35em; border-radius:4px; font-size:.9em; }
-.brand { display:inline-flex; align-items:center; gap:10px; font:600 1.2rem/1 var(--mono); letter-spacing:-.02em; color:var(--fg); }
+.brand { display:inline-flex; align-items:center; gap:10px; font:600 1.2rem/1 var(--mono); letter-spacing:-.02em; color:var(--fg); text-decoration:none; }
 .brand .logo { width:26px; height:26px; flex:none; }
 header.top { padding:14px 20px; border-bottom:1px solid var(--rule); background:var(--surface); }
 .nav-toggle { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
@@ -50,6 +50,7 @@ header.top { padding:14px 20px; border-bottom:1px solid var(--rule); background:
 #nav-toggle:focus-visible ~ .side .toggle { outline:2px solid var(--accent); }
 .side ul.links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
 .side ul.links a { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:8px; color:var(--muted); text-decoration:none; font-weight:500; white-space:nowrap; }
+.side ul.links button { display:flex; align-items:center; gap:12px; padding:8px 10px; margin:8px 0 0; color:var(--muted); }
 .side ul.links a:hover { background:var(--surface-2); color:var(--fg); }
 .side ul.links a[aria-current="page"] { background:var(--surface-2); color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
 .side svg, .ic svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
@@ -151,10 +152,10 @@ details.ins summary { cursor:pointer; color:var(--accent); margin-top:8px; }
 `;
 
 /** Draws an icon from its inline SVG paths, so the panel's policy needs no outside resource. */
-const icon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+export const icon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 
 /** The site's symbol (site/favicon.svg): a ring and an orange dot, next to the word in the mono font. */
-const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="25" cy="7" r="3.5" fill="#ff8a5c"/></svg><span class="word">zero</span>`;
+export const LOGO = `<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="25" cy="7" r="3.5" fill="#ff8a5c"/></svg><span class="word">zero</span>`;
 
 const MENU_ICON = `<path d="M4 6h16M4 12h16M4 18h16"/>`;
 
@@ -173,6 +174,7 @@ const NAV: [href: string, label: string, icon: string][] = [
   ["/about", "Qué es zero", `<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>`],
   ["/agents", "Agentes", `<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1M2 13v3M22 13v3"/>`],
   ["/remote-chat", "Chat remoto", `<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>`],
+  ["/guests", "Invitados", `<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6.5 7-6.5s7 2.5 7 6.5M19 8v6M16 11h6"/>`],
   ["/packages", "Paquetes", `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`],
 ];
 
@@ -185,10 +187,14 @@ const TAB_ICON = `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.
 export const tabLinks = (tabs: PackageTabLink[], active?: string) =>
   tabs.map((t) => `<li><a href="${esc(t.href)}"${t.href === active ? ` aria-current="page"` : ""} title="${esc(t.title)}">${icon(TAB_ICON)}<span class="lb">${esc(t.title)}</span></a></li>`).join("");
 
-/** The side menu: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
+/** The side menu's frame: a CSS-only checkbox collapses it to icons on a wide screen and opens it as a dropdown on a phone. */
+export const menu = (links: string, brand = `<span class="brand">${LOGO}</span>`) =>
+  `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row">${brand}<label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}</ul></nav>`;
+
+/** The menu of the person in charge: every section and the packages' tabs. */
 function sideMenu(active?: string): string {
   const links = NAV.map(([href, label, paths]) => `<li><a href="${href}"${href === active ? ` aria-current="page"` : ""} title="${esc(label)}">${icon(paths)}<span class="lb">${esc(label)}</span></a></li>`).join("");
-  return `<input type="checkbox" id="nav-toggle" class="nav-toggle"><nav class="side" aria-label="Secciones"><div class="brand-row"><span class="brand">${LOGO}</span><label for="nav-toggle" class="toggle" aria-label="Mostrar u ocultar el menú" title="Mostrar u ocultar el menú">${icon(MENU_ICON)}</label></div><ul class="links">${links}${TABS_MARK}</ul></nav>`;
+  return menu(`${links}${TABS_MARK}`);
 }
 
 /** Reloads the page every 15 s while nobody is typing, so the phone shows live state without a framework. */
@@ -199,9 +205,9 @@ const REFRESH = `setInterval(() => {
   if (document.visibilityState === "visible" && !typing && !drafted) location.reload();
 }, 15000);`;
 
-/** `active` is the side menu's section of the page; `nav: false` is the login page, which shows only the logo. */
-export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean; active?: string } = { nonce: "" }): string {
-  const chrome = opts.nav === false ? `<header class="top"><span class="brand">${LOGO}</span></header>` : sideMenu(opts.active);
+/** `active` is the side menu's section of the page; `nav: false` is the login page, which shows only the logo; `menu` replaces the menu of the person in charge. */
+export function page(title: string, body: string, opts: { nonce: string; flash?: string; refresh?: boolean; nav?: boolean; active?: string; menu?: string } = { nonce: "" }): string {
+  const chrome = opts.nav === false ? `<header class="top"><span class="brand">${LOGO}</span></header>` : (opts.menu ?? sideMenu(opts.active));
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin"><title>${esc(title)} · zero</title><style>${STYLE}</style></head>
 <body class="${opts.nav === false ? "plain" : "shell"}">${chrome}<main>
@@ -225,8 +231,8 @@ export function reportPage(view: { report?: MonthlyReport; error?: string; names
   return page("Informe mensual", form + body, { nonce, active: "/report" });
 }
 
-/** A package's read-only tab: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
-export function packageTabPage(view: PackageTabView, nonce: string): string {
+/** What a package's read-only tab shows: a third party's data, so every text is escaped, only http(s) links get an href and files are offered only through the panel's own download route. */
+export function packageTabBody(view: PackageTabView): string {
   const options = view.categories.map((c) => `<option value="${esc(c)}"${c === view.category ? " selected" : ""}>${esc(c)}</option>`).join("");
   const filter = view.categories.length
     ? `<form method="get" action="${esc(view.href)}"><label for="t-cat">Categoría</label><select id="t-cat" name="categoria"><option value="">Todas</option>${options}</select><button>Filtrar</button></form>`
@@ -246,8 +252,10 @@ export function packageTabPage(view: PackageTabView, nonce: string): string {
         : view.items.length
           ? `<div class="card"><ul class="jobs">${view.items.map(item).join("")}</ul></div>`
           : `<div class="card muted">No hay elementos${view.category ? " en esa categoría" : ""}.</div>`;
-  return page(view.title, `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`, { nonce });
+  return `<div class="card"><h1>${esc(view.title)}</h1><p class="muted">Datos del paquete ${esc(view.package)}, de solo lectura.</p>${filter}</div>${body}`;
 }
+
+export const packageTabPage = (view: PackageTabView, nonce: string): string => page(view.title, packageTabBody(view), { nonce });
 
 /** What a station takes as uploads, by `<package>/<station>`. */
 export type StationUploads = Record<string, { maxMb: number; extensions: string[] }>;
@@ -255,24 +263,31 @@ export type StationUploads = Record<string, { maxMb: number; extensions: string[
 /** One station of a package: its state, its last on-demand run and, when it takes them, the forms to ask for one and to upload a file. */
 function packageStation(pkg: string, s: PackageList["packages"][number]["stations"][number], onDemand: boolean, uploads?: StationUploads[string]): string {
   const ref = `${pkg}/${s.name}`;
-  const state = `${!s.allowed ? "no corre" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
+  const state = `${!s.allowed ? "no corre" : s.elsewhere ? "no corre en esta máquina" : s.missingSecrets.length ? `espera los secretos ${s.missingSecrets.join(", ")}` : s.lastRun ? `última pasada ${s.lastRun}` : "todavía no corrió"}${s.machine !== undefined ? ` · fijada a la máquina ${s.machine}` : ""}${s.whenBusy ? " · corre aunque la fábrica esté ocupada" : ""}`;
   const pending = s.onDemandPendingSince
-    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
+    ? `<p>Corrida a demanda pendiente desde ${esc(resetTime(s.onDemandPendingSince))}${s.onDemandGuest ? `, la pidió ${esc(s.onDemandGuest)} (invitado)` : ""}${s.onDemandRequest ? `, pedido: «${esc(s.onDemandRequest)}»` : ""}</p>`
     : "";
   const last = s.lastOnDemand ? `<p${s.lastOnDemand.outcome && s.lastOnDemand.outcome !== "done" ? ` class="bad"` : ""}>Última corrida a demanda: ${esc(describeStationRun(s.lastOnDemand))}</p>` : "";
-  const form = onDemand
+  const form = onDemand && !s.elsewhere
     ? `<form method="post" action="/packages/run"><input type="hidden" name="station" value="${esc(ref)}"><label for="p-${esc(ref)}">Pedido (opcional)</label><textarea id="p-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Pedir ahora</button></form>`
     : "";
-  const upload = uploads
+  const upload = uploads && !s.elsewhere
     ? `<form method="post" action="/packages/upload?station=${esc(encodeURIComponent(ref))}" enctype="multipart/form-data"><input type="hidden" name="station" value="${esc(ref)}"><label for="f-${esc(ref)}">Archivo (${esc(uploads.extensions.join(", "))}, hasta ${esc(String(uploads.maxMb))} MB)</label><input id="f-${esc(ref)}" type="file" name="file" accept="${esc(uploads.extensions.join(","))}" required><label for="u-${esc(ref)}">Pedido (opcional)</label><textarea id="u-${esc(ref)}" name="pedido" maxlength="4000"></textarea><button class="primary">Subir archivo</button></form>`
     : "";
   return `<div class="card"><h3>${esc(s.name)} <span class="muted">${esc(state)}</span></h3>${pending}${last}${form}${upload}</div>`;
 }
 
-/** The "Paquetes" tab: each loaded package's stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
+/** What a git package has installed, its channel or pin and what is newer: third parties' texts, escaped before the commands get their own tag. */
+function packageVersion(p: PackageList["packages"][number]): string {
+  if (p.source !== "git") return "";
+  const lines = [`instalado ${packageInstalled(p) ?? "(desconocido)"}`, ...packageNews(p)].map((line) => esc(line).replace(/`([^`]*)`/g, "<code>$1</code>"));
+  return `<p class="muted">${lines.join("<br>")}</p>`;
+}
+
+/** The "Paquetes" tab: each loaded package's version, stations, their on-demand runs and a "Pedir ahora" form on those that take them. */
 export function packagesPage(list: PackageList, onDemand: string[], nonce: string, flash?: string, uploads: StationUploads = {}): string {
   const packages = list.packages
-    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
+    .map((p) => `<h2>${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2>${packageVersion(p)}${p.stations.length ? p.stations.map((s) => packageStation(p.name, s, onDemand.includes(`${p.name}/${s.name}`), Object.hasOwn(uploads, `${p.name}/${s.name}`) ? uploads[`${p.name}/${s.name}`] : undefined)).join("") : `<p class="muted">Sin estaciones.</p>`}`)
     .join("");
   const problems = list.problems.length ? `<div class="card bad"><h2>Problemas</h2><ul>${list.problems.map((p) => `<li>${esc(p.package)}: ${esc(p.reason)}</li>`).join("")}</ul></div>` : "";
   return page(
@@ -315,10 +330,27 @@ export function loginPage(nonce: string, failed = false, back?: string): string 
 const CHIP_TEXT: Record<JobStatus, string> = { queued: "en cola", running: "trabajando", waiting: "te espera", delivered: "entregado", failed: "fallido", stopped: "detenido" };
 const chip = (status: JobStatus) => `<span class="chip" data-status="${status}">${CHIP_TEXT[status]}</span>`;
 
-const jobLine = (j: Job) =>
-  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}</span></li>`;
+/** Where a job is, only with other machines in the factory. */
+const onMachine = (m?: JobMachine) => (m ? (m.alive ? esc(machineNote(m)) : `<span class="bad">${esc(machineNote(m))}</span>`) : "");
 
-const answerForms = (j: Job) =>
+/** A job another machine has: its texts come from that machine. */
+const awayLine = (j: FactoryJob) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(j.title)}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)} · ${esc(describeFactoryJob(j))}${onMachine(j.machine)}</span></li>`;
+
+/** Where an answer goes, or what was already sent from here. */
+const awayNote = (m: JobMachine, note?: string) => `<p class="muted">${note ? `Desde esta máquina: ${esc(note)}.` : `Tu respuesta se entrega en la máquina ${esc(m.name)}${m.alive ? "" : " cuando vuelva"}.`}</p>`;
+
+/** The question of a job another machine has, with its answer unless one was already sent. */
+const awayQuestion = (j: FactoryJob) =>
+  j.question
+    ? `<pre>${esc(j.question.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${awayNote(j.machine, j.note)}${j.note ? "" : answerForms(j)}`
+    : "";
+
+const jobLine = (j: Job, machine?: JobMachine) =>
+  `<li><div class="top"><a class="job" href="/job/${esc(j.id)}"><b>${esc(jobName(j))}</b></a>${chip(j.status)}</div><span class="muted">${esc(j.id)} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))}${j.delivery ? ` · ${esc(describeDelivery(j.delivery))}` : ""}${onMachine(machine)}</span></li>`;
+
+const answerForms = (j: Pick<Job, "id">) =>
   `<form method="post" action="/job/${esc(j.id)}/answer"><label for="n-${esc(j.id)}">Nota (opcional)</label><input id="n-${esc(j.id)}" type="text" name="note">
 <button class="primary" name="decision" value="approve">Aprobar</button><button class="danger" name="decision" value="reject">Rechazar</button></form>`;
 
@@ -326,13 +358,14 @@ const answerForms = (j: Job) =>
 function budgetStat(s: FactoryStatus): string {
   const b = s.budget;
   const paused = b.reached ? ` · <span class="bad">PAUSADA${b.until ? ` hasta ${esc(resetTime(b.until))}` : ""}</span>` : "";
+  const shared = b.shared ? " · todas las máquinas" : "";
   if (b.billing === "subscription") {
     const top = [...b.windows].sort((x, y) => (y.utilization ?? 0) - (x.utilization ?? 0))[0];
-    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${paused}</span></div>`;
+    if (!top) return `<div class="stat"><b>—</b><span class="muted">cupo de la suscripción${shared}${paused}</span></div>`;
     const used = top.utilization === undefined ? "—" : `${Math.round(top.utilization * 100)}%`;
-    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${paused}</span></div>`;
+    return `<div class="stat"><b>${used}</b><span class="muted" title="${esc(planSummary(b))}">cupo de ${esc(top.label)}${top.resetsAt ? ` · se renueva ${esc(resetTime(top.resetsAt))}` : ""}${shared}${paused}</span></div>`;
   }
-  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${paused}</span></div>`;
+  return `<div class="stat"><b>${usd(b.spentUsd)}</b><span class="muted">de ${usd(b.limitUsd)} hoy${shared}${paused}</span></div>`;
 }
 
 /** The unjam station on demand: the pending request, the last run and, unless it is off, the form to ask for one. */
@@ -371,11 +404,17 @@ export function overviewPage(s: FactoryStatus, lines: string[], nonce: string, f
         : s.boxWait
           ? "Sin caja: los trabajos esperan en la cola. Corré <code>zero box setup</code> o elegí otra cosa con <code>zero setup</code>."
           : "Sin caja: los trabajos corren en copias locales.";
-  const waiting = s.waiting
-    .map((j) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
-<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`)
-    .join("");
-  const list = (title: string, jobs: Job[]) => (jobs.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${jobs.map(jobLine).join("")}</ul></div>` : "");
+  const waitingCard = (j: Job, machine?: JobMachine) =>
+    `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(jobName(j))}</a></h3>${jobOrigin(j) ? `<p class="muted">${esc(jobOrigin(j))}</p>` : ""}${machine ? `<p class="muted">${esc(j.id)}${onMachine(machine)}</p>` : ""}<pre>${esc(j.question?.text)}</pre>
+<p class="muted">Si nadie responde antes de ${esc(j.question?.expiresAt.slice(0, 16).replace("T", " "))} UTC: ${j.question?.onTimeout === "approve" ? "se aprueba" : "se rechaza"}.</p>${answerForms(j)}</div>`;
+  const awayCard = (j: FactoryJob) => `<div class="card"><h3><a class="job" href="/job/${esc(j.id)}">${esc(j.title)}</a></h3><p class="muted">${esc(j.id)}${onMachine(j.machine)}</p>${awayQuestion(j)}</div>`;
+  // With other machines in the factory, every list is of all of them.
+  const all = (status: JobStatus) => s.jobs?.filter((j) => j.status === status);
+  const waiting = (all("waiting")?.map((j) => (j.local ? waitingCard(j.local, j.machine) : awayCard(j))) ?? s.waiting.map((j) => waitingCard(j))).join("");
+  const list = (title: string, local: Job[], jobs?: FactoryJob[]) => {
+    const rows = jobs?.map((j) => (j.local ? jobLine(j.local, j.machine) : awayLine(j))) ?? local.map((j) => jobLine(j));
+    return rows.length ? `<div class="card"><h2>${title}</h2><ul class="jobs">${rows.join("")}</ul></div>` : "";
+  };
   const options = lines.map((l) => `<option>${esc(l)}</option>`).join("");
   return page(
     "Resumen",
@@ -391,20 +430,20 @@ ${s.isolation === "container" && s.box.availability.ready ? `<div class="stat"><
 ${s.install ? `<p class="muted"><span class="bad">${esc(installLine(s.install))}</span></p>` : ""}
 ${s.outages.map((o) => `<p class="muted"><span class="bad">${esc(outageLine(o))}</span></p>`).join("")}
 ${s.billing.map((b) => `<p class="muted"><span class="bad">${esc(billingLine(b))}</span></p>`).join("")}
-${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}
-${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
+${s.machines ? `<p class="muted">Máquinas:${s.machines.length ? "" : " todavía sin latidos"}</p>${s.machines.length ? `<ul>${s.machines.map((m) => `<li class="muted">${m.alive ? esc(machineLine(m)) : `<span class="bad">${esc(machineLine(m))}</span>`}</li>`).join("")}</ul>` : ""}` : ""}${s.linesAway?.length ? `<p class="muted">Líneas que no están en esta máquina:</p><ul>${s.linesAway.map((l) => `<li class="muted">${l.state === "failed" ? `<span class="bad">${esc(lineAwayLine(l))}</span>` : esc(lineAwayLine(l))}</li>`).join("")}</ul>` : ""}
+${s.sent?.length ? `<p class="muted">Para otras máquinas:</p><ul>${s.sent.map((e) => `<li class="muted">${esc(sentLine(e))}</li>`).join("")}</ul>` : ""}${s.trains.map((t) => `<p class="muted">${esc(trainLine(t))}</p>`).join("")}
 ${s.jams.length ? `<p class="muted">Trabas:</p><ul>${s.jams.map((j) => `<li class="muted">${esc(jamLine(j))}</li>`).join("")}</ul>` : ""}
-${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}
+${s.selfUpdate ? selfUpdateLines(s.selfUpdate).map((l) => `<p class="muted">${l.bad ? `<span class="bad">${esc(l.text)}</span>` : esc(l.text)}</p>`).join("") : ""}${s.selfUpdate?.offer ? `<form method="post" action="/update"><button>Actualizar ahora</button></form>` : ""}
 ${s.merges.map((m) => `<p class="muted">Fusión automática: <a href="${esc(m.url)}">${esc(m.url)}</a> · ${m.status === "blocked" ? `<span class="bad">no se funde: ${esc(m.why ?? "")}</span>` : esc(m.why ?? "esperando")}</p>`).join("")}
 ${s.intake.map((i) => `<p class="muted">Issues de GitHub: ${esc(i.line)} toma los issues con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.linear.map((i) => `<p class="muted">Issues de Linear: ${esc(i.line)} toma los issues del equipo <b>${esc(i.team)}</b> con la etiqueta <b>${esc(i.label)}</b>.${i.problem ? ` <span class="bad">${esc(i.problem)}</span>` : ""}</p>`).join("")}
 ${s.onDemand.map((d) => `<p class="muted">Corrida a demanda de <b>${esc(d.station)}</b>: pendiente desde ${esc(resetTime(d.since))}.</p>`).join("")}
 ${s.onDemandRuns.map((r) => `<p class="muted">Corrida a demanda de <b>${esc(r.station)}</b>, pedida ${esc(resetTime(r.asked))}: ${r.outcome === "failed" || r.outcome === "timeout" || r.outcome === "not-run" || r.stale ? `<span class="bad">${esc(onDemandState(r))}</span>` : esc(onDemandState(r))}.</p>`).join("")}
-${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
+${(s.packagesByHand ?? []).map((p) => `<p class="muted"><span class="bad">${esc(packageByHandLine(p)).replace(/`([^`]*)`/g, "<code>$1</code>")}</span></p>`).join("")}${s.whenBusy.length ? `<p class="muted">Estaciones que corren aunque la fábrica esté ocupada: ${esc(s.whenBusy.join(", "))}</p>` : ""}
 ${s.jira.map((j) => `<p class="muted">Issues de Jira: ${esc(j.line)} toma los issues de <b>${esc(j.project)}</b> (${esc(j.site)}) con la etiqueta <b>${esc(j.label)}</b>.${j.problem ? ` <span class="bad">${esc(j.problem)}</span>` : ""}</p>`).join("")}
 <form method="post" action="/andon">${s.andon ? `<button class="primary" name="state" value="off">Reanudar la fábrica</button>` : `<button class="danger" name="state" value="on">Detener la fábrica (andon)</button>`}</form></div>
 ${waiting ? `<h2>Esperando tu respuesta</h2>${waiting}` : ""}
-${list("Trabajando", s.running)}${list("En cola", s.queued)}${list("Últimos terminados", s.recent)}
+${list("Trabajando", s.running, all("running"))}${list("En cola", s.queued, all("queued"))}${list("Últimos terminados", s.recent, s.jobs && recentJobs(s.jobs))}
 ${unjamCard(s.unjam)}
 ${researchSummaryCard(s.research)}
 <div class="card"><h2>Pedir un trabajo</h2>
@@ -412,6 +451,19 @@ ${researchSummaryCard(s.research)}
 ${lines.length > 1 ? `<label for="line">Proyecto</label><select id="line" name="line">${options}</select>` : ""}
 <button class="primary">Pedir</button></form></div>`,
     { nonce, flash, refresh: true, active: "/" },
+  );
+}
+
+/** The page of a job another machine has: what that machine tells, and the answer to its question. */
+export function factoryJobPage(job: FactoryJob, nonce: string, flash?: string): string {
+  return page(
+    job.title,
+    `<div class="card"><h1>${esc(job.title)}</h1>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)} · prioridad ${esc(job.priority)}${onMachine(job.machine)}</p>
+<p>${chip(job.status)} <b>${esc(describeFactoryJob(job))}</b></p>
+${job.question ? `<h2>Pregunta para vos</h2>${awayQuestion(job)}` : ""}
+${job.note && !job.question ? `<p class="muted">Pedido desde esta máquina: ${esc(job.note)}.</p>` : `<p class="muted">La traza y la entrega están en la máquina ${esc(job.machine.name)}.</p>`}</div>`,
+    { nonce, flash, refresh: !FINAL_STATUSES.includes(job.status) },
   );
 }
 
@@ -432,12 +484,12 @@ const discardForm = (j: Job) =>
 <form method="post" action="/job/${esc(j.id)}/discard"><label for="d-${esc(j.id)}">Motivo (opcional)</label><input id="d-${esc(j.id)}" type="text" name="motivo">
 <button class="danger">Descartar</button></form></details>`;
 
-export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"]): string {
+export function jobPage(job: Job, traceText: string, nonce: string, flash?: string, subscription = false, mergeStatus?: MergeState["status"], machine?: JobMachine): string {
   const final = FINAL_STATUSES.includes(job.status);
   return page(
     jobName(job),
     `<div class="card"><h1>${esc(jobName(job))}</h1>
-<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}</p>
+<p class="muted">${esc(job.id)} · línea ${esc(job.line)}${jobOrigin(job) ? ` · ${esc(jobOrigin(job))}` : ""} · ${esc(jobCost(job, subscription))}${onMachine(machine)}</p>
 <p>${chip(job.status)} <b>${esc(describeJobStatus(job))}</b></p>
 ${job.delivery ? `<p class="ok">Entrega: ${job.delivery.url ? `<a href="${esc(job.delivery.url)}">${esc(describeDelivery(job.delivery))}</a>` : esc(describeDelivery(job.delivery))}</p>` : ""}
 ${job.reason ? `<p>Motivo:</p><pre>${esc(job.reason)}</pre>` : ""}
@@ -554,7 +606,7 @@ function proposalCard(p: ProposalView): string {
     : "";
   const actions = decidable
     ? `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">${p.awaitsIntegration ? "Aprobar e integrar" : "Aprobar"}</button></form>
-<form method="post" action="/proposals/${esc(p.id)}/reject"><label for="r-${esc(p.id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(p.id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`
+${rejectForm(p.id)}`
     : "";
   return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}</span></h3>
 <p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
@@ -566,6 +618,17 @@ ${p.issueUrl ? `<p class="muted">Issue: <a href="${esc(p.issueUrl)}">${esc(p.iss
 ${p.stage === "rejected" ? `<p class="bad">Rechazada: ${esc(p.note ?? "sin motivo")}</p>` : ""}${p.stage === "reverted" ? `<p class="bad">El turno nocturno la integró solo y la revertiste en la rama principal.</p>` : ""}${job}${actions}</div>`;
 }
 
+const rejectForm = (id: string) => `<form method="post" action="/proposals/${esc(id)}/reject"><label for="r-${esc(id)}">Motivo del rechazo (opcional)</label><input id="r-${esc(id)}" type="text" name="note"><button class="danger">Rechazar</button></form>`;
+
+/** A proposal that waits on another machine: its texts come from that machine. */
+function awayProposal(p: FactoryProposal): string {
+  const actions = p.note ? "" : `<form method="post" action="/proposals/${esc(p.id)}/approve" class="inline"><button class="primary">Aprobar</button></form>
+${rejectForm(p.id)}`;
+  return `<div class="card"><h3>${esc(p.title)} <span class="muted">${esc(p.id)}${onMachine(p.machine)}</span></h3>
+<p>${esc(p.why)}</p><p class="muted">Qué cambiaría: ${esc(p.change)}</p>
+<p class="muted">Línea ${esc(p.line)} · costo estimado ${usd(p.estimatedUsd)}</p>${awayNote(p.machine, p.note)}${actions}</div>`;
+}
+
 function proposalLine(l: ProposalLine): string {
   const groups = STAGES.map(([stage, title]) => {
     const items = l.proposals.filter((p) => p.stage === stage);
@@ -575,20 +638,22 @@ function proposalLine(l: ProposalLine): string {
 }
 
 /** The night shift's proposals of every line, grouped by where they stand, with each line's autonomy. */
-export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[] }, nonce: string, flash?: string): string {
+export function proposalsPage(data: { research: Autonomy | "off"; lines: ProposalLine[]; away?: FactoryProposal[] }, nonce: string, flash?: string): string {
   const research = data.research === "off" ? "apagada" : AUTONOMY[data.research];
   return page(
     "Propuestas",
     `<div class="card"><h1>Propuestas del turno nocturno</h1>
 <p class="muted">Lo que <code>scout</code> propone cuando la fábrica está libre. Las nacidas de una nota de investigación las regula la autonomía de investigación: <b>${esc(research)}</b>.</p></div>
-${data.lines.map(proposalLine).join("")}`,
+${data.lines.map(proposalLine).join("")}${data.away?.length ? `<h2>En otras máquinas</h2>${data.away.map(awayProposal).join("")}` : ""}`,
     { nonce, flash, refresh: true, active: "/proposals" },
   );
 }
 
 /** The step before approving a proposal: approving opens a job or integrates one, so the owner confirms it. */
-export function confirmProposalPage(p: ProposalView, nonce: string): string {
-  const what = p.awaitsIntegration
+export function confirmProposalPage(p: ProposalView | FactoryProposal, nonce: string): string {
+  const what = "machine" in p
+    ? `Aprobar abre un trabajo normal en la línea ${esc(p.line)}, en la máquina ${esc(p.machine.name)}.`
+    : p.awaitsIntegration
     ? `El trabajo ${esc(p.job?.id)} ya está construido: aprobar lo integra según la configuración de la línea ${esc(p.line)}.`
     : `Aprobar abre un trabajo normal en la línea ${esc(p.line)}.`;
   return page(
@@ -668,7 +733,7 @@ const ESTADOS: [RequestFilter, string][] = [
 ];
 
 /** One job of the "Pedidos" list, with its actions: detail and trace, its pending question, stop. */
-function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
+function requestRow({ job: j, machine, age }: RequestsView["rows"][number]): string {
   const id = esc(j.id);
   const question =
     j.status === "waiting" && j.question
@@ -677,8 +742,16 @@ function requestRow({ job: j, age }: RequestsView["rows"][number]): string {
       : "";
   const halt = FINAL_STATUSES.includes(j.status) ? "" : `<form method="post" action="/requests/${id}/stop"><button class="danger">Frenar</button></form>`;
   return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(jobName(j))}</a></h3>
-<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}</p>
+<p class="muted">${id} · ${esc(j.line)}${jobOrigin(j) ? ` · ${esc(jobOrigin(j))}` : ""} · ${esc(describeJobStatus(j))} · ${esc(age)}${onMachine(machine)}</p>
 <p><a href="/job/${id}">Ver detalle y traza</a></p>${question}${halt}</div>`;
+}
+
+/** One job of the list that another machine has. */
+function awayRow({ job: j, age }: RequestsView["away"][number]): string {
+  const id = esc(j.id);
+  return `<div class="card" id="request-${id}"><h3><a class="job" href="/job/${id}">${esc(j.title)}</a></h3>
+<p class="muted">${id} · ${esc(j.line)} · ${esc(describeFactoryJob(j))} · ${esc(age)}${onMachine(j.machine)}</p>
+<p><a href="/job/${id}">Ver detalle</a></p>${awayQuestion(j)}</div>`;
 }
 
 /** The "Pedidos" section: a typed request form, then every request with filters and per-request actions. */
@@ -697,8 +770,12 @@ export function requestsPage(view: RequestsView, nonce: string, flash?: string):
 <form method="get" action="/requests"><label for="f-line">Línea</label><select id="f-line" name="line"><option value="">Todas las líneas</option>${lineOptions(view.line)}</select>
 <label for="f-estado">Estado</label><select id="f-estado" name="estado">${ESTADOS.map(([v, label]) => `<option value="${v}"${v === view.estado ? " selected" : ""}>${label}</option>`).join("")}</select>
 <button>Filtrar</button></form>
-${view.rows.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
-  return page("Pedidos", form + filters + `<section class="requests">${view.rows.map(requestRow).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
+${view.rows.length || view.away.length ? "" : `<p class="muted">No hay pedidos con ese filtro.</p>`}</div>`;
+  const at = (row: { job: { createdAt: string } }) => Date.parse(row.job.createdAt);
+  const rows = [...view.rows.map((r) => ({ at: at(r), html: requestRow(r) })), ...view.away.map((r) => ({ at: at(r), html: awayRow(r) }))];
+  // The local rows come newest first already; only other machines' need a place among them.
+  if (view.away.length) rows.sort((a, b) => b.at - a.at);
+  return page("Pedidos", form + filters + `<section class="requests">${rows.map((r) => r.html).join("")}</section>`, { nonce, flash, refresh: true, active: "/requests" });
 }
 
 /** The step before stopping a job from the list: the owner confirms it. */

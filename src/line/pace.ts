@@ -66,13 +66,8 @@ export interface VerifyHistory {
   getJob(id: string): { line: string } | undefined;
 }
 
-/**
- * The time limit of one verify command of a line: the line's `verifyTimeoutMinutes` (20 by default), and never
- * less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a
- * machine that is slow does not fail jobs whose tests pass. A run that hangs still ends: history alone never gives more than 4 hours.
- */
-export function verifyTimeoutMs(history: VerifyHistory, line: Pick<LineConfig, "name" | "verifyTimeoutMinutes">, command: string, now: Date): number {
-  const floor = (line.verifyTimeoutMinutes ?? DEFAULT_VERIFY_MINUTES) * 60_000;
+/** How long the slowest of the last 5 passing runs of a command on a line took, in the last 30 days; undefined when there is none. */
+export function slowestPassMs(history: VerifyHistory, lineName: string, command: string, now: Date): number | undefined {
   const lines = new Map<string, string | undefined>();
   const lineOf = (jobId: string) => {
     if (!lines.has(jobId)) lines.set(jobId, history.getJob(jobId)?.line);
@@ -80,10 +75,20 @@ export function verifyTimeoutMs(history: VerifyHistory, line: Pick<LineConfig, "
   };
   const took = history
     .spansSince(VERIFY_COMMAND_SPAN, new Date(now.getTime() - HISTORY_DAYS * 86_400_000))
-    .filter((s) => s.status === "ok" && s.end && s.jobId && s.attrs["process.command_line"] === command && lineOf(s.jobId) === line.name)
+    .filter((s) => s.status === "ok" && s.end && s.jobId && s.attrs["process.command_line"] === command && lineOf(s.jobId) === lineName)
     .slice(-HISTORY_RUNS)
     .map((s) => (typeof s.attrs["zero.run_ms"] === "number" ? (s.attrs["zero.run_ms"] as number) : Date.parse(s.end!) - Date.parse(s.start)))
     .filter((ms) => Number.isFinite(ms) && ms > 0);
-  const learned = Math.min(2 * Math.max(0, ...took), MAX_LEARNED_MS);
+  return took.length ? Math.max(...took) : undefined;
+}
+
+/**
+ * The time limit of one verify command of a line: the line's `verifyTimeoutMinutes` (20 by default), and never
+ * less than twice what the slowest of its last 5 passing runs on that line took, so a suite that grows or a
+ * machine that is slow does not fail jobs whose tests pass. A run that hangs still ends: history alone never gives more than 4 hours.
+ */
+export function verifyTimeoutMs(history: VerifyHistory, line: Pick<LineConfig, "name" | "verifyTimeoutMinutes">, command: string, now: Date): number {
+  const floor = (line.verifyTimeoutMinutes ?? DEFAULT_VERIFY_MINUTES) * 60_000;
+  const learned = Math.min(2 * (slowestPassMs(history, line.name, command, now) ?? 0), MAX_LEARNED_MS);
   return Math.max(floor, learned);
 }

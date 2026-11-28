@@ -1,5 +1,5 @@
 import type { EgressRule } from "../box/egress.js";
-import type { EgressRow, Store } from "../state/store.js";
+import type { EgressRow, SpanRow, Store } from "../state/store.js";
 
 /** Span names the metrics are derived from. */
 export const AGENT_SPAN = "gen_ai.invoke_agent";
@@ -147,6 +147,22 @@ export function computeMetrics(store: Store, from: Date, to: Date = new Date()):
     byEngine,
     egress: { connections: egress.connections, blocked: egress.blocked, suspicious: egress.suspicious },
   };
+}
+
+/** Stations that work while the factory is idle (scout, research, the unjam station and the recruiter); they share `limits.usdPerNight`. */
+const IDLE_STATIONS = new Set(["scout", "research", "unjam", "recruit"]);
+
+/** How an agent called by a package's station is recorded (`package:<package>/<station>`). */
+export const PACKAGE_AGENT_PREFIX = "package:";
+
+/** On the span of a research call the person in charge asked for: it has its own cap (`research.usdPerRun`) and takes nothing from the night's. */
+export const ON_DEMAND_ATTR = "zero.on_demand";
+
+/** Whether an agent call counts against `limits.usdPerNight`: one of an idle station or a package, unless it is research on demand. */
+export function isIdleCall(s: SpanRow): boolean {
+  const agent = String(s.attrs["gen_ai.agent.name"]);
+  if (agent === "research" && s.attrs[ON_DEMAND_ATTR]) return false;
+  return IDLE_STATIONS.has(agent) || agent.startsWith(PACKAGE_AGENT_PREFIX);
 }
 
 /** Local midnight, the boundary of the daily budget. */

@@ -12,6 +12,9 @@ import { runJob, type RunnerDeps } from "../src/line/runner.js";
 import { conflictMarkers, workCopyAt } from "../src/workspace.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, simulatedBox, tempDir, testFactory, writeTree } from "./helpers.js";
 
+// These suites drive many real git clones and merges, and passed the 60 s limit when the whole suite ran in parallel on Windows.
+vi.setConfig({ testTimeout: 180_000 });
+
 afterEach(() => {
   vi.unstubAllEnvs();
   return cleanup();

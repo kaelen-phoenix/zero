@@ -14,7 +14,7 @@ const es = read("README.es.md");
 
 const AREAS = [
   "core", "daemon", "production-line", "auto-merge", "night-shift", "packages", "engines",
-  "panel", "reports", "box-and-egress", "intake", "self-update", "site",
+  "panel", "reports", "box-and-egress", "intake", "distributed", "self-update", "site",
 ];
 const areaFiles = () => readdirSync(new URL("../docs/agents/", import.meta.url)).filter((f) => f.endsWith(".md"));
 /** The guide for agents: the AGENTS.md index plus every area file under docs/agents/. */
@@ -65,6 +65,34 @@ describe("README in English and Spanish", () => {
       expect(text).toContain("selfUpdate");
       expect(blocks(text).map((b) => b.body).join("\n")).toContain("selfUpdate: { enabled: true }");
       expect(text).toContain("startTimeoutSeconds");
+    }
+  });
+
+  it("document the update channels in the code blocks of both languages", () => {
+    const missing = (text: string, pieces: string[]) => pieces.filter((p) => !text.includes(p));
+    for (const [text, heading] of [[en, "### Update channels (`channel`)"], [es, "### Canales de actualización (`channel`)"]] as const) {
+      const part = section(text, heading).split(/^### /m)[0]!;
+      const commands = blocks(part).map((b) => b.body).join("\n");
+      expect(missing(commands, ["selfUpdate: { channel: estable }", "zero liberar 1.3.0", "zero liberar 0.2.0 --line <line>"]), heading).toEqual([]);
+      // Not zero actualizar-pr, which updates pull requests.
+      expect(commands).toMatch(/^zero actualizar\s/m);
+      expect(missing(part, ["ultimo", "`zero_update`", "Actualizar ahora", "vX.Y.Z", "0010-canales-de-actualizacion.md"]), heading).toEqual([]);
+      const all = blocks(text).map((b) => b.body).join("\n");
+      expect(missing(all, ["zero package add github:acme/hello-zero --canal estable", "zero package update hello --etiqueta v1.1.0"]), heading).toEqual([]);
+      expect(text).toContain("`channel: estable`");
+    }
+  });
+
+  it("describe the update channels in the guide for agents and in an ADR", () => {
+    for (const [file, pieces] of [
+      ["docs/agents/self-update.md", ["src/releases.ts", "requestUpdate", "zero_update", "0010-canales-de-actualizacion.md"]],
+      ["docs/agents/packages.md", ["src/package-channel.ts", "src/package-auto-update.ts", "channel: estable", "--etiqueta"]],
+      ["docs/agents/panel.md", ["POST /update", "packageVersion"]],
+      ["docs/agents/daemon.md", ["selfUpdateWanted", "updatePackage"]],
+      ["docs/adr/0010-canales-de-actualizacion.md", ["# ADR 0010", "vX.Y.Z", "zero liberar", "zero actualizar", "`estable`", "`ultimo`", "--etiqueta"]],
+    ] as const) {
+      const text = read(file);
+      for (const piece of pieces) expect(text, `${file}: ${piece}`).toContain(piece);
     }
   });
 
@@ -337,6 +365,67 @@ describe("install with Docker", () => {
   });
 });
 
+describe("several machines and a Linux machine in the cloud", () => {
+  /** A subsection's own text, up to the next heading. */
+  const subsection = (text: string, heading: string) => section(text, heading).split(/^### /m)[0]!;
+  const machines = [subsection(en, "### Several machines"), subsection(es, "### Varias máquinas")];
+  const linux = [subsection(en, "### Linux machine in the cloud"), subsection(es, "### Máquina Linux en la nube")];
+
+  it("puts the Linux guide in the same place of both, right after several machines", () => {
+    const place = (text: string, several: string, guide: string) => {
+      const headings = text.split("\n").filter((l) => /^###? /.test(l));
+      const at = headings.findIndex((h) => h.startsWith(several));
+      expect(headings[at + 1]).toBe(guide);
+      return at;
+    };
+    expect(place(en, "### Several machines", "### Linux machine in the cloud")).toBe(place(es, "### Varias máquinas", "### Máquina Linux en la nube"));
+  });
+
+  it("has every command of the Linux guide, the same blocks in both", () => {
+    for (const text of linux) {
+      const code = blocks(text).map((b) => b.body).join("\n");
+      for (const piece of [
+        "podman", "gnome-keyring", "loginctl enable-linger", "install.sh", "zero init", "zero setup", "gh auth login", "gh auth setup-git", "zero box setup",
+        "claude setup-token", "zero secret set CLAUDE_CODE_OAUTH_TOKEN", "zero unirse", "zero autostart on", "zero panel remote on",
+      ]) expect(code, piece).toContain(piece);
+      for (const piece of ["Node 22", "Secret Service", "systemd", "/etc/subuid"]) expect(text, piece).toContain(piece);
+      // No secret as an argument, nor an open port.
+      expect(code).not.toMatch(/GH_TOKEN=|API_KEY=|--with-token|0\.0\.0\.0|ufw allow/);
+    }
+    expect(blocks(linux[0]!).map((b) => normalize(b.body))).toEqual(blocks(linux[1]!).map((b) => normalize(b.body)));
+  });
+
+  it("marks every command that needs administrator rights", () => {
+    for (const [text, word] of [[linux[0]!, "administrator"], [linux[1]!, "administrador"]] as const) {
+      const admin = blocks(text).flatMap((b) => b.body.split("\n")).filter((l) => l.includes("sudo "));
+      for (const line of admin) expect(line).toContain(`# ${word}`);
+      expect(admin.some((l) => l.includes("loginctl enable-linger"))).toBe(true);
+    }
+  });
+
+  it("says what zero's tests do not exercise and that the keyring is locked after a restart", () => {
+    expect(linux[0]).toContain("zero's tests do not exercise this installation");
+    expect(linux[0]).toContain("After every restart the keyring is locked again");
+    expect(linux[1]).toContain("Los tests de zero no prueban esta instalación");
+    expect(linux[1]).toContain("Después de cada reinicio el llavero vuelve a quedar bloqueado");
+  });
+
+  it("no longer says the shared queue is the next step, and covers what the machines share", () => {
+    expect(machines[0]).not.toMatch(/next step|for now each machine/i);
+    expect(machines[1]).not.toMatch(/paso siguiente|próximo paso|por ahora cada máquina/i);
+    for (const text of machines) {
+      for (const piece of ["--add-readme", "ZERO_HOME/lines", "platforms", "usdPerNight", "reservePercent", "integrate: pull-request", "0007-fabrica-distribuida.md"]) expect(text, piece).toContain(piece);
+    }
+    expect(machines[0]).toContain("A shared queue");
+    expect(machines[1]).toContain("Una cola común");
+  });
+
+  it("is in the guide for agents", () => {
+    const text = guide();
+    for (const piece of ["linesPass", "spendPass", "statusPass", "outboxPass", "decisionsPass", "shareLines", "factoryJobPage"]) expect(text, piece).toContain(piece);
+  });
+});
+
 describe("agent packages", () => {
   afterEach(cleanup);
   const HEADINGS = [[en, "## Agent packages"], [es, "## Paquetes de agentes"]] as const;
@@ -533,6 +622,13 @@ describe("AGENTS.md", () => {
     expect(rule).toBeDefined();
     expect(rule).toContain("both");
     expect(rule).toContain("Spanish");
+  });
+
+  it("forbids AI attribution in commits and pull requests", () => {
+    const conventions = read("AGENTS.md").split("## Conventions")[1]!;
+    const rule = conventions.split("\n").find((l) => l.includes("attribution") && l.includes("src/attribution.ts"));
+    expect(rule).toBeDefined();
+    expect(rule).toContain("co-authorship is kept");
   });
 
   it("is a short index with commands, areas and conventions", () => {

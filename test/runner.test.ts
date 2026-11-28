@@ -950,3 +950,84 @@ describe("a request split into stages", () => {
     expect(agents.calls[1]!.prompt).not.toMatch(/Stage/);
   });
 });
+
+describe("what build is told about time", () => {
+  const short = `${passes} short`;
+  const long = `${passes} long`;
+  const fresh = `${passes} fresh`;
+  /** A passing run of `command` on the line, by an earlier job, that took `minutes`. */
+  const ran = (ctx: FactoryContext, command: string, minutes: number) => {
+    const { job } = requestWork(ctx, { text: "un pedido anterior" });
+    ctx.tracer.start("zero.verify.command", { jobId: job.id, attrs: { "process.command_line": command } }).end("ok", { "zero.run_ms": minutes * 60_000 });
+  };
+  const buildPrompt = async (verify: string[], history: (ctx: FactoryContext) => void = () => {}) => {
+    const { ctx } = factory({ verify });
+    history(ctx);
+    const agents = fakeAgents({ build: writeHealth() });
+    const { job } = requestWork(ctx, { text: "agregá un endpoint de salud" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("delivered");
+    return agents.calls.find((c) => c.station === "build")!.prompt;
+  };
+
+  it("lists the commands as before when none has passed yet", async () => {
+    const prompt = await buildPrompt([fresh, short], (ctx) => {
+      const { job } = requestWork(ctx, { text: "uno que falló" });
+      ctx.tracer.start("zero.verify.command", { jobId: job.id, attrs: { "process.command_line": fresh } }).end("error", { "zero.run_ms": 30 * 60_000 });
+    });
+    expect(prompt).toContain(`Verification commands that must pass: ${fresh}, ${short}.`);
+    expect(prompt).not.toContain("takes up to");
+  });
+
+  it("shows how long a short command takes, without advice", async () => {
+    const prompt = await buildPrompt([fresh, short], (ctx) => ran(ctx, short, 2));
+    expect(prompt).toContain(`Verification commands that must pass: ${fresh}, ${short} (takes up to 2 min).`);
+    expect(prompt).not.toContain("do not run it whole");
+  });
+
+  it("tells build not to run a command whole that takes more than a third of its limit", async () => {
+    const prompt = await buildPrompt([short, long], (ctx) => {
+      ran(ctx, short, 0.2);
+      ran(ctx, long, 25);
+    });
+    expect(prompt).toContain(`${short} (takes up to 1 min), ${long} (takes up to 25 min: do not run it whole, run only the tests of the files you touch; zero runs it whole in verify).`);
+  });
+
+  it("still runs the slow command whole in verify, with its usual limit", async () => {
+    const { ctx } = factory({ verify: [long] });
+    ran(ctx, long, 25);
+    const agents = fakeAgents({ build: writeHealth() });
+    const { job } = requestWork(ctx, { text: "agregá un endpoint de salud" });
+    expect((await runJob(job.id, deps(ctx, agents.runner))).status).toBe("delivered");
+    const runs = ctx.store.spansForJob(job.id).filter((s) => s.name === "zero.verify.command");
+    expect(runs.map((s) => s.attrs["process.command_line"])).toEqual([long]);
+  });
+
+  it("says the clock cut build and that its work is still in the copy", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({
+      build: (req, n) => (n === 1 ? (writeHealth()(req), { ok: false, text: "timed out after 45 min", timedOut: true }) : undefined),
+    });
+    const { job } = requestWork(ctx, { text: "agregá un endpoint de salud" });
+
+    const done = await runJob(job.id, deps(ctx, agents.runner));
+
+    expect(done).toMatchObject({ status: "delivered", attempt: 2 });
+    const second = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
+    expect(second).toContain("límite de 45 minutos");
+    expect(second).toContain("sigue sin commitear en la copia de trabajo");
+    expect(second).toContain("continuá desde ahí");
+    expect(second).not.toContain("Hacé cambios más chicos");
+  });
+
+  it("keeps the usual feedback for another abnormal end", async () => {
+    const { ctx } = factory();
+    const agents = fakeAgents({ build: (req, n) => (n === 1 ? { ok: false, text: "boom" } : writeHealth()(req)) });
+    const { job } = requestWork(ctx, { text: "agregá un endpoint de salud" });
+
+    expect(await runJob(job.id, deps(ctx, agents.runner))).toMatchObject({ status: "delivered", attempt: 2 });
+    const second = agents.calls.filter((c) => c.station === "build")[1]!.prompt;
+    expect(second).toContain("terminó de forma anormal");
+    expect(second).toContain("Hacé cambios más chicos y enfocados");
+    expect(second).not.toContain("límite de");
+  });
+});

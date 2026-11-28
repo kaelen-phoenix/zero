@@ -187,7 +187,7 @@ export async function researchPass(ctx: FactoryContext, runAgent: AgentRunner, n
     if (!choice.available) return;
     let maxBudgetUsd: number | undefined;
     if (choice.billing !== "subscription") {
-      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, day, now);
+      const left = ctx.config.limits.usdPerNight - scoutSpent(ctx.store, day, now, ctx.config);
       if (left <= 0) return;
       maxBudgetUsd = Math.round(left * 1e6) / 1e6;
     }

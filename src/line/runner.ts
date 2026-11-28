@@ -7,6 +7,7 @@ import { jobBilledUsd, pickAgentEngine, pickEngine, type EngineChoice } from "..
 import { agentInstructionsPath, commitAuthor, customAgentChain, effectiveLevel, findLine, lineAgents, lineAutonomy, lineSignature, stationChain, type Autonomy, type BoxAvailability, type Level, type LineAgent, type LineConfig, type Signature } from "../config.js";
 import type { FactoryHome } from "../home.js";
 import { log } from "../log.js";
+import { scrubBranch } from "../attribution.js";
 import { signText, withTrailer } from "../signature.js";
 import { git, sh, spawnGit, tryGit, type ShellResult } from "../shell.js";
 import type { Job, Store } from "../state/store.js";
@@ -14,12 +15,13 @@ import type { Tracer } from "../telemetry/tracer.js";
 import { memoryBlock, type Learning, type NewPost, type Townhall } from "../townhall/index.js";
 import type { PullRequestsFactory } from "../tracker.js";
 import { conflictMarkers, openCloneCopy, openWorkCopy, removeWorkCopy, untrackedPaths, type WorkCopy } from "../workspace.js";
-import { askOwner, describeDelivery, finalizeJob, LOST_TO_ANOTHER, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
+import { askOwner, describeDelivery, finalizeJob, LOST_TO_ANOTHER, performanceFindingsKey, prRefresh, prRefreshKey, STOPPED_BY_YOU, type LedgerDeps, type PrRefresh } from "./finish.js";
 import { integrate } from "./integrate.js";
 import { recordCleanup } from "./cleanup.js";
 import { killLeftovers } from "../leftovers.js";
 import { asksBeforeUpdate, decide, decideNightShift, researchAutonomy, stricter, touchesLegal, touchesManifest } from "./policy.js";
-import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema } from "./review.js";
+import { blockingFindings, checkCitations, findingsFeedback, lowConfidence, ReviewSchema, type Finding } from "./review.js";
+import { publicText } from "../public-text.js";
 import {
   capabilityExists,
   changeName,
@@ -37,7 +39,7 @@ import {
 import { baseCommits, conflictBlocks, ConflictSchema, diff3Markers, resolveSimply, type ConflictAnswer } from "./conflicts.js";
 import { pinTrainHead } from "./train.js";
 import { checkDependencies, dependencyBlock, newNpmDependencies } from "./dependencies.js";
-import { localCommands, verifyTimeoutMs } from "./pace.js";
+import { localCommands, slowestPassMs, verifyTimeoutMs } from "./pace.js";
 import { artifactFeedback, changeArtifacts, verifyChange } from "./verify.js";
 
 export interface RunnerDeps extends LedgerDeps {
@@ -296,10 +298,12 @@ export async function runJob(jobId: string, deps: RunnerDeps, signal: AbortSigna
     job = store.updateJob(jobId, { station: "integrate" });
     const result = await tracer.within("zero.station.integrate", { jobId, parentId: jobSpan, attrs: { "zero.station": "integrate", "zero.integrate.mode": line.integrate, "zero.isolation": isolation, "zero.commit.author": commitAuthor(config, line) } }, async () => {
       copy.publish();
+      // What an agent committed with AI attribution leaves its messages; the base and what is already pushed stay as they are.
+      scrubBranch(line.repo, copy.branch, [line.baseBranch, copy.base, refresh?.head]);
       return integrate(line, copy, {
         jobId,
         title: spec.title,
-        body: deliveryBody(spec, job!, store, lineSignature(config, line)),
+        body: deliveryBody(spec, job!, store, lineSignature(config, line), config.lines.map((l) => l.repo)),
         signature: lineSignature(config, line),
         scratchDir: join(deps.home.worktrees, line.name),
         author: commitAuthor(config, line),
@@ -640,25 +644,31 @@ const choose = (deps: RunnerDeps, who: Who) =>
 const engineOf = (c: EngineChoice): AgentRequest["engine"] => ({ name: c.engine, model: c.model, replaces: c.replaces, reason: c.reason });
 
 /** What the job may still be charged; subscription calls cost nothing extra. */
-const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, job.id, nowOf(deps)), 0.01);
+const remaining = (deps: RunnerDeps, job: Job) => Math.max(job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0) - jobBilledUsd(deps.store, deps.config, job.id, nowOf(deps)), 0.01);
 
 /** The dollar cap of the next call: none on a subscription, whose real limit is the plan itself. */
 const callCap = (deps: RunnerDeps, job: Job, choice: EngineChoice) => (choice.billing === "subscription" ? undefined : remaining(deps, job));
 
+/** Whether the engine refused the call itself: its plan or credit ran out, or its session expired. */
+function engineOut(run: AgentRun<unknown>): boolean {
+  return run.quota?.limited === true || run.signedOut === true;
+}
+
 /**
- * Whether a call the plan cut short goes on with another engine of the
- * station's chain, in the same attempt. Each replacement is tried at most once.
+ * Whether a call the plan cut short (or its engine's expired session refused)
+ * goes on with another engine of the station's chain, in the same attempt.
+ * Each replacement is tried at most once.
  */
 function goesOn(deps: RunnerDeps, run: AgentRun<unknown>, station: Who, switched: number): boolean {
-  if (!run.quota?.limited || switched >= chainOf(deps, station).length - 1) return false;
+  if (!engineOut(run) || switched >= chainOf(deps, station).length - 1) return false;
   const next = choose(deps, station);
   if (next.available) log.info("engine quota or credit used up; going on with a replacement", { station: nameOf(station), engine: next.engine });
   return next.available;
 }
 
-/** Stops the job when the plan refused the call; it resumes from the same station once the plan renews. */
+/** Stops the job when the plan (or an expired session) refused the call; it resumes from the same station once the engine is back. */
 function quotaStop(run: AgentRun<unknown>): void {
-  if (run.quota?.limited) throw new Interrupted("quota");
+  if (engineOut(run)) throw new Interrupted("quota");
 }
 
 /**
@@ -695,11 +705,28 @@ function heldBy(ofLine: Autonomy, researchBorn: boolean): string {
   return `La propuesta tiene autonomía \`build\` y la línea ahora tiene \`${ofLine}\``;
 }
 
-/** What the pull request says:the plain spec, the issue it closes (its own, or its proposal's), and what the job cost. */
-export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal">, signature?: Signature): string {
+/** What the pull request says:the plain spec, what the performance reviewer noted without blocking, the issue it closes (its own, or its proposal's), and what the job cost. */
+export function deliveryBody(spec: Spec, job: Job, store?: Pick<Store, "getProposal" | "getKv">, signature?: Signature, repos: string[] = []): string {
   const issue = job.source?.kind === "github-issue" ? job.source.number : job.source?.kind === "night-shift" ? store?.getProposal(job.source.proposal)?.issueNumber : undefined;
   const closes = issue !== undefined ? `\n\nCloses #${issue}` : "";
-  return signText(`${plainSpec(spec)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`, signature);
+  return signText(`${plainSpec(spec)}${performanceSection(store, job.id, repos)}${closes}\n\n---\nGenerado por zero · trabajo ${job.id} · costo estimado $${job.costUsd.toFixed(2)}`, signature);
+}
+
+/** The performance reviewer's non-blocking findings as a section of the pull request, cleaned like any published text; empty without any. */
+function performanceSection(store: Pick<Store, "getKv"> | undefined, jobId: string, repos: string[]): string {
+  const saved = store?.getKv(performanceFindingsKey(jobId));
+  if (!saved) return "";
+  let findings: Finding[];
+  try {
+    findings = JSON.parse(saved) as Finding[];
+  } catch {
+    log.warn("unreadable performance findings; left out of the pull request", { job: jobId });
+    return "";
+  }
+  if (!findings.length) return "";
+  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+  const items = findings.map((f) => `- [${f.severity}] \`${f.file}:${f.line}\`: ${oneLine(f.problem)} → ${oneLine(f.fix)}`);
+  return `\n\n${publicText(`## Rendimiento\nEl revisor de rendimiento no frenó el cambio por esto, pero conviene mirarlo:\n${items.join("\n")}`, repos).text}`;
 }
 
 /**
@@ -831,6 +858,21 @@ function budgetStop(deps: RunnerDeps, job: Job, level: Level, spec: Spec, billed
   });
 }
 
+/**
+ * What build is told about the line's verify commands: how long each takes, when its passing runs say so, and
+ * not to run whole one that would use up more than a third of build's own time.
+ */
+function verifyRequest(deps: RunnerDeps, line: LineConfig): string {
+  const buildMs = deps.config.stations.build.timeoutMinutes * 60_000;
+  const commands = line.verify.map((command) => {
+    const ms = slowestPassMs(deps.store, line.name, command, nowOf(deps));
+    if (ms === undefined) return command;
+    const minutes = `takes up to ${Math.ceil(ms / 60_000)} min`;
+    return 3 * ms > buildMs ? `${command} (${minutes}: do not run it whole, run only the tests of the files you touch; zero runs it whole in verify)` : `${command} (${minutes})`;
+  });
+  return `Implement the specification. Verification commands that must pass: ${commands.join(", ") || "none configured"}.`;
+}
+
 /** The build → the agents that write → verify → review → security → the reviewing agents loop. Returns the job when it stops here (failed, parked), or undefined to integrate. */
 async function buildLoop(
   deps: RunnerDeps,
@@ -879,7 +921,7 @@ async function buildLoop(
     }
     // The job's dollar cap counts only what is charged, and only matters when the next engine is not on a subscription.
     // An attempt that starts with less than a small share of the cap would only be cut short by it.
-    const billed = jobBilledUsd(store, jobId, nowOf(deps));
+    const billed = jobBilledUsd(store, deps.config, jobId, nowOf(deps));
     const cap = job.budgetUsd + (job.approvals.extraBudgetUsd ?? 0);
     const next = choose(deps, resumingWriter >= 0 ? writers[resumingWriter]! : resumingCustom >= 0 ? custom[resumingCustom]! : resuming && job.station !== "verify" ? (job.station as AgentStation) : "build");
     if ((billed >= cap || cap - billed < cap * MIN_ATTEMPT_SHARE) && next.billing !== "subscription") return budgetStop(deps, job, level, spec, billed);
@@ -905,6 +947,8 @@ async function buildLoop(
     };
 
     if (!resuming) {
+      // A new attempt's performance review starts from nothing: what an earlier one noted no longer describes the change.
+      store.deleteKv(performanceFindingsKey(jobId));
       job = store.updateJob(jobId, { attempt, station: "build" });
       const run = await tracer.within("zero.station.build", { jobId, parentId: attemptSpan.id, attrs: { "zero.station": "build" } }, async (span) => {
         for (let switched = 0; ; switched++) {
@@ -926,7 +970,7 @@ async function buildLoop(
               // A checks fix keeps what the checks said even once an attempt's own feedback replaces it.
               mark?.checks && mark.checks !== job.feedback && `## Failed checks of the pull request (fix them)\n${mark.checks}`,
               job.feedback && `## Feedback from the previous attempt (fix all of it)\n${job.feedback}`,
-              `Implement the specification. Verification commands that must pass: ${line.verify.join(", ") || "none configured"}.`,
+              verifyRequest(deps, line),
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -941,7 +985,7 @@ async function buildLoop(
         attemptSpan.end("error", { "error.message": "interrupted" });
         throw new Interrupted(reasonOf(signal));
       }
-      if (run.quota?.limited) {
+      if (engineOut(run)) {
         // The plan cut the call short: this attempt does not count, and the build is redone after the renewal.
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1 });
@@ -953,10 +997,14 @@ async function buildLoop(
         copy.discardChanges();
         store.updateJob(jobId, { attempt: attempt - 1, station: "build" });
         attemptSpan.end("error", { "error.message": "job budget used up" });
-        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+        return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
       }
       if (!run.ok) {
-        failAttempt(`La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
+        // In a conflict the merge starts again before the next call, so only outside one does the work stay in the copy.
+        const problem = run.timedOut
+          ? `La ejecución de build llegó al límite de ${config.stations.build.timeoutMinutes} minutos y se cortó ahí.${conflicted ? " zero vuelve a empezar la mezcla." : " Lo hecho sigue sin commitear en la copia de trabajo: miralo con `git status` y `git diff`, y continuá desde ahí en lugar de empezar de nuevo."}`
+          : `La ejecución de build terminó de forma anormal (${run.text.slice(0, 500)}). Hacé cambios más chicos y enfocados.`;
+        failAttempt(`${problem}${conflicted ? `\n\n${conflictFeedback(copy, conflicted.paths, adoptedOf(job, conflicted))}` : ""}`);
         continue;
       }
       if (conflicted) {
@@ -1041,7 +1089,7 @@ async function buildLoop(
           attemptSpan.end("error", { "error.message": "interrupted" });
           throw new Interrupted(reasonOf(signal));
         }
-        if (run.quota?.limited) {
+        if (engineOut(run)) {
           // The plan cut the call short: the attempt and the station stay, so only this agent runs again after the renewal.
           copy.discardChanges();
           attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
@@ -1051,7 +1099,7 @@ async function buildLoop(
           // The job's dollar cap cut the call short: the owner decides, and it resumes at this agent.
           copy.discardChanges();
           attemptSpan.end("error", { "error.message": "job budget used up" });
-          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, jobId, nowOf(deps)));
+          return budgetStop(deps, store.getJob(jobId)!, level, spec, jobBilledUsd(store, deps.config, jobId, nowOf(deps)));
         }
         if (!run.ok) {
           // Unlike build, nothing half-done stays for the next commit to pick up as someone else's work.
@@ -1163,7 +1211,7 @@ async function buildLoop(
         own = customRun(agent, loaded.text);
       }
       const ask = agent
-        ? `You are this project's own "${agent.name}" agent. Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
+        ? `${agent.origin === "zero" ? `You are zero's own "${agent.name}" reviewer.` : `You are this project's own "${agent.name}" agent.`} Check the change with \`git diff ${copy.base}...HEAD\`, only for what your instructions cover. You are read-only: anything you write is discarded.`
         : `${station === "security" ? "Check the change for security problems" : "Review the change"} with \`git diff ${copy.base}...HEAD\`.`;
       await ensureHolds(deps, attemptSpan);
       store.updateJob(jobId, { station });
@@ -1197,13 +1245,13 @@ async function buildLoop(
             tryNo--;
             continue;
           }
-          if (run.quota?.limited) attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
+          if (engineOut(run)) attemptSpan.end("error", { "error.message": "engine quota or credit used up" });
           quotaStop(run);
           if (signal.aborted || (run.ok && run.output)) {
             if (!run.output) return undefined;
             const { valid, invalid } = checkCitations(copy.cwd, run.output.findings);
             span.set({ "zero.findings": valid.length, "zero.citations.invalid": invalid.length, "zero.findings.low_confidence": lowConfidence(valid).length });
-            return { review: run.output, blocking: blockingFindings(valid) };
+            return { review: run.output, valid, blocking: blockingFindings(valid) };
           }
         }
         return undefined;
@@ -1216,7 +1264,14 @@ async function buildLoop(
       }
       await learn(reviewed.review.learnings);
       // An informative custom agent only reports: its findings never reject the change.
-      if (reviewed.blocking.length && (!agent || agent.blocking)) {
+      const blocks = reviewed.blocking.length > 0 && (!agent || agent.blocking);
+      // What zero's performance reviewer notes without blocking goes in the pull request; a rejected run leaves nothing.
+      if (agent?.origin === "zero" && agent.name === "performance") {
+        const notes = blocks ? [] : reviewed.valid.filter((f) => !reviewed.blocking.includes(f));
+        if (notes.length) store.setKv(performanceFindingsKey(jobId), JSON.stringify(notes));
+        else store.deleteKv(performanceFindingsKey(jobId));
+      }
+      if (blocks) {
         failAttempt(findingsFeedback(reviewed.blocking, station));
         rejected = true;
         break;

@@ -51,7 +51,7 @@ export function testTampering(files: ChangedFile[], added: { path: string; text:
 const ARTIFACT_SHAPES: { shape: RegExp; why: string }[] = [
   { shape: /\.(db|db-wal|db-shm|db-journal|sqlite|sqlite3)$/i, why: "base de datos" },
   { shape: /\.log$/i, why: "log" },
-  { shape: /(^|\/)(zero\.factory\.yaml|daemon\.lock|secrets\.enc)$/i, why: "archivo de ZERO_HOME" },
+  { shape: /(^|\/)(zero\.factory\.yaml|(daemon|package-update)\.lock|secrets\.enc)$/i, why: "archivo de ZERO_HOME" },
   { shape: /(^|\/)\.zero\/(townhall|worktrees|jobs|gate|bin|packages|reports|drills)\//i, why: "carpeta de ZERO_HOME" },
   { shape: /(^|\/)plus-[^/]+\//i, why: "carpeta plus-* de la operación" },
   { shape: /(^|\/)(reports?|informes?)\/(.*\/)?[^/]+\.(md|html|htm|pdf|csv|json|xlsx|txt|xml)$/i, why: "informe generado" },
