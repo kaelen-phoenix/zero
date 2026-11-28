@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANDON_KEY, regenerationDrill } from "../src/app.js";
 import { formatDrill } from "../src/format.js";
 import { factoryHome } from "../src/home.js";
+import { DRILL_SETUP_MS } from "../src/line/drill.js";
 import { VERIFY_COMMAND_SPAN } from "../src/line/pace.js";
+import { sh, type ShellResult } from "../src/shell.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, run, tempDir, testFactory } from "./helpers.js";
 
 afterEach(cleanup);
@@ -194,6 +196,92 @@ describe("regeneration drill", () => {
     expect(existsSync(join(ctx.home.drills, r.id, "copy"))).toBe(false);
     expect(report).toMatch(/Copia de trabajo:.*borr/);
     expect(json).toMatchObject({ outcome: "alcanzan", copyKept: false });
+  });
+
+  describe("time limits", () => {
+    const SETUP = `node -e "process.exit(0)"`;
+    const SLOW = `node -e "process.exit(5)"`;
+    /** Records the limit of each command and answers the chosen ones; the rest run for real. */
+    const fakeSh = (answers: Record<string, Partial<ShellResult>> = {}) => {
+      const limits: Record<string, number> = {};
+      const fn = async (command: string, cwd: string, opts: { timeoutMs: number }): Promise<ShellResult> => {
+        limits[command] = opts.timeoutMs;
+        const a = answers[command];
+        return a ? { code: 0, output: "", timedOut: false, ms: 1, ...a } : sh(command, cwd, opts);
+      };
+      return { fn, limits };
+    };
+    const drill = (ctx: ReturnType<typeof factory>["ctx"], s: ReturnType<typeof fakeSh>, build = rebuild()) =>
+      regenerationDrill(ctx, { line: "demo", capability: "cap", patterns: ["src/**"] }, { runAgent: fakeAgents({ build }).runner, sh: s.fn, cwd: away() });
+    const json = (ctx: ReturnType<typeof factory>["ctx"], id: string) => JSON.parse(readFileSync(join(ctx.home.drills, id, "resultado.json"), "utf8"));
+    const resultLine = (report: string) => report.split("\n").find((l) => l.startsWith("- Resultado:"))!;
+
+    it("runs verify with the line's verifyTimeoutMinutes and setup with 20 minutes, and keeps each limit", async () => {
+      const { ctx } = factory({}, { setup: [SETUP], verifyTimeoutMinutes: 45 });
+      const s = fakeSh();
+      const r = await drill(ctx, s);
+      expect(s.limits).toEqual({ [SETUP]: 20 * 60_000, [VERIFY]: 45 * 60_000 });
+      expect(r.outcome).toBe("alcanzan");
+      expect(r.setup[0]!.timeoutMs).toBe(DRILL_SETUP_MS);
+      expect(r.verify[0]!.timeoutMs).toBe(2_700_000);
+      expect(readFileSync(r.report, "utf8")).not.toContain("cortado a los");
+    });
+
+    it("gives verify the limit learned from the line's passing runs", async () => {
+      const { ctx } = factory();
+      const job = ctx.store.createJob({ line: "demo", kind: "request", request: "x", budgetUsd: 3 });
+      const end = new Date(Date.now() - 86_400_000);
+      ctx.store.insertSpan({ id: "s1", jobId: job.id, name: VERIFY_COMMAND_SPAN, start: new Date(end.getTime() - 30 * 60_000).toISOString(), end: end.toISOString(), status: "ok", attrs: { "process.command_line": VERIFY, "zero.run_ms": 30 * 60_000 } });
+      const s = fakeSh();
+      await drill(ctx, s);
+      expect(s.limits[VERIFY]).toBe(60 * 60_000);
+    });
+
+    it("gives verify 20 minutes without history or a limit of the line", async () => {
+      const { ctx } = factory();
+      const s = fakeSh();
+      await drill(ctx, s);
+      expect(s.limits[VERIFY]).toBe(20 * 60_000);
+    });
+
+    it("is unmeasured when the only failures are time cuts, with the real limit in the report", async () => {
+      const { ctx } = factory({}, { verifyTimeoutMinutes: 45 });
+      const r = await drill(ctx, fakeSh({ [VERIFY]: { code: 1, timedOut: true } }));
+      expect(r.outcome).toBe("sin medir");
+      const report = readFileSync(r.report, "utf8");
+      expect(report).toContain("cortado a los 45 minutos");
+      expect(report).toContain("verifyTimeoutMinutes");
+      expect(report).not.toContain("cortado a los 20 minutos");
+      expect(report).toContain("**sin medir**");
+      expect(resultLine(report)).toContain("verifyTimeoutMinutes");
+      expect(resultLine(report)).not.toContain("no alcanzan");
+      expect(json(ctx, r.id)).toMatchObject({ outcome: "sin medir", verify: [{ timeoutMs: 2_700_000, timedOut: true }] });
+    });
+
+    it("is not enough when another verify command really failed", async () => {
+      const { ctx } = factory({}, { verify: [VERIFY, SLOW] });
+      const r = await drill(ctx, fakeSh({ [VERIFY]: { code: 1, timedOut: true }, [SLOW]: { code: 3, timedOut: false } }));
+      expect(r.outcome).toBe("no alcanzan");
+    });
+
+    it("is invalid when a test was touched, even with a time cut", async () => {
+      const { ctx } = factory();
+      const build = (req: { cwd: string }) => {
+        writeFileSync(join(req.cwd, "test", "mod.test.ts"), "nothing to check\n");
+        return rebuild()(req);
+      };
+      const r = await drill(ctx, fakeSh({ [VERIFY]: { code: 1, timedOut: true } }), build);
+      expect(r.outcome).toBe("inválido");
+    });
+
+    it("is not enough when a time cut comes with a file not rebuilt or an agent that failed", async () => {
+      const builds = [() => ({ output: { missing: [] } }), (req: { cwd: string }) => ({ ...rebuild()(req), ok: false, text: "no pude" }), (req: { cwd: string }) => ({ ...rebuild()(req), budgetLimited: true })];
+      for (const build of builds) {
+        const { ctx } = factory();
+        const r = await drill(ctx, fakeSh({ [VERIFY]: { code: 1, timedOut: true } }), build);
+        expect(r.outcome).toBe("no alcanzan");
+      }
+    });
   });
 
   describe("working copy", () => {

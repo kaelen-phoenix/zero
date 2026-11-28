@@ -180,6 +180,7 @@ async function drillIn(deps: DrillDeps, input: DrillInput, id: string, dir: stri
   const notRebuilt = files.filter((f) => !rebuilt.includes(f));
   const complete = setupOk && agent.ok && !agent.budgetLimited && !notRebuilt.length && verify.length > 0;
   const failed = verify.filter((c) => c.code !== 0);
+  // Tests cut by their time limit say nothing about the specifications, only about the limit.
   const outcome: DrillOutcome = tampered.length
     ? "inválido"
     : !complete || failed.some((c) => !c.timedOut)
@@ -209,7 +210,7 @@ const VERIFY_HINT = "; ese límite se cambia con `verifyTimeoutMinutes` de la l�
 const OUTCOME_TEXT: Record<DrillOutcome, string> = {
   alcanzan: "las especificaciones alcanzan: se reconstruyó todo y los tests de la línea pasan",
   "no alcanzan": "las especificaciones no alcanzan",
-  "sin medir": "verify se cortó por tiempo, y eso no dice nada de las especificaciones",
+  "sin medir": "verify se cortó por tiempo, y eso no dice nada de las especificaciones; el límite se sube con `verifyTimeoutMinutes` de la línea",
   inválido: "inválido: se tocaron tests o especificaciones, así que el resultado no mide nada",
 };
 
