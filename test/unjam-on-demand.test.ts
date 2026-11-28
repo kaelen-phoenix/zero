@@ -612,6 +612,31 @@ describe("seeing it", () => {
     expect(shown(recorded({ startedAt: undefined, outcome: "not-run", reason: "no existe la línea", lines: [] }))[0]).toContain("pedida para tienda 13:00, no pudo correr (13:07): no existe la línea");
   });
 
+  it("zero status names the jobs it closed because they were already resolved", () => {
+    const one = [{ line: "tienda", job: "a1b2c3d4" }];
+    expect(shown(recorded({ closed: one, lines: [{ line: "tienda", jams: 0, causes: 0 }] }))).toEqual([
+      "Última corrida a demanda del destrabador: pedida para tienda 13:00, empezó 13:05, terminó bien (13:07) · cerró 1 trabajo que ya estaba resuelto (tienda: a1b2c3d4) · tienda: sin trabas",
+    ]);
+    const two = [
+      { line: "tienda", job: "a1b2c3d4" },
+      { line: "blog", job: "12345678" },
+      { line: "tienda", job: "e5f6a7b8" },
+    ];
+    expect(shown(recorded({ closed: two }))[0]).toContain("terminó bien (13:07) · cerró 3 trabajos que ya estaban resueltos (tienda: a1b2c3d4, e5f6a7b8; blog: 12345678) · tienda: 2 trabas");
+    const seven = Array.from({ length: 7 }, (_, i) => ({ line: "tienda", job: `0000000${i}` }));
+    expect(shown(recorded({ closed: seven }))[0]).toContain("cerró 7 trabajos que ya estaban resueltos (tienda: 00000000, 00000001, 00000002, 00000003, 00000004 y 2 más)");
+    expect(shown(recorded({ outcome: "stopped", reason: "se alcanzó el presupuesto", closed: one }))[0]).toContain("se cortó (13:07): se alcanzó el presupuesto · cerró 1 trabajo que ya estaba resuelto (tienda: a1b2c3d4)");
+  });
+
+  it("zero status reads an older record without closed as before", () => {
+    const before = "Última corrida a demanda del destrabador: pedida para tienda 13:00, empezó 13:05, terminó bien (13:07) · tienda: 2 trabas, 1 causa";
+    const old = recorded();
+    expect(readUnjamRun(old.store)).not.toHaveProperty("closed");
+    expect(shown(old)).toEqual([before]);
+    expect(shown(recorded({ closed: "x" as unknown as UnjamRunRecord["closed"] }))).toEqual([before]);
+    expect(shown(recorded({ closed: [] }))).toEqual([before]);
+  });
+
   it("zero status dates a run of more than a few days ago", () => {
     expect(shown(recorded({}, new Date(2026, 10, 20, 9)), new Date(2026, 10, 20, 9))[0]).toContain("29/10/2026 13:07");
   });

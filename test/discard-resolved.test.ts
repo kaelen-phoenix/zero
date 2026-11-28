@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { quotaAttrs } from "../src/agent.js";
 import { requestUnjam, type FactoryContext } from "../src/app.js";
 import { runDaemon } from "../src/daemon.js";
 import { mergeKey, type MergeApi } from "../src/line/automerge.js";
@@ -6,6 +7,7 @@ import { discardResolved, RESOLVED_MS } from "../src/line/discard.js";
 import { finalizeJob } from "../src/line/finish.js";
 import { readDiagnosis, readUnjamRun, unjamOnDemandPass, unjamPass, urgentUnjamPass } from "../src/line/unjam.js";
 import type { Job } from "../src/state/store.js";
+import { AGENT_SPAN } from "../src/telemetry/metrics.js";
 import { cleanup, fakeAgents, gitIn, gitRepo, tempDir, testFactory, writeTree } from "./helpers.js";
 
 afterEach(cleanup);
@@ -59,6 +61,26 @@ const github = (answer: MergeApi["pullRequest"]): MergeApi => ({
 const read = (ctx: FactoryContext, job: Job) => ctx.store.getJob(job.id)!;
 
 describe("failed jobs already resolved", () => {
+  it("tells the callback each job it closes, with its line", async () => {
+    const { ctx, repo } = withRemote();
+    const one = await failed(ctx, repo);
+    const two = await failed(ctx, repo);
+    merge(repo, one);
+    merge(repo, two);
+    const seen: { line: string; job: string }[] = [];
+    expect(await discardResolved(ctx, at(0), undefined, (c) => seen.push(c))).toBe(2);
+    expect(seen).toHaveLength(2);
+    expect(seen).toEqual(expect.arrayContaining([{ line: "demo", job: one.id }, { line: "demo", job: two.id }]));
+  });
+
+  it("never calls the callback when nothing is closed", async () => {
+    const { ctx, repo } = withRemote();
+    await failed(ctx, repo);
+    const seen: unknown[] = [];
+    expect(await discardResolved(ctx, at(0), undefined, (c) => seen.push(c))).toBe(0);
+    expect(seen).toEqual([]);
+  });
+
   it.each([
     ["a merge commit", ["--no-ff", "-m", "merge"]],
     ["a fast-forward", ["--ff-only"]],
@@ -206,7 +228,76 @@ describe("failed jobs already resolved", () => {
     await unjamOnDemandPass(ctx, agents.runner, new Date());
     expect(agents.calls).toEqual([]);
     expect(read(ctx, job).status).toBe("stopped");
-    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }] });
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "ok", reason: "la línea demo no tiene trabas", lines: [{ line: "demo", jams: 0, causes: 0 }], closed: [{ line: "demo", job: job.id }] });
+  });
+
+  it("an unjam run on demand records what it closed on every line, though asked for one", async () => {
+    const { ctx, repo } = withRemote();
+    const other = withRemote();
+    ctx.config.lines.push({ ...other.ctx.config.lines[0]!, name: "blog" });
+    const job = await failed(ctx, repo);
+    merge(repo, job);
+    const blogJob = ctx.store.createJob({ line: "blog", kind: "request", request: "x", budgetUsd: 3 });
+    gitIn(other.repo, "checkout", "-q", "-b", `zero/${blogJob.id}`);
+    commit(other.repo, { [`${blogJob.id}.txt`]: blogJob.id }, "work");
+    gitIn(other.repo, "checkout", "-q", "main");
+    await finalizeJob(ctx, blogJob, "failed", { reason: "verify falló" });
+    merge(other.repo, blogJob);
+    expect(requestUnjam(ctx, "demo", new Date())).toMatchObject({ ok: true });
+    await unjamOnDemandPass(ctx, fakeAgents({}).runner, new Date());
+    expect(readUnjamRun(ctx.store)?.closed).toEqual([
+      { line: "demo", job: job.id },
+      { line: "blog", job: blogJob.id },
+    ]);
+  });
+
+  it("an unjam run on demand that closes nothing records no closed", async () => {
+    const { ctx, repo } = withRemote();
+    await failed(ctx, repo);
+    expect(requestUnjam(ctx, "demo", new Date())).toMatchObject({ ok: true });
+    await unjamOnDemandPass(ctx, fakeAgents({ unjam: () => ({ output: { causes: [] } }) }).runner, new Date());
+    const run = readUnjamRun(ctx.store)!;
+    expect(run.outcome).toBe("ok");
+    expect(run).not.toHaveProperty("closed");
+  });
+
+  /** Runs `then` right after the factory closes a job as `stopped`. */
+  function whenClosed(ctx: FactoryContext, then: () => void) {
+    const finish = ctx.store.finishJob.bind(ctx.store);
+    ctx.store.finishJob = (...args: Parameters<typeof finish>) => {
+      const done = finish(...args);
+      if (args[1] === "stopped") then();
+      return done;
+    };
+  }
+
+  it("an unjam run on demand cut by the budget after closing still records it", async () => {
+    const { ctx, repo } = withRemote({ limits: { usdPerDay: 1 } });
+    const job = await failed(ctx, repo);
+    merge(repo, job);
+    await failed(ctx, repo);
+    expect(requestUnjam(ctx, "demo", new Date())).toMatchObject({ ok: true });
+    // The budget is reached while the resolved job is closed, before the line, still jammed, is looked at.
+    whenClosed(ctx, () => ctx.tracer.start(AGENT_SPAN, { attrs: { "gen_ai.agent.name": "build", "zero.engine": "claude", "zero.billing": "api" } }).end("ok", { "zero.cost.usd": 5, ...quotaAttrs({ billing: "api", windows: [] }) }));
+    const agents = fakeAgents({});
+    await unjamOnDemandPass(ctx, agents.runner, new Date());
+    expect(agents.calls).toEqual([]);
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "stopped", reason: "se alcanzó el presupuesto", closed: [{ line: "demo", job: job.id }] });
+  });
+
+  it("an unjam run on demand cut by a shutdown after closing still records it", async () => {
+    const { ctx, repo } = withRemote();
+    const job = await failed(ctx, repo);
+    merge(repo, job);
+    expect(requestUnjam(ctx, "demo", new Date())).toMatchObject({ ok: true });
+    const stop = new AbortController();
+    // The shutdown arrives while the resolved job is closed, so before the first line.
+    whenClosed(ctx, () => stop.abort());
+    const agents = fakeAgents({});
+    await unjamOnDemandPass(ctx, agents.runner, new Date(), { signal: stop.signal });
+    expect(agents.calls).toEqual([]);
+    expect(read(ctx, job).status).toBe("stopped");
+    expect(readUnjamRun(ctx.store)).toMatchObject({ outcome: "stopped", reason: "la fábrica se apagó", closed: [{ line: "demo", job: job.id }] });
   });
 
   it("are closed before the daytime unjam looks: only what is left is diagnosed", async () => {

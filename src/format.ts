@@ -402,14 +402,31 @@ function unjamLineText(l: UnjamLineResult): string {
 /** The unjam run asked for and not started: "pendiente para tienda desde 10:05". */
 export const unjamPendingText = (r: UnjamRequest, now = new Date()) => `pendiente para ${r.line ?? "todas las líneas"} desde ${pastTime(r.requestedAt, now)}`;
 
-/** The last on-demand unjam run: "pedida para tienda 10:00, empezó 10:05, terminó bien (10:07) · tienda: 2 trabas, 1 causa". */
+/** How many ids of closed jobs `unjamClosedText` lists. */
+const CLOSED_SHOWN = 5;
+
+/** "cerró 3 trabajos que ya estaban resueltos (tienda: a1b2c3d4, e5f6a7b8; blog: 12345678)", at most `CLOSED_SHOWN` ids. */
+function unjamClosedText(closed: { line: string; job: string }[]): string {
+  const byLine = new Map<string, string[]>();
+  for (const c of closed.slice(0, CLOSED_SHOWN)) byLine.set(c.line, [...(byLine.get(c.line) ?? []), c.job]);
+  const list = [...byLine].map(([line, jobs]) => `${line}: ${jobs.join(", ")}`).join("; ");
+  const more = closed.length > CLOSED_SHOWN ? ` y ${closed.length - CLOSED_SHOWN} más` : "";
+  const what = closed.length === 1 ? "1 trabajo que ya estaba resuelto" : `${closed.length} trabajos que ya estaban resueltos`;
+  return `cerró ${what} (${list}${more})`;
+}
+
+/**
+ * The last on-demand unjam run: "pedida para tienda 10:00, empezó 10:05, terminó bien (10:07) · cerró 1 trabajo que ya
+ * estaba resuelto (tienda: a1b2c3d4) · tienda: 2 trabas, 1 causa".
+ */
 export function describeUnjamRun(r: UnjamRunRecord, now = new Date()): string {
   const asked = `pedida para ${r.line ?? "todas las líneas"} ${pastTime(r.asked, now)}`;
   if (!r.endedAt) return `${asked}, corriendo${r.startedAt ? ` desde ${pastTime(r.startedAt, now)}` : ""}`;
   const started = r.startedAt ? `, empezó ${pastTime(r.startedAt, now)}` : "";
   // A run that ended well needs no reason: its lines tell it.
   const reason = r.reason && r.outcome !== "ok" ? `: ${r.reason}` : "";
-  return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...r.lines.map(unjamLineText)].join(" · ");
+  const closed = Array.isArray(r.closed) && r.closed.length ? [unjamClosedText(r.closed)] : [];
+  return [`${asked}${started}, ${UNJAM_END[r.outcome ?? "failed"]} (${pastTime(r.endedAt, now)})${reason}`, ...closed, ...r.lines.map(unjamLineText)].join(" · ");
 }
 
 /** How an express research run ended, as the person in charge reads it. */

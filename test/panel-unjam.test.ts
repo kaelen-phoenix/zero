@@ -95,6 +95,12 @@ describe("the panel's summary", () => {
     expect(failed.html).toMatch(/<p class="bad">Última corrida a demanda: [^<]*empezó [^<]*13:05, falló [^<]*13:07\)/);
     expect(failed.html).toContain("válido de &lt;tienda&gt;");
   });
+
+  it("names the jobs the last run closed because they were already resolved", () => {
+    const { html, run } = withRun({ closed: [{ line: "tienda", job: "a1b2c3d4" }, { line: "<blog>", job: "e5f6a7b8" }] });
+    expect(html).toContain(`<p>Última corrida a demanda: ${esc(describeUnjamRun(run))}</p>`);
+    expect(html).toContain("cerró 2 trabajos que ya estaban resueltos (tienda: a1b2c3d4; &lt;blog&gt;: e5f6a7b8)");
+  });
 });
 
 describe("POST /unjam", () => {

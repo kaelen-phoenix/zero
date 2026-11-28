@@ -240,8 +240,14 @@ function inBase(line: LineConfig, job: Job, branch: string, tip: string, base: s
   return own.some((p) => missing.has(p)) ? undefined : `los cambios de su rama ${branch} ya están en ${name}`;
 }
 
+/** A failed job `discardResolved` closed. */
+export interface ClosedJob {
+  line: string;
+  job: string;
+}
+
 /** Closes the failed jobs of one line whose work is already in. */
-async function discardResolvedIn(ctx: FactoryContext, line: LineConfig, now: Date, merges?: MergeApiFactory): Promise<number> {
+async function discardResolvedIn(ctx: FactoryContext, line: LineConfig, now: Date, merges?: MergeApiFactory, onClosed?: (closed: ClosedJob) => void): Promise<number> {
   const failed = ctx.store.listJobs({ line: line.name, status: ["failed"], limit: -1 });
   if (!failed.length) return 0;
   const last = readLook(ctx.store, line.name);
@@ -278,6 +284,7 @@ async function discardResolvedIn(ctx: FactoryContext, line: LineConfig, now: Dat
       if (!current || current.status !== "failed" || failedAt(current) !== failedAt(job)) continue;
       await finalizeJob(ctx, current, "stopped", { reason: discardedByFactory(why), delivery: current.delivery });
       closed++;
+      onClosed?.({ line: line.name, job: job.id });
       log.info("failed job closed: its work is already in", { job: job.id, line: line.name, why });
     } catch (err) {
       log.warn("cannot tell whether a failed job is already resolved", { job: job.id, line: line.name, error: String(err) });
@@ -290,14 +297,15 @@ async function discardResolvedIn(ctx: FactoryContext, line: LineConfig, now: Dat
 /**
  * Closes on its own, as `stopped` through `finalizeJob`, the failed jobs whose work is already in: GitHub says their
  * pull request was merged, or the base branch on the line's remote already has their branch or the same content. Any
- * other failed job stays as it is, and nothing is asked of the person in charge. Returns how many it closed.
+ * other failed job stays as it is, and nothing is asked of the person in charge. Returns how many it closed, and tells
+ * `onClosed` each one.
  */
-export async function discardResolved(ctx: FactoryContext, now: Date, merges?: MergeApiFactory): Promise<number> {
+export async function discardResolved(ctx: FactoryContext, now: Date, merges?: MergeApiFactory, onClosed?: (closed: ClosedJob) => void): Promise<number> {
   let closed = 0;
   for (const line of ctx.config.lines) {
     if (line.package) continue;
     try {
-      closed += await discardResolvedIn(ctx, line, now, merges);
+      closed += await discardResolvedIn(ctx, line, now, merges, onClosed);
     } catch (err) {
       log.warn("cannot look for resolved jobs", { line: line.name, error: String(err) });
     }
