@@ -12,9 +12,10 @@ import type { Store } from "../state/store.js";
 import type { Tracer } from "../telemetry/tracer.js";
 import { log } from "../log.js";
 import { FACTORY_IDENTITY } from "../workspace.js";
+import { verifyTimeoutMs } from "./pace.js";
 import { isTestFile } from "./verify.js";
 
-/** Each setup and verify command of a drill gets at most this long, like a job's. */
+/** Each setup command of a drill gets at most this long; verify commands get the line's limit (`verifyTimeoutMs`), like a job's. */
 export const DRILL_COMMAND_MS = 20 * 60_000;
 const OUTPUT_TAIL = 2_000;
 
@@ -23,12 +24,14 @@ export const DrillOutput = z.object({
   missing: z.array(z.string()),
 });
 
-export type DrillOutcome = "alcanzan" | "no alcanzan" | "inválido";
+export type DrillOutcome = "alcanzan" | "no alcanzan" | "sin medir" | "inválido";
 
 export interface DrillCommand {
   command: string;
   code: number;
   timedOut: boolean;
+  /** The time limit it was run with. */
+  timeoutMs: number;
   /** The end of its output. */
   output: string;
 }
@@ -88,7 +91,7 @@ export function drillFiles(line: LineConfig, patterns: string[]): string[] {
   return tracked.filter((p) => !kept(p) && patterns.some((g) => posix.matchesGlob(p, g)));
 }
 
-const tail = (r: ShellResult, command: string): DrillCommand => ({ command, code: r.code, timedOut: r.timedOut, output: r.output.slice(-OUTPUT_TAIL) });
+const tail = (r: ShellResult, command: string, timeoutMs: number): DrillCommand => ({ command, code: r.code, timedOut: r.timedOut, timeoutMs, output: r.output.slice(-OUTPUT_TAIL) });
 
 /**
  * Rebuilds the given files of a line from its specification alone, in a copy
@@ -130,7 +133,7 @@ async function drillIn(deps: DrillDeps, input: DrillInput, id: string, dir: stri
 
   const setup: DrillCommand[] = [];
   for (const command of line.setup) {
-    const r = tail(await run(command, copy, { timeoutMs: DRILL_COMMAND_MS }), command);
+    const r = tail(await run(command, copy, { timeoutMs: DRILL_COMMAND_MS }), command, DRILL_COMMAND_MS);
     setup.push(r);
     if (r.code !== 0) break;
   }
@@ -166,14 +169,24 @@ async function drillIn(deps: DrillDeps, input: DrillInput, id: string, dir: stri
     .split("\n")
     .filter((p) => p && kept(p));
   const verify: DrillCommand[] = [];
-  if (setupOk) for (const command of line.verify) verify.push(tail(await run(command, copy, { timeoutMs: DRILL_COMMAND_MS }), command));
+  if (setupOk) {
+    for (const command of line.verify) {
+      const timeoutMs = verifyTimeoutMs(deps.store, line, command, deps.now?.() ?? new Date());
+      verify.push(tail(await run(command, copy, { timeoutMs }), command, timeoutMs));
+    }
+  }
   const rebuilt = files.filter((f) => existsSync(join(copy, f)));
   const notRebuilt = files.filter((f) => !rebuilt.includes(f));
+  const rebuiltOk = setupOk && agent.ok && !agent.budgetLimited && !notRebuilt.length && verify.length > 0;
+  const failed = verify.filter((c) => c.code !== 0);
+  // Tests cut by their time limit say nothing about the specifications, only about the limit.
   const outcome: DrillOutcome = tampered.length
     ? "inválido"
-    : setupOk && agent.ok && !agent.budgetLimited && !notRebuilt.length && verify.length > 0 && verify.every((c) => c.code === 0)
+    : rebuiltOk && !failed.length
       ? "alcanzan"
-      : "no alcanzan";
+      : rebuiltOk && failed.every((c) => c.timedOut)
+        ? "sin medir"
+        : "no alcanzan";
 
   const report = join(dir, "informe.md");
   const result: DrillResult = { id, line: line.name, capability, baseBranch: line.baseBranch, baseCommit, removed: files, rebuilt, notRebuilt, tampered, outcome, agent, setup, verify, missing, report, copyKept: !!input.keep };
@@ -184,11 +197,12 @@ async function drillIn(deps: DrillDeps, input: DrillInput, id: string, dir: stri
 
 const list = (items: string[], empty = "(ninguno)") => (items.length ? items.map((i) => `- ${i}`).join("\n") : empty);
 const fence = (text: string) => "```\n" + text.replace(/```/g, "'''").trimEnd() + "\n```";
-const commandBlock = (c: DrillCommand) => `### \`${c.command}\`\n\nCódigo de salida: ${c.code}${c.timedOut ? " (cortado a los 20 minutos)" : ""}\n\n${fence(c.output || "(sin salida)")}`;
+const commandBlock = (c: DrillCommand) => `### \`${c.command}\`\n\nCódigo de salida: ${c.code}${c.timedOut ? ` (cortado a los ${Math.round(c.timeoutMs / 60_000)} minutos; el límite de verify se cambia con \`verifyTimeoutMinutes\` de la línea)` : ""}\n\n${fence(c.output || "(sin salida)")}`;
 
 const OUTCOME_TEXT: Record<DrillOutcome, string> = {
   alcanzan: "las especificaciones alcanzan: se reconstruyó todo y los tests de la línea pasan",
   "no alcanzan": "las especificaciones no alcanzan",
+  "sin medir": "los tests de la línea se cortaron por su límite de tiempo, así que el simulacro no dice si las especificaciones alcanzan; el límite se sube con `verifyTimeoutMinutes` de la línea",
   inválido: "inválido: se tocaron tests o especificaciones, así que el resultado no mide nada",
 };
 
